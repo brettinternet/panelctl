@@ -49,9 +49,13 @@ jobs:
           codesign --force --sign - dist/panelctl
           codesign --verify --strict dist/panelctl
           lipo -info dist/panelctl
-          release_zip="dist/panelctl-${GITHUB_REF_NAME}-macos-universal.zip"
+          release_name="panelctl-${GITHUB_REF_NAME}-macos-universal.zip"
+          release_zip="dist/${release_name}"
           zip -q -j "$release_zip" dist/panelctl README.md THIRD_PARTY_NOTICES.md
-          shasum -a 256 "$release_zip" > "${release_zip}.sha256"
+          (
+            cd dist
+            shasum -a 256 "$release_name" > "${release_name}.sha256"
+          )
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
