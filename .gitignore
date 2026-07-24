@@ -1,0 +1,23 @@
+.build/
+.build-*/
+.swiftpm/
+.swift-cache/
+.swift-module-cache/
+.swift-module-cache-*/
+.swiftpm-scratch/
+
+# macOS and editor metadata
+.DS_Store
+._*
+*.swp
+.idea/
+.vscode/
+DerivedData/
+xcuserdata/
+*.dSYM/
+
+# Local release artifacts
+dist/
+release/
+*.zip
+*.sha256
