@@ -18,6 +18,8 @@
 	<string>@MARKETING_VERSION@</string>
 	<key>CFBundleVersion</key>
 	<string>@BUILD_NUMBER@</string>
+	<key>PanelCtlReleaseVersion</key>
+	<string>@RELEASE_VERSION@</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSMultipleInstancesProhibited</key>

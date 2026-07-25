@@ -35,11 +35,16 @@ final class AppModel: ObservableObject {
     var onStatusChange: (() -> Void)?
 
     private let defaults: UserDefaults
+    private let displayProvider: () -> [DisplayRecord]
     private let service: ProtectionService
     private static let preferencesKey = "blackoutPreferences"
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        displayProvider: @escaping () -> [DisplayRecord] = { DisplayInventory.records() }
+    ) {
         self.defaults = defaults
+        self.displayProvider = displayProvider
         let loadedPreferences = defaults.data(forKey: Self.preferencesKey)
             .flatMap { try? JSONDecoder().decode(ProtectionPreferences.self, from: $0) }
 
@@ -47,12 +52,15 @@ final class AppModel: ObservableObject {
         preferences.selectedDisplayUUIDs = Set(
             preferences.selectedDisplayUUIDs.map { $0.uppercased() }
         )
-        let displays = DisplayInventory.records()
+        let displays = displayProvider()
         if !preferences.didChooseDisplays {
-            let available = displays.filter { $0.active && $0.online && $0.uuid != nil }
-            let preferred = available.filter { !$0.builtin }
-            let initial = preferred.first ?? available.first
-            preferences.allDisplays = available.count == 1
+            let drawable = displays.filter {
+                $0.active && $0.online && $0.bounds.width > 0 && $0.bounds.height > 0
+            }
+            let selectable = drawable.filter { $0.uuid != nil }
+            let preferred = selectable.filter { !$0.builtin }
+            let initial = preferred.first ?? selectable.first
+            preferences.allDisplays = false
             preferences.selectedDisplayUUIDs = initial?.uuid
                 .map { Set([$0.uppercased()]) } ?? []
             preferences.didChooseDisplays = true
@@ -63,7 +71,13 @@ final class AppModel: ObservableObject {
         launchAtLoginEnabled = LaunchAtLogin.isEnabled
         service = ProtectionService()
         service.onStateChange = { [weak self] state in
-            self?.runtimeState = state
+            guard let self else { return }
+            self.runtimeState = self.presentedRuntimeState(for: state)
+            if case .waitingForDisplays = state {
+                DispatchQueue.main.async {
+                    self.refreshDisplays()
+                }
+            }
         }
         savePreferences()
         reconcileProtection()
@@ -79,6 +93,7 @@ final class AppModel: ObservableObject {
     }
 
     var unavailableSelectedDisplayUUIDs: [String] {
+        guard !preferences.allDisplays else { return [] }
         let available = Set(activeDisplays.compactMap(\.uuid).map { $0.uppercased() })
         return preferences.selectedDisplayUUIDs
             .map { $0.uppercased() }
@@ -96,6 +111,11 @@ final class AppModel: ObservableObject {
     }
 
     var version: String {
+        if let version = Bundle.main.object(
+            forInfoDictionaryKey: "PanelCtlReleaseVersion"
+        ) as? String, !version.isEmpty {
+            return version
+        }
         if let version = Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString"
         ) as? String, !version.isEmpty {
@@ -123,10 +143,11 @@ final class AppModel: ObservableObject {
     }
 
     func refreshDisplays() {
-        displays = DisplayInventory.records()
-        if preferences.isEnabled {
+        displays = displayProvider()
+        if preferences.isEnabled, !service.hasManagedProcess {
             reconcileProtection()
         }
+        runtimeState = presentedRuntimeState(for: service.state)
         onStatusChange?()
     }
 
@@ -186,6 +207,34 @@ final class AppModel: ObservableObject {
             }
         } catch {
             service.fail(error.localizedDescription)
+        }
+    }
+
+    private func presentedRuntimeState(
+        for serviceState: ProtectionRuntimeState
+    ) -> ProtectionRuntimeState {
+        guard preferences.isEnabled else { return serviceState }
+        switch serviceState {
+        case .starting, .waiting, .blackedOut, .sleeping:
+            break
+        default:
+            return serviceState
+        }
+
+        do {
+            _ = try preferences.commandArguments(for: displays)
+            return serviceState
+        } catch ProtectionConfigurationError.noDisplays {
+            return .waitingForDisplays(
+                ProtectionConfigurationError.noDisplays.localizedDescription
+            )
+        } catch let error as ProtectionConfigurationError {
+            if case .selectedDisplayUnavailable = error {
+                return .waitingForDisplays(error.localizedDescription)
+            }
+            return serviceState
+        } catch {
+            return serviceState
         }
     }
 

@@ -143,6 +143,6 @@ struct ProtectionPreferences: Codable, Equatable {
     }
 
     private static func isValidDuration(_ seconds: TimeInterval) -> Bool {
-        seconds.isFinite && seconds > 0 && seconds <= 30 * 24 * 60 * 60
+        seconds.isFinite && seconds >= 1 && seconds <= 30 * 24 * 60 * 60
     }
 }

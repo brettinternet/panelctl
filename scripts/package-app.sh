@@ -20,13 +20,14 @@ arm64_cli=$4
 x86_64_cli=$5
 output_app=$6
 
-if [[ ! "$tag" =~ ^v([0-9]+(\.[0-9]+){0,2})([-+][0-9A-Za-z.-]+)?$ ]]; then
-	echo "package-app.sh: tag must be a version such as v1.2.3: $tag" >&2
+source "$(dirname "${BASH_SOURCE[0]}")/release-version.sh"
+if ! release_version_parse "$tag"; then
+	echo "package-app.sh: tag must be a semantic version such as v1.2.3 or v1.2.3-beta.1: $tag" >&2
 	exit 1
 fi
 
-marketing_version=${BASH_REMATCH[1]}
-build_number=$marketing_version
+marketing_version=$RELEASE_MARKETING_VERSION
+build_number=$RELEASE_BUILD_NUMBER
 
 for binary in "$arm64_ui" "$x86_64_ui" "$arm64_cli" "$x86_64_cli"; do
 	if [[ ! -f "$binary" || ! -x "$binary" ]]; then
@@ -57,6 +58,7 @@ chmod 0755 "$staging/Contents/MacOS/PanelCtl" "$staging/Contents/Helpers/panelct
 
 sed \
 	-e "s/@MARKETING_VERSION@/$marketing_version/g" \
+	-e "s/@RELEASE_VERSION@/$RELEASE_FULL_VERSION/g" \
 	-e "s/@BUILD_NUMBER@/$build_number/g" \
 	"$(dirname "${BASH_SOURCE[0]}")/../Packaging/Info.plist" \
 	> "$staging/Contents/Info.plist"

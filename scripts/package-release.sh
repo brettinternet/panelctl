@@ -18,11 +18,12 @@ fi
 
 tag=$1
 output_dir=${2:-dist}
-if [[ ! "$tag" =~ ^v([0-9]+(\.[0-9]+){0,2})([-+][0-9A-Za-z.-]+)?$ ]]; then
-	echo "package-release.sh: tag must be a version such as v1.2.3: $tag" >&2
+source "$(dirname "${BASH_SOURCE[0]}")/release-version.sh"
+if ! release_version_parse "$tag"; then
+	echo "package-release.sh: tag must be a semantic version such as v1.2.3 or v1.2.3-beta.1: $tag" >&2
 	exit 1
 fi
-marketing_version=${BASH_REMATCH[1]}
+marketing_version=$RELEASE_MARKETING_VERSION
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source_version=$(

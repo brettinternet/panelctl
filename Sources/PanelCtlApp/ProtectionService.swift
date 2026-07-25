@@ -75,6 +75,10 @@ final class ProtectionService {
     private var forceTerminationWorkItem: DispatchWorkItem?
     private var shutdownCompletion: (() -> Void)?
 
+    var hasManagedProcess: Bool {
+        process != nil
+    }
+
     func run(arguments: [String]) {
         if let process {
             if currentArguments == arguments,
@@ -208,7 +212,11 @@ final class ProtectionService {
     }
 
     private func consumeStatus(_ data: Data, from sourceProcess: Process) {
-        guard !data.isEmpty, process === sourceProcess else { return }
+        guard !data.isEmpty,
+              process === sourceProcess,
+              state != .stopping else {
+            return
+        }
         statusBuffer.append(data)
         if statusBuffer.count > maximumStatusBufferBytes {
             statusBuffer.removeAll(keepingCapacity: true)

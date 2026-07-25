@@ -21,6 +21,8 @@ jobs:
         uses: actions/checkout@v6
       - name: Run tests
         run: swift test --disable-sandbox
+      - name: Check release version policy
+        run: ./scripts/test-release-version.sh
       - name: Compile CLI product
         run: swift build --disable-sandbox --product panelctl
       - name: Compile app product
@@ -43,6 +45,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          source scripts/release-version.sh
+          release_version_parse "$GITHUB_REF_NAME"
+          release_flags=()
+          if [[ "$RELEASE_IS_PRERELEASE" == 1 ]]; then
+            release_flags+=(--prerelease --latest=false)
+          fi
           gh release create "$GITHUB_REF_NAME" \
             "dist/panelctl-${GITHUB_REF_NAME}-macos-universal.zip" \
             "dist/panelctl-${GITHUB_REF_NAME}-macos-universal.zip.sha256" \
@@ -50,5 +58,6 @@ jobs:
             "dist/panelctl-app-${GITHUB_REF_NAME}-macos-universal.zip.sha256" \
             --title "$GITHUB_REF_NAME" \
             --verify-tag \
+            "${release_flags[@]}" \
             --notes "Universal CLI and PanelCtl.app archives are ad-hoc signed, not Developer ID signed or notarized. Verify SHA-256 checksums; macOS may require Privacy & Security > Open Anyway." \
             --generate-notes

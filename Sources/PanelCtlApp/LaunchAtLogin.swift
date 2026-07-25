@@ -1,5 +1,5 @@
-import ServiceManagement
 import Foundation
+import ServiceManagement
 
 enum LaunchAtLoginResult: Equatable {
     case enabled

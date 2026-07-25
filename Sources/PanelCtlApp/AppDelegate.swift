@@ -87,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         let appMenu = NSMenu()
         appMenu.addItem(item("Settings…", action: #selector(openSettings), key: ","))
+        appMenu.addItem(item("View on GitHub", action: #selector(openGitHub)))
         appMenu.addItem(.separator())
         appMenu.addItem(item("Quit PanelCtl", action: #selector(quit), key: "q"))
         appMenuItem.submenu = appMenu

@@ -169,6 +169,7 @@ displayplacer failure analysis, BetterDisplay inference, and hardware evidence.
 swift test --disable-sandbox
 swift build --product panelctl
 swift build --product PanelCtlApp
+scripts/test-release-version.sh
 ```
 
 CI runs tests and compiles both products on macOS. To build release archives
@@ -178,6 +179,7 @@ locally, pass a version tag to the shared packaging script:
 scripts/package-release.sh v0.3.0
 ```
 
-Tags matching `v*` publish universal arm64/x86_64 CLI and app archives with
-SHA-256 checksums. Both artifacts are ad-hoc signed, not Developer ID signed or
-notarized.
+Release tags use `vMAJOR.MINOR.PATCH`; `-alpha.N`, `-beta.N`, and `-rc.N`
+prereleases are also supported. Valid tags publish universal arm64/x86_64 CLI
+and app archives with SHA-256 checksums. Both artifacts are ad-hoc signed, not
+Developer ID signed or notarized.

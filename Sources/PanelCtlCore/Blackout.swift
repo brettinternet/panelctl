@@ -617,6 +617,11 @@ public final class BlackoutController {
     private func interruptCycle(_ reset: BlackoutWatchReset) {
         watchState.reset(reset, after: observedInputBaseline())
         hideWindows()
+        if case .suspension(.screensAsleep) = reset {
+            stateHandler?(.sleeping)
+        } else {
+            stateHandler?(.waiting)
+        }
     }
 
     private func handleWorkspaceEvent(_ event: WorkspaceEvent) {
@@ -635,6 +640,11 @@ public final class BlackoutController {
             interruptCycle(reset)
         case .resume(let reason):
             watchState.resume(reason, after: observedInputBaseline())
+            stateHandler?(
+                watchState.suspensions.contains(.screensAsleep)
+                    ? .sleeping
+                    : .waiting
+            )
         }
     }
 
