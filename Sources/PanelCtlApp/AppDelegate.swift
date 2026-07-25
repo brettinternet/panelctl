@@ -1,13 +1,16 @@
 import AppKit
 import Combine
+import PanelCtlCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var model: AppModel!
+    private var controlServer: AppControlServer?
     private var statusItem: NSStatusItem?
     private var settingsWindowController: SettingsWindowController?
     private var noticeCancellable: AnyCancellable?
     private var launchedAsLoginItem = false
+    private var suppressInitialSettings = false
     private var terminationPending = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -16,10 +19,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             event?.eventID == kAEOpenApplication &&
             event?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue
                 == keyAELaunchedAsLogInItem
+        suppressInitialSettings = CommandLine.arguments.contains("--background")
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         model = AppModel()
+        let controlServer = AppControlServer { [weak self] request in
+            self?.handleControlRequest(request) ?? .unavailable()
+        }
+        do {
+            try controlServer.start()
+            self.controlServer = controlServer
+        } catch {
+            fputs("PanelCtl: app control unavailable: \(error.localizedDescription)\n", stderr)
+        }
         configureMainMenu()
         configureStatusItem()
         model.onStatusChange = { [weak self] in
@@ -32,7 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installScreenObservers()
         updateStatusItem()
 
-        if !launchedAsLoginItem {
+        if !launchedAsLoginItem && !suppressInitialSettings {
             showSettings()
         }
     }
@@ -68,11 +81,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        controlServer?.stop()
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     private func configureStatusItem() {
+        guard model.showMenuBarIcon, statusItem == nil else { return }
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.autosaveName = "PanelCtlStatusItem"
         self.statusItem = statusItem
@@ -96,7 +111,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateStatusItem() {
-        guard let statusItem, let model else { return }
+        guard let model else { return }
+        if !model.showMenuBarIcon {
+            if let statusItem {
+                NSStatusBar.system.removeStatusItem(statusItem)
+            }
+            statusItem = nil
+            return
+        }
+        configureStatusItem()
+        guard let statusItem else { return }
         let image = NSImage(
             systemSymbolName: model.runtimeState.systemImage,
             accessibilityDescription: model.statusSummary
@@ -186,6 +210,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindowController?.present()
     }
 
+    private func handleControlRequest(
+        _ request: AppControlRequest
+    ) -> AppControlResponse {
+        guard request.protocolVersion == AppControlRequest.currentProtocol else {
+            return controlResponse(
+                ok: false,
+                error: "unsupported app-control protocol \(request.protocolVersion)"
+            )
+        }
+
+        switch request.command {
+        case .enable:
+            model.setProtectionEnabled(true)
+        case .disable:
+            model.setProtectionEnabled(false)
+        case .toggle:
+            model.setProtectionEnabled(!model.preferences.isEnabled)
+        case .status:
+            break
+        case .openSettings:
+            showSettings()
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        return controlResponse(ok: true)
+    }
+
+    private func controlResponse(
+        ok: Bool,
+        error: String? = nil
+    ) -> AppControlResponse {
+        AppControlResponse(
+            ok: ok,
+            running: true,
+            enabled: model.preferences.isEnabled,
+            state: model.runtimeState.controlIdentifier,
+            summary: model.statusSummary,
+            detail: model.runtimeState.detailMessage,
+            error: error
+        )
+    }
+
     @objc private func quit() {
         NSApp.terminate(nil)
     }
@@ -227,5 +292,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSWorkspace.screensDidWakeNotification,
             object: nil
         )
+    }
+}
+
+private extension ProtectionRuntimeState {
+    var controlIdentifier: String {
+        switch self {
+        case .disabled: return "disabled"
+        case .starting: return "starting"
+        case .waiting: return "waiting"
+        case .blackedOut: return "blacked_out"
+        case .sleeping: return "sleeping"
+        case .stopping: return "stopping"
+        case .waitingForDisplays: return "waiting_for_displays"
+        case .failed: return "failed"
+        }
     }
 }

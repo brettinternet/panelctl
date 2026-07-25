@@ -24,19 +24,62 @@ CLI as a supervised helper. Move it to `/Applications`, open it, choose the
 displays to protect, and enable protection. The app stays out of the Dock and
 provides:
 
-- Menu-bar enable/disable and live waiting, blackout, sleep, and error state
+- Optional menu-bar icon with enable/disable and live waiting, blackout, sleep,
+  and error state
 - Per-display or explicit all-display protection using stable display UUIDs
 - Configurable idle, restore, all-display sleep, and caffeinate behavior
 - Launch at login, background operation, version, and project links
 
 Closing Settings leaves protection running. Quitting the menu app stops its
-watcher and removes any active blackout.
+watcher and removes any active blackout. If the menu icon is hidden, opening
+`PanelCtl.app` again brings the existing Settings window forward. Launch at
+Login and automation launches stay in the background.
+
+### Stream Deck and automation
+
+The existing CLI is also the app's stable automation interface:
+
+```sh
+panelctl app enable
+panelctl app disable
+panelctl app toggle
+panelctl app status --json
+panelctl app open-settings
+```
+
+These commands control the app's persisted setting and supervised watcher;
+ordinary commands such as `panelctl blackout` remain standalone and do not
+contact the app. `status` never launches the app. The other app commands start
+it in the background if needed, and only `open-settings` brings up a window.
+
+For Stream Deck, use a shell-command action to run the absolute path to
+`panelctl`. If the standalone CLI is not installed, use the copy bundled with
+the app:
+
+```sh
+/Applications/PanelCtl.app/Contents/Helpers/panelctl app toggle
+```
+
+A macOS Shortcut with one **Run Shell Script** action is a convenient adapter
+for Stream Deck's Shortcuts action. Prefer separate `enable` and `disable`
+Shortcuts when retries are possible; `toggle` is intentionally non-idempotent.
+Scripts can use `status --json` and its exit status: `0` means the app answered,
+`3` means it is not running, and `1` means control failed.
+
+App-control requests use a bounded, same-user Unix socket in the Darwin user
+temporary directory. Nothing listens on the network, and the app remains the
+sole owner of its configuration and watcher process.
 
 ## Releases
 
-Tagged releases include the universal `panelctl` CLI and a universal
-`PanelCtl.app`. Verify the published SHA-256 checksum before running either
-archive.
+Each tagged GitHub release contains two clearly labeled downloads:
+
+- `PanelCtl-v…-macos-universal.zip` — the menu-bar app
+- `panelctl-cli-v…-macos-universal.zip` — the standalone CLI
+
+Each has a matching `.sha256` file. The app also bundles the CLI as its
+supervised helper, but the standalone archive remains portable and usable
+without the app.
 
 > [!NOTE]
 > No Apple Developer Program identity is used. Releases are ad-hoc signed by
@@ -176,7 +219,7 @@ CI runs tests and compiles both products on macOS. To build release archives
 locally, pass a version tag to the shared packaging script:
 
 ```sh
-scripts/package-release.sh v0.3.0
+scripts/package-release.sh v0.3.1
 ```
 
 Release tags use `vMAJOR.MINOR.PATCH`; `-alpha.N`, `-beta.N`, and `-rc.N`

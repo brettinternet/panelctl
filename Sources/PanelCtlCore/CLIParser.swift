@@ -35,6 +35,7 @@ public enum PanelCommand: Equatable {
     case ddcLuminance(selector: String, setValue: UInt16?, json: Bool)
     case sleepDisplays(keepSystemAwake: Bool, timeout: TimeInterval?)
     case wakeDisplays
+    case app(command: AppControlCommand, json: Bool)
     case help(command: String?)
     case version
 }
@@ -54,6 +55,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case allRequiresLimit
     case watchRequiresIdleAfter
     case invalidLuminance
+    case missingAppCommand
 
     public var description: String {
         switch self {
@@ -72,12 +74,13 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
         case .allRequiresLimit: return "--all requires --timeout or --sleep-after"
         case .watchRequiresIdleAfter: return "--watch requires --idle-after"
         case .invalidLuminance: return "luminance must be an integer from 0 through 65535"
+        case .missingAppCommand: return "missing app command (use 'panelctl help app' for usage)"
         }
     }
 }
 
 public enum CLIParser {
-    private static let commands = ["list", "probe", "blackout", "ddc-luminance", "sleep-displays", "wake-displays"]
+    private static let commands = ["list", "probe", "blackout", "ddc-luminance", "sleep-displays", "wake-displays", "app"]
 
     public static func parse(_ args: [String]) throws -> PanelCommand {
         guard let command = args.first else { throw CLIParseError.missingCommand }
@@ -127,9 +130,25 @@ public enum CLIParser {
         case "wake-displays":
             guard rest.isEmpty else { throw CLIParseError.unknownOption(rest[0]) }
             return .wakeDisplays
+        case "app":
+            return try parseApp(rest)
         default:
             throw CLIParseError.unknownCommand(command)
         }
+    }
+
+    private static func parseApp(_ args: [String]) throws -> PanelCommand {
+        guard let rawCommand = args.first else { throw CLIParseError.missingAppCommand }
+        guard let command = AppControlCommand(rawValue: rawCommand) else {
+            throw CLIParseError.unknownCommand(rawCommand)
+        }
+        var json = false
+        for option in args.dropFirst() {
+            guard option == "--json" else { throw CLIParseError.unknownOption(option) }
+            guard !json else { throw CLIParseError.duplicateOption("--json") }
+            json = true
+        }
+        return .app(command: command, json: json)
     }
 
     private static func parseBlackout(_ args: [String]) throws -> PanelCommand {

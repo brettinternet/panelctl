@@ -38,6 +38,29 @@ struct PanelCtlMain {
                 }
             case .wakeDisplays:
                 try DisplaySleepController.wake()
+            case .app(let appCommand, let json):
+                let client = try AppControlClient()
+                let response = try client.execute(appCommand)
+                if json {
+                    try printJSON(response)
+                } else if !response.ok, appCommand != .status {
+                    fputs(
+                        "panelctl: \(response.error ?? response.summary)\n",
+                        stderr
+                    )
+                } else {
+                    var line = "running=\(response.running) enabled=\(response.enabled) state=\(response.state) summary=\(quoted(response.summary))"
+                    if let detail = response.detail, !detail.isEmpty {
+                        line += " detail=\(quoted(detail))"
+                    }
+                    print(line)
+                }
+                if appCommand == .status, !response.running {
+                    Foundation.exit(3)
+                }
+                if !response.ok {
+                    Foundation.exit(EXIT_FAILURE)
+                }
             case .help(let command):
                 print(CLIHelp.text(for: command))
             case .version:
@@ -89,5 +112,12 @@ struct PanelCtlMain {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         FileHandle.standardOutput.write(try encoder.encode(value))
         print()
+    }
+
+    private static func quoted(_ value: String) -> String {
+        let escaped = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
     }
 }

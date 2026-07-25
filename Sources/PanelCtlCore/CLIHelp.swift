@@ -1,6 +1,6 @@
 public enum CLIHelp {
     /// Release version displayed by `panelctl --version`.
-    public static let version = "panelctl 0.3.0"
+    public static let version = "panelctl 0.3.1"
 
     public static func text(for command: String? = nil) -> String {
         switch command {
@@ -15,6 +15,7 @@ public enum CLIHelp {
               ddc-luminance    Read or set luminance
               sleep-displays   Sleep every display
               wake-displays    Wake every display
+              app              Control the PanelCtl app
 
             Options:
               -h, --help        Show help
@@ -48,6 +49,8 @@ public enum CLIHelp {
             return "Usage: panelctl sleep-displays [--keep-system-awake [--timeout <duration>]]\nSleep every display; --timeout requires --keep-system-awake."
         case "wake-displays":
             return "Usage: panelctl wake-displays\nWake every display."
+        case "app":
+            return "Usage: panelctl app <enable|disable|toggle|status|open-settings> [--json]\nControl PanelCtl.app; status does not launch the app."
         default:
             return text(for: nil)
         }

@@ -117,6 +117,24 @@ final class ProtectionPreferencesTests: XCTestCase {
     }
 
     @MainActor
+    func testMenuBarIconPreferenceDefaultsVisibleAndIsStoredSeparately() throws {
+        let suiteName = "panelctl-menu-bar-icon-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let model = AppModel(defaults: defaults, displayProvider: { [] })
+        XCTAssertTrue(model.showMenuBarIcon)
+        XCTAssertEqual(defaults.object(forKey: "showMenuBarIcon") as? Bool, true)
+        let protectionData = defaults.data(forKey: "blackoutPreferences")
+
+        model.setShowMenuBarIcon(false)
+
+        XCTAssertFalse(model.showMenuBarIcon)
+        XCTAssertEqual(defaults.data(forKey: "blackoutPreferences"), protectionData)
+        XCTAssertEqual(defaults.object(forKey: "showMenuBarIcon") as? Bool, false)
+    }
+
+    @MainActor
     func testStoppingIgnoresLateStatusFromOldWatcher() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("panelctl-late-status-\(UUID().uuidString)", isDirectory: true)

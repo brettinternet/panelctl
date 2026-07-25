@@ -21,6 +21,13 @@ final class AppModel: ObservableObject {
             onStatusChange?()
         }
     }
+    @Published var showMenuBarIcon: Bool {
+        didSet {
+            guard showMenuBarIcon != oldValue else { return }
+            defaults.set(showMenuBarIcon, forKey: Self.showMenuBarIconKey)
+            onStatusChange?()
+        }
+    }
     @Published private(set) var displays: [DisplayRecord]
     @Published private(set) var runtimeState: ProtectionRuntimeState = .disabled {
         didSet {
@@ -38,6 +45,7 @@ final class AppModel: ObservableObject {
     private let displayProvider: () -> [DisplayRecord]
     private let service: ProtectionService
     private static let preferencesKey = "blackoutPreferences"
+    private static let showMenuBarIconKey = "showMenuBarIcon"
 
     init(
         defaults: UserDefaults = .standard,
@@ -45,6 +53,7 @@ final class AppModel: ObservableObject {
     ) {
         self.defaults = defaults
         self.displayProvider = displayProvider
+        self.showMenuBarIcon = defaults.object(forKey: Self.showMenuBarIconKey) as? Bool ?? true
         let loadedPreferences = defaults.data(forKey: Self.preferencesKey)
             .flatMap { try? JSONDecoder().decode(ProtectionPreferences.self, from: $0) }
 
@@ -80,6 +89,7 @@ final class AppModel: ObservableObject {
             }
         }
         savePreferences()
+        defaults.set(showMenuBarIcon, forKey: Self.showMenuBarIconKey)
         reconcileProtection()
     }
 
@@ -172,6 +182,10 @@ final class AppModel: ObservableObject {
                 opensLoginItemSettings: false
             )
         }
+    }
+
+    func setShowMenuBarIcon(_ enabled: Bool) {
+        showMenuBarIcon = enabled
     }
 
     func refreshLaunchAtLoginStatus() {

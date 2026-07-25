@@ -192,7 +192,14 @@ struct SettingsView: View {
                         set: model.setLaunchAtLogin
                     )
                 )
-                Text("PanelCtl runs as a menu-bar background app. Closing this window does not stop protection.")
+                Toggle(
+                    "Show menu bar icon",
+                    isOn: Binding(
+                        get: { model.showMenuBarIcon },
+                        set: model.setShowMenuBarIcon
+                    )
+                )
+                Text("Closing this window does not stop protection. If the menu icon is hidden, open PanelCtl again to return here.")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

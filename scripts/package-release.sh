@@ -35,8 +35,8 @@ if [[ "$source_version" != "$marketing_version" ]]; then
 	exit 1
 fi
 output_dir=$(mkdir -p "$output_dir" && cd "$output_dir" && pwd)
-cli_archive="panelctl-${tag}-macos-universal.zip"
-app_archive="panelctl-app-${tag}-macos-universal.zip"
+cli_archive="panelctl-cli-${tag}-macos-universal.zip"
+app_archive="PanelCtl-${tag}-macos-universal.zip"
 for output in "$output_dir/$cli_archive" "$output_dir/$cli_archive.sha256" \
 	"$output_dir/$app_archive" "$output_dir/$app_archive.sha256"; do
 	if [[ -e "$output" ]]; then
