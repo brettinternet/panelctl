@@ -1,5 +1,6 @@
 import Foundation
 import PanelCtlCore
+import Darwin
 
 @main
 struct PanelCtlMain {
@@ -10,7 +11,7 @@ struct PanelCtlMain {
             case .list(let json): try DisplayInventory.printRecords(DisplayInventory.records(), json: json)
             case .probe(let json): try Probe.printReport(Probe.report(), json: json)
             case .blackout(let options):
-                let controller = BlackoutController()
+                let controller = blackoutController()
                 try controller.run(options: options)
             case .ddcLuminance(let selector, let setValue, let json):
                 if let setValue {
@@ -49,6 +50,37 @@ struct PanelCtlMain {
         } catch {
             fputs("panelctl: \(error)\n", stderr)
             Foundation.exit(EXIT_FAILURE)
+        }
+    }
+
+    private static func blackoutController() -> BlackoutController {
+        let controller: BlackoutController
+        if ProcessInfo.processInfo.environment["PANELCTL_EMIT_STATUS"] == "1" {
+            controller = BlackoutController { state in
+                let line = #"{"state":"\#(state.rawValue)"}"# + "\n"
+                FileHandle.standardOutput.write(Data(line.utf8))
+            }
+        } else {
+            controller = BlackoutController()
+        }
+        if ProcessInfo.processInfo.environment["PANELCTL_PARENT_PIPE"] == "1" {
+            stopWhenParentPipeCloses(controller)
+        }
+        return controller
+    }
+
+    private static func stopWhenParentPipeCloses(_ controller: BlackoutController) {
+        DispatchQueue.global(qos: .utility).async {
+            var byte: UInt8 = 0
+            while true {
+                let count = Darwin.read(STDIN_FILENO, &byte, 1)
+                if count > 0 { continue }
+                if count < 0, errno == EINTR { continue }
+                DispatchQueue.main.async {
+                    controller.stop()
+                }
+                return
+            }
         }
     }
 

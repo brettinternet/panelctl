@@ -33,6 +33,13 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
     }
 }
 
+public enum BlackoutRuntimeState: String, Equatable {
+    case waiting
+    case blackedOut = "blacked_out"
+    case sleeping
+    case stopped
+}
+
 struct IdleSample: Equatable {
     let seconds: TimeInterval
     let lastInputUptime: TimeInterval
@@ -175,17 +182,32 @@ public final class BlackoutController {
     private var lastInputUptime: TimeInterval?
     private let idleSource: IdleTimeSource
     private let uptime: () -> TimeInterval
+    private let stateHandler: ((BlackoutRuntimeState) -> Void)?
 
     public convenience init() {
         self.init(
             idleSource: CombinedSessionIdleTimeSource(),
-            uptime: { ProcessInfo.processInfo.systemUptime }
+            uptime: { ProcessInfo.processInfo.systemUptime },
+            stateHandler: nil
         )
     }
 
-    init(idleSource: IdleTimeSource, uptime: @escaping () -> TimeInterval) {
+    public convenience init(stateHandler: @escaping (BlackoutRuntimeState) -> Void) {
+        self.init(
+            idleSource: CombinedSessionIdleTimeSource(),
+            uptime: { ProcessInfo.processInfo.systemUptime },
+            stateHandler: stateHandler
+        )
+    }
+
+    init(
+        idleSource: IdleTimeSource,
+        uptime: @escaping () -> TimeInterval,
+        stateHandler: ((BlackoutRuntimeState) -> Void)? = nil
+    ) {
         self.idleSource = idleSource
         self.uptime = uptime
+        self.stateHandler = stateHandler
     }
 
     public func run(options: BlackoutOptions) throws {
@@ -196,7 +218,10 @@ public final class BlackoutController {
         watchMode = options.watch
         installSignals()
         installObservers()
-        defer { stop() }
+        defer {
+            stop()
+            stateHandler?(.stopped)
+        }
 
         let screens = NSScreen.screens
         let drawableScreens = screens.filter { Self.isValidScreenFrame($0.frame) }
@@ -287,6 +312,7 @@ public final class BlackoutController {
                 }
                 hideWindows()
                 if !watch {
+                    stateHandler?(.sleeping)
                     intentionalDisplaySleep = true
                     try DisplaySleepController.sleep()
                     if assertion != nil {
@@ -295,6 +321,7 @@ public final class BlackoutController {
                     return
                 }
                 watchState.reset(.sleepAfter, after: finalSample.lastInputUptime)
+                stateHandler?(.sleeping)
                 try DisplaySleepController.sleep()
                 try waitForWatchWakeAndInput()
                 return
@@ -435,9 +462,11 @@ public final class BlackoutController {
         }
         windows = prepared
         committed = true
+        stateHandler?(.blackedOut)
     }
 
     private func waitUntilReady(policy: BlackoutPolicy) throws -> IdleSample? {
+        stateHandler?(.waiting)
         while !stopRequested {
             try ensureCaffeinate()
             let sample = try idleSample()

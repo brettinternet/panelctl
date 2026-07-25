@@ -21,6 +21,10 @@ jobs:
         uses: actions/checkout@v6
       - name: Run tests
         run: swift test --disable-sandbox
+      - name: Compile CLI product
+        run: swift build --disable-sandbox --product panelctl
+      - name: Compile app product
+        run: swift build --disable-sandbox --product PanelCtlApp
 
   release:
     name: Test and publish universal macOS release
@@ -33,32 +37,8 @@ jobs:
         uses: actions/checkout@v6
       - name: Run tests
         run: swift test --disable-sandbox
-      - name: Build arm64 binary
-        run: swift build -c release --triple arm64-apple-macosx13.0 --scratch-path .build/release-arm64
-      - name: Build x86_64 binary
-        run: swift build -c release --triple x86_64-apple-macosx13.0 --scratch-path .build/release-x86_64
       - name: Package release
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          arm64_bin="$(find .build/release-arm64 -type f -path '*/release/panelctl' -perm -111 -print -quit)"
-          x86_64_bin="$(find .build/release-x86_64 -type f -path '*/release/panelctl' -perm -111 -print -quit)"
-          test -n "$arm64_bin"
-          test -n "$x86_64_bin"
-          lipo -create "$arm64_bin" "$x86_64_bin" -output dist/panelctl
-          chmod +x dist/panelctl
-          codesign --force --sign - dist/panelctl
-          codesign --verify --strict dist/panelctl
-          lipo -info dist/panelctl
-          release_name="panelctl-${GITHUB_REF_NAME}-macos-universal.zip"
-          release_zip="dist/${release_name}"
-          zip -q -j "$release_zip" dist/panelctl README.md THIRD_PARTY_NOTICES.md
-          zip -q "$release_zip" examples/com.brettinternet.panelctl.blackout.plist
-          (
-            cd dist
-            shasum -a 256 "$release_name" > "${release_name}.sha256"
-          )
+        run: ./scripts/package-release.sh "$GITHUB_REF_NAME"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -66,6 +46,9 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             "dist/panelctl-${GITHUB_REF_NAME}-macos-universal.zip" \
             "dist/panelctl-${GITHUB_REF_NAME}-macos-universal.zip.sha256" \
+            "dist/panelctl-app-${GITHUB_REF_NAME}-macos-universal.zip" \
+            "dist/panelctl-app-${GITHUB_REF_NAME}-macos-universal.zip.sha256" \
             --title "$GITHUB_REF_NAME" \
             --verify-tag \
+            --notes "Universal CLI and PanelCtl.app archives are ad-hoc signed, not Developer ID signed or notarized. Verify SHA-256 checksums; macOS may require Privacy & Security > Open Anyway." \
             --generate-notes

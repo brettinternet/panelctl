@@ -8,13 +8,47 @@ inventory, and experimental DDC luminance control.
 Build from source on macOS 13 or newer:
 
 ```sh
-swift build -c release
+swift build -c release --product panelctl
 install -m 0755 .build/release/panelctl ~/.local/bin/panelctl
 ```
 
 Universal binaries are also published on the
 [GitHub Releases page](https://github.com/brettinternet/panelctl/releases).
-Release binaries are ad-hoc signed, not Developer ID signed or notarized.
+The standalone CLI and app are ad-hoc signed. Neither is Developer ID signed
+or notarized.
+
+### Menu-bar app
+
+`PanelCtl.app` is a separate build that bundles the same portable `panelctl`
+CLI as a supervised helper. Move it to `/Applications`, open it, choose the
+displays to protect, and enable protection. The app stays out of the Dock and
+provides:
+
+- Menu-bar enable/disable and live waiting, blackout, sleep, and error state
+- Per-display or explicit all-display protection using stable display UUIDs
+- Configurable idle, restore, all-display sleep, and caffeinate behavior
+- Launch at login, background operation, version, and project links
+
+Closing Settings leaves protection running. Quitting the menu app stops its
+watcher and removes any active blackout.
+
+## Releases
+
+Tagged releases include the universal `panelctl` CLI and a universal
+`PanelCtl.app`. Verify the published SHA-256 checksum before running either
+archive.
+
+> [!NOTE]
+> No Apple Developer Program identity is used. Releases are ad-hoc signed by
+> CI, not Developer ID signed or notarized, so macOS may quarantine the app.
+> Build it yourself or bypass Gatekeeper only if you trust the source and have
+> verified the checksum.
+
+If macOS blocks the app, use the supported user-facing override. Open System
+Settings → Privacy & Security, scroll to Security, then click **Open Anyway**
+for PanelCtl. You can also control-click `PanelCtl.app` in Finder, choose
+**Open**, and confirm the dialog. Only do this after verifying the checksum and
+trusting the source.
 
 ## Common uses
 
@@ -133,7 +167,17 @@ displayplacer failure analysis, BetterDisplay inference, and hardware evidence.
 
 ```sh
 swift test --disable-sandbox
+swift build --product panelctl
+swift build --product PanelCtlApp
 ```
 
-CI runs the tests on macOS. Tags matching `v*` build and publish an ad-hoc
-signed universal arm64/x86_64 release with a SHA-256 checksum.
+CI runs tests and compiles both products on macOS. To build release archives
+locally, pass a version tag to the shared packaging script:
+
+```sh
+scripts/package-release.sh v0.3.0
+```
+
+Tags matching `v*` publish universal arm64/x86_64 CLI and app archives with
+SHA-256 checksums. Both artifacts are ad-hoc signed, not Developer ID signed or
+notarized.
