@@ -233,7 +233,7 @@ CI runs tests and compiles both products on macOS. To build release archives
 locally, pass a version tag to the shared packaging script:
 
 ```sh
-scripts/package-release.sh v0.3.2
+scripts/package-release.sh v0.3.3
 ```
 
 Release tags use `vMAJOR.MINOR.PATCH`; `-alpha.N`, `-beta.N`, and `-rc.N`

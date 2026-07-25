@@ -463,7 +463,7 @@ final class ProtectionPreferencesTests: XCTestCase {
     }
 
     @MainActor
-    func testBlackoutCommandRelaunchesWatcherThatJustExited() async throws {
+    func testBlackoutCommandSurvivesCleanExitWhileWatcherStarts() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "panelctl-control-exited-\(UUID().uuidString)",
@@ -476,12 +476,15 @@ final class ProtectionPreferencesTests: XCTestCase {
         let helper = directory.appendingPathComponent("fake-panelctl")
         let log = directory.appendingPathComponent("control.log")
         let marker = directory.appendingPathComponent("first-launch")
+        let allowExit = directory.appendingPathComponent("allow-exit")
         let script = """
         #!/bin/bash
         printf 'launch:%s\\n' "$1" >> "$PANELCTL_TEST_LOG"
         if [[ ! -e "$PANELCTL_TEST_MARKER" ]]; then
             touch "$PANELCTL_TEST_MARKER"
-            /bin/sleep 0.05
+            while [[ ! -e "$PANELCTL_TEST_ALLOW_EXIT" ]]; do
+                /bin/sleep 0.01
+            done
             exit 0
         fi
         printf '{"state":"waiting"}\\n'
@@ -498,19 +501,21 @@ final class ProtectionPreferencesTests: XCTestCase {
         setenv("PANELCTL_HELPER", helper.path, 1)
         setenv("PANELCTL_TEST_LOG", log.path, 1)
         setenv("PANELCTL_TEST_MARKER", marker.path, 1)
+        setenv("PANELCTL_TEST_ALLOW_EXIT", allowExit.path, 1)
         defer {
             unsetenv("PANELCTL_HELPER")
             unsetenv("PANELCTL_TEST_LOG")
             unsetenv("PANELCTL_TEST_MARKER")
+            unsetenv("PANELCTL_TEST_ALLOW_EXIT")
         }
 
         let service = ProtectionService()
         service.run(arguments: ["A"])
         _ = try await waitForLogLines(1, at: log)
 
-        usleep(100_000)
         service.run(arguments: ["A"])
         try service.sendControl(.blackoutNow)
+        try Data().write(to: allowExit)
 
         let lines = try await waitForLogLines(3, at: log)
         XCTAssertEqual(lines, [
@@ -522,6 +527,71 @@ final class ProtectionPreferencesTests: XCTestCase {
         let stopped = expectation(description: "watcher stopped")
         service.shutdown { stopped.fulfill() }
         await fulfillment(of: [stopped], timeout: 3)
+    }
+
+    @MainActor
+    func testControlRecoveryStopsAfterOneCleanExitRetry() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "panelctl-control-retry-limit-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let log = directory.appendingPathComponent("control.log")
+        let marker = directory.appendingPathComponent("first-launch")
+        let allowExit = directory.appendingPathComponent("allow-exit")
+        let script = """
+        #!/bin/bash
+        printf 'launch:%s\\n' "$1" >> "$PANELCTL_TEST_LOG"
+        if [[ ! -e "$PANELCTL_TEST_MARKER" ]]; then
+            touch "$PANELCTL_TEST_MARKER"
+            while [[ ! -e "$PANELCTL_TEST_ALLOW_EXIT" ]]; do
+                /bin/sleep 0.01
+            done
+            exit 0
+        fi
+        printf '{"state":"waiting"}\\n'
+        IFS= read -r command
+        printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
+        exit 0
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: helper.path
+        )
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        setenv("PANELCTL_TEST_MARKER", marker.path, 1)
+        setenv("PANELCTL_TEST_ALLOW_EXIT", allowExit.path, 1)
+        defer {
+            unsetenv("PANELCTL_HELPER")
+            unsetenv("PANELCTL_TEST_LOG")
+            unsetenv("PANELCTL_TEST_MARKER")
+            unsetenv("PANELCTL_TEST_ALLOW_EXIT")
+        }
+
+        let service = ProtectionService()
+        service.run(arguments: ["A"])
+        _ = try await waitForLogLines(1, at: log)
+        service.run(arguments: ["A"])
+        try service.sendControl(.blackoutNow)
+        try Data().write(to: allowExit)
+
+        try await waitUntil {
+            if case .failed = service.state { return true }
+            return false
+        }
+        let lines = try await waitForLogLines(3, at: log)
+        XCTAssertEqual(
+            lines,
+            ["launch:A", "launch:A", "command:blackout-now"]
+        )
+        XCTAssertFalse(service.hasManagedProcess)
     }
 
     @MainActor

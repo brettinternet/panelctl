@@ -58,9 +58,20 @@ final class ProtectionService {
     private struct ControlIntent {
         let command: BlackoutControlCommand
         var isApplied = false
+        var didRetryAfterCleanExit = false
 
         var replayed: Self {
-            Self(command: command)
+            Self(
+                command: command,
+                didRetryAfterCleanExit: didRetryAfterCleanExit
+            )
+        }
+
+        var retryingAfterCleanExit: Self {
+            Self(
+                command: command,
+                didRetryAfterCleanExit: true
+            )
         }
     }
 
@@ -446,6 +457,7 @@ final class ProtectionService {
 
     private func processDidTerminate(_ finished: Process) {
         guard process === finished else { return }
+        let terminatedArguments = currentArguments
         forceTerminationWorkItem?.cancel()
         forceTerminationWorkItem = nil
         lifetimeWriteHandle?.closeFile()
@@ -470,9 +482,21 @@ final class ProtectionService {
             completion?()
             return
         }
+        if finished.terminationReason == .exit,
+           finished.terminationStatus == 0,
+           let terminatedArguments,
+           let interruptedIntent = pendingControlIntent ?? inFlightControlIntent,
+           !interruptedIntent.didRetryAfterCleanExit {
+            pendingControlIntent = interruptedIntent.retryingAfterCleanExit
+            pendingControlSourceProcess = nil
+            inFlightControlIntent = nil
+            launch(arguments: terminatedArguments)
+            return
+        }
 
         let errorText = String(data: errorBuffer, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        pendingControlIntent = nil
         pendingControlSourceProcess = nil
         inFlightControlIntent = nil
         errorBuffer.removeAll(keepingCapacity: true)

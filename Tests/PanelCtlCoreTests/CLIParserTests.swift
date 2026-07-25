@@ -103,7 +103,7 @@ final class CLIParserTests: XCTestCase {
         XCTAssertEqual(try CLIParser.parse(["help", "blackout"]), .help(command: "blackout"))
         XCTAssertEqual(try CLIParser.parse(["blackout", "-h"]), .help(command: "blackout"))
         XCTAssertEqual(try CLIParser.parse(["--version"]), .version)
-        XCTAssertEqual(CLIHelp.version, "panelctl 0.3.2")
+        XCTAssertEqual(CLIHelp.version, "panelctl 0.3.3")
         XCTAssertTrue(CLIHelp.text(for: "app").contains("blackout-now|restore"))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--watch"))
         XCTAssertEqual(CLIParseError.unknownOption("--bad").description, "unknown option: --bad")
