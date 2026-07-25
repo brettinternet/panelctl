@@ -152,6 +152,24 @@ final class AppModel: ObservableObject {
         reconcileProtection()
     }
 
+    func blackoutNow() throws {
+        displays = displayProvider()
+        let arguments = try preferences.commandArguments(for: displays)
+        if !preferences.isEnabled {
+            preferences.isEnabled = true
+        }
+        service.run(arguments: arguments)
+        try service.sendControl(.blackoutNow)
+    }
+
+    @discardableResult
+    func restoreBlackout() throws -> Bool {
+        guard preferences.isEnabled, service.canReceiveControl else {
+            return false
+        }
+        return try service.sendControl(.restore)
+    }
+
     func refreshDisplays() {
         displays = displayProvider()
         if preferences.isEnabled, !service.hasManagedProcess {

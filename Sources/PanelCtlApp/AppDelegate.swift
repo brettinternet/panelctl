@@ -229,6 +229,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.setProtectionEnabled(!model.preferences.isEnabled)
         case .status:
             break
+        case .blackoutNow:
+            do {
+                try model.blackoutNow()
+                return controlResponse(
+                    ok: true,
+                    summary: "Blackout requested"
+                )
+            } catch {
+                return controlResponse(
+                    ok: false,
+                    summary: "Blackout request failed",
+                    error: error.localizedDescription
+                )
+            }
+        case .restore:
+            do {
+                let requested = try model.restoreBlackout()
+                return controlResponse(
+                    ok: true,
+                    summary: requested
+                        ? "Restore requested"
+                        : "No active blackout"
+                )
+            } catch {
+                return controlResponse(
+                    ok: false,
+                    summary: "Restore request failed",
+                    error: error.localizedDescription
+                )
+            }
         case .openSettings:
             showSettings()
             NSApp.activate(ignoringOtherApps: true)
@@ -238,6 +268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func controlResponse(
         ok: Bool,
+        summary: String? = nil,
         error: String? = nil
     ) -> AppControlResponse {
         AppControlResponse(
@@ -245,7 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             running: true,
             enabled: model.preferences.isEnabled,
             state: model.runtimeState.controlIdentifier,
-            summary: model.statusSummary,
+            summary: summary ?? model.statusSummary,
             detail: model.runtimeState.detailMessage,
             error: error
         )

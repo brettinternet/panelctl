@@ -87,17 +87,36 @@ struct PanelCtlMain {
             controller = BlackoutController()
         }
         if ProcessInfo.processInfo.environment["PANELCTL_PARENT_PIPE"] == "1" {
-            stopWhenParentPipeCloses(controller)
+            monitorParentPipe(controller)
         }
         return controller
     }
 
-    private static func stopWhenParentPipeCloses(_ controller: BlackoutController) {
+    private static func monitorParentPipe(_ controller: BlackoutController) {
         DispatchQueue.global(qos: .utility).async {
-            var byte: UInt8 = 0
+            var pending = Data()
+            var buffer = [UInt8](repeating: 0, count: 256)
             while true {
-                let count = Darwin.read(STDIN_FILENO, &byte, 1)
-                if count > 0 { continue }
+                let count = buffer.withUnsafeMutableBytes {
+                    Darwin.read(STDIN_FILENO, $0.baseAddress, $0.count)
+                }
+                if count > 0 {
+                    pending.append(contentsOf: buffer.prefix(count))
+                    while let newline = pending.firstIndex(of: 0x0A) {
+                        let line = Data(pending[..<newline])
+                        pending.removeSubrange(...newline)
+                        guard let value = String(data: line, encoding: .utf8),
+                              let command = BlackoutControlCommand(
+                                rawValue: value
+                              ) else {
+                            continue
+                        }
+                        DispatchQueue.main.async {
+                            controller.handleControl(command)
+                        }
+                    }
+                    if pending.count <= 1024 { continue }
+                }
                 if count < 0, errno == EINTR { continue }
                 DispatchQueue.main.async {
                     controller.stop()

@@ -1,6 +1,6 @@
 public enum CLIHelp {
     /// Release version displayed by `panelctl --version`.
-    public static let version = "panelctl 0.3.1"
+    public static let version = "panelctl 0.3.2"
 
     public static func text(for command: String? = nil) -> String {
         switch command {
@@ -50,7 +50,7 @@ public enum CLIHelp {
         case "wake-displays":
             return "Usage: panelctl wake-displays\nWake every display."
         case "app":
-            return "Usage: panelctl app <enable|disable|toggle|status|open-settings> [--json]\nControl PanelCtl.app; status does not launch the app."
+            return "Usage: panelctl app <enable|disable|toggle|status|blackout-now|restore|open-settings> [--json]\nControl PanelCtl.app; status does not launch the app. blackout-now and restore use the app's saved protection settings."
         default:
             return text(for: nil)
         }

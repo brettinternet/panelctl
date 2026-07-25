@@ -9,6 +9,14 @@ final class AppControlTests: XCTestCase {
             String(data: try encoder.encode(AppControlRequest(command: .openSettings)), encoding: .utf8),
             #"{"command":"open-settings","protocol":1}"#
         )
+        XCTAssertEqual(
+            String(data: try encoder.encode(AppControlRequest(command: .blackoutNow)), encoding: .utf8),
+            #"{"command":"blackout-now","protocol":1}"#
+        )
+        XCTAssertEqual(
+            String(data: try encoder.encode(AppControlRequest(command: .restore)), encoding: .utf8),
+            #"{"command":"restore","protocol":1}"#
+        )
     }
 
     func testResponseOmitsOptionalFieldsWhenAbsent() throws {
@@ -56,6 +64,8 @@ final class AppControlTests: XCTestCase {
     func testAppCommandParsing() throws {
         XCTAssertEqual(try CLIParser.parse(["app", "enable"]), .app(command: .enable, json: false))
         XCTAssertEqual(try CLIParser.parse(["app", "open-settings", "--json"]), .app(command: .openSettings, json: true))
+        XCTAssertEqual(try CLIParser.parse(["app", "blackout-now"]), .app(command: .blackoutNow, json: false))
+        XCTAssertEqual(try CLIParser.parse(["app", "restore", "--json"]), .app(command: .restore, json: true))
         XCTAssertThrowsError(try CLIParser.parse(["app"])) { XCTAssertEqual($0 as? CLIParseError, .missingAppCommand) }
         XCTAssertThrowsError(try CLIParser.parse(["app", "enable", "--json", "--json"])) { XCTAssertEqual($0 as? CLIParseError, .duplicateOption("--json")) }
     }

@@ -44,6 +44,8 @@ panelctl app enable
 panelctl app disable
 panelctl app toggle
 panelctl app status --json
+panelctl app blackout-now
+panelctl app restore
 panelctl app open-settings
 ```
 
@@ -51,6 +53,16 @@ These commands control the app's persisted setting and supervised watcher;
 ordinary commands such as `panelctl blackout` remain standalone and do not
 contact the app. `status` never launches the app. The other app commands start
 it in the background if needed, and only `open-settings` brings up a window.
+
+`blackout-now` controls the existing `PanelCtl.app` watcher. It uses the app's
+saved display, follow-up, and caffeinate settings, implicitly enables
+protection when protection is disabled, and activates the blackout immediately.
+The watcher then remains on its configured automation. `restore` removes an
+active blackout, wakes displays after sleep when needed, leaves protection
+enabled, and restarts the full configured idle interval. Restoring while
+protection is disabled or while no watcher is running is a successful no-op.
+These commands take no standalone display or timing options; the standalone
+`panelctl blackout` command remains separate and never contacts the app.
 
 For Stream Deck, use a shell-command action to run the absolute path to
 `panelctl`. If the standalone CLI is not installed, use the copy bundled with
@@ -108,6 +120,8 @@ reconnecting displays.
 | Bounded AFK blackout everywhere | `panelctl blackout --all --idle-after 300 --sleep-after 1800 --caffeinate` | Blacks out all displays, then moves all of them to real display sleep |
 | Sleep displays, keep work running | `panelctl sleep-displays --keep-system-awake` | Runs `pmset displaysleepnow` while preventing idle system sleep |
 | Wake displays explicitly | `panelctl wake-displays` | Declares user activity with `caffeinate -u` |
+| Activate the app's saved blackout now | `panelctl app blackout-now` | Uses the app's saved display, follow-up, and caffeinate settings, then continues configured automation |
+| Restore the app's active blackout | `panelctl app restore` | Removes blackout, wakes displays if needed, keeps protection enabled, and restarts the full idle interval |
 | Read DDC luminance | `panelctl ddc-luminance --display index:2` | Reads MCCS luminance VCP `0x10` |
 | Set DDC luminance | `panelctl ddc-luminance --display index:2 --set 75` | Writes VCP `0x10`, then reads it back to verify |
 
@@ -219,7 +233,7 @@ CI runs tests and compiles both products on macOS. To build release archives
 locally, pass a version tag to the shared packaging script:
 
 ```sh
-scripts/package-release.sh v0.3.1
+scripts/package-release.sh v0.3.2
 ```
 
 Release tags use `vMAJOR.MINOR.PATCH`; `-alpha.N`, `-beta.N`, and `-rc.N`

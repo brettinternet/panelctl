@@ -40,9 +40,23 @@ public enum BlackoutRuntimeState: String, Equatable {
     case stopped
 }
 
+public enum BlackoutControlCommand: String, Equatable, Sendable {
+    case blackoutNow = "blackout-now"
+    case restore
+}
+
 struct IdleSample: Equatable {
     let seconds: TimeInterval
     let lastInputUptime: TimeInterval
+
+    func applyingSyntheticActivity(at activityUptime: TimeInterval) -> Self {
+        let sampleUptime = lastInputUptime + seconds
+        let effectiveInputUptime = max(lastInputUptime, activityUptime)
+        return Self(
+            seconds: max(0, sampleUptime - effectiveInputUptime),
+            lastInputUptime: effectiveInputUptime
+        )
+    }
 }
 
 protocol IdleTimeSource {
@@ -103,6 +117,12 @@ struct BlackoutWatchState: Equatable {
 
     mutating func terminate() {
         terminated = true
+    }
+
+    mutating func acceptManualActivity() {
+        guard !terminated else { return }
+        awaitingFreshInput = false
+        rearmInputBaseline = nil
     }
 
     mutating func consumeFreshInput(_ sample: IdleSample, allowScreenWakeFallback: Bool) -> Bool {
@@ -180,6 +200,9 @@ public final class BlackoutController {
     private var watchState = BlackoutWatchState()
     private var targets: [BlackoutScreenTarget] = []
     private var lastInputUptime: TimeInterval?
+    private var immediateBlackoutRequested = false
+    private var manualActivityUptime: TimeInterval?
+    private var restoreGeneration: UInt64 = 0
     private let idleSource: IdleTimeSource
     private let uptime: () -> TimeInterval
     private let stateHandler: ((BlackoutRuntimeState) -> Void)?
@@ -211,11 +234,11 @@ public final class BlackoutController {
     }
 
     public func run(options: BlackoutOptions) throws {
+        watchMode = options.watch
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         app.finishLaunching()
 
-        watchMode = options.watch
         installSignals()
         installObservers()
         defer {
@@ -235,22 +258,40 @@ public final class BlackoutController {
             sleepAfter: options.sleepAfter
         )
         if !watchMode {
-            guard let baseline = try waitUntilReady(policy: policy) else { return }
+            guard let activation = try waitUntilReady(policy: policy) else {
+                return
+            }
             if stopRequested { return }
             let currentSelection = try resolveCurrentScreens(all: options.all)
             try showWindows(on: currentSelection)
-            try runBlackoutCycle(policy: policy, baseline: baseline, watch: false)
+            try runBlackoutCycle(
+                policy: policy,
+                baseline: activation.sample,
+                watch: false,
+                restoreGeneration: restoreGeneration
+            )
             return
         }
 
         while !stopRequested {
             resetCycleFlags()
-            guard let baseline = try waitUntilReady(policy: policy) else { return }
+            guard let activation = try waitUntilReady(policy: policy) else {
+                return
+            }
             if stopRequested { return }
+            let cycleRestoreGeneration = restoreGeneration
             do {
                 let currentSelection = try resolveCurrentScreens(all: options.all)
                 try showWindows(on: currentSelection)
-                try runBlackoutCycle(policy: policy, baseline: baseline, watch: true)
+                if activation.forced {
+                    immediateBlackoutRequested = false
+                }
+                try runBlackoutCycle(
+                    policy: policy,
+                    baseline: activation.sample,
+                    watch: true,
+                    restoreGeneration: cycleRestoreGeneration
+                )
             } catch let error as BlackoutError {
                 switch error {
                 case .topologyChanged, .noScreens, .invalidScreenFrame, .coverageMismatch,
@@ -263,8 +304,65 @@ public final class BlackoutController {
         }
     }
 
-    private func runBlackoutCycle(policy: BlackoutPolicy, baseline: IdleSample, watch: Bool) throws {
+    public func handleControl(_ command: BlackoutControlCommand) {
+        guard watchMode, !stopRequested else { return }
+        let displaysAreAsleep =
+            watchState.suspensions.contains(.screensAsleep) ||
+            Self.currentDisplaysAreAsleep()
+        switch command {
+        case .blackoutNow:
+            if !windows.isEmpty {
+                stateHandler?(.blackedOut)
+            } else if intentionalDisplaySleep ||
+                        displaysAreAsleep {
+                if manualActivityUptime != nil {
+                    immediateBlackoutRequested = true
+                } else {
+                    stateHandler?(.sleeping)
+                }
+            } else {
+                immediateBlackoutRequested = true
+            }
+        case .restore:
+            let sleeping = intentionalDisplaySleep ||
+                displaysAreAsleep
+            immediateBlackoutRequested = false
+            restoreGeneration &+= 1
+            manualActivityUptime = uptime()
+            if !sleeping {
+                watchState.acceptManualActivity()
+            }
+            hideWindows()
+            if sleeping {
+                do {
+                    try DisplaySleepController.wake()
+                    stateHandler?(.waiting)
+                } catch {
+                    stateHandler?(.sleeping)
+                }
+            } else {
+                stateHandler?(.waiting)
+            }
+        }
+    }
+
+    private static func currentDisplaysAreAsleep() -> Bool {
+        DisplayInventory.records().contains {
+            $0.online && $0.asleep
+        }
+    }
+
+    private func runBlackoutCycle(
+        policy: BlackoutPolicy,
+        baseline: IdleSample,
+        watch: Bool,
+        restoreGeneration cycleRestoreGeneration: UInt64
+    ) throws {
         let startedAt = uptime()
+        if watch, cycleRestoreGeneration != restoreGeneration {
+            hideWindows()
+            return
+        }
         let installedSample = try idleSample()
         if policy.hasNewInput(installedSample, after: baseline.lastInputUptime) {
             hideWindows()
@@ -278,6 +376,10 @@ public final class BlackoutController {
             try ensureCaffeinate()
             runLoopTick()
             if stopRequested { return }
+            if watch, cycleRestoreGeneration != restoreGeneration {
+                hideWindows()
+                return
+            }
             let sample = try idleSample()
             if policy.hasNewInput(sample, after: baseline.lastInputUptime) {
                 hideWindows()
@@ -310,10 +412,10 @@ public final class BlackoutController {
                     }
                     return
                 }
+                intentionalDisplaySleep = true
                 hideWindows()
                 if !watch {
                     stateHandler?(.sleeping)
-                    intentionalDisplaySleep = true
                     try DisplaySleepController.sleep()
                     if assertion != nil {
                         try waitForDisplayWakeOrInput(after: finalSample.lastInputUptime)
@@ -465,7 +567,9 @@ public final class BlackoutController {
         stateHandler?(.blackedOut)
     }
 
-    private func waitUntilReady(policy: BlackoutPolicy) throws -> IdleSample? {
+    private func waitUntilReady(
+        policy: BlackoutPolicy
+    ) throws -> (sample: IdleSample, forced: Bool)? {
         stateHandler?(.waiting)
         while !stopRequested {
             try ensureCaffeinate()
@@ -476,11 +580,27 @@ public final class BlackoutController {
                 runLoopTick()
                 continue
             }
+            if watchMode,
+               immediateBlackoutRequested,
+               watchState.suspensions.isEmpty {
+                watchState.acceptManualActivity()
+                let activationSample = manualActivityUptime.map {
+                    sample.applyingSyntheticActivity(at: $0)
+                } ?? sample
+                manualActivityUptime = nil
+                return (activationSample, true)
+            }
             if watchMode && !watchState.mayBeginCycle {
                 runLoopTick()
                 continue
             }
-            if policy.shouldBegin(idleSeconds: sample.seconds) { return sample }
+            let activationSample = manualActivityUptime.map {
+                sample.applyingSyntheticActivity(at: $0)
+            } ?? sample
+            if policy.shouldBegin(idleSeconds: activationSample.seconds) {
+                manualActivityUptime = nil
+                return (activationSample, false)
+            }
             runLoopTick()
         }
         return nil
@@ -491,6 +611,11 @@ public final class BlackoutController {
             try ensureCaffeinate()
             runLoopTick()
             let sample = try idleSample()
+            if immediateBlackoutRequested,
+               watchState.suspensions.isEmpty {
+                watchState.acceptManualActivity()
+                return
+            }
             if consumeFreshInput(sample) { return }
             if watchState.suspensions.isEmpty && !watchState.awaitingFreshInput {
                 return
@@ -640,6 +765,10 @@ public final class BlackoutController {
             interruptCycle(reset)
         case .resume(let reason):
             watchState.resume(reason, after: observedInputBaseline())
+            if manualActivityUptime != nil, watchState.suspensions.isEmpty {
+                manualActivityUptime = uptime()
+                watchState.acceptManualActivity()
+            }
             stateHandler?(
                 watchState.suspensions.contains(.screensAsleep)
                     ? .sleeping

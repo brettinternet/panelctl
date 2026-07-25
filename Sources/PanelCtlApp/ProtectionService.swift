@@ -55,6 +55,16 @@ enum ProtectionRuntimeState: Equatable {
 
 @MainActor
 final class ProtectionService {
+    private struct ControlIntent {
+        let command: BlackoutControlCommand
+        var isApplied = false
+
+        var replayed: Self {
+            Self(command: command)
+        }
+    }
+
+    private let displaysAreAsleep: () -> Bool
     var onStateChange: ((ProtectionRuntimeState) -> Void)?
 
     private(set) var state: ProtectionRuntimeState = .disabled {
@@ -68,6 +78,9 @@ final class ProtectionService {
     private var process: Process?
     private var currentArguments: [String]?
     private var pendingArguments: [String]?
+    private var pendingControlIntent: ControlIntent?
+    private var pendingControlSourceProcess: Process?
+    private var inFlightControlIntent: ControlIntent?
     private var stateAfterTermination: ProtectionRuntimeState?
     private var statusBuffer = Data()
     private var errorBuffer = Data()
@@ -75,18 +88,44 @@ final class ProtectionService {
     private var forceTerminationWorkItem: DispatchWorkItem?
     private var shutdownCompletion: (() -> Void)?
 
+    init(
+        displaysAreAsleep: @escaping () -> Bool = {
+            DisplayInventory.records().contains {
+                $0.online && $0.asleep
+            }
+        }
+    ) {
+        self.displaysAreAsleep = displaysAreAsleep
+    }
+
     var hasManagedProcess: Bool {
         process != nil
+    }
+
+    var canReceiveControl: Bool {
+        pendingArguments != nil || (
+            process?.isRunning == true &&
+            lifetimeWriteHandle != nil &&
+            state != .stopping
+        )
     }
 
     func run(arguments: [String]) {
         if let process {
             if currentArguments == arguments,
                pendingArguments == nil,
-               stateAfterTermination == nil {
+               stateAfterTermination == nil,
+               process.isRunning {
                 return
             }
             pendingArguments = arguments
+            if pendingControlIntent == nil {
+                pendingControlIntent = inFlightControlIntent
+                if pendingControlIntent != nil {
+                    pendingControlSourceProcess = process
+                }
+            }
+            inFlightControlIntent = nil
             stateAfterTermination = nil
             state = .stopping
             requestTermination(of: process)
@@ -107,8 +146,52 @@ final class ProtectionService {
         stop(then: .waitingForDisplays(message))
     }
 
+    @discardableResult
+    func sendControl(_ command: BlackoutControlCommand) throws -> Bool {
+        let existingIntent = pendingControlIntent ?? inFlightControlIntent
+        if command == .restore {
+            let hasActiveBlackout = state == .blackedOut ||
+                state == .sleeping ||
+                displaysAreAsleep() ||
+                existingIntent?.command == .blackoutNow ||
+                existingIntent?.command == .restore
+            guard hasActiveBlackout else { return false }
+        }
+        if existingIntent?.command == command {
+            if pendingControlSourceProcess != nil {
+                pendingControlIntent = existingIntent?.replayed
+                pendingControlSourceProcess = nil
+                return true
+            }
+            if command != .restore ||
+                state != .sleeping ||
+                existingIntent?.isApplied == true {
+                return true
+            }
+        }
+        let intent = ControlIntent(command: command)
+        if pendingArguments != nil || state == .starting {
+            pendingControlIntent = intent
+            pendingControlSourceProcess = nil
+            inFlightControlIntent = nil
+            return true
+        }
+        guard state != .stopping else { throw HelperError.notRunning }
+        if let process,
+           process.isRunning,
+           let lifetimeWriteHandle {
+            try Self.writeControl(command, to: lifetimeWriteHandle)
+            inFlightControlIntent = intent
+            return true
+        }
+        throw HelperError.notRunning
+    }
+
     func shutdown(completion: @escaping () -> Void) {
         pendingArguments = nil
+        pendingControlIntent = nil
+        pendingControlSourceProcess = nil
+        inFlightControlIntent = nil
         stateAfterTermination = .disabled
         shutdownCompletion = completion
         guard let process else {
@@ -122,6 +205,9 @@ final class ProtectionService {
 
     private func stop(then finalState: ProtectionRuntimeState) {
         pendingArguments = nil
+        pendingControlIntent = nil
+        pendingControlSourceProcess = nil
+        inFlightControlIntent = nil
         stateAfterTermination = finalState
         guard let process else {
             self.process = nil
@@ -149,6 +235,13 @@ final class ProtectionService {
             environment["PANELCTL_EMIT_STATUS"] = "1"
             environment["PANELCTL_PARENT_PIPE"] = "1"
             process.environment = environment
+            guard fcntl(
+                lifetimePipe.fileHandleForWriting.fileDescriptor,
+                F_SETNOSIGPIPE,
+                1
+            ) == 0 else {
+                throw HelperError.controlPipe(String(cString: strerror(errno)))
+            }
 
             statusBuffer.removeAll(keepingCapacity: true)
             errorBuffer.removeAll(keepingCapacity: true)
@@ -213,8 +306,7 @@ final class ProtectionService {
 
     private func consumeStatus(_ data: Data, from sourceProcess: Process) {
         guard !data.isEmpty,
-              process === sourceProcess,
-              state != .stopping else {
+              process === sourceProcess else {
             return
         }
         statusBuffer.append(data)
@@ -226,10 +318,18 @@ final class ProtectionService {
             let line = statusBuffer[..<newline]
             statusBuffer.removeSubrange(...newline)
             guard let event = try? JSONDecoder().decode(StatusEvent.self, from: Data(line)),
-                  let state = BlackoutRuntimeState(rawValue: event.state) else {
+                  let runtimeState = BlackoutRuntimeState(rawValue: event.state) else {
                 continue
             }
-            switch state {
+            if state == .stopping {
+                updateInheritedControlIntent(
+                    for: runtimeState,
+                    from: sourceProcess
+                )
+                continue
+            }
+            updateControlIntent(for: runtimeState)
+            switch runtimeState {
             case .waiting: self.state = .waiting
             case .blackedOut: self.state = .blackedOut
             case .sleeping: self.state = .sleeping
@@ -238,7 +338,82 @@ final class ProtectionService {
                     self.state = .stopping
                 }
             }
+            if runtimeState == .waiting {
+                deliverPendingControl(to: sourceProcess)
+            }
         }
+    }
+
+    private func deliverPendingControl(to sourceProcess: Process) {
+        guard process === sourceProcess,
+              sourceProcess.isRunning,
+              let intent = pendingControlIntent,
+              let lifetimeWriteHandle else {
+            return
+        }
+        pendingControlIntent = nil
+        pendingControlSourceProcess = nil
+        do {
+            try Self.writeControl(intent.command, to: lifetimeWriteHandle)
+            inFlightControlIntent = intent.replayed
+        } catch {
+            inFlightControlIntent = nil
+            stateAfterTermination = .failed(
+                "Could not control the watcher: \(error.localizedDescription)"
+            )
+            state = .stopping
+            requestTermination(of: sourceProcess)
+        }
+    }
+
+    private func updateInheritedControlIntent(
+        for runtimeState: BlackoutRuntimeState,
+        from sourceProcess: Process
+    ) {
+        guard pendingControlSourceProcess === sourceProcess,
+              let intent = pendingControlIntent else {
+            return
+        }
+        pendingControlIntent = Self.transition(
+            intent,
+            for: runtimeState
+        )
+        if pendingControlIntent == nil {
+            pendingControlSourceProcess = nil
+        }
+    }
+
+    private func updateControlIntent(for runtimeState: BlackoutRuntimeState) {
+        guard let intent = inFlightControlIntent else { return }
+        inFlightControlIntent = Self.transition(intent, for: runtimeState)
+    }
+
+    private static func transition(
+        _ currentIntent: ControlIntent,
+        for runtimeState: BlackoutRuntimeState
+    ) -> ControlIntent? {
+        var intent = currentIntent
+        switch intent.command {
+        case .blackoutNow:
+            switch runtimeState {
+            case .blackedOut, .sleeping:
+                intent.isApplied = true
+            case .waiting where intent.isApplied:
+                return nil
+            default:
+                break
+            }
+        case .restore:
+            switch runtimeState {
+            case .waiting:
+                intent.isApplied = true
+            case .blackedOut where intent.isApplied:
+                return nil
+            default:
+                break
+            }
+        }
+        return intent
     }
 
     private func consumeError(_ data: Data, from sourceProcess: Process) {
@@ -281,10 +456,13 @@ final class ProtectionService {
 
         if let pendingArguments {
             self.pendingArguments = nil
+            pendingControlSourceProcess = nil
             launch(arguments: pendingArguments)
             return
         }
         if let finalState = stateAfterTermination {
+            pendingControlSourceProcess = nil
+            inFlightControlIntent = nil
             stateAfterTermination = nil
             state = finalState
             let completion = shutdownCompletion
@@ -295,6 +473,8 @@ final class ProtectionService {
 
         let errorText = String(data: errorBuffer, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        pendingControlSourceProcess = nil
+        inFlightControlIntent = nil
         errorBuffer.removeAll(keepingCapacity: true)
         if let errorText, !errorText.isEmpty {
             state = .failed(errorText)
@@ -329,6 +509,36 @@ final class ProtectionService {
         }
         throw HelperError.notFound
     }
+
+    private static func writeControl(
+        _ command: BlackoutControlCommand,
+        to handle: FileHandle
+    ) throws {
+        let data = Data((command.rawValue + "\n").utf8)
+        let descriptor = handle.fileDescriptor
+        guard descriptor >= 0 else { throw HelperError.notRunning }
+
+        var written = 0
+        while written < data.count {
+            let count = data.withUnsafeBytes {
+                Darwin.write(
+                    descriptor,
+                    $0.baseAddress?.advanced(by: written),
+                    data.count - written
+                )
+            }
+            if count > 0 {
+                written += count
+                continue
+            }
+            if count < 0, errno == EINTR { continue }
+            throw HelperError.controlPipe(
+                count == 0
+                    ? "the watcher closed its control pipe"
+                    : String(cString: strerror(errno))
+            )
+        }
+    }
 }
 
 private struct StatusEvent: Decodable {
@@ -337,9 +547,18 @@ private struct StatusEvent: Decodable {
 
 private enum HelperError: Error, LocalizedError {
     case notFound
+    case notRunning
+    case controlPipe(String)
 
     var errorDescription: String? {
-        "The bundled panelctl helper could not be found."
+        switch self {
+        case .notFound:
+            return "The bundled panelctl helper could not be found."
+        case .notRunning:
+            return "The managed watcher is not running."
+        case .controlPipe(let message):
+            return "Could not send a watcher command: \(message)"
+        }
     }
 }
 

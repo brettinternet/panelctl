@@ -38,6 +38,33 @@ final class BlackoutPolicyTests: XCTestCase {
         XCTAssertEqual(sample.lastInputUptime, 90, accuracy: 0.000_001)
     }
 
+    func testSyntheticActivityRestartsTheIdleInterval() {
+        let idle = IdleSample(seconds: 60, lastInputUptime: 40)
+
+        XCTAssertEqual(
+            idle.applyingSyntheticActivity(at: 95),
+            IdleSample(seconds: 5, lastInputUptime: 95)
+        )
+        XCTAssertEqual(
+            IdleSample(seconds: 2, lastInputUptime: 98)
+                .applyingSyntheticActivity(at: 95),
+            IdleSample(seconds: 2, lastInputUptime: 98)
+        )
+    }
+
+    func testManualActivityRearmsWithoutClearingSuspensions() {
+        var timedOut = BlackoutWatchState()
+        timedOut.reset(.timeout, after: 100)
+        timedOut.acceptManualActivity()
+        XCTAssertTrue(timedOut.mayBeginCycle)
+
+        var sleeping = BlackoutWatchState()
+        sleeping.reset(.suspension(.screensAsleep), after: 100)
+        sleeping.acceptManualActivity()
+        XCTAssertFalse(sleeping.mayBeginCycle)
+        XCTAssertTrue(sleeping.suspensions.contains(.screensAsleep))
+    }
+
     func testWatchInputRearmsOnlyAfterNewInputAndFullIdleInterval() {
         var state = BlackoutWatchState()
         let policy = BlackoutPolicy(idleAfter: 5, timeout: nil, sleepAfter: nil)

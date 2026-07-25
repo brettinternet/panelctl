@@ -135,6 +135,396 @@ final class ProtectionPreferencesTests: XCTestCase {
     }
 
     @MainActor
+    func testBlackoutNowEnablesAndControlsTheExistingWatcher() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "panelctl-immediate-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let log = directory.appendingPathComponent("control.log")
+        let script = """
+        #!/bin/bash
+        printf 'launch:%s\\n' "$*" >> "$PANELCTL_TEST_LOG"
+        printf '{"state":"waiting"}\\n'
+        trap 'exit 0' TERM
+        while IFS= read -r command; do
+            printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
+        done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: helper.path
+        )
+
+        let suiteName = "panelctl-immediate-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var preferences = ProtectionPreferences()
+        preferences.didChooseDisplays = true
+        preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
+        preferences.idleSeconds = 120
+        preferences.followUpAction = .restore
+        preferences.followUpSeconds = 15
+        preferences.caffeinate = false
+        defaults.set(
+            try JSONEncoder().encode(preferences),
+            forKey: "blackoutPreferences"
+        )
+
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        defer {
+            unsetenv("PANELCTL_HELPER")
+            unsetenv("PANELCTL_TEST_LOG")
+        }
+
+        let model = AppModel(
+            defaults: defaults,
+            displayProvider: { [self.displays[0], self.displays[1]] }
+        )
+        XCTAssertFalse(try model.restoreBlackout())
+
+        try model.blackoutNow()
+        XCTAssertTrue(model.preferences.isEnabled)
+        var lines = try await waitForLogLines(2, at: log)
+        XCTAssertEqual(
+            lines,
+            [
+                "launch:blackout --display AAAA-UUID --idle-after 120 --watch --timeout 15",
+                "command:blackout-now"
+            ]
+        )
+
+        XCTAssertTrue(try model.restoreBlackout())
+        lines = try await waitForLogLines(3, at: log)
+        XCTAssertEqual(lines.last, "command:restore")
+        XCTAssertEqual(lines.filter { $0.hasPrefix("launch:") }.count, 1)
+
+        let stopped = expectation(description: "watcher stopped")
+        model.shutdown { stopped.fulfill() }
+        await fulfillment(of: [stopped], timeout: 3)
+    }
+
+    @MainActor
+    func testBlackoutNowRejectsInvalidSettingsWithoutEnabling() throws {
+        let suiteName = "panelctl-immediate-invalid-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var preferences = ProtectionPreferences()
+        preferences.didChooseDisplays = true
+        defaults.set(
+            try JSONEncoder().encode(preferences),
+            forKey: "blackoutPreferences"
+        )
+        let model = AppModel(defaults: defaults, displayProvider: { self.displays })
+
+        XCTAssertThrowsError(try model.blackoutNow()) {
+            XCTAssertEqual(
+                $0 as? ProtectionConfigurationError,
+                .noSelection
+            )
+        }
+        XCTAssertFalse(model.preferences.isEnabled)
+    }
+
+    @MainActor
+    func testControlCommandIsQueuedAcrossWatcherRestart() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "panelctl-control-restart-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let log = directory.appendingPathComponent("control.log")
+        let script = """
+        #!/bin/bash
+        printf 'launch:%s\\n' "$1" >> "$PANELCTL_TEST_LOG"
+        printf '{"state":"waiting"}\\n'
+        trap 'exit 0' TERM
+        while IFS= read -r command; do
+            printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
+        done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: helper.path
+        )
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        defer {
+            unsetenv("PANELCTL_HELPER")
+            unsetenv("PANELCTL_TEST_LOG")
+        }
+
+        var displaysAreAsleep = false
+        let service = ProtectionService(
+            displaysAreAsleep: { displaysAreAsleep }
+        )
+        service.run(arguments: ["A"])
+        try await waitUntil { service.state == .waiting }
+        XCTAssertFalse(try service.sendControl(.restore))
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let initialLines = try await waitForLogLines(1, at: log)
+        XCTAssertEqual(initialLines, ["launch:A"])
+        displaysAreAsleep = true
+        XCTAssertTrue(try service.sendControl(.restore))
+        _ = try await waitForLogLines(2, at: log)
+        service.run(arguments: ["B"])
+        try service.sendControl(.blackoutNow)
+
+        let lines = try await waitForLogLines(4, at: log)
+        XCTAssertEqual(lines, [
+            "launch:A",
+            "command:restore",
+            "launch:B",
+            "command:blackout-now"
+        ])
+
+        let stopped = expectation(description: "watcher stopped")
+        service.shutdown { stopped.fulfill() }
+        await fulfillment(of: [stopped], timeout: 3)
+    }
+
+    @MainActor
+    func testLatestControlCommandWinsAcrossWatcherRestart() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "panelctl-control-latest-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let log = directory.appendingPathComponent("control.log")
+        let script = """
+        #!/bin/bash
+        printf 'launch:%s\\n' "$1" >> "$PANELCTL_TEST_LOG"
+        printf '{"state":"waiting"}\\n'
+        trap 'exit 0' TERM
+        while IFS= read -r command; do
+            printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
+        done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: helper.path
+        )
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        defer {
+            unsetenv("PANELCTL_HELPER")
+            unsetenv("PANELCTL_TEST_LOG")
+        }
+
+        let service = ProtectionService()
+        service.run(arguments: ["A"])
+        _ = try await waitForLogLines(1, at: log)
+        try service.sendControl(.blackoutNow)
+        _ = try await waitForLogLines(2, at: log)
+
+        service.run(arguments: ["B"])
+        try service.sendControl(.restore)
+
+        let lines = try await waitForLogLines(4, at: log)
+        XCTAssertEqual(lines, [
+            "launch:A",
+            "command:blackout-now",
+            "launch:B",
+            "command:restore"
+        ])
+
+        let stopped = expectation(description: "watcher stopped")
+        service.shutdown { stopped.fulfill() }
+        await fulfillment(of: [stopped], timeout: 3)
+    }
+
+    @MainActor
+    func testAcknowledgedControlIntentSurvivesWatcherRestart() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "panelctl-control-intent-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let log = directory.appendingPathComponent("control.log")
+        let script = """
+        #!/bin/bash
+        printf 'launch:%s\\n' "$1" >> "$PANELCTL_TEST_LOG"
+        printf '{"state":"waiting"}\\n'
+        if [[ "$1" == "D" ]]; then
+            printf '{"state":"sleeping"}\\n'
+        fi
+        restore_attempt=0
+        trap 'if [[ "$1" == "C" ]]; then printf "{\\"state\\":\\"blacked_out\\"}\\n"; elif [[ "$1" == "E" ]]; then printf "{\\"state\\":\\"blacked_out\\"}\\n{\\"state\\":\\"waiting\\"}\\n"; fi; exit 0' TERM
+        while IFS= read -r command; do
+            printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
+            if [[ "$command" == "blackout-now" && "$1" != "E" ]]; then
+                printf '{"state":"blacked_out"}\\n'
+            elif [[ "$1" == "D" && "$restore_attempt" == 0 ]]; then
+                restore_attempt=1
+                printf '{"state":"sleeping"}\\n'
+            else
+                printf '{"state":"waiting"}\\n'
+            fi
+        done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: helper.path
+        )
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        defer {
+            unsetenv("PANELCTL_HELPER")
+            unsetenv("PANELCTL_TEST_LOG")
+        }
+
+        let service = ProtectionService()
+        service.run(arguments: ["A"])
+        try await waitUntil { service.state == .waiting }
+        try service.sendControl(.blackoutNow)
+        try await waitUntil { service.state == .blackedOut }
+
+        service.run(arguments: ["B"])
+        _ = try await waitForLogLines(4, at: log)
+        try await waitUntil { service.state == .blackedOut }
+        try service.sendControl(.restore)
+        try await waitUntil { service.state == .waiting }
+
+        service.run(arguments: ["C"])
+        _ = try await waitForLogLines(7, at: log)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        service.run(arguments: ["D"])
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let lines = try await waitForLogLines(8, at: log)
+        XCTAssertEqual(lines, [
+            "launch:A",
+            "command:blackout-now",
+            "launch:B",
+            "command:blackout-now",
+            "command:restore",
+            "launch:C",
+            "command:restore",
+            "launch:D"
+        ])
+        try await waitUntil { service.state == .sleeping }
+        try service.sendControl(.restore)
+        _ = try await waitForLogLines(9, at: log)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(service.state, .sleeping)
+        try service.sendControl(.restore)
+        let retryLines = try await waitForLogLines(10, at: log)
+        XCTAssertEqual(Array(retryLines.suffix(2)), [
+            "command:restore",
+            "command:restore"
+        ])
+        try await waitUntil { service.state == .waiting }
+
+        let firstStopped = expectation(description: "first watcher stopped")
+        service.shutdown { firstStopped.fulfill() }
+        await fulfillment(of: [firstStopped], timeout: 3)
+
+        let lateStatusService = ProtectionService()
+        lateStatusService.run(arguments: ["E"])
+        try await waitUntil { lateStatusService.state == .waiting }
+        try lateStatusService.sendControl(.blackoutNow)
+        _ = try await waitForLogLines(12, at: log)
+        lateStatusService.run(arguments: ["F"])
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let lateStatusLines = try await waitForLogLines(13, at: log)
+        XCTAssertEqual(Array(lateStatusLines.suffix(3)), [
+            "launch:E",
+            "command:blackout-now",
+            "launch:F"
+        ])
+
+        let secondStopped = expectation(description: "second watcher stopped")
+        lateStatusService.shutdown { secondStopped.fulfill() }
+        await fulfillment(of: [secondStopped], timeout: 3)
+    }
+
+    @MainActor
+    func testBlackoutCommandRelaunchesWatcherThatJustExited() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "panelctl-control-exited-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let log = directory.appendingPathComponent("control.log")
+        let marker = directory.appendingPathComponent("first-launch")
+        let script = """
+        #!/bin/bash
+        printf 'launch:%s\\n' "$1" >> "$PANELCTL_TEST_LOG"
+        if [[ ! -e "$PANELCTL_TEST_MARKER" ]]; then
+            touch "$PANELCTL_TEST_MARKER"
+            /bin/sleep 0.05
+            exit 0
+        fi
+        printf '{"state":"waiting"}\\n'
+        trap 'exit 0' TERM
+        while IFS= read -r command; do
+            printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
+        done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: helper.path
+        )
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        setenv("PANELCTL_TEST_MARKER", marker.path, 1)
+        defer {
+            unsetenv("PANELCTL_HELPER")
+            unsetenv("PANELCTL_TEST_LOG")
+            unsetenv("PANELCTL_TEST_MARKER")
+        }
+
+        let service = ProtectionService()
+        service.run(arguments: ["A"])
+        _ = try await waitForLogLines(1, at: log)
+
+        usleep(100_000)
+        service.run(arguments: ["A"])
+        try service.sendControl(.blackoutNow)
+
+        let lines = try await waitForLogLines(3, at: log)
+        XCTAssertEqual(lines, [
+            "launch:A",
+            "launch:A",
+            "command:blackout-now"
+        ])
+
+        let stopped = expectation(description: "watcher stopped")
+        service.shutdown { stopped.fulfill() }
+        await fulfillment(of: [stopped], timeout: 3)
+    }
+
+    @MainActor
     func testStoppingIgnoresLateStatusFromOldWatcher() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("panelctl-late-status-\(UUID().uuidString)", isDirectory: true)
@@ -301,6 +691,24 @@ final class ProtectionPreferencesTests: XCTestCase {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         XCTFail("Timed out waiting for \(count) watcher launches")
+        return []
+    }
+
+    private func waitForLogLines(
+        _ count: Int,
+        at log: URL
+    ) async throws -> [String] {
+        for _ in 0..<150 {
+            if let data = try? Data(contentsOf: log),
+               let contents = String(data: data, encoding: .utf8) {
+                let lines = contents.split(separator: "\n").map(String.init)
+                if lines.count >= count {
+                    return lines
+                }
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTFail("Timed out waiting for \(count) log lines")
         return []
     }
 

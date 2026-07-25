@@ -8,6 +8,8 @@ public enum AppControlCommand: String, Codable, Equatable, CaseIterable, Sendabl
     case disable
     case toggle
     case status
+    case blackoutNow = "blackout-now"
+    case restore
     case openSettings = "open-settings"
 }
 
