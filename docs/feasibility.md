@@ -50,26 +50,45 @@ The grammar is:
 
 ```text
 blackout ((--display <selector> | --index <n>)... | --all)
-         [--idle-after <seconds>]
-         [--timeout <seconds> | --sleep-after <seconds>]
-         [--caffeinate]
+         [--idle-after <duration>]
+         [--timeout <duration> | --sleep-after <duration>]
+         [--caffeinate] [--watch]
 ```
 
 `--index` is a one-based shortcut for the index printed by `list`; selectors
-also accept a contextual decimal/hexadecimal display ID, UUID, or `index:N`.
+also accept a decimal/hexadecimal CG display ID, UUID, or `index:N`.
 `--all` requires a finite `--timeout` or `--sleep-after`, and explicit targets
-cannot include every drawable screen. Without `--idle-after`, the overlay is
-installed immediately. With it, `panelctl` waits for combined-session idle
-time. After installation, any new combined-session input removes the overlay
-and exits (one-shot restore behavior).
+cannot include every drawable screen. Duration values accept seconds as a bare
+number or with an `s`, `m`, or `h` suffix (for example, `300`, `300s`, `5m`, or
+`0.5h`). Without
+`--idle-after`, the overlay is installed immediately. With it, `panelctl` waits
+for combined-session idle time. After installation, any new combined-session
+input removes the overlay and exits (one-shot restore behavior).
+
+`--watch` requires `--idle-after` and repeats the AFK cycle. Input ends the
+current cycle and starts waiting for the next idle interval. A timeout,
+`--sleep-after`, sleep notification, or other session/display interruption
+fails open: the overlay is removed and the watcher requires fresh input followed
+by a new full idle interval before another cycle. Signals remove the overlay and
+terminate the watcher. `--caffeinate` holds its idle-sleep assertion for the
+entire watcher lifetime, so a running watcher indefinitely prevents idle system
+sleep (while still allowing display sleep). Explicit watch targets must expose
+a UUID; the watcher retains that identity across display re-enumeration.
+
+For persisted watchers, resolve targets to UUIDs and store those UUIDs in the
+LaunchAgent arguments. Indexes and CG IDs are inventory values that can change
+when displays reconnect; a persisted configuration must never use either one.
+If no UUID is available, do not persist a fallback selector.
 
 The timeout and sleep-after clocks start when the overlay is installed, not
-when the process starts. `--timeout` removes the overlay and exits;
-`--sleep-after` removes it and then runs `pmset displaysleepnow` for all
-displays. They are mutually exclusive. `--caffeinate` holds only a
+when the process starts. In one-shot mode, `--timeout` removes the overlay and
+exits; `--sleep-after` removes it, runs `pmset displaysleepnow` for all
+displays, and exits. In watch mode, either limit resets the cycle after the
+documented fresh-input gate. They are mutually exclusive. `--caffeinate` holds only a
 `caffeinate -i` assertion, so idle system sleep is prevented while display
-sleep remains allowed. Signals, display-layout changes, and session/sleep
-notifications fail open by removing the windows.
+sleep remains allowed. Display-layout changes and session/sleep notifications
+fail open by removing the windows and reset a watch cycle as described above.
+Signals fail open and then terminate the process.
 
 The overlay is owned by the logged-in GUI session. The cursor, system HUDs,
 lock screen, or a higher-level system window may appear above it; locking,
@@ -91,7 +110,8 @@ coverage. This follows the screen-relative semantics of Apple's
 
 `panelctl sleep-displays` invokes `pmset displaysleepnow`, which asks macOS to
 sleep every display without putting the system to sleep. `--keep-system-awake`
-adds `caffeinate -i`; an optional timeout releases that assertion, while
+adds `caffeinate -i`; an optional timeout (using the same seconds/s/m/h
+duration syntax) releases that assertion, while
 `wake-displays` sends a short user-activity assertion. These commands do not
 change persistent power settings. This is the recommended mode for a long
 unattended OLED interval when no panel must remain visible.

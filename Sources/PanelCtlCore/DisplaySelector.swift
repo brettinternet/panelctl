@@ -19,9 +19,6 @@ enum DisplaySelector {
         if let record = records.first(where: { $0.uuid?.caseInsensitiveCompare(selector) == .orderedSame }) {
             return record
         }
-        if let index = Int(selector), index > 0, records.indices.contains(index - 1) {
-            return records[index - 1]
-        }
         return nil
     }
 }

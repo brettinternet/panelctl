@@ -7,6 +7,25 @@ public struct BlackoutOptions: Equatable {
     public let timeout: TimeInterval?
     public let sleepAfter: TimeInterval?
     public let caffeinate: Bool
+    public let watch: Bool
+
+    public init(
+        selectors: [String],
+        all: Bool,
+        idleAfter: TimeInterval?,
+        timeout: TimeInterval?,
+        sleepAfter: TimeInterval?,
+        caffeinate: Bool,
+        watch: Bool = false
+    ) {
+        self.selectors = selectors
+        self.all = all
+        self.idleAfter = idleAfter
+        self.timeout = timeout
+        self.sleepAfter = sleepAfter
+        self.caffeinate = caffeinate
+        self.watch = watch
+    }
 }
 
 public enum PanelCommand: Equatable {
@@ -16,6 +35,8 @@ public enum PanelCommand: Equatable {
     case ddcLuminance(selector: String, setValue: UInt16?, json: Bool)
     case sleepDisplays(keepSystemAwake: Bool, timeout: TimeInterval?)
     case wakeDisplays
+    case help(command: String?)
+    case version
 }
 
 public enum CLIParseError: Error, Equatable, CustomStringConvertible {
@@ -23,7 +44,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case unknownCommand(String)
     case unknownOption(String)
     case missingValue(String)
-    case invalidTimeout
+    case invalidDuration(option: String, value: String)
     case noDisplays
     case timeoutRequiresKeepAwake
     case duplicateOption(String)
@@ -31,144 +52,214 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case conflictingTargets
     case conflictingBlackoutLimits
     case allRequiresLimit
+    case watchRequiresIdleAfter
     case invalidLuminance
 
     public var description: String {
         switch self {
-        case .missingCommand: return "missing command (list, probe, blackout, ddc-luminance, sleep-displays, or wake-displays)"
-        case .unknownCommand(let s): return "unknown command: \(s)"
-        case .unknownOption(let s): return "unknown option: \(s)"
-        case .missingValue(let s): return "missing value for \(s)"
-        case .invalidTimeout: return "timeout must be a positive number of seconds"
-        case .noDisplays: return "blackout requires at least one --display selector"
+        case .missingCommand: return "missing command (use 'panelctl help' for usage)"
+        case .unknownCommand(let command): return "unknown command: \(command)"
+        case .unknownOption(let option): return "unknown option: \(option)"
+        case .missingValue(let option): return "missing value for \(option)"
+        case .invalidDuration(let option, let value):
+            return "invalid duration for \(option): \(value) (expected positive seconds with optional s, m, or h suffix)"
+        case .noDisplays: return "blackout requires at least one --display or --index selector"
         case .timeoutRequiresKeepAwake: return "--timeout requires --keep-system-awake"
         case .duplicateOption(let option): return "option may only be supplied once: \(option)"
         case .invalidIndex: return "display index must be a positive integer"
         case .conflictingTargets: return "--all cannot be combined with --display or --index"
         case .conflictingBlackoutLimits: return "--timeout and --sleep-after are mutually exclusive"
         case .allRequiresLimit: return "--all requires --timeout or --sleep-after"
+        case .watchRequiresIdleAfter: return "--watch requires --idle-after"
         case .invalidLuminance: return "luminance must be an integer from 0 through 65535"
         }
     }
 }
 
 public enum CLIParser {
+    private static let commands = ["list", "probe", "blackout", "ddc-luminance", "sleep-displays", "wake-displays"]
+
     public static func parse(_ args: [String]) throws -> PanelCommand {
         guard let command = args.first else { throw CLIParseError.missingCommand }
         let rest = Array(args.dropFirst())
+
+        if command == "--version" { guard rest.isEmpty else { throw CLIParseError.unknownOption(rest[0]) }; return .version }
+        if command == "--help" || command == "-h" { guard rest.isEmpty else { throw CLIParseError.unknownOption(rest[0]) }; return .help(command: nil) }
+        if command == "help" {
+            guard rest.count <= 1 else { throw CLIParseError.unknownOption(rest[1]) }
+            guard let requested = rest.first else { return .help(command: nil) }
+            if requested == "-h" || requested == "--help" { return .help(command: nil) }
+            guard commands.contains(requested) else { throw CLIParseError.unknownCommand(requested) }
+            return .help(command: requested)
+        }
+
+        // A command-specific help flag is a zero-exit parse command. Keep it
+        // deliberately strict so typos in a command's other options are not
+        // hidden by help handling.
+        if rest.count == 1 && (rest[0] == "--help" || rest[0] == "-h") {
+            guard commands.contains(command) else { throw CLIParseError.unknownCommand(command) }
+            return .help(command: command)
+        }
+
         switch command {
         case "list":
-            guard rest.allSatisfy({ $0 == "--json" }) else {
-                throw CLIParseError.unknownOption(rest.first(where: { $0 != "--json" })!)
-            }
-            return .list(json: rest.contains("--json"))
-        case "probe":
-            guard rest.allSatisfy({ $0 == "--json" }) else {
-                throw CLIParseError.unknownOption(rest.first(where: { $0 != "--json" })!)
-            }
-            return .probe(json: rest.contains("--json"))
-        case "blackout":
-            var selectors: [String] = []
-            var all = false
-            var idleAfter: TimeInterval?
-            var timeout: TimeInterval?
-            var sleepAfter: TimeInterval?
-            var caffeinate = false
-            var i = 0
-            while i < rest.count {
-                switch rest[i] {
-                case "--display":
-                    i += 1
-                    guard i < rest.count, !rest[i].hasPrefix("--"), !rest[i].isEmpty else { throw CLIParseError.missingValue("--display") }
-                    selectors.append(rest[i])
-                case "--index":
-                    i += 1
-                    guard i < rest.count, !rest[i].hasPrefix("--") else { throw CLIParseError.missingValue("--index") }
-                    guard let index = Int(rest[i]), index > 0 else { throw CLIParseError.invalidIndex }
-                    selectors.append("index:\(index)")
-                case "--all":
-                    guard !all else { throw CLIParseError.duplicateOption("--all") }
-                    all = true
-                case "--idle-after":
-                    guard idleAfter == nil else { throw CLIParseError.duplicateOption("--idle-after") }
-                    i += 1
-                    guard i < rest.count, !rest[i].hasPrefix("--") else { throw CLIParseError.missingValue("--idle-after") }
-                    guard let value = TimeInterval(rest[i]), value > 0, value.isFinite else { throw CLIParseError.invalidTimeout }
-                    idleAfter = value
-                case "--timeout":
-                    guard timeout == nil else { throw CLIParseError.duplicateOption("--timeout") }
-                    i += 1
-                    guard i < rest.count, !rest[i].hasPrefix("--") else { throw CLIParseError.missingValue("--timeout") }
-                    guard let value = TimeInterval(rest[i]), value > 0, value.isFinite else { throw CLIParseError.invalidTimeout }
-                    timeout = value
-                case "--sleep-after":
-                    guard sleepAfter == nil else { throw CLIParseError.duplicateOption("--sleep-after") }
-                    i += 1
-                    guard i < rest.count, !rest[i].hasPrefix("--") else { throw CLIParseError.missingValue("--sleep-after") }
-                    guard let value = TimeInterval(rest[i]), value > 0, value.isFinite else { throw CLIParseError.invalidTimeout }
-                    sleepAfter = value
-                case "--caffeinate":
-                    guard !caffeinate else { throw CLIParseError.duplicateOption("--caffeinate") }
-                    caffeinate = true
-                default: throw CLIParseError.unknownOption(rest[i])
-                }
-                i += 1
-            }
-            if all && !selectors.isEmpty { throw CLIParseError.conflictingTargets }
-            if !all && selectors.isEmpty { throw CLIParseError.noDisplays }
-            if timeout != nil && sleepAfter != nil { throw CLIParseError.conflictingBlackoutLimits }
-            if all && timeout == nil && sleepAfter == nil { throw CLIParseError.allRequiresLimit }
-            return .blackout(BlackoutOptions(selectors: selectors, all: all, idleAfter: idleAfter, timeout: timeout, sleepAfter: sleepAfter, caffeinate: caffeinate))
-        case "ddc-luminance":
-            var selector: String?
-            var setValue: UInt16?
             var json = false
-            var i = 0
-            while i < rest.count {
-                switch rest[i] {
-                case "--display":
-                    i += 1
-                    guard i < rest.count, !rest[i].hasPrefix("--"), !rest[i].isEmpty else { throw CLIParseError.missingValue("--display") }
-                    selector = rest[i]
-                case "--set":
-                    guard setValue == nil else { throw CLIParseError.duplicateOption("--set") }
-                    i += 1
-                    guard i < rest.count, !rest[i].hasPrefix("--") else { throw CLIParseError.missingValue("--set") }
-                    guard let value = UInt16(rest[i]) else { throw CLIParseError.invalidLuminance }
-                    setValue = value
-                case "--json":
-                    json = true
-                default:
-                    throw CLIParseError.unknownOption(rest[i])
-                }
-                i += 1
+            for option in rest {
+                guard option == "--json" else { throw CLIParseError.unknownOption(option) }
+                guard !json else { throw CLIParseError.duplicateOption("--json") }
+                json = true
             }
-            guard let selector else { throw CLIParseError.missingValue("--display") }
-            return .ddcLuminance(selector: selector, setValue: setValue, json: json)
+            return .list(json: json)
+        case "probe":
+            var json = false
+            for option in rest {
+                guard option == "--json" else { throw CLIParseError.unknownOption(option) }
+                guard !json else { throw CLIParseError.duplicateOption("--json") }
+                json = true
+            }
+            return .probe(json: json)
+        case "blackout":
+            return try parseBlackout(rest)
+        case "ddc-luminance":
+            return try parseDDCLuminance(rest)
         case "sleep-displays":
-            var keepSystemAwake = false
-            var timeout: TimeInterval?
-            var i = 0
-            while i < rest.count {
-                switch rest[i] {
-                case "--keep-system-awake":
-                    keepSystemAwake = true
-                case "--timeout":
-                    i += 1
-                    guard i < rest.count, !rest[i].hasPrefix("--") else { throw CLIParseError.missingValue("--timeout") }
-                    guard let value = TimeInterval(rest[i]), value > 0, value.isFinite else { throw CLIParseError.invalidTimeout }
-                    timeout = value
-                default:
-                    throw CLIParseError.unknownOption(rest[i])
-                }
-                i += 1
-            }
-            if timeout != nil && !keepSystemAwake { throw CLIParseError.timeoutRequiresKeepAwake }
-            return .sleepDisplays(keepSystemAwake: keepSystemAwake, timeout: timeout)
+            return try parseSleepDisplays(rest)
         case "wake-displays":
             guard rest.isEmpty else { throw CLIParseError.unknownOption(rest[0]) }
             return .wakeDisplays
-        default: throw CLIParseError.unknownCommand(command)
+        default:
+            throw CLIParseError.unknownCommand(command)
         }
+    }
+
+    private static func parseBlackout(_ args: [String]) throws -> PanelCommand {
+        var selectors: [String] = []
+        var all = false
+        var idleAfter: TimeInterval?
+        var timeout: TimeInterval?
+        var sleepAfter: TimeInterval?
+        var caffeinate = false
+        var watch = false
+        var i = 0
+        while i < args.count {
+            switch args[i] {
+            case "--display":
+                i += 1
+                guard i < args.count, !args[i].hasPrefix("--"), !args[i].isEmpty else { throw CLIParseError.missingValue("--display") }
+                selectors.append(args[i])
+            case "--index":
+                i += 1
+                guard i < args.count, !args[i].hasPrefix("--") else { throw CLIParseError.missingValue("--index") }
+                guard let index = Int(args[i]), index > 0 else { throw CLIParseError.invalidIndex }
+                selectors.append("index:\(index)")
+            case "--all":
+                guard !all else { throw CLIParseError.duplicateOption("--all") }
+                all = true
+            case "--idle-after":
+                guard idleAfter == nil else { throw CLIParseError.duplicateOption("--idle-after") }
+                idleAfter = try duration(option: "--idle-after", args: args, index: &i)
+            case "--timeout":
+                guard timeout == nil else { throw CLIParseError.duplicateOption("--timeout") }
+                timeout = try duration(option: "--timeout", args: args, index: &i)
+            case "--sleep-after":
+                guard sleepAfter == nil else { throw CLIParseError.duplicateOption("--sleep-after") }
+                sleepAfter = try duration(option: "--sleep-after", args: args, index: &i)
+            case "--caffeinate":
+                guard !caffeinate else { throw CLIParseError.duplicateOption("--caffeinate") }
+                caffeinate = true
+            case "--watch":
+                guard !watch else { throw CLIParseError.duplicateOption("--watch") }
+                watch = true
+            default:
+                throw CLIParseError.unknownOption(args[i])
+            }
+            i += 1
+        }
+        if watch && idleAfter == nil { throw CLIParseError.watchRequiresIdleAfter }
+        if all && !selectors.isEmpty { throw CLIParseError.conflictingTargets }
+        if !all && selectors.isEmpty { throw CLIParseError.noDisplays }
+        if timeout != nil && sleepAfter != nil { throw CLIParseError.conflictingBlackoutLimits }
+        if all && timeout == nil && sleepAfter == nil { throw CLIParseError.allRequiresLimit }
+        return .blackout(BlackoutOptions(selectors: selectors, all: all, idleAfter: idleAfter, timeout: timeout, sleepAfter: sleepAfter, caffeinate: caffeinate, watch: watch))
+    }
+
+    private static func parseDDCLuminance(_ args: [String]) throws -> PanelCommand {
+        var selector: String?
+        var setValue: UInt16?
+        var json = false
+        var i = 0
+        while i < args.count {
+            switch args[i] {
+            case "--display":
+                guard selector == nil else { throw CLIParseError.duplicateOption("--display") }
+                i += 1
+                guard i < args.count, !args[i].hasPrefix("--"), !args[i].isEmpty else { throw CLIParseError.missingValue("--display") }
+                selector = args[i]
+            case "--set":
+                guard setValue == nil else { throw CLIParseError.duplicateOption("--set") }
+                i += 1
+                guard i < args.count, !args[i].hasPrefix("--") else { throw CLIParseError.missingValue("--set") }
+                guard let value = UInt16(args[i]) else { throw CLIParseError.invalidLuminance }
+                setValue = value
+            case "--json":
+                guard !json else { throw CLIParseError.duplicateOption("--json") }
+                json = true
+            default:
+                throw CLIParseError.unknownOption(args[i])
+            }
+            i += 1
+        }
+        guard let selector else { throw CLIParseError.missingValue("--display") }
+        return .ddcLuminance(selector: selector, setValue: setValue, json: json)
+    }
+
+    private static func parseSleepDisplays(_ args: [String]) throws -> PanelCommand {
+        var keepSystemAwake = false
+        var timeout: TimeInterval?
+        var i = 0
+        while i < args.count {
+            switch args[i] {
+            case "--keep-system-awake":
+                guard !keepSystemAwake else { throw CLIParseError.duplicateOption("--keep-system-awake") }
+                keepSystemAwake = true
+            case "--timeout":
+                guard timeout == nil else { throw CLIParseError.duplicateOption("--timeout") }
+                timeout = try duration(option: "--timeout", args: args, index: &i)
+            default:
+                throw CLIParseError.unknownOption(args[i])
+            }
+            i += 1
+        }
+        if timeout != nil && !keepSystemAwake { throw CLIParseError.timeoutRequiresKeepAwake }
+        return .sleepDisplays(keepSystemAwake: keepSystemAwake, timeout: timeout)
+    }
+
+    private static func duration(option: String, args: [String], index: inout Int) throws -> TimeInterval {
+        index += 1
+        guard index < args.count, !args[index].hasPrefix("--") else { throw CLIParseError.missingValue(option) }
+        let raw = args[index]
+        guard raw.range(
+            of: "^[0-9]+(?:\\.[0-9]+)?(?:[sSmMhH])?$",
+            options: .regularExpression
+        ) != nil else {
+            throw CLIParseError.invalidDuration(option: option, value: raw)
+        }
+        let last = raw.last.map { String($0).lowercased() }
+        let suffix = last.flatMap { ["s", "m", "h"].contains($0) ? $0 : nil }
+        let number = suffix == nil ? raw : String(raw.dropLast())
+        guard let base = Double(number), base > 0, base.isFinite else {
+            throw CLIParseError.invalidDuration(option: option, value: raw)
+        }
+        let multiplier: Double
+        switch suffix {
+        case "m": multiplier = 60
+        case "h": multiplier = 3600
+        default: multiplier = 1
+        }
+        let value = base * multiplier
+        guard value > 0, value.isFinite else {
+            throw CLIParseError.invalidDuration(option: option, value: raw)
+        }
+        return value
     }
 }

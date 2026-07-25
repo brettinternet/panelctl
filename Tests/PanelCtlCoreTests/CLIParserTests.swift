@@ -8,8 +8,23 @@ final class CLIParserTests: XCTestCase {
     }
 
     func testBlackoutOptions() throws {
-        let options = BlackoutOptions(selectors: ["1", "index:3"], all: false, idleAfter: 10, timeout: 2.5, sleepAfter: nil, caffeinate: true)
-        XCTAssertEqual(try CLIParser.parse(["blackout", "--display", "1", "--index", "3", "--idle-after", "10", "--timeout", "2.5", "--caffeinate"]), .blackout(options))
+        let options = BlackoutOptions(
+            selectors: ["1", "index:3"],
+            all: false,
+            idleAfter: 600,
+            timeout: 2.5,
+            sleepAfter: nil,
+            caffeinate: true,
+            watch: true
+        )
+        XCTAssertEqual(
+            try CLIParser.parse([
+                "blackout", "--display", "1", "--index", "3",
+                "--idle-after", "10m", "--timeout", "2.5s",
+                "--caffeinate", "--watch"
+            ]),
+            .blackout(options)
+        )
     }
 
     func testAllBlackoutSafetyOptions() throws {
@@ -23,6 +38,7 @@ final class CLIParserTests: XCTestCase {
     func testDisplaySleepOptions() throws {
         XCTAssertEqual(try CLIParser.parse(["sleep-displays"]), .sleepDisplays(keepSystemAwake: false, timeout: nil))
         XCTAssertEqual(try CLIParser.parse(["sleep-displays", "--keep-system-awake", "--timeout", "30"]), .sleepDisplays(keepSystemAwake: true, timeout: 30))
+        XCTAssertEqual(try CLIParser.parse(["sleep-displays", "--keep-system-awake", "--timeout", "0.5h"]), .sleepDisplays(keepSystemAwake: true, timeout: 1_800))
         XCTAssertEqual(try CLIParser.parse(["wake-displays"]), .wakeDisplays)
     }
 
@@ -36,10 +52,75 @@ final class CLIParserTests: XCTestCase {
 
     func testRejectsUnsafeValues() {
         XCTAssertThrowsError(try CLIParser.parse(["blackout"])) { XCTAssertEqual($0 as? CLIParseError, .noDisplays) }
-        XCTAssertThrowsError(try CLIParser.parse(["blackout", "--display", "1", "--timeout", "0"])) { XCTAssertEqual($0 as? CLIParseError, .invalidTimeout) }
+        XCTAssertThrowsError(try CLIParser.parse(["blackout", "--display", "1", "--timeout", "0"])) {
+            XCTAssertEqual($0 as? CLIParseError, .invalidDuration(option: "--timeout", value: "0"))
+        }
+        XCTAssertThrowsError(try CLIParser.parse(["blackout", "--display", "1", "--watch"])) {
+            XCTAssertEqual($0 as? CLIParseError, .watchRequiresIdleAfter)
+        }
         XCTAssertThrowsError(try CLIParser.parse(["list", "--nope"])) { XCTAssertEqual($0 as? CLIParseError, .unknownOption("--nope")) }
         XCTAssertThrowsError(try CLIParser.parse(["sleep-displays", "--timeout", "30"])) { XCTAssertEqual($0 as? CLIParseError, .timeoutRequiresKeepAwake) }
         XCTAssertThrowsError(try CLIParser.parse(["wake-displays", "--nope"])) { XCTAssertEqual($0 as? CLIParseError, .unknownOption("--nope")) }
+    }
+
+    func testDurationSyntaxAndValidation() throws {
+        let valid: [(String, TimeInterval)] = [
+            ("30", 30),
+            ("30s", 30),
+            ("5M", 300),
+            ("2h", 7_200)
+        ]
+        for (raw, seconds) in valid {
+            let command = try CLIParser.parse([
+                "blackout", "--display", "1", "--idle-after", raw
+            ])
+            guard case .blackout(let options) = command else {
+                return XCTFail("expected blackout command")
+            }
+            XCTAssertEqual(options.idleAfter, seconds)
+        }
+
+        let invalid = [
+            "0", "-1", ".5h", "1h30m", "nan", "inf", "1e3", "1d",
+            String(repeating: "9", count: 1_000)
+        ]
+        for raw in invalid {
+            XCTAssertThrowsError(
+                try CLIParser.parse([
+                    "blackout", "--display", "1", "--idle-after", raw
+                ])
+            ) {
+                XCTAssertEqual(
+                    $0 as? CLIParseError,
+                    .invalidDuration(option: "--idle-after", value: raw)
+                )
+            }
+        }
+    }
+
+    func testHelpVersionAndErrorDescriptions() throws {
+        XCTAssertEqual(try CLIParser.parse(["--help"]), .help(command: nil))
+        XCTAssertEqual(try CLIParser.parse(["help", "blackout"]), .help(command: "blackout"))
+        XCTAssertEqual(try CLIParser.parse(["blackout", "-h"]), .help(command: "blackout"))
+        XCTAssertEqual(try CLIParser.parse(["--version"]), .version)
+        XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--watch"))
+        XCTAssertEqual(CLIParseError.unknownOption("--bad").description, "unknown option: --bad")
+    }
+
+    func testDuplicateScalarOptionsAreRejected() {
+        let cases: [([String], CLIParseError)] = [
+            (["list", "--json", "--json"], .duplicateOption("--json")),
+            (["blackout", "--display", "1", "--idle-after", "1m", "--idle-after", "2m"], .duplicateOption("--idle-after")),
+            (["blackout", "--display", "1", "--caffeinate", "--caffeinate"], .duplicateOption("--caffeinate")),
+            (["ddc-luminance", "--display", "1", "--display", "2"], .duplicateOption("--display")),
+            (["ddc-luminance", "--display", "1", "--json", "--json"], .duplicateOption("--json")),
+            (["sleep-displays", "--keep-system-awake", "--keep-system-awake"], .duplicateOption("--keep-system-awake"))
+        ]
+        for (arguments, expected) in cases {
+            XCTAssertThrowsError(try CLIParser.parse(arguments)) {
+                XCTAssertEqual($0 as? CLIParseError, expected)
+            }
+        }
     }
 
     func testBlackoutSafetyDecisions() {

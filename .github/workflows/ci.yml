@@ -3,6 +3,8 @@ name: CI
 on:
   pull_request:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
@@ -12,7 +14,7 @@ permissions:
 jobs:
   test:
     name: Swift tests
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: macos-15
     steps:
       - name: Check out source
@@ -52,6 +54,7 @@ jobs:
           release_name="panelctl-${GITHUB_REF_NAME}-macos-universal.zip"
           release_zip="dist/${release_name}"
           zip -q -j "$release_zip" dist/panelctl README.md THIRD_PARTY_NOTICES.md
+          zip -q "$release_zip" examples/com.brettinternet.panelctl.blackout.plist
           (
             cd dist
             shasum -a 256 "$release_name" > "${release_name}.sha256"

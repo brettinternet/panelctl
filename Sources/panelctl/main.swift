@@ -37,10 +37,17 @@ struct PanelCtlMain {
                 }
             case .wakeDisplays:
                 try DisplaySleepController.wake()
+            case .help(let command):
+                print(CLIHelp.text(for: command))
+            case .version:
+                print(CLIHelp.version)
             }
+        } catch let error as CLIParseError {
+            fputs("panelctl: \(error)\n", stderr)
+            fputs("Try 'panelctl help' for usage.\n", stderr)
+            Foundation.exit(2)
         } catch {
             fputs("panelctl: \(error)\n", stderr)
-            fputs("Usage: panelctl list [--json] | probe [--json] | blackout ((--display <selector> | --index <n>)... | --all) [--idle-after seconds] [--timeout seconds | --sleep-after seconds] [--caffeinate] | ddc-luminance --display <selector> [--set value] [--json] | sleep-displays [--keep-system-awake [--timeout seconds]] | wake-displays\n", stderr)
             Foundation.exit(EXIT_FAILURE)
         }
     }

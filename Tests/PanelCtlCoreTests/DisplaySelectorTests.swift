@@ -12,7 +12,7 @@ final class DisplaySelectorTests: XCTestCase {
         XCTAssertEqual(DisplaySelector.resolve("0x5", in: records)?.id, 5)
         XCTAssertEqual(DisplaySelector.resolve("bbbb", in: records)?.id, 5)
         XCTAssertEqual(DisplaySelector.resolve("index:3", in: records)?.id, 9)
-        XCTAssertEqual(DisplaySelector.resolve("3", in: records)?.id, 9)
+        XCTAssertNil(DisplaySelector.resolve("3", in: records))
         XCTAssertNil(DisplaySelector.resolve("index:0", in: records))
         XCTAssertNil(DisplaySelector.resolve("missing", in: records))
     }

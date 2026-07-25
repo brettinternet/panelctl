@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.brettinternet.panelctl.blackout</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/REPLACE_WITH_YOUR_USERNAME/.local/bin/panelctl</string>
+		<string>blackout</string>
+		<string>--display</string>
+		<string>REPLACE_WITH_DISPLAY_UUID</string>
+		<string>--idle-after</string>
+		<string>5m</string>
+		<string>--sleep-after</string>
+		<string>30m</string>
+		<string>--caffeinate</string>
+		<string>--watch</string>
+	</array>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>
