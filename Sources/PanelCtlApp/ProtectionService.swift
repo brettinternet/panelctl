@@ -7,8 +7,10 @@ private let maximumErrorBufferBytes = 16 * 1024
 
 enum ProtectionRuntimeState: Equatable {
     case disabled
+    case snoozed(Date)
     case starting
     case waiting
+    case waitingForInput
     case blackedOut
     case sleeping
     case stopping
@@ -18,8 +20,10 @@ enum ProtectionRuntimeState: Equatable {
     var label: String {
         switch self {
         case .disabled: return "Disabled"
+        case .snoozed: return "Protection snoozed"
         case .starting: return "Starting…"
         case .waiting: return "Watching for inactivity"
+        case .waitingForInput: return "Waiting for activity"
         case .blackedOut: return "Blackout active"
         case .sleeping: return "Displays sleeping"
         case .stopping: return "Stopping…"
@@ -31,7 +35,8 @@ enum ProtectionRuntimeState: Equatable {
     var systemImage: String {
         switch self {
         case .disabled: return "shield"
-        case .starting, .waiting: return "shield.fill"
+        case .snoozed: return "pause.circle.fill"
+        case .starting, .waiting, .waitingForInput: return "shield.fill"
         case .blackedOut: return "rectangle.fill"
         case .sleeping: return "moon.fill"
         case .stopping: return "shield"
@@ -48,6 +53,8 @@ enum ProtectionRuntimeState: Equatable {
     var detailMessage: String? {
         switch self {
         case .waitingForDisplays(let message), .failed(let message): return message
+        case .snoozed(let until):
+            return "Resumes \(until.formatted(date: .abbreviated, time: .shortened))"
         default: return nil
         }
     }
@@ -342,6 +349,7 @@ final class ProtectionService {
             updateControlIntent(for: runtimeState)
             switch runtimeState {
             case .waiting: self.state = .waiting
+            case .waitingForInput: self.state = .waitingForInput
             case .blackedOut: self.state = .blackedOut
             case .sleeping: self.state = .sleeping
             case .stopped:

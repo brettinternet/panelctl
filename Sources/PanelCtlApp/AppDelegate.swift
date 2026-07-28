@@ -3,8 +3,8 @@ import Combine
 import PanelCtlCore
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var model: AppModel!
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    var model: AppModel!
     private var controlServer: AppControlServer?
     private var statusItem: NSStatusItem?
     private var settingsWindowController: SettingsWindowController?
@@ -132,9 +132,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = makeMenu()
     }
 
-    private func makeMenu() -> NSMenu {
+    func makeMenu() -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        menu.delegate = self
 
         let status = NSMenuItem(title: model.statusSummary, action: nil, keyEquivalent: "")
         status.image = NSImage(
@@ -159,6 +160,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ? "Disable Protection"
             : "Enable Protection"
         menu.addItem(item(toggleTitle, action: #selector(toggleProtection)))
+        if model.snoozedUntil != nil {
+            menu.addItem(item("Resume Protection", action: #selector(resumeProtection)))
+        }
+
+        switch model.runtimeState {
+        case .blackedOut, .sleeping:
+            menu.addItem(item("Restore", action: #selector(restoreNow)))
+        default:
+            menu.addItem(item("Blackout Now", action: #selector(blackoutNow)))
+        }
+        menu.addItem(item("Sleep All Now", action: #selector(sleepAllNow)))
+
+        if model.preferences.isEnabled, model.snoozedUntil == nil {
+            let snoozeMenuItem = NSMenuItem(title: "Snooze", action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            submenu.autoenablesItems = false
+            submenu.addItem(snoozeItem("30 Minutes", duration: 30 * 60))
+            submenu.addItem(snoozeItem("1 Hour", duration: 60 * 60))
+            submenu.addItem(item("Until Tomorrow", action: #selector(snoozeUntilTomorrow)))
+            snoozeMenuItem.submenu = submenu
+            menu.addItem(snoozeMenuItem)
+        }
 
         if model.runtimeState.errorMessage != nil, model.preferences.isEnabled {
             menu.addItem(item("Retry Watcher", action: #selector(retryProtection)))
@@ -169,6 +192,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(item("Quit PanelCtl", action: #selector(quit), key: "q"))
         return menu
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        guard let status = menu.items.first else { return }
+        status.title = model.statusSummary
+        status.image = NSImage(
+            systemSymbolName: model.runtimeState.systemImage,
+            accessibilityDescription: nil
+        )
+        statusItem?.button?.toolTip = "PanelCtl — \(model.statusSummary)"
     }
 
     private func item(
@@ -182,6 +215,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return menuItem
     }
 
+    private func snoozeItem(_ title: String, duration: TimeInterval) -> NSMenuItem {
+        let menuItem = item(title, action: #selector(snoozeForDuration(_:)))
+        menuItem.representedObject = duration
+        return menuItem
+    }
+
     @objc private func toggleProtection() {
         model.setProtectionEnabled(!model.preferences.isEnabled)
         if model.preferences.isEnabled, model.validationMessage != nil {
@@ -191,6 +230,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func retryProtection() {
         model.retryProtection()
+    }
+
+    @objc private func blackoutNow() {
+        do {
+            try model.blackoutNow()
+        } catch {
+            presentActionError("Could not start blackout", error: error)
+        }
+    }
+
+    @objc private func restoreNow() {
+        do {
+            _ = try model.restoreBlackout()
+        } catch {
+            presentActionError("Could not restore displays", error: error)
+        }
+    }
+
+    @objc private func sleepAllNow() {
+        do {
+            try model.sleepAllNow()
+        } catch {
+            presentActionError("Could not sleep displays", error: error)
+        }
+    }
+
+    @objc private func snoozeForDuration(_ sender: NSMenuItem) {
+        guard let duration = sender.representedObject as? TimeInterval else { return }
+        model.snooze(for: duration)
+    }
+
+    @objc private func snoozeUntilTomorrow() {
+        model.snoozeUntilTomorrow()
+    }
+
+    @objc private func resumeProtection() {
+        model.resumeProtection()
     }
 
     @objc private func openSettings() {
@@ -243,6 +319,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     error: error.localizedDescription
                 )
             }
+        case .sleepNow:
+            do {
+                try model.sleepAllNow()
+                return controlResponse(ok: true, summary: "Display sleep requested")
+            } catch {
+                return controlResponse(
+                    ok: false,
+                    summary: "Display sleep request failed",
+                    error: error.localizedDescription
+                )
+            }
+        case .snooze:
+            guard let duration = request.durationSeconds,
+                  duration.isFinite,
+                  duration > 0,
+                  duration <= AppModel.maximumSnoozeDuration else {
+                return controlResponse(
+                    ok: false,
+                    summary: "Snooze request failed",
+                    error: "snooze duration must be between 1 second and 30 days"
+                )
+            }
+            model.snooze(for: duration)
+        case .resume:
+            model.resumeProtection()
         case .restore:
             do {
                 let requested = try model.restoreBlackout()
@@ -278,7 +379,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state: model.runtimeState.controlIdentifier,
             summary: summary ?? model.statusSummary,
             detail: model.runtimeState.detailMessage,
-            error: error
+            error: error,
+            nextAction: model.nextAction,
+            secondsRemaining: model.secondsRemaining,
+            snoozedUntil: model.snoozedUntil.map(Self.iso8601.string)
         )
     }
 
@@ -310,6 +414,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func presentActionError(_ title: String, error: Error) {
+        model.notice = AppNotice(
+            title: title,
+            message: error.localizedDescription,
+            opensLoginItemSettings: false
+        )
+    }
+
     private func installScreenObservers() {
         NotificationCenter.default.addObserver(
             self,
@@ -326,12 +438,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+private extension AppDelegate {
+    static let iso8601 = ISO8601DateFormatter()
+}
+
 private extension ProtectionRuntimeState {
     var controlIdentifier: String {
         switch self {
         case .disabled: return "disabled"
+        case .snoozed: return "snoozed"
         case .starting: return "starting"
         case .waiting: return "waiting"
+        case .waitingForInput: return "waiting_for_input"
         case .blackedOut: return "blacked_out"
         case .sleeping: return "sleeping"
         case .stopping: return "stopping"

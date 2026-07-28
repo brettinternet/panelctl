@@ -746,6 +746,216 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertEqual(service.state, .disabled)
     }
 
+    @MainActor
+    func testWatcherFreshInputGateHasDistinctRuntimeState() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "panelctl-waiting-input-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let script = """
+        #!/bin/bash
+        printf '{"state":"waiting_for_input"}\\n'
+        trap 'exit 0' TERM
+        while true; do /bin/sleep 0.02; done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: helper.path
+        )
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        defer { unsetenv("PANELCTL_HELPER") }
+
+        let service = ProtectionService()
+        service.run(arguments: ["blackout"])
+        try await waitUntil { service.state == .waitingForInput }
+
+        let stopped = expectation(description: "watcher stopped")
+        service.shutdown { stopped.fulfill() }
+        await fulfillment(of: [stopped], timeout: 3)
+    }
+
+    @MainActor
+    func testSnoozePersistsAcrossRestartAndAutoResumesAtExpiry() throws {
+        let suiteName = "panelctl-snooze-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var current = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let model = AppModel(
+            defaults: defaults,
+            displayProvider: { [] },
+            now: { current }
+        )
+        model.snooze(for: 30 * 60)
+
+        XCTAssertTrue(model.preferences.isEnabled)
+        XCTAssertEqual(model.snoozedUntil, current.addingTimeInterval(30 * 60))
+        XCTAssertEqual(model.runtimeState, .snoozed(current.addingTimeInterval(30 * 60)))
+        XCTAssertEqual(model.nextAction, "resume")
+        XCTAssertEqual(model.secondsRemaining, 30 * 60)
+        XCTAssertFalse(try model.restoreBlackout())
+        XCTAssertEqual(model.snoozedUntil, current.addingTimeInterval(30 * 60))
+
+        let delegate = AppDelegate()
+        delegate.model = model
+        let menuTitles = delegate.makeMenu().items.map(\.title)
+        XCTAssertTrue(menuTitles.contains("Disable Protection"))
+        XCTAssertTrue(menuTitles.contains("Resume Protection"))
+
+        let restarted = AppModel(
+            defaults: defaults,
+            displayProvider: { [] },
+            now: { current }
+        )
+        XCTAssertEqual(restarted.runtimeState, .snoozed(current.addingTimeInterval(30 * 60)))
+
+        current.addTimeInterval(30 * 60)
+        restarted.refreshCountdown()
+
+        XCTAssertNil(restarted.snoozedUntil)
+        XCTAssertNil(defaults.object(forKey: "snoozedUntil"))
+        guard case .waitingForDisplays = restarted.runtimeState else {
+            return XCTFail("Expected protection to resume, got \(restarted.runtimeState)")
+        }
+    }
+
+    @MainActor
+    func testUntilTomorrowUsesNextLocalEightAM() throws {
+        let suiteName = "panelctl-until-tomorrow-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Denver"))
+        let current = try XCTUnwrap(
+            calendar.date(from: DateComponents(
+                year: 2026,
+                month: 7,
+                day: 28,
+                hour: 7,
+                minute: 15
+            ))
+        )
+        let expected = try XCTUnwrap(
+            calendar.date(from: DateComponents(
+                year: 2026,
+                month: 7,
+                day: 29,
+                hour: 8
+            ))
+        )
+        let model = AppModel(
+            defaults: defaults,
+            displayProvider: { [] },
+            now: { current }
+        )
+
+        model.snoozeUntilTomorrow(calendar: calendar)
+
+        XCTAssertEqual(model.snoozedUntil, expected)
+        XCTAssertTrue(model.statusSummary.contains("Protection snoozed until"))
+    }
+
+    @MainActor
+    func testSleepNowPreservesProtectionStateAndCancelsSnooze() throws {
+        let suiteName = "panelctl-sleep-now-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var sleepRequests = 0
+        let model = AppModel(
+            defaults: defaults,
+            displayProvider: { [] },
+            sleepDisplays: { sleepRequests += 1 }
+        )
+
+        try model.sleepAllNow()
+        XCTAssertEqual(sleepRequests, 1)
+        XCTAssertFalse(model.preferences.isEnabled)
+
+        model.snooze(for: 30 * 60)
+        XCTAssertTrue(model.preferences.isEnabled)
+        XCTAssertNotNil(model.snoozedUntil)
+
+        try model.sleepAllNow()
+        XCTAssertEqual(sleepRequests, 2)
+        XCTAssertTrue(model.preferences.isEnabled)
+        XCTAssertNil(model.snoozedUntil)
+        guard case .waitingForDisplays = model.runtimeState else {
+            return XCTFail("Expected enabled protection to resume, got \(model.runtimeState)")
+        }
+    }
+
+    @MainActor
+    func testWaitingCountdownUsesCombinedIdleAndManualActivityClamp() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panelctl-countdown-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let script = """
+        #!/bin/bash
+        printf '{"state":"waiting"}\\n'
+        trap 'exit 0' TERM
+        while IFS= read -r command; do
+            if [[ "$command" == "blackout-now" ]]; then
+                printf '{"state":"blacked_out"}\\n'
+            elif [[ "$command" == "restore" ]]; then
+                printf '{"state":"waiting"}\\n'
+            fi
+        done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+
+        let suiteName = "panelctl-countdown-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var preferences = ProtectionPreferences()
+        preferences.isEnabled = true
+        preferences.didChooseDisplays = true
+        preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
+        preferences.idleSeconds = 300
+        preferences.followUpAction = .restore
+        preferences.followUpSeconds = 120
+        defaults.set(try JSONEncoder().encode(preferences), forKey: "blackoutPreferences")
+        var current = Date(timeIntervalSince1970: 1_800_000_000)
+        var idle: TimeInterval = 100
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        defer { unsetenv("PANELCTL_HELPER") }
+
+        let model = AppModel(
+            defaults: defaults,
+            displayProvider: { [self.displays[0], self.displays[1]] },
+            now: { current },
+            idleSecondsProvider: { idle }
+        )
+        try await waitUntil { model.runtimeState == .waiting }
+        XCTAssertEqual(model.nextAction, "blackout")
+        XCTAssertEqual(model.secondsRemaining, 200)
+
+        try model.blackoutNow()
+        try await waitUntil { model.runtimeState == .blackedOut }
+        XCTAssertEqual(model.nextAction, "restore")
+        XCTAssertEqual(model.secondsRemaining, 120)
+        current.addTimeInterval(31)
+        XCTAssertEqual(model.secondsRemaining, 89)
+
+        XCTAssertTrue(try model.restoreBlackout())
+        try await waitUntil { model.runtimeState == .waiting }
+        idle = 250
+        current.addTimeInterval(10)
+        XCTAssertEqual(model.secondsRemaining, 290)
+
+        let stopped = expectation(description: "watcher stopped")
+        model.shutdown { stopped.fulfill() }
+        await fulfillment(of: [stopped], timeout: 3)
+    }
+
     private func waitForLaunches(
         _ count: Int,
         at log: URL

@@ -334,7 +334,9 @@ struct SettingsView: View {
     private var statusColor: Color {
         switch model.runtimeState {
         case .failed: return .orange
-        case .blackedOut, .sleeping, .starting, .waiting: return .accentColor
+        case .blackedOut, .sleeping, .starting, .waiting, .waitingForInput:
+            return .accentColor
+        case .snoozed: return .accentColor
         case .waitingForDisplays: return .orange
         case .disabled, .stopping: return .secondary
         }

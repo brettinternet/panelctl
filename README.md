@@ -28,6 +28,7 @@ provides:
   and error state
 - Per-display or explicit all-display protection using stable display UUIDs
 - Configurable idle, restore, all-display sleep, and caffeinate behavior
+- Immediate blackout, restore, all-display sleep, and temporary snooze actions
 - Launch at login, background operation, version, and project links
 
 Closing Settings leaves protection running. Quitting the menu app stops its
@@ -35,7 +36,7 @@ watcher and removes any active blackout. If the menu icon is hidden, opening
 `PanelCtl.app` again brings the existing Settings window forward. Launch at
 Login and automation launches stay in the background.
 
-### Stream Deck and automation
+### Shell, Shortcuts, and automation
 
 The existing CLI is also the app's stable automation interface:
 
@@ -46,6 +47,9 @@ panelctl app toggle
 panelctl app status --json
 panelctl app blackout-now
 panelctl app restore
+panelctl app sleep-now
+panelctl app snooze --for 30m
+panelctl app resume
 panelctl app open-settings
 ```
 
@@ -61,26 +65,62 @@ The watcher then remains on its configured automation. `restore` removes an
 active blackout, wakes displays after sleep when needed, leaves protection
 enabled, and restarts the full configured idle interval. Restoring while
 protection is disabled or while no watcher is running is a successful no-op.
-These commands take no standalone display or timing options; the standalone
+`sleep-now` immediately sleeps all displays. `snooze --for <duration>`
+temporarily pauses protection for a duration such as `30m`, `1h`, or `2h`;
+the maximum is 30 days. Protection resumes automatically when the persisted
+deadline arrives, including after the app relaunches. `resume` ends a snooze
+early and resumes protection.
+These app commands use the app's saved configuration. The standalone
 `panelctl blackout` command remains separate and never contacts the app.
 
-For Stream Deck, use a shell-command action to run the absolute path to
-`panelctl`. If the standalone CLI is not installed, use the copy bundled with
-the app:
+Shell scripts and macOS Shortcuts can run the installed `panelctl` executable.
+If the standalone CLI is not installed, use the copy bundled with the app:
 
 ```sh
 /Applications/PanelCtl.app/Contents/Helpers/panelctl app toggle
 ```
 
-A macOS Shortcut with one **Run Shell Script** action is a convenient adapter
-for Stream Deck's Shortcuts action. Prefer separate `enable` and `disable`
-Shortcuts when retries are possible; `toggle` is intentionally non-idempotent.
+A macOS Shortcut needs only one **Run Shell Script** action. Prefer separate
+`enable` and `disable` scripts or Shortcuts when retries are possible; `toggle`
+is intentionally non-idempotent.
 Scripts can use `status --json` and its exit status: `0` means the app answered,
 `3` means it is not running, and `1` means control failed.
+
+The JSON status includes countdown information when a transition is scheduled:
+
+| Field | Meaning |
+| --- | --- |
+| `nextAction` | The scheduled transition: `blackout`, `restore`, `sleep`, or `resume` |
+| `secondsRemaining` | Nonnegative whole seconds until `nextAction`; it may be rounded up to the next second |
+| `snoozedUntil` | ISO-8601 snooze deadline, present only while protection is snoozed |
+
+These optional fields are omitted when no transition is scheduled. For example,
+a snoozed app reports `nextAction: "resume"`, the remaining whole seconds, and
+the persisted `snoozedUntil` deadline. Scripts should treat the countdown as a
+live value rather than expecting identical results across successive requests.
 
 App-control requests use a bounded, same-user Unix socket in the Darwin user
 temporary directory. Nothing listens on the network, and the app remains the
 sole owner of its configuration and watcher process.
+
+### Menu actions and countdowns
+
+The menu shows the current state and the countdown to the next scheduled
+blackout, restore, sleep, or snooze resume. Its immediate actions are:
+
+- **Blackout Now**, or **Restore** while a blackout is active
+- **Sleep All Now**
+- **Snooze for 30 Minutes**
+- **Snooze for 1 Hour**
+- **Snooze Until Tomorrow**, which resumes protection at 8:00 AM local time on
+  the next calendar day
+- **Resume Protection**, available while snoozed
+- **Enable Protection** or **Disable Protection**
+
+Snoozing removes active protection until its deadline without discarding the
+saved protection configuration. The snooze deadline persists across app
+relaunches; protection resumes automatically when it expires, or immediately
+when **Resume Protection** or `panelctl app resume` is used.
 
 ## Releases
 
@@ -122,6 +162,9 @@ reconnecting displays.
 | Wake displays explicitly | `panelctl wake-displays` | Declares user activity with `caffeinate -u` |
 | Activate the app's saved blackout now | `panelctl app blackout-now` | Uses the app's saved display, follow-up, and caffeinate settings, then continues configured automation |
 | Restore the app's active blackout | `panelctl app restore` | Removes blackout, wakes displays if needed, keeps protection enabled, and restarts the full idle interval |
+| Sleep all displays through the app | `panelctl app sleep-now` | Immediately sleeps all displays |
+| Pause app protection for 30 minutes | `panelctl app snooze --for 30m` | Removes active protection, persists the deadline, and resumes automatically |
+| Resume app protection early | `panelctl app resume` | Ends the current snooze and resumes protection |
 | Read DDC luminance | `panelctl ddc-luminance --display index:2` | Reads MCCS luminance VCP `0x10` |
 | Set DDC luminance | `panelctl ddc-luminance --display index:2 --set 75` | Writes VCP `0x10`, then reads it back to verify |
 

@@ -50,7 +50,21 @@ public enum CLIHelp {
         case "wake-displays":
             return "Usage: panelctl wake-displays\nWake every display."
         case "app":
-            return "Usage: panelctl app <enable|disable|toggle|status|blackout-now|restore|open-settings> [--json]\nControl PanelCtl.app; status does not launch the app. blackout-now and restore use the app's saved protection settings."
+            return """
+            Usage: panelctl app <command> [options]
+
+            Commands:
+              enable, disable, toggle, status
+              blackout-now, restore
+              sleep-now
+              snooze --for <duration>
+              resume
+              open-settings
+
+            Control PanelCtl.app; status does not launch the app. --json emits
+            the machine-readable response. snooze temporarily pauses automation
+            for up to 30 days; resume ends a snooze early.
+            """
         default:
             return text(for: nil)
         }

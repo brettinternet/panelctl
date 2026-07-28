@@ -32,27 +32,56 @@ final class AppModel: ObservableObject {
     @Published private(set) var runtimeState: ProtectionRuntimeState = .disabled {
         didSet {
             if runtimeState != oldValue {
+                if case .blackedOut = runtimeState {
+                    if case .blackedOut = oldValue {
+                        // Preserve the original follow-up deadline.
+                    } else {
+                        stateBeganAt = now()
+                    }
+                } else {
+                    stateBeganAt = nil
+                }
                 onStatusChange?()
             }
         }
     }
     @Published private(set) var launchAtLoginEnabled: Bool
     @Published var notice: AppNotice?
+    @Published private(set) var countdownDate = Date()
 
     var onStatusChange: (() -> Void)?
 
     private let defaults: UserDefaults
     private let displayProvider: () -> [DisplayRecord]
+    private let now: () -> Date
+    private let idleSecondsProvider: () -> TimeInterval?
+    private let sleepDisplays: () throws -> Void
     private let service: ProtectionService
+    private var snoozeTimer: Timer?
+    private var manualActivityDate: Date?
     private static let preferencesKey = "blackoutPreferences"
     private static let showMenuBarIconKey = "showMenuBarIcon"
+    private static let snoozedUntilKey = "snoozedUntil"
+    static let maximumSnoozeDuration: TimeInterval = 30 * 24 * 60 * 60
 
     init(
         defaults: UserDefaults = .standard,
-        displayProvider: @escaping () -> [DisplayRecord] = { DisplayInventory.records() }
+        displayProvider: @escaping () -> [DisplayRecord] = { DisplayInventory.records() },
+        now: @escaping () -> Date = Date.init,
+        idleSecondsProvider: @escaping () -> TimeInterval? = {
+            guard let anyInput = CGEventType(rawValue: UInt32.max) else { return nil }
+            return CGEventSource.secondsSinceLastEventType(
+                .combinedSessionState,
+                eventType: anyInput
+            )
+        },
+        sleepDisplays: @escaping () throws -> Void = DisplaySleepController.sleep
     ) {
         self.defaults = defaults
         self.displayProvider = displayProvider
+        self.now = now
+        self.idleSecondsProvider = idleSecondsProvider
+        self.sleepDisplays = sleepDisplays
         self.showMenuBarIcon = defaults.object(forKey: Self.showMenuBarIconKey) as? Bool ?? true
         let loadedPreferences = defaults.data(forKey: Self.preferencesKey)
             .flatMap { try? JSONDecoder().decode(ProtectionPreferences.self, from: $0) }
@@ -79,6 +108,12 @@ final class AppModel: ObservableObject {
         self.displays = displays
         launchAtLoginEnabled = LaunchAtLogin.isEnabled
         service = ProtectionService()
+        let storedSnooze = defaults.object(forKey: Self.snoozedUntilKey) as? Date
+        if let storedSnooze, storedSnooze > now(), preferences.isEnabled {
+            runtimeState = .snoozed(storedSnooze)
+        } else {
+            defaults.removeObject(forKey: Self.snoozedUntilKey)
+        }
         service.onStateChange = { [weak self] state in
             guard let self else { return }
             self.runtimeState = self.presentedRuntimeState(for: state)
@@ -91,6 +126,7 @@ final class AppModel: ObservableObject {
         savePreferences()
         defaults.set(showMenuBarIcon, forKey: Self.showMenuBarIconKey)
         reconcileProtection()
+        startCountdownTimer()
     }
 
     var activeDisplays: [DisplayRecord] {
@@ -135,16 +171,27 @@ final class AppModel: ObservableObject {
     }
 
     var statusSummary: String {
+        if let secondsRemaining, let nextAction {
+            switch runtimeState {
+            case .snoozed(let until):
+                return "\(runtimeState.label) until \(Self.expiryFormatter.string(from: until)) · \(Self.countdownLabel(secondsRemaining)) to \(nextAction)"
+            default:
+                return "\(runtimeState.label) · \(Self.countdownLabel(secondsRemaining)) to \(nextAction)"
+            }
+        }
         switch runtimeState {
-        case .waiting:
-            return "\(runtimeState.label) · \(Self.durationLabel(preferences.idleSeconds))"
         default:
             return runtimeState.label
         }
     }
 
     func setProtectionEnabled(_ enabled: Bool) {
-        preferences.isEnabled = enabled
+        cancelSnooze()
+        if preferences.isEnabled == enabled {
+            reconcileProtection()
+        } else {
+            preferences.isEnabled = enabled
+        }
     }
 
     func retryProtection() {
@@ -153,8 +200,17 @@ final class AppModel: ObservableObject {
     }
 
     func blackoutNow() throws {
+        let wasSnoozed = cancelSnooze()
         displays = displayProvider()
-        let arguments = try preferences.commandArguments(for: displays)
+        let arguments: [String]
+        do {
+            arguments = try preferences.commandArguments(for: displays)
+        } catch {
+            if wasSnoozed {
+                reconcileProtection()
+            }
+            throw error
+        }
         if !preferences.isEnabled {
             preferences.isEnabled = true
         }
@@ -164,10 +220,56 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func restoreBlackout() throws -> Bool {
+        guard snoozedUntil == nil else { return false }
         guard preferences.isEnabled, service.canReceiveControl else {
             return false
         }
-        return try service.sendControl(.restore)
+        let restored = try service.sendControl(.restore)
+        if restored {
+            manualActivityDate = now()
+        }
+        return restored
+    }
+
+    func sleepAllNow() throws {
+        let wasSnoozed = cancelSnooze()
+        if wasSnoozed {
+            reconcileProtection()
+        }
+        try sleepDisplays()
+    }
+
+    func snooze(for duration: TimeInterval) {
+        guard duration.isFinite,
+              duration > 0,
+              duration <= Self.maximumSnoozeDuration else { return }
+        snooze(until: now().addingTimeInterval(duration))
+    }
+
+    func snoozeUntilTomorrow(calendar: Calendar = .current) {
+        let current = now()
+        let tomorrow = calendar.date(
+            byAdding: .day,
+            value: 1,
+            to: calendar.startOfDay(for: current)
+        ) ?? current.addingTimeInterval(24 * 60 * 60)
+        let expiry = calendar.date(
+            bySettingHour: 8,
+            minute: 0,
+            second: 0,
+            of: tomorrow
+        )
+        snooze(until: expiry ?? tomorrow)
+    }
+
+    func resumeProtection() {
+        let wasSnoozed = defaults.object(forKey: Self.snoozedUntilKey) != nil
+        cancelSnooze()
+        guard preferences.isEnabled else { return }
+        if wasSnoozed {
+            manualActivityDate = now()
+        }
+        reconcileProtection()
     }
 
     func refreshDisplays() {
@@ -219,10 +321,64 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown(completion: @escaping () -> Void) {
+        snoozeTimer?.invalidate()
         service.shutdown(completion: completion)
     }
 
+    var snoozedUntil: Date? {
+        guard let date = defaults.object(forKey: Self.snoozedUntilKey) as? Date,
+              date > now() else {
+            return nil
+        }
+        return date
+    }
+
+    var nextAction: String? {
+        switch runtimeState {
+        case .snoozed:
+            return "resume"
+        case .waiting:
+            return "blackout"
+        case .blackedOut:
+            switch preferences.followUpAction {
+            case .restore: return "restore"
+            case .sleepDisplays: return "sleep"
+            case .untilActivity: return nil
+            }
+        default:
+            return nil
+        }
+    }
+
+    var secondsRemaining: Int? {
+        let remaining: TimeInterval
+        switch runtimeState {
+        case .snoozed(let until):
+            remaining = until.timeIntervalSince(now())
+        case .waiting:
+            var idle = idleSecondsProvider() ?? 0
+            if let manualActivityDate {
+                idle = min(idle, max(0, now().timeIntervalSince(manualActivityDate)))
+            }
+            remaining = preferences.idleSeconds - idle
+        case .blackedOut:
+            guard preferences.followUpAction != .untilActivity,
+                  let stateBeganAt else { return nil }
+            remaining = preferences.followUpSeconds - now().timeIntervalSince(stateBeganAt)
+        default:
+            return nil
+        }
+        return max(0, Int(ceil(remaining)))
+    }
+
+    private var stateBeganAt: Date?
+
     private func reconcileProtection() {
+        if let until = snoozedUntil {
+            runtimeState = .snoozed(until)
+            service.disable()
+            return
+        }
         guard preferences.isEnabled else {
             service.disable()
             return
@@ -245,9 +401,12 @@ final class AppModel: ObservableObject {
     private func presentedRuntimeState(
         for serviceState: ProtectionRuntimeState
     ) -> ProtectionRuntimeState {
+        if let until = snoozedUntil {
+            return .snoozed(until)
+        }
         guard preferences.isEnabled else { return serviceState }
         switch serviceState {
-        case .starting, .waiting, .blackedOut, .sleeping:
+        case .starting, .waiting, .waitingForInput, .blackedOut, .sleeping:
             break
         default:
             return serviceState
@@ -273,6 +432,59 @@ final class AppModel: ObservableObject {
     private func savePreferences() {
         guard let data = try? JSONEncoder().encode(preferences) else { return }
         defaults.set(data, forKey: Self.preferencesKey)
+    }
+
+    private func snooze(until: Date) {
+        defaults.set(until, forKey: Self.snoozedUntilKey)
+        if !preferences.isEnabled {
+            preferences.isEnabled = true
+        }
+        runtimeState = .snoozed(until)
+        service.disable()
+        onStatusChange?()
+    }
+
+    @discardableResult
+    private func cancelSnooze() -> Bool {
+        guard defaults.object(forKey: Self.snoozedUntilKey) != nil else {
+            return false
+        }
+        defaults.removeObject(forKey: Self.snoozedUntilKey)
+        return true
+    }
+
+    private func startCountdownTimer() {
+        snoozeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) {
+            [weak self] _ in
+            Task { @MainActor in
+                self?.refreshCountdown()
+            }
+        }
+    }
+
+    func refreshCountdown() {
+        countdownDate = now()
+        if defaults.object(forKey: Self.snoozedUntilKey) != nil,
+           snoozedUntil == nil {
+            resumeProtection()
+        }
+    }
+
+    private static let expiryFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    private static func countdownLabel(_ seconds: Int) -> String {
+        if seconds >= 3600 {
+            return "\(seconds / 3600)h \((seconds % 3600) / 60)m"
+        }
+        if seconds >= 60 {
+            return "\(seconds / 60)m \(seconds % 60)s"
+        }
+        return "\(seconds)s"
     }
 
     static func durationLabel(_ seconds: TimeInterval) -> String {

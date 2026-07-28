@@ -10,6 +10,9 @@ public enum AppControlCommand: String, Codable, Equatable, CaseIterable, Sendabl
     case status
     case blackoutNow = "blackout-now"
     case restore
+    case sleepNow = "sleep-now"
+    case snooze
+    case resume
     case openSettings = "open-settings"
 }
 
@@ -19,15 +22,29 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
 
     public let protocolVersion: Int
     public let command: AppControlCommand
+    public let durationSeconds: TimeInterval?
 
-    public init(command: AppControlCommand, protocolVersion: Int = AppControlRequest.currentProtocol) {
+    public init(
+        command: AppControlCommand,
+        durationSeconds: TimeInterval? = nil,
+        protocolVersion: Int = AppControlRequest.currentProtocol
+    ) {
         self.protocolVersion = protocolVersion
         self.command = command
+        self.durationSeconds = durationSeconds
     }
 
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol"
         case command
+        case durationSeconds
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolVersion, forKey: .protocolVersion)
+        try container.encode(command, forKey: .command)
+        try container.encodeIfPresent(durationSeconds, forKey: .durationSeconds)
     }
 }
 
@@ -42,6 +59,9 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
     public let summary: String
     public let detail: String?
     public let error: String?
+    public let nextAction: String?
+    public let secondsRemaining: Int?
+    public let snoozedUntil: String?
 
     public init(
         protocolVersion: Int = AppControlRequest.currentProtocol,
@@ -51,7 +71,10 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         state: String,
         summary: String,
         detail: String? = nil,
-        error: String? = nil
+        error: String? = nil,
+        nextAction: String? = nil,
+        secondsRemaining: Int? = nil,
+        snoozedUntil: String? = nil
     ) {
         self.protocolVersion = protocolVersion
         self.ok = ok
@@ -61,6 +84,9 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         self.summary = summary
         self.detail = detail
         self.error = error
+        self.nextAction = nextAction
+        self.secondsRemaining = secondsRemaining
+        self.snoozedUntil = snoozedUntil
     }
 
     public static func unavailable(_ message: String = "PanelCtl.app is not running") -> Self {
@@ -77,6 +103,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol"
         case ok, running, enabled, state, summary, detail, error
+        case nextAction, secondsRemaining, snoozedUntil
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -89,6 +116,9 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         try container.encode(summary, forKey: .summary)
         try container.encodeIfPresent(detail, forKey: .detail)
         try container.encodeIfPresent(error, forKey: .error)
+        try container.encodeIfPresent(nextAction, forKey: .nextAction)
+        try container.encodeIfPresent(secondsRemaining, forKey: .secondsRemaining)
+        try container.encodeIfPresent(snoozedUntil, forKey: .snoozedUntil)
     }
 }
 
@@ -189,17 +219,23 @@ public struct AppControlClient {
     /// bounded startup poll.  A toggle is never retried after request bytes
     /// have reached the socket.
     public func execute(
-        _ command: AppControlCommand
+        _ command: AppControlCommand,
+        durationSeconds: TimeInterval? = nil
     ) throws -> AppControlResponse {
-        try execute(command, deadline: Self.defaultDeadline)
+        try execute(
+            command,
+            durationSeconds: durationSeconds,
+            deadline: Self.defaultDeadline
+        )
     }
 
     func execute(
         _ command: AppControlCommand,
+        durationSeconds: TimeInterval? = nil,
         deadline: TimeInterval
     ) throws -> AppControlResponse {
         do {
-            return try send(command)
+            return try send(command, durationSeconds: durationSeconds)
         } catch let error as AppControlTransportError {
             if command == .status {
                 if !error.requestBytesWritten, !Self.isAppRunning {
@@ -215,7 +251,10 @@ public struct AppControlClient {
                 while now() < startupDeadline {
                     if Self.canConnect(to: socketPath) {
                         do {
-                            return try send(command)
+                            return try send(
+                                command,
+                                durationSeconds: durationSeconds
+                            )
                         } catch {
                             throw AppControlError.transport(
                                 error.localizedDescription
@@ -241,7 +280,7 @@ public struct AppControlClient {
                 sleep(Self.pollInterval)
             }
             do {
-                return try send(command)
+                return try send(command, durationSeconds: durationSeconds)
             } catch {
                 throw AppControlError.transport(error.localizedDescription)
             }
@@ -250,8 +289,14 @@ public struct AppControlClient {
         }
     }
 
-    private func send(_ command: AppControlCommand) throws -> AppControlResponse {
-        let request = AppControlRequest(command: command)
+    private func send(
+        _ command: AppControlCommand,
+        durationSeconds: TimeInterval?
+    ) throws -> AppControlResponse {
+        let request = AppControlRequest(
+            command: command,
+            durationSeconds: durationSeconds
+        )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         var bytes = try encoder.encode(request)

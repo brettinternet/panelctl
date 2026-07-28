@@ -35,6 +35,7 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
 
 public enum BlackoutRuntimeState: String, Equatable {
     case waiting
+    case waitingForInput = "waiting_for_input"
     case blackedOut = "blacked_out"
     case sleeping
     case stopped
@@ -570,8 +571,23 @@ public final class BlackoutController {
     private func waitUntilReady(
         policy: BlackoutPolicy
     ) throws -> (sample: IdleSample, forced: Bool)? {
-        stateHandler?(.waiting)
+        var reportedState: BlackoutRuntimeState?
+        func reportState(_ state: BlackoutRuntimeState) {
+            guard reportedState != state else { return }
+            reportedState = state
+            stateHandler?(state)
+        }
+
         while !stopRequested {
+            if watchMode && watchState.suspensions.contains(.screensAsleep) {
+                reportState(.sleeping)
+            } else if watchMode &&
+                        !watchState.mayBeginCycle &&
+                        !immediateBlackoutRequested {
+                reportState(.waitingForInput)
+            } else {
+                reportState(.waiting)
+            }
             try ensureCaffeinate()
             let sample = try idleSample()
             if watchMode && consumeFreshInput(sample) {

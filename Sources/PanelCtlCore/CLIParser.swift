@@ -35,7 +35,11 @@ public enum PanelCommand: Equatable {
     case ddcLuminance(selector: String, setValue: UInt16?, json: Bool)
     case sleepDisplays(keepSystemAwake: Bool, timeout: TimeInterval?)
     case wakeDisplays
-    case app(command: AppControlCommand, json: Bool)
+    case app(
+        command: AppControlCommand,
+        durationSeconds: TimeInterval?,
+        json: Bool
+    )
     case help(command: String?)
     case version
 }
@@ -56,6 +60,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case watchRequiresIdleAfter
     case invalidLuminance
     case missingAppCommand
+    case snoozeDurationTooLong
 
     public var description: String {
         switch self {
@@ -75,11 +80,13 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
         case .watchRequiresIdleAfter: return "--watch requires --idle-after"
         case .invalidLuminance: return "luminance must be an integer from 0 through 65535"
         case .missingAppCommand: return "missing app command (use 'panelctl help app' for usage)"
+        case .snoozeDurationTooLong: return "snooze duration must not exceed 30 days"
         }
     }
 }
 
 public enum CLIParser {
+    private static let maximumSnoozeDuration: TimeInterval = 30 * 24 * 60 * 60
     private static let commands = ["list", "probe", "blackout", "ddc-luminance", "sleep-displays", "wake-displays", "app"]
 
     public static func parse(_ args: [String]) throws -> PanelCommand {
@@ -143,12 +150,44 @@ public enum CLIParser {
             throw CLIParseError.unknownCommand(rawCommand)
         }
         var json = false
-        for option in args.dropFirst() {
-            guard option == "--json" else { throw CLIParseError.unknownOption(option) }
-            guard !json else { throw CLIParseError.duplicateOption("--json") }
-            json = true
+        var durationSeconds: TimeInterval?
+        var i = 1
+        while i < args.count {
+            switch args[i] {
+            case "--json":
+                guard !json else {
+                    throw CLIParseError.duplicateOption("--json")
+                }
+                json = true
+            case "--for":
+                guard command == .snooze else {
+                    throw CLIParseError.unknownOption("--for")
+                }
+                guard durationSeconds == nil else {
+                    throw CLIParseError.duplicateOption("--for")
+                }
+                let value = try duration(
+                    option: "--for",
+                    args: args,
+                    index: &i
+                )
+                guard value <= maximumSnoozeDuration else {
+                    throw CLIParseError.snoozeDurationTooLong
+                }
+                durationSeconds = value
+            default:
+                throw CLIParseError.unknownOption(args[i])
+            }
+            i += 1
         }
-        return .app(command: command, json: json)
+        if command == .snooze, durationSeconds == nil {
+            throw CLIParseError.missingValue("--for")
+        }
+        return .app(
+            command: command,
+            durationSeconds: durationSeconds,
+            json: json
+        )
     }
 
     private static func parseBlackout(_ args: [String]) throws -> PanelCommand {

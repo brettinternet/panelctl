@@ -38,9 +38,12 @@ struct PanelCtlMain {
                 }
             case .wakeDisplays:
                 try DisplaySleepController.wake()
-            case .app(let appCommand, let json):
+            case .app(let appCommand, let durationSeconds, let json):
                 let client = try AppControlClient()
-                let response = try client.execute(appCommand)
+                let response = try client.execute(
+                    appCommand,
+                    durationSeconds: durationSeconds
+                )
                 if json {
                     try printJSON(response)
                 } else if !response.ok, appCommand != .status {
@@ -52,6 +55,15 @@ struct PanelCtlMain {
                     var line = "running=\(response.running) enabled=\(response.enabled) state=\(response.state) summary=\(quoted(response.summary))"
                     if let detail = response.detail, !detail.isEmpty {
                         line += " detail=\(quoted(detail))"
+                    }
+                    if let nextAction = response.nextAction {
+                        line += " nextAction=\(quoted(nextAction))"
+                    }
+                    if let secondsRemaining = response.secondsRemaining {
+                        line += " secondsRemaining=\(secondsRemaining)"
+                    }
+                    if let snoozedUntil = response.snoozedUntil {
+                        line += " snoozedUntil=\(quoted(snoozedUntil))"
                     }
                     print(line)
                 }
