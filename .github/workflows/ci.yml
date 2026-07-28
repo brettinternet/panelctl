@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v6
+      - name: Lint compiler warnings
+        run: swift build --disable-sandbox --build-tests -Xswiftc -warnings-as-errors
       - name: Run tests
         run: swift test --disable-sandbox
       - name: Check release version policy
