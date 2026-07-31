@@ -130,6 +130,7 @@ struct SettingsView: View {
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.top, 3)
         }
@@ -221,15 +222,20 @@ struct SettingsView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Text("Version \(model.version)")
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
+        HStack(alignment: .bottom) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.version)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                Link("View on GitHub", destination: AppModel.githubURL)
+                    .font(.system(size: 11.5))
+            }
             Spacer()
-            Link("View on GitHub", destination: AppModel.githubURL)
-                .font(.system(size: 11.5))
-            Button("Quit PanelCtl") {
+            Button {
                 NSApp.terminate(nil)
+            } label: {
+                Text("Quit")
+                    .frame(width: 54)
             }
         }
         .padding(.horizontal, 2)

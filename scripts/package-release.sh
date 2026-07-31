@@ -93,7 +93,7 @@ codesign --verify --strict "$universal_staging/panelctl"
 lipo -info "$universal_staging/panelctl"
 
 zip -q -j "$output_dir/$cli_archive" \
-	"$universal_staging/panelctl" "$repo_root/README.md" "$repo_root/THIRD_PARTY_NOTICES.md"
+	"$universal_staging/panelctl" "$repo_root/README.md"
 (
 	cd "$repo_root"
 	zip -q "$output_dir/$cli_archive" examples/com.brettinternet.panelctl.blackout.plist
@@ -108,8 +108,7 @@ zip -q -j "$output_dir/$cli_archive" \
 app_archive_staging="$universal_staging/archive"
 mkdir "$app_archive_staging"
 ditto "$universal_staging/PanelCtl.app" "$app_archive_staging/PanelCtl.app"
-cp "$repo_root/README.md" "$repo_root/THIRD_PARTY_NOTICES.md" \
-	"$repo_root/examples/com.brettinternet.panelctl.blackout.plist" "$app_archive_staging/"
+cp "$repo_root/README.md" "$app_archive_staging/"
 ditto -c -k --sequesterRsrc "$app_archive_staging" "$output_dir/$app_archive"
 (
 	cd "$output_dir"
