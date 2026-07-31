@@ -1,4 +1,8 @@
-# panelctl
+<p align="center">
+  <img width="128" src="Packaging/AppIcon.png" style="padding:0.5rem;">
+</p>
+
+<h1 align="center">panelctl</h1>
 
 A macOS CLI and menu-bar app for OLED blackouts, display sleep, inventory, and
 experimental DDC luminance control.
