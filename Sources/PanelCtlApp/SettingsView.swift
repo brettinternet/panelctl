@@ -105,7 +105,7 @@ struct SettingsView: View {
                     }
                 }
                 if model.preferences.followUpAction == .sleepDisplays {
-                    Text("Sleep sleeps all displays.")
+                    Text("Sleeps all displays.")
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
