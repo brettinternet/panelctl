@@ -27,7 +27,8 @@ provides:
 - Optional menu-bar icon with enable/disable and live waiting, blackout, sleep,
   and error state
 - Per-display or explicit all-display protection using stable display UUIDs
-- Configurable idle, restore, all-display sleep, and caffeinate behavior
+- Configurable idle, restore, all-display sleep, caffeinate, and experimental
+  hardware dimming behavior
 - Immediate blackout, restore, all-display sleep, and temporary snooze actions
 - Launch at login, background operation, version, and project links
 
@@ -154,6 +155,7 @@ reconnecting displays.
 | --- | --- | --- |
 | Inspect displays | `panelctl list` | Shows index, CG ID, UUID, model, bounds, and state |
 | Black out one OLED now | `panelctl blackout --index 3 --timeout 3600` | Restores on input or after one hour |
+| Black out and dim one OLED | `panelctl blackout --index 3 --timeout 3600 --dim` | Best-effort dims supported external displays and restores their original brightness |
 | AFK blackout for one OLED | `panelctl blackout --index 3 --idle-after 300 --timeout 3600 --caffeinate` | Starts after five idle minutes; restores on input or after one blackout hour |
 | AFK blackout, then real sleep | `panelctl blackout --index 3 --idle-after 300 --sleep-after 1800 --caffeinate` | Blacks out that panel, then sleeps every display after 30 blackout minutes |
 | Repeat AFK blackout | `panelctl blackout --display <UUID> --idle-after 5m --watch` | Repeats after each fresh five-minute idle period |
@@ -225,6 +227,9 @@ If a display has no UUID, do not persist a fallback selector.
 - `--all` requires one of those finite limits.
 - `--caffeinate` uses `caffeinate -i`: it prevents idle system sleep but
   deliberately allows display sleep.
+- `--dim` best-effort lowers supported external targets to minimum DDC
+  luminance. Their captured values are restored before the overlay is removed
+  or before all-display sleep is requested.
 - `--watch` requires `--idle-after` and repeats after each input-ended cycle;
   timeout, display sleep, or interruption resets the cycle until fresh input
   and a new full idle interval occur.
@@ -258,9 +263,12 @@ monitor-, mode-, cable-, and dock-dependent. On the tested path:
 | AW3425DW `703CA103-…` | Read `75/100`; verified write/restore `75 → 74 → 75` |
 | AW3423DW `9963A32C-…` | Communication failed; no write attempted |
 
-`--set` is experimental and persistent; it validates against a fresh maximum,
-retries verification once, and does not automatically restore the old value.
-No DDC power/DPMS command is implemented.
+`ddc-luminance --set` is experimental and persistent; it validates against a
+fresh maximum, retries verification once, and does not automatically restore
+the old value. Blackout `--dim` is also experimental, but journals each original
+value before changing it, restores by the same display UUID, and retains failed
+restorations for a later retry. A crash, disconnect, or unavailable DDC path can
+still delay recovery. No DDC power/DPMS command is implemented.
 
 See [docs/feasibility.md](docs/feasibility.md) for the API investigation,
 displayplacer failure analysis, BetterDisplay inference, and hardware evidence.

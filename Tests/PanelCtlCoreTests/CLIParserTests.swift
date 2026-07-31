@@ -15,13 +15,14 @@ final class CLIParserTests: XCTestCase {
             timeout: 2.5,
             sleepAfter: nil,
             caffeinate: true,
-            watch: true
+            watch: true,
+            dimDisplays: true
         )
         XCTAssertEqual(
             try CLIParser.parse([
                 "blackout", "--display", "1", "--index", "3",
                 "--idle-after", "10m", "--timeout", "2.5s",
-                "--caffeinate", "--watch"
+                "--caffeinate", "--watch", "--dim"
             ]),
             .blackout(options)
         )
@@ -106,6 +107,7 @@ final class CLIParserTests: XCTestCase {
         XCTAssertEqual(CLIHelp.version, "panelctl 0.3.5")
         XCTAssertTrue(CLIHelp.text(for: "app").contains("snooze --for <duration>"))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--watch"))
+        XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--dim"))
         XCTAssertEqual(CLIParseError.unknownOption("--bad").description, "unknown option: --bad")
     }
 
@@ -114,6 +116,7 @@ final class CLIParserTests: XCTestCase {
             (["list", "--json", "--json"], .duplicateOption("--json")),
             (["blackout", "--display", "1", "--idle-after", "1m", "--idle-after", "2m"], .duplicateOption("--idle-after")),
             (["blackout", "--display", "1", "--caffeinate", "--caffeinate"], .duplicateOption("--caffeinate")),
+            (["blackout", "--display", "1", "--dim", "--dim"], .duplicateOption("--dim")),
             (["ddc-luminance", "--display", "1", "--display", "2"], .duplicateOption("--display")),
             (["ddc-luminance", "--display", "1", "--json", "--json"], .duplicateOption("--json")),
             (["sleep-displays", "--keep-system-awake", "--keep-system-awake"], .duplicateOption("--keep-system-awake"))

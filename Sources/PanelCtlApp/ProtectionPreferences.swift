@@ -55,6 +55,34 @@ struct ProtectionPreferences: Codable, Equatable {
     var allDisplays = false
     var selectedDisplayUUIDs: Set<String> = []
     var didChooseDisplays = false
+    var dimDisplaysDuringBlackout = false
+
+    private enum CodingKeys: String, CodingKey {
+        case isEnabled
+        case idleSeconds
+        case followUpAction
+        case followUpSeconds
+        case caffeinate
+        case allDisplays
+        case selectedDisplayUUIDs
+        case didChooseDisplays
+        case dimDisplaysDuringBlackout
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        isEnabled = try values.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false
+        idleSeconds = try values.decodeIfPresent(TimeInterval.self, forKey: .idleSeconds) ?? 5 * 60
+        followUpAction = try values.decodeIfPresent(FollowUpAction.self, forKey: .followUpAction) ?? .sleepDisplays
+        followUpSeconds = try values.decodeIfPresent(TimeInterval.self, forKey: .followUpSeconds) ?? 30 * 60
+        caffeinate = try values.decodeIfPresent(Bool.self, forKey: .caffeinate) ?? true
+        allDisplays = try values.decodeIfPresent(Bool.self, forKey: .allDisplays) ?? false
+        selectedDisplayUUIDs = try values.decodeIfPresent(Set<String>.self, forKey: .selectedDisplayUUIDs) ?? []
+        didChooseDisplays = try values.decodeIfPresent(Bool.self, forKey: .didChooseDisplays) ?? false
+        dimDisplaysDuringBlackout = try values.decodeIfPresent(Bool.self, forKey: .dimDisplaysDuringBlackout) ?? false
+    }
 
     func commandArguments(for displays: [DisplayRecord]) throws -> [String] {
         guard Self.isValidDuration(idleSeconds) else {
@@ -133,6 +161,9 @@ struct ProtectionPreferences: Codable, Equatable {
         }
         if caffeinate {
             arguments.append("--caffeinate")
+        }
+        if dimDisplaysDuringBlackout {
+            arguments.append("--dim")
         }
         return arguments
     }

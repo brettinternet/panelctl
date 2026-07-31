@@ -52,7 +52,7 @@ The grammar is:
 blackout ((--display <selector> | --index <n>)... | --all)
          [--idle-after <duration>]
          [--timeout <duration> | --sleep-after <duration>]
-         [--caffeinate] [--watch]
+         [--caffeinate] [--watch] [--dim]
 ```
 
 `--index` is a one-based shortcut for the index printed by `list`; selectors
@@ -74,6 +74,14 @@ terminate the watcher. `--caffeinate` holds its idle-sleep assertion for the
 entire watcher lifetime, so a running watcher indefinitely prevents idle system
 sleep (while still allowing display sleep). Explicit watch targets must expose
 a UUID; the watcher retains that identity across display re-enumeration.
+
+`--dim` is an opt-in, best-effort DDC enhancement for selected external
+displays. After the black overlay is verified and visible, it reads and
+journals each supported target's current VCP luminance, sets luminance to zero,
+and restores the captured value by exact UUID before removing the overlay. A
+sleep-after transition restores brightness before invoking
+`pmset displaysleepnow`, because the DDC transport may disappear after sleep.
+Unsupported displays and failed DDC operations do not abort the overlay.
 
 For persisted watchers, resolve targets to UUIDs and store those UUIDs in the
 LaunchAgent arguments. Indexes and CG IDs are inventory values that can change
@@ -148,11 +156,13 @@ classifying the panel as unsupported. DDC is a monitor-firmware and transport
 feature, not a portable macOS display-power API.
 
 The AW3425DW write proves luminance control only for this monitor, firmware
-state, and connection path. A luminance write persists if the process exits;
-there is no transactional rollback across a crash, cable loss, or system
-shutdown. The command therefore reports the original, requested, and observed
-values, but restoration remains the caller's responsibility. No write was sent
-to the AW3423DW because it did not pass the read prerequisite.
+state, and connection path. A raw `ddc-luminance --set` write persists if the
+process exits, so restoration remains the caller's responsibility. Blackout
+`--dim` instead journals original values before writing, restores them on every
+normal exit, and retries retained entries on a later eligible run or display
+wake. It still cannot guarantee immediate rollback across a crash, cable loss,
+system shutdown, UUID churn, or an unavailable DDC path. No write was sent to
+the AW3423DW because it did not pass the read prerequisite.
 
 BetterDisplay's exact implementation is proprietary. Based on its published
 [integration/CLI documentation](https://github.com/waydabber/BetterDisplay/wiki/Integration-features%2C-CLI),

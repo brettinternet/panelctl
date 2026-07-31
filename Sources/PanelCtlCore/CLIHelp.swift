@@ -38,7 +38,9 @@ public enum CLIHelp {
             restores then sleeps all displays. These limits are mutually exclusive;
             --all requires one. --watch keeps watching for future idle periods and
             requires --idle-after; explicit watch targets must expose a stable
-            display UUID. --caffeinate prevents idle system sleep.
+            display UUID. --caffeinate prevents idle system sleep. --dim
+            experimentally lowers supported external displays to minimum DDC
+            luminance, restoring their original values before blackout ends or sleep.
 
             Selectors accept a display UUID or decimal/hex CG display ID. Use
             --index <n> or index:<n> for the one-based index from `panelctl list`.

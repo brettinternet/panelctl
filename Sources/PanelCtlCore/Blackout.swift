@@ -221,6 +221,7 @@ public final class BlackoutController {
     private var immediateBlackoutRequested = false
     private var manualActivityUptime: TimeInterval?
     private var restoreGeneration: UInt64 = 0
+    private var dimming: BlackoutDimming?
     private let idleSource: IdleTimeSource
     private let uptime: () -> TimeInterval
     private let stateHandler: ((BlackoutRuntimeState) -> Void)?
@@ -268,6 +269,11 @@ public final class BlackoutController {
         let drawableScreens = screens.filter { Self.isValidScreenFrame($0.frame) }
         guard !drawableScreens.isEmpty else { throw BlackoutError.noScreens }
         targets = try resolveTargets(options: options, screens: screens, drawableScreens: drawableScreens)
+        if options.dimDisplays {
+            let dimming = BlackoutDimming()
+            dimming.start()
+            self.dimming = dimming
+        }
         if options.caffeinate { assertion = try CaffeinateAssertion() }
 
         let policy = BlackoutPolicy(
@@ -592,6 +598,7 @@ public final class BlackoutController {
         }
         windows = prepared
         committed = true
+        dimming?.dim(targets, screenIDs: screens.compactMap(Self.screenID))
         stateHandler?(.blackedOut)
     }
 
@@ -719,6 +726,7 @@ public final class BlackoutController {
     }
 
     private func hideWindows() {
+        dimming?.restore()
         windows.forEach {
             $0.orderOut(nil)
             $0.close()
@@ -762,6 +770,7 @@ public final class BlackoutController {
         })
         workspaceObservers.append(center.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
+            self.dimming?.recoverStale()
             self.displayWakeObserved = true
             if self.watchMode {
                 if let event = Self.workspaceEvent(for: NSWorkspace.screensDidWakeNotification) {
@@ -793,6 +802,9 @@ public final class BlackoutController {
     }
 
     private func handleWorkspaceEvent(_ event: WorkspaceEvent) {
+        if case .resume(let reason) = event, reason != .screensAsleep {
+            dimming?.recoverStale()
+        }
         guard watchMode else {
             switch event {
             case .reset(.suspension(.screensAsleep)):
@@ -849,6 +861,8 @@ public final class BlackoutController {
     public func stop() {
         stopRequested = true
         hideWindows()
+        dimming?.stop()
+        dimming = nil
         signalSources.forEach { $0.cancel() }
         signalSources.removeAll()
         for number in [SIGINT, SIGTERM, SIGHUP] {

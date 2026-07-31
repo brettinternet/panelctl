@@ -8,6 +8,7 @@ public struct BlackoutOptions: Equatable {
     public let sleepAfter: TimeInterval?
     public let caffeinate: Bool
     public let watch: Bool
+    public let dimDisplays: Bool
 
     public init(
         selectors: [String],
@@ -16,7 +17,8 @@ public struct BlackoutOptions: Equatable {
         timeout: TimeInterval?,
         sleepAfter: TimeInterval?,
         caffeinate: Bool,
-        watch: Bool = false
+        watch: Bool = false,
+        dimDisplays: Bool = false
     ) {
         self.selectors = selectors
         self.all = all
@@ -25,6 +27,7 @@ public struct BlackoutOptions: Equatable {
         self.sleepAfter = sleepAfter
         self.caffeinate = caffeinate
         self.watch = watch
+        self.dimDisplays = dimDisplays
     }
 }
 
@@ -198,6 +201,7 @@ public enum CLIParser {
         var sleepAfter: TimeInterval?
         var caffeinate = false
         var watch = false
+        var dimDisplays = false
         var i = 0
         while i < args.count {
             switch args[i] {
@@ -228,6 +232,9 @@ public enum CLIParser {
             case "--watch":
                 guard !watch else { throw CLIParseError.duplicateOption("--watch") }
                 watch = true
+            case "--dim":
+                guard !dimDisplays else { throw CLIParseError.duplicateOption("--dim") }
+                dimDisplays = true
             default:
                 throw CLIParseError.unknownOption(args[i])
             }
@@ -238,7 +245,7 @@ public enum CLIParser {
         if !all && selectors.isEmpty { throw CLIParseError.noDisplays }
         if timeout != nil && sleepAfter != nil { throw CLIParseError.conflictingBlackoutLimits }
         if all && timeout == nil && sleepAfter == nil { throw CLIParseError.allRequiresLimit }
-        return .blackout(BlackoutOptions(selectors: selectors, all: all, idleAfter: idleAfter, timeout: timeout, sleepAfter: sleepAfter, caffeinate: caffeinate, watch: watch))
+        return .blackout(BlackoutOptions(selectors: selectors, all: all, idleAfter: idleAfter, timeout: timeout, sleepAfter: sleepAfter, caffeinate: caffeinate, watch: watch, dimDisplays: dimDisplays))
     }
 
     private static func parseDDCLuminance(_ args: [String]) throws -> PanelCommand {

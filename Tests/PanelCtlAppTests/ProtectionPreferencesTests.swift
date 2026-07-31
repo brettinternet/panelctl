@@ -65,6 +65,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertEqual(defaults.followUpAction, .sleepDisplays)
         XCTAssertEqual(defaults.followUpSeconds, 30 * 60)
         XCTAssertTrue(defaults.caffeinate)
+        XCTAssertFalse(defaults.dimDisplaysDuringBlackout)
 
         var preferences = defaults
         preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
@@ -72,6 +73,37 @@ final class ProtectionPreferencesTests: XCTestCase {
             try preferences.commandArguments(for: displays),
             ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--caffeinate"]
         )
+    }
+
+    func testDimmingIsOptInAndEmitsFlag() throws {
+        var preferences = ProtectionPreferences()
+        preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
+
+        XCTAssertFalse(try preferences.commandArguments(for: displays).contains("--dim"))
+
+        preferences.dimDisplaysDuringBlackout = true
+        XCTAssertEqual(
+            try preferences.commandArguments(for: displays),
+            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--caffeinate", "--dim"]
+        )
+    }
+
+    func testLegacyPreferencesDefaultDimmingOff() throws {
+        let legacy = Data(#"{"isEnabled":true,"idleSeconds":120,"followUpAction":"restore","followUpSeconds":15,"caffeinate":false,"allDisplays":false,"selectedDisplayUUIDs":["AAAA-UUID"],"didChooseDisplays":true}"#.utf8)
+
+        let preferences = try JSONDecoder().decode(
+            ProtectionPreferences.self,
+            from: legacy
+        )
+
+        XCTAssertTrue(preferences.isEnabled)
+        XCTAssertEqual(preferences.idleSeconds, 120)
+        XCTAssertEqual(preferences.followUpAction, .restore)
+        XCTAssertEqual(preferences.followUpSeconds, 15)
+        XCTAssertFalse(preferences.caffeinate)
+        XCTAssertEqual(preferences.selectedDisplayUUIDs, ["AAAA-UUID"])
+        XCTAssertTrue(preferences.didChooseDisplays)
+        XCTAssertFalse(preferences.dimDisplaysDuringBlackout)
     }
 
     func testInvalidDurationsAreRejectedBeforeIntegerConversion() {

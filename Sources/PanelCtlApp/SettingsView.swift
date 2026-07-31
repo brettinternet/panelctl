@@ -119,6 +119,16 @@ struct SettingsView: View {
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                Divider()
+                Toggle(
+                    "Dim supported external displays during blackout",
+                    isOn: preferenceBinding(\.dimDisplaysDuringBlackout)
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Text("Experimental · DDC support varies by monitor and connection. PanelCtl attempts restoration before blackout ends or displays sleep.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.top, 3)
         }
