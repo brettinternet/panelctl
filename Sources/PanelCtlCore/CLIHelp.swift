@@ -41,6 +41,8 @@ public enum CLIHelp {
             display UUID. --caffeinate prevents idle system sleep. --dim
             experimentally lowers supported external displays to minimum DDC
             luminance, restoring their original values before blackout ends or sleep.
+            --ignore-playback disables system-wide playback/presentation/screen-sharing
+            detection and allows automatic blackout during those activities.
 
             Selectors accept a display UUID or decimal/hex CG display ID. Use
             --index <n> or index:<n> for the one-based index from `panelctl list`.

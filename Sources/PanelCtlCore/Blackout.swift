@@ -181,13 +181,26 @@ struct BlackoutPolicy {
     let idleAfter: TimeInterval?
     let timeout: TimeInterval?
     let sleepAfter: TimeInterval?
+    let deferPlayback: Bool
+
+    init(
+        idleAfter: TimeInterval?,
+        timeout: TimeInterval?,
+        sleepAfter: TimeInterval?,
+        deferPlayback: Bool = true
+    ) {
+        self.idleAfter = idleAfter
+        self.timeout = timeout
+        self.sleepAfter = sleepAfter
+        self.deferPlayback = deferPlayback
+    }
 
     func shouldBegin(idleSeconds: TimeInterval) -> Bool {
         idleAfter.map { idleSeconds >= $0 } ?? true
     }
 
     func shouldDeferForPlayback(assertionActive: Bool, immediateBlackoutRequested: Bool) -> Bool {
-        idleAfter != nil && assertionActive && !immediateBlackoutRequested
+        deferPlayback && idleAfter != nil && assertionActive && !immediateBlackoutRequested
     }
 
     func hasNewInput(_ sample: IdleSample, after baselineUptime: TimeInterval) -> Bool {
@@ -285,7 +298,8 @@ public final class BlackoutController {
         let policy = BlackoutPolicy(
             idleAfter: options.idleAfter,
             timeout: options.timeout,
-            sleepAfter: options.sleepAfter
+            sleepAfter: options.sleepAfter,
+            deferPlayback: options.deferPlayback
         )
         if !watchMode {
             guard let activation = try waitUntilReady(policy: policy) else {
@@ -636,7 +650,8 @@ public final class BlackoutController {
                 reportState(.waitingForInput)
             } else {
                 let defersForPlayback = policy.shouldDeferForPlayback(
-                    assertionActive: policy.idleAfter != nil &&
+                    assertionActive: policy.deferPlayback &&
+                        policy.idleAfter != nil &&
                         !immediateBlackoutRequested &&
                         playbackAssertionActive(),
                     immediateBlackoutRequested: immediateBlackoutRequested

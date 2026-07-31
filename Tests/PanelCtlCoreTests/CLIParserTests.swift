@@ -36,6 +36,18 @@ final class CLIParserTests: XCTestCase {
         XCTAssertThrowsError(try CLIParser.parse(["blackout", "--display", "1", "--timeout", "1", "--sleep-after", "2"])) { XCTAssertEqual($0 as? CLIParseError, .conflictingBlackoutLimits) }
     }
 
+    func testBlackoutCanIgnorePlaybackDeferral() throws {
+        let command = try CLIParser.parse(["blackout", "--display", "1", "--ignore-playback"])
+        guard case .blackout(let options) = command else {
+            return XCTFail("expected blackout command")
+        }
+        XCTAssertFalse(options.deferPlayback)
+        XCTAssertTrue(BlackoutOptions(
+            selectors: ["1"], all: false, idleAfter: nil, timeout: nil,
+            sleepAfter: nil, caffeinate: false
+        ).deferPlayback)
+    }
+
     func testDisplaySleepOptions() throws {
         XCTAssertEqual(try CLIParser.parse(["sleep-displays"]), .sleepDisplays(keepSystemAwake: false, timeout: nil))
         XCTAssertEqual(try CLIParser.parse(["sleep-displays", "--keep-system-awake", "--timeout", "30"]), .sleepDisplays(keepSystemAwake: true, timeout: 30))
@@ -108,6 +120,7 @@ final class CLIParserTests: XCTestCase {
         XCTAssertTrue(CLIHelp.text(for: "app").contains("snooze --for <duration>"))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--watch"))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--dim"))
+        XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--ignore-playback"))
         XCTAssertEqual(CLIParseError.unknownOption("--bad").description, "unknown option: --bad")
     }
 
@@ -117,6 +130,7 @@ final class CLIParserTests: XCTestCase {
             (["blackout", "--display", "1", "--idle-after", "1m", "--idle-after", "2m"], .duplicateOption("--idle-after")),
             (["blackout", "--display", "1", "--caffeinate", "--caffeinate"], .duplicateOption("--caffeinate")),
             (["blackout", "--display", "1", "--dim", "--dim"], .duplicateOption("--dim")),
+            (["blackout", "--display", "1", "--ignore-playback", "--ignore-playback"], .duplicateOption("--ignore-playback")),
             (["ddc-luminance", "--display", "1", "--display", "2"], .duplicateOption("--display")),
             (["ddc-luminance", "--display", "1", "--json", "--json"], .duplicateOption("--json")),
             (["sleep-displays", "--keep-system-awake", "--keep-system-awake"], .duplicateOption("--keep-system-awake"))

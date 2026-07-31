@@ -66,6 +66,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertEqual(defaults.followUpSeconds, 30 * 60)
         XCTAssertTrue(defaults.caffeinate)
         XCTAssertFalse(defaults.dimDisplaysDuringBlackout)
+        XCTAssertTrue(defaults.deferBlackoutDuringPlayback)
 
         var preferences = defaults
         preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
@@ -88,6 +89,17 @@ final class ProtectionPreferencesTests: XCTestCase {
         )
     }
 
+    func testPlaybackDeferralOptOutEmitsIgnoreFlag() throws {
+        var preferences = ProtectionPreferences()
+        preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
+        preferences.deferBlackoutDuringPlayback = false
+
+        XCTAssertEqual(
+            try preferences.commandArguments(for: displays).last,
+            "--ignore-playback"
+        )
+    }
+
     func testLegacyPreferencesDefaultDimmingOff() throws {
         let legacy = Data(#"{"isEnabled":true,"idleSeconds":120,"followUpAction":"restore","followUpSeconds":15,"caffeinate":false,"allDisplays":false,"selectedDisplayUUIDs":["AAAA-UUID"],"didChooseDisplays":true}"#.utf8)
 
@@ -104,6 +116,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertEqual(preferences.selectedDisplayUUIDs, ["AAAA-UUID"])
         XCTAssertTrue(preferences.didChooseDisplays)
         XCTAssertFalse(preferences.dimDisplaysDuringBlackout)
+        XCTAssertTrue(preferences.deferBlackoutDuringPlayback)
     }
 
     func testInvalidDurationsAreRejectedBeforeIntegerConversion() {

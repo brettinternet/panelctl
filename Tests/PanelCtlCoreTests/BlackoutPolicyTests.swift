@@ -29,6 +29,9 @@ final class BlackoutPolicyTests: XCTestCase {
             assertionActive: true,
             immediateBlackoutRequested: false
         ))
+        XCTAssertFalse(BlackoutPolicy(
+            idleAfter: 60, timeout: nil, sleepAfter: nil, deferPlayback: false
+        ).shouldDeferForPlayback(assertionActive: true, immediateBlackoutRequested: false))
     }
 
     func testPlaybackDeferralRestartsTheFullIdleCountdown() {

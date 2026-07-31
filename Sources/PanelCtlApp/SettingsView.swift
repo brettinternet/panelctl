@@ -122,6 +122,17 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Divider()
                 Toggle(
+                    "Defer blackout during playback or presentations",
+                    isOn: preferenceBinding(\.deferBlackoutDuringPlayback)
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Text("Detection is system-wide, not per display, and may include playback, presentations, or screen sharing.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Divider()
+                Toggle(
                     "Dim supported external displays during blackout",
                     isOn: preferenceBinding(\.dimDisplaysDuringBlackout)
                 )
