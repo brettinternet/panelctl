@@ -5,11 +5,34 @@ import Darwin
 @testable import PanelCtlCore
 
 final class ProtectionPreferencesTests: XCTestCase {
+    func testSleepDisplayDefaultsEmitBoundedDisplayAssertion() throws {
+        var preferences = ProtectionPreferences()
+        preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
+        XCTAssertTrue(preferences.keepDisplaysAwake)
+        let arguments = try preferences.commandArguments(for: displays)
+        XCTAssertTrue(arguments.contains("--keep-displays-awake"))
+        XCTAssertFalse(arguments.contains("--caffeinate"))
+
+        preferences.followUpAction = .restore
+        XCTAssertFalse(try preferences.commandArguments(for: displays).contains("--keep-displays-awake"))
+    }
+
+    func testLegacyCaffeinateDoesNotMigrateToSystemAssertion() throws {
+        let data = Data(#"{"followUpAction":"sleepDisplays","caffeinate":true}"#.utf8)
+        let preferences = try JSONDecoder().decode(ProtectionPreferences.self, from: data)
+        XCTAssertFalse(preferences.caffeinate)
+        XCTAssertTrue(preferences.keepDisplaysAwake)
+
+        let restoreData = Data(#"{"followUpAction":"restore","caffeinate":true}"#.utf8)
+        let restore = try JSONDecoder().decode(ProtectionPreferences.self, from: restoreData)
+        XCTAssertTrue(restore.keepDisplaysAwake)
+    }
+
     func testAllDisplaysEmitsAllAndRequiresSafetyLimit() throws {
         var preferences = ProtectionPreferences()
         preferences.allDisplays = true
 
-        let expected = ["blackout", "--all", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--caffeinate"]
+        let expected = ["blackout", "--all", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake"]
         XCTAssertEqual(try preferences.commandArguments(for: displays), expected)
 
         preferences.followUpAction = .untilActivity
@@ -25,7 +48,7 @@ final class ProtectionPreferencesTests: XCTestCase {
 
         XCTAssertEqual(
             try preferences.commandArguments(for: displays),
-            ["blackout", "--display", "AAAA-UUID", "--display", "BBBB-UUID", "--idle-after", "300", "--watch", "--timeout", "1800", "--caffeinate"]
+            ["blackout", "--display", "AAAA-UUID", "--display", "BBBB-UUID", "--idle-after", "300", "--watch", "--timeout", "1800"]
         )
     }
 
@@ -55,16 +78,16 @@ final class ProtectionPreferencesTests: XCTestCase {
         preferences.selectedDisplayUUIDs = ["AAAA-UUID", "MISSING-UUID"]
         XCTAssertEqual(
             try preferences.commandArguments(for: displays),
-            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--caffeinate"]
+            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake"]
         )
     }
 
-    func testDefaultConfigurationUsesFiveMinuteIdleSleepAndCaffeinate() throws {
+    func testDefaultConfigurationUsesFiveMinuteIdleSleepAndBoundedDisplayAssertion() throws {
         let defaults = ProtectionPreferences()
         XCTAssertEqual(defaults.idleSeconds, 5 * 60)
         XCTAssertEqual(defaults.followUpAction, .sleepDisplays)
         XCTAssertEqual(defaults.followUpSeconds, 30 * 60)
-        XCTAssertTrue(defaults.caffeinate)
+        XCTAssertTrue(defaults.keepDisplaysAwake)
         XCTAssertFalse(defaults.dimDisplaysDuringBlackout)
         XCTAssertTrue(defaults.deferBlackoutDuringPlayback)
 
@@ -72,7 +95,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
         XCTAssertEqual(
             try preferences.commandArguments(for: displays),
-            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--caffeinate"]
+            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake"]
         )
     }
 
@@ -85,7 +108,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         preferences.dimDisplaysDuringBlackout = true
         XCTAssertEqual(
             try preferences.commandArguments(for: displays),
-            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--caffeinate", "--dim"]
+            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake", "--dim"]
         )
     }
 
@@ -162,7 +185,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertEqual(model.preferences.selectedDisplayUUIDs, ["AAAA-UUID"])
         XCTAssertEqual(
             try model.preferences.commandArguments(for: [onlyDisplay]),
-            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--caffeinate"]
+            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake"]
         )
     }
 
@@ -754,7 +777,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         try await waitUntil { model.runtimeState == .waiting }
         let initialLaunches = try await waitForLaunches(1, at: log)
         XCTAssertEqual(initialLaunches, [
-            "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --caffeinate"
+            "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake"
         ])
 
         currentDisplays = [displays[0], displays[2]]
@@ -762,8 +785,8 @@ final class ProtectionPreferencesTests: XCTestCase {
         try await waitUntil { model.runtimeState == .waiting }
         let partialLaunches = try await waitForLaunches(2, at: log)
         XCTAssertEqual(partialLaunches, [
-            "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --caffeinate",
-            "launch:blackout --display AAAA-UUID --idle-after 300 --watch --sleep-after 1800 --caffeinate"
+            "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake",
+            "launch:blackout --display AAAA-UUID --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake"
         ])
 
         currentDisplays = displays
@@ -771,9 +794,9 @@ final class ProtectionPreferencesTests: XCTestCase {
         try await waitUntil { model.runtimeState == .waiting }
         let recoveredLaunches = try await waitForLaunches(3, at: log)
         XCTAssertEqual(recoveredLaunches, [
-            "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --caffeinate",
-            "launch:blackout --display AAAA-UUID --idle-after 300 --watch --sleep-after 1800 --caffeinate",
-            "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --caffeinate"
+            "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake",
+            "launch:blackout --display AAAA-UUID --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake",
+            "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake"
         ])
 
         currentDisplays = [displays[2]]

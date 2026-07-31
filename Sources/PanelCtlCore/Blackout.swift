@@ -78,11 +78,37 @@ struct CombinedSessionIdleTimeSource: IdleTimeSource {
 /// Assertion API failures intentionally fail open so protection continues.
 func playbackAssertionIsActive() -> Bool {
     var assertions: Unmanaged<CFDictionary>?
-    guard IOPMCopyAssertionsStatus(&assertions) == kIOReturnSuccess,
+    guard IOPMCopyAssertionsByProcess(&assertions) == kIOReturnSuccess,
           let dictionary = assertions?.takeRetainedValue() as NSDictionary? else {
         return false
     }
-    return (dictionary[kIOPMAssertPreventUserIdleDisplaySleep] as? NSNumber)?.boolValue == true
+    return hasExternalDisplaySleepAssertion(
+        in: dictionary as? [AnyHashable: Any] ?? [:],
+        excludingPID: ProcessInfo.processInfo.processIdentifier
+    )
+}
+
+/// Interprets IOPMCopyAssertionsByProcess output while ignoring PanelCtl's own
+/// native display assertion. Fail-open for unknown dictionary shapes.
+func hasExternalDisplaySleepAssertion(
+    in assertions: [AnyHashable: Any],
+    excludingPID: Int32
+) -> Bool {
+    let expectedType = kIOPMAssertPreventUserIdleDisplaySleep as String
+    for (rawPID, rawEntries) in assertions {
+        guard let pid = (rawPID as? NSNumber)?.int32Value,
+              pid != excludingPID,
+              let entries = rawEntries as? [Any] else { continue }
+        for rawEntry in entries {
+            guard let entry = rawEntry as? [AnyHashable: Any],
+                  let type = entry[kIOPMAssertionTypeKey as String] as? String,
+                  type == expectedType else { continue }
+            if (entry[kIOPMAssertionLevelKey as String] as? NSNumber)?.intValue ?? 0 > 0 {
+                return true
+            }
+        }
+    }
+    return false
 }
 
 enum BlackoutLimitAction: Equatable {
@@ -225,6 +251,8 @@ public final class BlackoutController {
     private var screenObserver: NSObjectProtocol?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var assertion: CaffeinateAssertion?
+    private var displayAssertion: CaffeinateAssertion?
+    private var keepDisplaysAwake = false
     private var stopRequested = false
     private var intentionalDisplaySleep = false
     private var displayWakeObserved = false
@@ -273,6 +301,7 @@ public final class BlackoutController {
 
     public func run(options: BlackoutOptions) throws {
         watchMode = options.watch
+        keepDisplaysAwake = options.keepDisplaysAwake
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         app.finishLaunching()
@@ -293,7 +322,8 @@ public final class BlackoutController {
             dimming.start()
             self.dimming = dimming
         }
-        if options.caffeinate { assertion = try CaffeinateAssertion() }
+        if options.caffeinate { assertion = try CaffeinateAssertion(kind: .system) }
+        if options.keepDisplaysAwake { try ensureDisplayAssertion() }
 
         let policy = BlackoutPolicy(
             idleAfter: options.idleAfter,
@@ -417,7 +447,7 @@ public final class BlackoutController {
         }
 
         while !stopRequested {
-            try ensureCaffeinate()
+            try ensureAssertions()
             runLoopTick()
             if stopRequested { return }
             if watch, cycleRestoreGeneration != restoreGeneration {
@@ -458,6 +488,7 @@ public final class BlackoutController {
                 }
                 intentionalDisplaySleep = true
                 hideWindows()
+                releaseDisplayAssertion()
                 if !watch {
                     stateHandler?(.sleeping)
                     try DisplaySleepController.sleep()
@@ -660,7 +691,7 @@ public final class BlackoutController {
                     playbackWasActive = true
                     playbackDeferralUptime = nil
                     reportState(.waitingForPlayback)
-                    try ensureCaffeinate()
+                    try ensureAssertions()
                     runLoopTick()
                     continue
                 }
@@ -670,7 +701,7 @@ public final class BlackoutController {
                 }
                 reportState(.waiting)
             }
-            try ensureCaffeinate()
+            try ensureAssertions()
             let sample = try idleSample()
             if watchMode && consumeFreshInput(sample) {
                 // Input is a rearm edge, not an activation edge. The next
@@ -709,7 +740,7 @@ public final class BlackoutController {
 
     private func waitForWatchWakeAndInput() throws {
         while !stopRequested {
-            try ensureCaffeinate()
+            try ensureAssertions()
             runLoopTick()
             let sample = try idleSample()
             if immediateBlackoutRequested,
@@ -727,7 +758,7 @@ public final class BlackoutController {
     private func waitForDisplayWakeOrInput(after baselineUptime: TimeInterval) throws {
         let inputPolicy = BlackoutPolicy(idleAfter: nil, timeout: nil, sleepAfter: nil)
         while !stopRequested, !displayWakeObserved {
-            try ensureCaffeinate()
+            try ensureAssertions()
             runLoopTick()
             if stopRequested { return }
             let sample = try idleSample()
@@ -770,6 +801,36 @@ public final class BlackoutController {
             hideWindows()
             throw BlackoutError.caffeinateExited
         }
+    }
+
+    private func ensureAssertions() throws {
+        try ensureCaffeinate()
+        try ensureDisplayAssertion()
+    }
+
+    private func ensureDisplayAssertion() throws {
+        guard keepDisplaysAwake else { return }
+        guard !intentionalDisplaySleep else {
+            releaseDisplayAssertion()
+            return
+        }
+        guard (!watchMode || watchState.suspensions.isEmpty) &&
+              (!watchMode || !watchState.awaitingFreshInput) else {
+            releaseDisplayAssertion()
+            return
+        }
+        if displayAssertion == nil {
+            displayAssertion = try CaffeinateAssertion(kind: .display)
+        }
+        guard displayAssertion?.isRunning == true else {
+            hideWindows()
+            throw BlackoutError.caffeinateExited
+        }
+    }
+
+    private func releaseDisplayAssertion() {
+        displayAssertion?.stop()
+        displayAssertion = nil
     }
 
     private func runLoopTick() {
@@ -843,6 +904,7 @@ public final class BlackoutController {
     }
 
     private func interruptCycle(_ reset: BlackoutWatchReset) {
+        releaseDisplayAssertion()
         watchState.reset(reset, after: observedInputBaseline())
         hideWindows()
         if case .suspension(.screensAsleep) = reset {
@@ -928,6 +990,7 @@ public final class BlackoutController {
         workspaceObservers.removeAll()
         assertion?.stop()
         assertion = nil
+        releaseDisplayAssertion()
     }
 
     private func installSignals() {

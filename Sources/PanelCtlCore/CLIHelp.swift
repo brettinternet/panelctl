@@ -38,7 +38,9 @@ public enum CLIHelp {
             restores then sleeps all displays. These limits are mutually exclusive;
             --all requires one. --watch keeps watching for future idle periods and
             requires --idle-after; explicit watch targets must expose a stable
-            display UUID. --caffeinate prevents idle system sleep. --dim
+            display UUID. --caffeinate prevents idle system sleep (advanced).
+            --keep-displays-awake keeps displays awake until --sleep-after;
+            macOS may sleep the Mac sooner, and the assertion applies globally. --dim
             experimentally lowers supported external displays to minimum DDC
             luminance, restoring their original values before blackout ends or sleep.
             --ignore-playback disables system-wide playback/presentation/screen-sharing

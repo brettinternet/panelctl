@@ -7,6 +7,7 @@ public struct BlackoutOptions: Equatable {
     public let timeout: TimeInterval?
     public let sleepAfter: TimeInterval?
     public let caffeinate: Bool
+    public let keepDisplaysAwake: Bool
     public let watch: Bool
     public let dimDisplays: Bool
     public let deferPlayback: Bool
@@ -18,6 +19,7 @@ public struct BlackoutOptions: Equatable {
         timeout: TimeInterval?,
         sleepAfter: TimeInterval?,
         caffeinate: Bool,
+        keepDisplaysAwake: Bool = false,
         watch: Bool = false,
         dimDisplays: Bool = false,
         deferPlayback: Bool = true
@@ -28,6 +30,7 @@ public struct BlackoutOptions: Equatable {
         self.timeout = timeout
         self.sleepAfter = sleepAfter
         self.caffeinate = caffeinate
+        self.keepDisplaysAwake = keepDisplaysAwake
         self.watch = watch
         self.dimDisplays = dimDisplays
         self.deferPlayback = deferPlayback
@@ -58,6 +61,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case invalidDuration(option: String, value: String)
     case noDisplays
     case timeoutRequiresKeepAwake
+    case keepDisplaysAwakeRequiresSleepAfter
     case duplicateOption(String)
     case invalidIndex
     case conflictingTargets
@@ -78,6 +82,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
             return "invalid duration for \(option): \(value) (expected positive seconds with optional s, m, or h suffix)"
         case .noDisplays: return "blackout requires at least one --display or --index selector"
         case .timeoutRequiresKeepAwake: return "--timeout requires --keep-system-awake"
+        case .keepDisplaysAwakeRequiresSleepAfter: return "--keep-displays-awake requires --sleep-after"
         case .duplicateOption(let option): return "option may only be supplied once: \(option)"
         case .invalidIndex: return "display index must be a positive integer"
         case .conflictingTargets: return "--all cannot be combined with --display or --index"
@@ -203,6 +208,7 @@ public enum CLIParser {
         var timeout: TimeInterval?
         var sleepAfter: TimeInterval?
         var caffeinate = false
+        var keepDisplaysAwake = false
         var watch = false
         var dimDisplays = false
         var deferPlayback = true
@@ -233,6 +239,9 @@ public enum CLIParser {
             case "--caffeinate":
                 guard !caffeinate else { throw CLIParseError.duplicateOption("--caffeinate") }
                 caffeinate = true
+            case "--keep-displays-awake":
+                guard !keepDisplaysAwake else { throw CLIParseError.duplicateOption("--keep-displays-awake") }
+                keepDisplaysAwake = true
             case "--watch":
                 guard !watch else { throw CLIParseError.duplicateOption("--watch") }
                 watch = true
@@ -251,8 +260,9 @@ public enum CLIParser {
         if all && !selectors.isEmpty { throw CLIParseError.conflictingTargets }
         if !all && selectors.isEmpty { throw CLIParseError.noDisplays }
         if timeout != nil && sleepAfter != nil { throw CLIParseError.conflictingBlackoutLimits }
+        if keepDisplaysAwake && sleepAfter == nil { throw CLIParseError.keepDisplaysAwakeRequiresSleepAfter }
         if all && timeout == nil && sleepAfter == nil { throw CLIParseError.allRequiresLimit }
-        return .blackout(BlackoutOptions(selectors: selectors, all: all, idleAfter: idleAfter, timeout: timeout, sleepAfter: sleepAfter, caffeinate: caffeinate, watch: watch, dimDisplays: dimDisplays, deferPlayback: deferPlayback))
+        return .blackout(BlackoutOptions(selectors: selectors, all: all, idleAfter: idleAfter, timeout: timeout, sleepAfter: sleepAfter, caffeinate: caffeinate, keepDisplaysAwake: keepDisplaysAwake, watch: watch, dimDisplays: dimDisplays, deferPlayback: deferPlayback))
     }
 
     private static func parseDDCLuminance(_ args: [String]) throws -> PanelCommand {

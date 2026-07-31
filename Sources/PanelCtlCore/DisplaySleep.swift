@@ -1,4 +1,5 @@
 import Foundation
+import IOKit.pwr_mgt
 
 public enum DisplaySleepError: Error, CustomStringConvertible {
     case commandFailed(String, Int32, String)
@@ -21,7 +22,7 @@ public final class DisplaySleepController {
 
     public func start(keepSystemAwake: Bool, timeout: TimeInterval?) throws {
         if keepSystemAwake {
-            assertion = try CaffeinateAssertion()
+            assertion = try CaffeinateAssertion(kind: .system)
             installSignals()
             if let timeout {
                 let work = DispatchWorkItem { [weak self] in self?.stop() }
@@ -90,21 +91,61 @@ public final class DisplaySleepController {
     }
 }
 
+enum CaffeinateAssertionKind {
+    case system
+    case display
+
+    var arguments: [String] {
+        switch self {
+        case .system: return ["-i"]
+        case .display: return []
+        }
+    }
+}
+
 final class CaffeinateAssertion {
-    private let process: Process
+    private let process: Process?
+    private var nativeID: IOPMAssertionID?
 
-    var isRunning: Bool { process.isRunning }
+    var isRunning: Bool { nativeID != nil || process?.isRunning == true }
 
-    init() throws {
+    init(kind: CaffeinateAssertionKind = .system) throws {
+        if case .display = kind {
+            var assertionID: IOPMAssertionID = 0
+            let status = IOPMAssertionCreateWithDescription(
+                kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+                "PanelCtl display sleep timer" as CFString,
+                "Keep displays awake until the configured sleep timeout" as CFString,
+                nil,
+                nil,
+                0,
+                nil,
+                &assertionID
+            )
+            guard status == kIOReturnSuccess else {
+                throw DisplaySleepError.commandFailed(
+                    "IOPMAssertionCreateWithDescription",
+                    Int32(status),
+                    ""
+                )
+            }
+            nativeID = assertionID
+            process = nil
+            return
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
-        process.arguments = ["-i", "-w", String(ProcessInfo.processInfo.processIdentifier)]
+        process.arguments = kind.arguments + ["-w", String(ProcessInfo.processInfo.processIdentifier)]
         try process.run()
         self.process = process
     }
 
     func stop() {
-        guard process.isRunning else { return }
+        if let nativeID {
+            _ = IOPMAssertionRelease(nativeID)
+            self.nativeID = nil
+        }
+        guard let process, process.isRunning else { return }
         process.terminate()
         process.waitUntilExit()
     }

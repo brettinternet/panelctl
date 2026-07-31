@@ -39,7 +39,7 @@ stops the watcher. Reopen the app to show Settings when its menu icon is hidden.
 panelctl list
 panelctl blackout --display DISPLAY_UUID --idle-after 5m --watch
 panelctl blackout --index 3 --timeout 1h
-panelctl blackout --all --idle-after 5m --sleep-after 30m --caffeinate
+panelctl blackout --all --idle-after 5m --sleep-after 30m --keep-displays-awake
 panelctl sleep-displays --keep-system-awake
 panelctl wake-displays
 panelctl ddc-luminance --display index:2
@@ -65,7 +65,10 @@ cursor while it is in the background.
   `--sleep-after` instead sleeps every display.
 - `--watch` requires `--idle-after` and repeats after each restored cycle.
 - `--all` requires `--timeout` or `--sleep-after`.
-- `--caffeinate` prevents idle system sleep but allows display sleep.
+- `--caffeinate` explicitly prevents idle system sleep (advanced behavior).
+  `--keep-displays-awake` is valid with `--sleep-after` and keeps displays
+  awake until that endpoint while allowing macOS to sleep the Mac sooner. The
+  display assertion is global, so it applies to all displays.
 - Automatic idle blackouts pause while macOS reports an active display-sleep
   prevention assertion (such as media playback), then restart the full idle
   countdown when it ends. Manual blackout-now commands are not deferred.

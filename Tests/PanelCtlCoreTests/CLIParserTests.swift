@@ -36,6 +36,24 @@ final class CLIParserTests: XCTestCase {
         XCTAssertThrowsError(try CLIParser.parse(["blackout", "--display", "1", "--timeout", "1", "--sleep-after", "2"])) { XCTAssertEqual($0 as? CLIParseError, .conflictingBlackoutLimits) }
     }
 
+    func testBoundedDisplayAssertionRequiresSleepAfter() throws {
+        let command = try CLIParser.parse([
+            "blackout", "--display", "1", "--sleep-after", "60", "--keep-displays-awake"
+        ])
+        guard case .blackout(let options) = command else { return XCTFail("expected blackout") }
+        XCTAssertTrue(options.keepDisplaysAwake)
+        XCTAssertThrowsError(try CLIParser.parse([
+            "blackout", "--display", "1", "--keep-displays-awake"
+        ])) {
+            XCTAssertEqual($0 as? CLIParseError, .keepDisplaysAwakeRequiresSleepAfter)
+        }
+        XCTAssertThrowsError(try CLIParser.parse([
+            "blackout", "--display", "1", "--sleep-after", "60", "--keep-displays-awake", "--keep-displays-awake"
+        ])) {
+            XCTAssertEqual($0 as? CLIParseError, .duplicateOption("--keep-displays-awake"))
+        }
+    }
+
     func testBlackoutCanIgnorePlaybackDeferral() throws {
         let command = try CLIParser.parse(["blackout", "--display", "1", "--ignore-playback"])
         guard case .blackout(let options) = command else {

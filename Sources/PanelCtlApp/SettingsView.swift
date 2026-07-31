@@ -110,16 +110,19 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Divider()
-                Toggle(
-                    "Keep the Mac awake while protection is enabled",
-                    isOn: preferenceBinding(\.caffeinate)
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Text("Caffeinate prevents idle system sleep while enabled; display sleep still works.")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
+                if model.preferences.followUpAction == .sleepDisplays {
+                    Divider()
+                    Toggle(
+                        "Use PanelCtl’s display sleep timer",
+                        isOn: preferenceBinding(\.keepDisplaysAwake)
+                    )
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Keeps displays awake until the configured sleep time; macOS may sleep the Mac sooner. This assertion applies to all displays.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Divider()
                 Toggle(
                     "Defer blackout during playback or presentations",
