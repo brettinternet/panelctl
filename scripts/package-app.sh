@@ -64,6 +64,14 @@ sed \
 	> "$staging/Contents/Info.plist"
 
 plutil -lint "$staging/Contents/Info.plist" >/dev/null
+xcrun actool \
+	"$(dirname "${BASH_SOURCE[0]}")/../Packaging/Assets.xcassets" \
+	--compile "$staging/Contents/Resources" \
+	--platform macosx \
+	--minimum-deployment-target 13.0 \
+	--app-icon AppIcon \
+	--output-partial-info-plist /dev/null \
+	>/dev/null
 # Ad-hoc signing needs no Apple Developer key. Sign nested code first so
 # launch-at-login and helper execution have a coherent local requirement.
 codesign --force --sign - "$staging/Contents/Helpers/panelctl"
