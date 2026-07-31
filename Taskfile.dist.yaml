@@ -1,0 +1,43 @@
+---
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+vars:
+  ARM64_BUILD_DIR: .build/task-release-arm64
+  X86_64_BUILD_DIR: .build/task-release-x86_64
+  APP_PATH: .build/PanelCtl.app
+
+tasks:
+  default:
+    desc: List available tasks
+    silent: true
+    cmds:
+      - task -l
+
+  build:release:
+    desc: Build the app (Release)
+    cmds:
+      - swift build --disable-sandbox --configuration release --product PanelCtlApp --triple arm64-apple-macosx13.0 --scratch-path "{{.ARM64_BUILD_DIR}}"
+      - swift build --disable-sandbox --configuration release --product panelctl --triple arm64-apple-macosx13.0 --scratch-path "{{.ARM64_BUILD_DIR}}"
+      - swift build --disable-sandbox --configuration release --product PanelCtlApp --triple x86_64-apple-macosx13.0 --scratch-path "{{.X86_64_BUILD_DIR}}"
+      - swift build --disable-sandbox --configuration release --product panelctl --triple x86_64-apple-macosx13.0 --scratch-path "{{.X86_64_BUILD_DIR}}"
+      - /bin/test ! -e "{{.APP_PATH}}" || /usr/bin/trash "{{.APP_PATH}}"
+      - |
+        version=$(/usr/bin/sed -n 's/.*public static let version = "panelctl \([^"]*\)".*/\1/p' Sources/PanelCtlCore/CLIHelp.swift)
+        ./scripts/package-app.sh "v$version" \
+          "{{.ARM64_BUILD_DIR}}/arm64-apple-macosx/release/PanelCtlApp" \
+          "{{.X86_64_BUILD_DIR}}/x86_64-apple-macosx/release/PanelCtlApp" \
+          "{{.ARM64_BUILD_DIR}}/arm64-apple-macosx/release/panelctl" \
+          "{{.X86_64_BUILD_DIR}}/x86_64-apple-macosx/release/panelctl" \
+          "{{.APP_PATH}}"
+
+  copy:release:
+    desc: Copy the built app release to the Applications folder
+    deps: ["build:release"]
+    cmds:
+      - /usr/bin/xcrun swift ./scripts/install-release.swift "{{.APP_PATH}}" /Applications/PanelCtl.app
+
+  open:release:
+    desc: Run the built app (Release)
+    cmds:
+      - open "{{.APP_PATH}}"
