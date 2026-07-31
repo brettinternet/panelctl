@@ -36,6 +36,12 @@ final class BlackoutFocusControllerTests: XCTestCase {
         )
         let operations = makeOperations(
             frontmost: { previous },
+            makeProxyWindow: {
+                BlackoutFocusWindow(
+                    show: { events.append("window-show") },
+                    close: { events.append("window-close") }
+                )
+            },
             requestActivation: { panelIsActive = true },
             panelIsActive: { panelIsActive },
             hideCursor: { events.append("hide"); return .success },
@@ -45,7 +51,7 @@ final class BlackoutFocusControllerTests: XCTestCase {
         controller.enter(targetFrames: [CGRect(x: 0, y: 0, width: 10_000, height: 10_000)])
         controller.leave()
 
-        XCTAssertEqual(events, ["hide", "show", "yield", "activate"])
+        XCTAssertEqual(events, ["window-show", "hide", "show", "window-close", "yield", "activate"])
     }
 
     func testDelayedActivationHidesOnlyAfterConfirmation() {
@@ -183,6 +189,9 @@ final class BlackoutFocusControllerTests: XCTestCase {
 
     private func makeOperations(
         frontmost: @escaping () -> BlackoutPreviousApplication? = { nil },
+        makeProxyWindow: @escaping () -> BlackoutFocusWindow = {
+            BlackoutFocusWindow(show: {}, close: {})
+        },
         requestActivation: @escaping () -> Void = {},
         panelIsActive: @escaping () -> Bool = { true },
         mouseLocation: @escaping () -> CGPoint = { CGPoint(x: 5, y: 5) },
@@ -194,9 +203,7 @@ final class BlackoutFocusControllerTests: XCTestCase {
         BlackoutFocusOperations(
             currentProcessIdentifier: 7,
             frontmostApplication: frontmost,
-            makeProxyWindow: {
-                NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
-            },
+            makeProxyWindow: makeProxyWindow,
             requestActivation: requestActivation,
             panelIsActive: panelIsActive,
             mouseLocation: mouseLocation,

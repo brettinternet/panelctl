@@ -5,6 +5,19 @@ private final class BlackoutFocusProxyWindow: NSWindow {
     override var canBecomeKey: Bool { true }
 }
 
+final class BlackoutFocusWindow {
+    private let showOperation: () -> Void
+    private let closeOperation: () -> Void
+
+    init(show: @escaping () -> Void, close: @escaping () -> Void) {
+        showOperation = show
+        closeOperation = close
+    }
+
+    func show() { showOperation() }
+    func close() { closeOperation() }
+}
+
 struct BlackoutPreviousApplication {
     let processIdentifier: pid_t
     let isRunning: () -> Bool
@@ -27,7 +40,7 @@ struct BlackoutPreviousApplication {
 struct BlackoutFocusOperations {
     let currentProcessIdentifier: pid_t
     let frontmostApplication: () -> BlackoutPreviousApplication?
-    let makeProxyWindow: () -> NSWindow
+    let makeProxyWindow: () -> BlackoutFocusWindow
     let requestActivation: () -> Void
     let panelIsActive: () -> Bool
     let mouseLocation: () -> CGPoint
@@ -39,7 +52,7 @@ struct BlackoutFocusOperations {
     init(
         currentProcessIdentifier: pid_t = NSRunningApplication.current.processIdentifier,
         frontmostApplication: @escaping () -> BlackoutPreviousApplication? = BlackoutFocusOperations.defaultFrontmostApplication,
-        makeProxyWindow: @escaping () -> NSWindow = BlackoutFocusOperations.defaultProxyWindow,
+        makeProxyWindow: @escaping () -> BlackoutFocusWindow = BlackoutFocusOperations.defaultProxyWindow,
         requestActivation: @escaping () -> Void = { NSApp.activate(ignoringOtherApps: true) },
         panelIsActive: @escaping () -> Bool = { NSApp.isActive },
         mouseLocation: @escaping () -> CGPoint = { NSEvent.mouseLocation },
@@ -74,7 +87,7 @@ struct BlackoutFocusOperations {
         )
     }
 
-    private static func defaultProxyWindow() -> NSWindow {
+    private static func defaultProxyWindow() -> BlackoutFocusWindow {
         let window = BlackoutFocusProxyWindow(
             contentRect: CGRect(x: -10_000, y: -10_000, width: 1, height: 1),
             styleMask: .borderless,
@@ -84,14 +97,23 @@ struct BlackoutFocusOperations {
         window.level = .floating
         window.ignoresMouseEvents = true
         window.isReleasedWhenClosed = false
-        return window
+        return BlackoutFocusWindow(
+            show: {
+                window.orderFrontRegardless()
+                window.makeKeyAndOrderFront(nil)
+            },
+            close: {
+                window.orderOut(nil)
+                window.close()
+            }
+        )
     }
 }
 
 @MainActor
 final class BlackoutFocusController {
     private let operations: BlackoutFocusOperations
-    private var proxyWindow: NSWindow?
+    private var proxyWindow: BlackoutFocusWindow?
     private var previousApplication: BlackoutPreviousApplication?
     private var cursorHidden = false
     private var ownsActivation = false
@@ -127,8 +149,7 @@ final class BlackoutFocusController {
         }
         let window = operations.makeProxyWindow()
         proxyWindow = window
-        window.orderFrontRegardless()
-        window.makeKeyAndOrderFront(nil)
+        window.show()
         operations.requestActivation()
         activationDeadline = Date(timeIntervalSinceNow: operations.activationTimeout)
         waitForActivation()
@@ -139,7 +160,6 @@ final class BlackoutFocusController {
             operations.schedule { [weak self] in self?.leave() }
             return
         }
-        proxyWindow?.orderOut(nil)
         proxyWindow?.close()
         proxyWindow = nil
         let wasOwned = ownsActivation
