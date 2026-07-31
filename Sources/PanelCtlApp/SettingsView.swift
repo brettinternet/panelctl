@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import PanelCtlCore
 
@@ -227,6 +228,9 @@ struct SettingsView: View {
             Spacer()
             Link("View on GitHub", destination: AppModel.githubURL)
                 .font(.system(size: 11.5))
+            Button("Quit PanelCtl") {
+                NSApp.terminate(nil)
+            }
         }
         .padding(.horizontal, 2)
     }
