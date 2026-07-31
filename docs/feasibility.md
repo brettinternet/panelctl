@@ -90,10 +90,12 @@ sleep remains allowed. Display-layout changes and session/sleep notifications
 fail open by removing the windows and reset a watch cycle as described above.
 Signals fail open and then terminate the process.
 
-The overlay is owned by the logged-in GUI session. The cursor, system HUDs,
-lock screen, or a higher-level system window may appear above it; locking,
-Fast User Switching, or ending the GUI session can replace it. It does not
-disconnect displays, power them off, or guarantee uninterrupted black output.
+The overlay is owned by the logged-in GUI session. `panelctl` hides the macOS
+cursor only while it is over an active blackout window, leaving the cursor on
+unselected displays unchanged. System HUDs, the lock screen, or a higher-level
+system window may appear above it; locking, Fast User Switching, or ending the
+GUI session can replace it. It does not disconnect displays, power them off, or
+guarantee uninterrupted black output.
 Hot-plug and display-layout changes stop it rather than risk covering the wrong
 screen. Windows are prepared before any are shown, pinned to the current full
 `NSScreen.frame`, and rejected unless the actual frame and target screen ID

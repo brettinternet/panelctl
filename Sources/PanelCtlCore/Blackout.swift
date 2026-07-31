@@ -94,6 +94,23 @@ enum BlackoutWatchReset: Equatable {
     case topologyChanged
 }
 
+private final class BlackoutContentView: NSView {
+    // Cursor rectangles stay scoped to this blackout window; global cursor
+    // hiding would affect displays that are not blacked out.
+    private static let invisibleCursor: NSCursor = {
+        let image = NSImage(size: NSSize(width: 1, height: 1))
+        image.lockFocus()
+        NSColor.clear.setFill()
+        NSRect(origin: .zero, size: image.size).fill()
+        image.unlockFocus()
+        return NSCursor(image: image, hotSpot: .zero)
+    }()
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: Self.invisibleCursor)
+    }
+}
+
 struct BlackoutWatchState: Equatable {
     private(set) var suspensions: Set<BlackoutWatchSuspension> = []
     private(set) var awaitingFreshInput = false
@@ -542,8 +559,10 @@ public final class BlackoutController {
             window.ignoresMouseEvents = false
             window.isReleasedWhenClosed = false
             window.animationBehavior = .none
-            window.contentView?.wantsLayer = true
-            window.contentView?.layer?.backgroundColor = NSColor.black.cgColor
+            let contentView = BlackoutContentView(frame: Self.windowContentRect(for: screen.frame))
+            contentView.wantsLayer = true
+            contentView.layer?.backgroundColor = NSColor.black.cgColor
+            window.contentView = contentView
             window.setFrame(screen.frame, display: false)
 
             guard Self.exactlyCovers(

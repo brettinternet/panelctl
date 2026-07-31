@@ -238,11 +238,13 @@ windows instead of accepting partial coverage.
 ## Limits and safety
 
 A pure-black window minimizes OLED pixel emission but is not hardware sleep:
-the display electronics and link remain active, and the cursor, system HUD,
-lock screen, or higher-level system UI may still appear. It cannot guarantee a
-panel compensation cycle. For long unattended periods, use real all-display
-sleep; both tested Dell OLEDs document automatic Pixel Refresh after sufficient
-use when entering standby.
+the display electronics and link remain active. `panelctl` hides the macOS
+cursor only while it is over an active blackout window, so a selected-display
+blackout leaves the cursor on other displays unchanged. System HUDs, the lock
+screen, or higher-level system UI may still appear. It cannot guarantee a panel
+compensation cycle. For long unattended periods, use real all-display sleep;
+both tested Dell OLEDs document automatic Pixel Refresh after sufficient use
+when entering standby.
 
 macOS exposes no public per-display sleep/disconnect setter. Private topology
 calls can remove a display from the public inventory needed to recover it, which
