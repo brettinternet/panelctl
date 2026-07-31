@@ -108,87 +108,6 @@ enum BlackoutWatchReset: Equatable {
     case topologyChanged
 }
 
-private final class BlackoutContentView: NSView {
-    private let updateCursorVisibility: () -> Void
-
-    init(
-        frame: CGRect,
-        cursorInitiallyInside: Bool,
-        updateCursorVisibility: @escaping () -> Void
-    ) {
-        self.updateCursorVisibility = updateCursorVisibility
-        super.init(frame: frame)
-        var options: NSTrackingArea.Options = [
-            .mouseEnteredAndExited,
-            .activeAlways,
-            .inVisibleRect
-        ]
-        if cursorInitiallyInside {
-            options.insert(.assumeInside)
-        }
-        addTrackingArea(NSTrackingArea(
-            rect: .zero,
-            options: options,
-            owner: self,
-            userInfo: nil
-        ))
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is unavailable")
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        updateCursorVisibility()
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        updateCursorVisibility()
-    }
-}
-
-struct BlackoutCursorTarget: Equatable {
-    let displayID: CGDirectDisplayID
-    let frame: CGRect
-}
-
-struct BlackoutCursorLifecycle {
-    typealias CursorOperation = (CGDirectDisplayID) -> CGError
-
-    // Core Graphics ignores the display argument, so active tracking updates
-    // this global hide count whenever the pointer crosses a blackout boundary.
-    private let hideCursor: CursorOperation
-    private let showCursor: CursorOperation
-    private var hiddenDisplayID: CGDirectDisplayID?
-
-    init(
-        hideCursor: @escaping CursorOperation = CGDisplayHideCursor,
-        showCursor: @escaping CursorOperation = CGDisplayShowCursor
-    ) {
-        self.hideCursor = hideCursor
-        self.showCursor = showCursor
-    }
-
-    mutating func update(mouseLocation: CGPoint, targets: [BlackoutCursorTarget]) {
-        guard let target = targets.first(where: { $0.frame.contains(mouseLocation) }) else {
-            restore()
-            return
-        }
-        guard hiddenDisplayID == nil,
-              hideCursor(target.displayID) == .success else {
-            return
-        }
-        hiddenDisplayID = target.displayID
-    }
-
-    mutating func restore() {
-        guard let displayID = hiddenDisplayID else { return }
-        guard showCursor(displayID) == .success else { return }
-        hiddenDisplayID = nil
-    }
-}
-
 struct BlackoutWatchState: Equatable {
     private(set) var suspensions: Set<BlackoutWatchSuspension> = []
     private(set) var awaitingFreshInput = false
@@ -304,8 +223,6 @@ public final class BlackoutController {
     private var manualActivityUptime: TimeInterval?
     private var restoreGeneration: UInt64 = 0
     private var dimming: BlackoutDimming?
-    private var cursorLifecycle = BlackoutCursorLifecycle()
-    private var cursorTargets: [BlackoutCursorTarget] = []
     private let idleSource: IdleTimeSource
     private let uptime: () -> TimeInterval
     private let playbackAssertionActive: () -> Bool
@@ -623,7 +540,6 @@ public final class BlackoutController {
 
     private func showWindows(on screens: [NSScreen]) throws {
         guard windows.isEmpty else { return }
-        let initialMouseLocation = NSEvent.mouseLocation
         var prepared: [NSWindow] = []
         var committed = false
         defer {
@@ -655,13 +571,7 @@ public final class BlackoutController {
             window.ignoresMouseEvents = false
             window.isReleasedWhenClosed = false
             window.animationBehavior = .none
-            let contentView = BlackoutContentView(
-                frame: Self.windowContentRect(for: screen.frame),
-                cursorInitiallyInside: screen.frame.contains(initialMouseLocation),
-                updateCursorVisibility: { [weak self] in
-                    self?.updateCursorVisibility()
-                }
-            )
+            let contentView = NSView(frame: Self.windowContentRect(for: screen.frame))
             contentView.wantsLayer = true
             contentView.layer?.backgroundColor = NSColor.black.cgColor
             window.contentView = contentView
@@ -694,20 +604,8 @@ public final class BlackoutController {
         }
         windows = prepared
         committed = true
-        cursorTargets = screens.compactMap { screen -> BlackoutCursorTarget? in
-            guard let displayID = Self.screenID(screen) else { return nil }
-            return BlackoutCursorTarget(displayID: displayID, frame: screen.frame)
-        }
-        updateCursorVisibility()
         dimming?.dim(targets, screenIDs: screens.compactMap(Self.screenID))
         stateHandler?(.blackedOut)
-    }
-
-    private func updateCursorVisibility() {
-        cursorLifecycle.update(
-            mouseLocation: NSEvent.mouseLocation,
-            targets: cursorTargets
-        )
     }
 
     private func waitUntilReady(
@@ -864,14 +762,12 @@ public final class BlackoutController {
     }
 
     private func hideWindows() {
-        cursorTargets.removeAll()
         dimming?.restore()
         windows.forEach {
             $0.orderOut(nil)
             $0.close()
         }
         windows.removeAll()
-        cursorLifecycle.restore()
     }
 
     private func installObservers() {

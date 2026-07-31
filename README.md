@@ -54,6 +54,12 @@ Run `panelctl help` or `panelctl <command> --help` for all options.
 
 ### Blackout behavior
 
+When the pointer is on a blacked-out display, the menu-bar app takes focus so
+macOS will hide the cursor. Moving to an active display or restoring the
+blackout returns focus to the previous app. This applies only to blackouts
+managed by the menu-bar app; the standalone CLI cannot reliably hide the macOS
+cursor while it is in the background.
+
 - Without `--idle-after`, blackout starts immediately.
 - Input restores the display. `--timeout` restores after a limit;
   `--sleep-after` instead sleeps every display.

@@ -12,6 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var launchedAsLoginItem = false
     private var suppressInitialSettings = false
     private var terminationPending = false
+    private let blackoutFocusController = BlackoutFocusController()
+    private var blackoutFocusTimer: Timer?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let event = NSAppleEventManager.shared().currentAppleEvent
@@ -36,7 +38,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         configureMainMenu()
         configureStatusItem()
         model.onStatusChange = { [weak self] in
-            self?.updateStatusItem()
+            guard let self else { return }
+            self.updateStatusItem()
+            self.updateBlackoutFocus()
         }
         noticeCancellable = model.$notice.sink { [weak self] notice in
             guard let self, let notice else { return }
@@ -44,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         installScreenObservers()
         updateStatusItem()
+        updateBlackoutFocus()
 
         if !launchedAsLoginItem && !suppressInitialSettings {
             showSettings()
@@ -59,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        guard !blackoutFocusController.isEngaged else { return }
         model?.refreshLaunchAtLoginStatus()
         model?.refreshDisplays()
         if settingsWindowController?.window?.isVisible == true {
@@ -81,9 +87,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        blackoutFocusTimer?.invalidate()
+        blackoutFocusController.shutdown()
         controlServer?.stop()
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    private func updateBlackoutFocus() {
+        guard let model else { return }
+        if case .blackedOut = model.runtimeState {
+            if blackoutFocusTimer == nil {
+                let timer = Timer(
+                    timeInterval: 0.05,
+                    target: self,
+                    selector: #selector(pollBlackoutFocus),
+                    userInfo: nil,
+                    repeats: true
+                )
+                RunLoop.main.add(timer, forMode: .common)
+                blackoutFocusTimer = timer
+            }
+            let selectedIDs: Set<UInt32>
+            if model.preferences.allDisplays {
+                selectedIDs = Set(model.activeDisplays.map(\.id))
+            } else {
+                selectedIDs = Set(model.activeDisplays.compactMap { display in
+                    guard let uuid = display.uuid,
+                          model.preferences.selectedDisplayUUIDs.contains(where: {
+                              $0.caseInsensitiveCompare(uuid) == .orderedSame
+                          }) else { return nil }
+                    return display.id
+                })
+            }
+            let frames = NSScreen.screens.compactMap { screen -> CGRect? in
+                guard let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
+                      selectedIDs.contains(id) else { return nil }
+                return screen.frame
+            }
+            blackoutFocusController.enter(targetFrames: frames)
+        } else {
+            blackoutFocusTimer?.invalidate()
+            blackoutFocusTimer = nil
+            blackoutFocusController.leave()
+        }
+    }
+
+    @objc private func pollBlackoutFocus() {
+        updateBlackoutFocus()
     }
 
     private func configureStatusItem() {
