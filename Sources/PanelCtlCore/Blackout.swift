@@ -21,7 +21,7 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
         case .unknownSelector(let selector): return "unknown display selector: \(selector)"
         case .nonDrawable(let selector): return "display is not drawable: \(selector)"
         case .mirroredDisplay(let selector): return "refusing mirrored display target: \(selector)"
-        case .allScreensSafety: return "refusing to black out every drawable screen without --all"
+        case .allScreensSafety: return "refusing to black out every drawable screen without --all or a finite safety limit"
         case .invalidScreenFrame(let display): return "display has an invalid screen frame: \(display)"
         case .coverageMismatch(let display): return "refusing partial blackout because the window does not exactly cover display \(display)"
         case .topologyChanged: return "display topology changed before blackout could be installed"
@@ -263,7 +263,7 @@ public final class BlackoutController {
                 return
             }
             if stopRequested { return }
-            let currentSelection = try resolveCurrentScreens(all: options.all)
+            let currentSelection = try resolveCurrentScreens(options: options)
             try showWindows(on: currentSelection)
             try runBlackoutCycle(
                 policy: policy,
@@ -282,7 +282,7 @@ public final class BlackoutController {
             if stopRequested { return }
             let cycleRestoreGeneration = restoreGeneration
             do {
-                let currentSelection = try resolveCurrentScreens(all: options.all)
+                let currentSelection = try resolveCurrentScreens(options: options)
                 try showWindows(on: currentSelection)
                 if activation.forced {
                     immediateBlackoutRequested = false
@@ -462,15 +462,19 @@ public final class BlackoutController {
             }
         }
         guard !selected.isEmpty else { throw BlackoutError.noScreens }
-        try Self.validateSelection(selectedCount: selected.count, drawableCount: drawableScreens.count)
+        try Self.validateSelection(
+            selectedCount: selected.count,
+            drawableCount: drawableScreens.count,
+            hasSafetyLimit: Self.hasSafetyLimit(options)
+        )
         return selected
     }
 
-    private func resolveCurrentScreens(all: Bool) throws -> [NSScreen] {
+    private func resolveCurrentScreens(options: BlackoutOptions) throws -> [NSScreen] {
         let currentScreens = NSScreen.screens
         let drawable = currentScreens.filter { Self.isValidScreenFrame($0.frame) }
         guard !drawable.isEmpty else { throw BlackoutError.noScreens }
-        if all {
+        if options.all {
             if watchMode { return drawable }
             var currentByID: [CGDirectDisplayID: NSScreen] = [:]
             for screen in drawable {
@@ -497,7 +501,11 @@ public final class BlackoutController {
             return screen
         }
         guard !selected.isEmpty else { throw BlackoutError.noScreens }
-        try Self.validateSelection(selectedCount: selected.count, drawableCount: drawable.count)
+        try Self.validateSelection(
+            selectedCount: selected.count,
+            drawableCount: drawable.count,
+            hasSafetyLimit: Self.hasSafetyLimit(options)
+        )
         return selected
     }
 
@@ -852,8 +860,21 @@ public final class BlackoutController {
         if isMirrored { throw BlackoutError.mirroredDisplay(selector) }
     }
 
-    static func validateSelection(selectedCount: Int, drawableCount: Int) throws {
-        if selectedCount >= drawableCount { throw BlackoutError.allScreensSafety }
+    static func validateSelection(
+        selectedCount: Int,
+        drawableCount: Int,
+        hasSafetyLimit: Bool = false
+    ) throws {
+        if selectedCount >= drawableCount, !hasSafetyLimit {
+            throw BlackoutError.allScreensSafety
+        }
+    }
+
+    private static func hasSafetyLimit(_ options: BlackoutOptions) -> Bool {
+        [options.timeout, options.sleepAfter].contains {
+            guard let duration = $0 else { return false }
+            return duration > 0 && duration.isFinite
+        }
     }
 
     static func windowContentRect(for screenFrame: CGRect) -> CGRect {

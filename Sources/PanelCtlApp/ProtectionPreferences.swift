@@ -87,7 +87,7 @@ struct ProtectionPreferences: Codable, Equatable {
                     $0.caseInsensitiveCompare(uuid) == .orderedSame
                 }
             }
-            guard selected.count == selectedDisplayUUIDs.count else {
+            guard !selected.isEmpty else {
                 let missing = selectedDisplayUUIDs.first { uuid in
                     !selected.contains {
                         $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame
@@ -102,7 +102,9 @@ struct ProtectionPreferences: Codable, Equatable {
         if allDisplays && followUpAction == .untilActivity {
             throw ProtectionConfigurationError.allDisplaysRequireLimit
         }
-        if !allDisplays, Set(selected.map(\.id)) == Set(drawable.map(\.id)) {
+        if !allDisplays,
+           followUpAction == .untilActivity,
+           Set(selected.map(\.id)) == Set(drawable.map(\.id)) {
             throw ProtectionConfigurationError.selectionWouldCoverAllDisplays
         }
 

@@ -29,16 +29,19 @@ final class ProtectionPreferencesTests: XCTestCase {
         )
     }
 
-    func testManualSelectionCoveringAllDrawableDisplaysIsRejected() {
+    func testManualSelectionCoveringAllDrawableDisplaysRequiresSafetyLimit() throws {
         var preferences = ProtectionPreferences()
         preferences.selectedDisplayUUIDs = Set(displays.compactMap(\.uuid))
 
+        XCTAssertNoThrow(try preferences.commandArguments(for: displays))
+
+        preferences.followUpAction = .untilActivity
         XCTAssertThrowsError(try preferences.commandArguments(for: displays)) {
             XCTAssertEqual($0 as? ProtectionConfigurationError, .selectionWouldCoverAllDisplays)
         }
     }
 
-    func testMissingAndEmptySelectionsAreRejected() {
+    func testSelectionRequiresAtLeastOneAvailableDisplay() throws {
         var preferences = ProtectionPreferences()
         XCTAssertThrowsError(try preferences.commandArguments(for: displays)) {
             XCTAssertEqual($0 as? ProtectionConfigurationError, .noSelection)
@@ -48,6 +51,12 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertThrowsError(try preferences.commandArguments(for: displays)) {
             XCTAssertEqual($0 as? ProtectionConfigurationError, .selectedDisplayUnavailable("MISSING-"))
         }
+
+        preferences.selectedDisplayUUIDs = ["AAAA-UUID", "MISSING-UUID"]
+        XCTAssertEqual(
+            try preferences.commandArguments(for: displays),
+            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--caffeinate"]
+        )
     }
 
     func testDefaultConfigurationUsesFiveMinuteIdleSleepAndCaffeinate() throws {
@@ -106,14 +115,10 @@ final class ProtectionPreferencesTests: XCTestCase {
 
         XCTAssertFalse(model.preferences.allDisplays)
         XCTAssertEqual(model.preferences.selectedDisplayUUIDs, ["AAAA-UUID"])
-        XCTAssertThrowsError(
-            try model.preferences.commandArguments(for: [onlyDisplay])
-        ) {
-            XCTAssertEqual(
-                $0 as? ProtectionConfigurationError,
-                .selectionWouldCoverAllDisplays
-            )
-        }
+        XCTAssertEqual(
+            try model.preferences.commandArguments(for: [onlyDisplay]),
+            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--caffeinate"]
+        )
     }
 
     @MainActor
@@ -631,7 +636,7 @@ final class ProtectionPreferencesTests: XCTestCase {
     }
 
     @MainActor
-    func testManagedWatcherReportsUnavailableDisplayAndRecoversWithoutRestart() async throws {
+    func testManagedWatcherReconfiguresForAvailableSelectedDisplays() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("panelctl-display-recovery-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(
@@ -642,7 +647,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         let log = directory.appendingPathComponent("launches.log")
         let script = """
         #!/bin/bash
-        printf 'launch\\n' >> "$PANELCTL_TEST_LOG"
+        printf 'launch:%s\\n' "$*" >> "$PANELCTL_TEST_LOG"
         printf '{"state":"waiting"}\\n'
         trap 'exit 0' TERM
         while true; do /bin/sleep 0.02; done
@@ -659,7 +664,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         var preferences = ProtectionPreferences()
         preferences.isEnabled = true
         preferences.didChooseDisplays = true
-        preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
+        preferences.selectedDisplayUUIDs = ["AAAA-UUID", "BBBB-UUID"]
         defaults.set(try JSONEncoder().encode(preferences), forKey: "blackoutPreferences")
 
         var currentDisplays = displays
@@ -676,20 +681,40 @@ final class ProtectionPreferencesTests: XCTestCase {
         )
         try await waitUntil { model.runtimeState == .waiting }
         let initialLaunches = try await waitForLaunches(1, at: log)
-        XCTAssertEqual(initialLaunches, ["launch"])
+        XCTAssertEqual(initialLaunches, [
+            "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --caffeinate"
+        ])
 
-        currentDisplays = Array(displays.dropFirst())
+        currentDisplays = [displays[0], displays[2]]
         model.refreshDisplays()
-        guard case .waitingForDisplays = model.runtimeState else {
-            return XCTFail("Expected unavailable-display state, got \(model.runtimeState)")
-        }
+        try await waitUntil { model.runtimeState == .waiting }
+        let partialLaunches = try await waitForLaunches(2, at: log)
+        XCTAssertEqual(partialLaunches, [
+            "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --caffeinate",
+            "launch:blackout --display AAAA-UUID --idle-after 300 --watch --sleep-after 1800 --caffeinate"
+        ])
 
         currentDisplays = displays
         model.refreshDisplays()
-        XCTAssertEqual(model.runtimeState, .waiting)
-        try await Task.sleep(nanoseconds: 100_000_000)
-        let recoveredLaunches = try await waitForLaunches(1, at: log)
-        XCTAssertEqual(recoveredLaunches, ["launch"])
+        try await waitUntil { model.runtimeState == .waiting }
+        let recoveredLaunches = try await waitForLaunches(3, at: log)
+        XCTAssertEqual(recoveredLaunches, [
+            "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --caffeinate",
+            "launch:blackout --display AAAA-UUID --idle-after 300 --watch --sleep-after 1800 --caffeinate",
+            "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --caffeinate"
+        ])
+
+        currentDisplays = [displays[2]]
+        model.refreshDisplays()
+        try await waitUntil {
+            if case .waitingForDisplays = model.runtimeState {
+                return true
+            }
+            return false
+        }
+        guard case .waitingForDisplays = model.runtimeState else {
+            return XCTFail("Expected unavailable-display state, got \(model.runtimeState)")
+        }
 
         let stopped = expectation(description: "watcher stopped")
         model.shutdown { stopped.fulfill() }

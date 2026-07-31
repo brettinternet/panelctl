@@ -274,7 +274,7 @@ final class AppModel: ObservableObject {
 
     func refreshDisplays() {
         displays = displayProvider()
-        if preferences.isEnabled, !service.hasManagedProcess {
+        if preferences.isEnabled {
             reconcileProtection()
         }
         runtimeState = presentedRuntimeState(for: service.state)

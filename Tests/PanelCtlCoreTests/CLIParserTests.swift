@@ -103,7 +103,7 @@ final class CLIParserTests: XCTestCase {
         XCTAssertEqual(try CLIParser.parse(["help", "blackout"]), .help(command: "blackout"))
         XCTAssertEqual(try CLIParser.parse(["blackout", "-h"]), .help(command: "blackout"))
         XCTAssertEqual(try CLIParser.parse(["--version"]), .version)
-        XCTAssertEqual(CLIHelp.version, "panelctl 0.3.4")
+        XCTAssertEqual(CLIHelp.version, "panelctl 0.3.5")
         XCTAssertTrue(CLIHelp.text(for: "app").contains("snooze --for <duration>"))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--watch"))
         XCTAssertEqual(CLIParseError.unknownOption("--bad").description, "unknown option: --bad")
@@ -132,6 +132,13 @@ final class CLIParserTests: XCTestCase {
         XCTAssertThrowsError(try BlackoutController.validateSelection(selectedCount: 3, drawableCount: 2)) {
             XCTAssertEqual($0 as? BlackoutError, .allScreensSafety)
         }
+        XCTAssertNoThrow(
+            try BlackoutController.validateSelection(
+                selectedCount: 2,
+                drawableCount: 2,
+                hasSafetyLimit: true
+            )
+        )
         XCTAssertNoThrow(try BlackoutController.validateSelection(selectedCount: 1, drawableCount: 2))
         XCTAssertThrowsError(try BlackoutController.validateTarget(isMirrored: true, selector: "1")) {
             XCTAssertEqual($0 as? BlackoutError, .mirroredDisplay("1"))
