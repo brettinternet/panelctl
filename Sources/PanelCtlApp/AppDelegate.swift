@@ -450,6 +450,7 @@ private extension ProtectionRuntimeState {
         case .starting: return "starting"
         case .waiting: return "waiting"
         case .waitingForInput: return "waiting_for_input"
+        case .waitingForPlayback: return "waiting_for_playback"
         case .blackedOut: return "blacked_out"
         case .sleeping: return "sleeping"
         case .stopping: return "stopping"

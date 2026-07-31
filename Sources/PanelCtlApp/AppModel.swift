@@ -406,7 +406,7 @@ final class AppModel: ObservableObject {
         }
         guard preferences.isEnabled else { return serviceState }
         switch serviceState {
-        case .starting, .waiting, .waitingForInput, .blackedOut, .sleeping:
+        case .starting, .waiting, .waitingForInput, .waitingForPlayback, .blackedOut, .sleeping:
             break
         default:
             return serviceState

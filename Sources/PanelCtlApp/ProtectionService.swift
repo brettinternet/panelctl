@@ -11,6 +11,7 @@ enum ProtectionRuntimeState: Equatable {
     case starting
     case waiting
     case waitingForInput
+    case waitingForPlayback
     case blackedOut
     case sleeping
     case stopping
@@ -24,6 +25,7 @@ enum ProtectionRuntimeState: Equatable {
         case .starting: return "Starting…"
         case .waiting: return "Watching for inactivity"
         case .waitingForInput: return "Waiting for activity"
+        case .waitingForPlayback: return "Playback detected — automatic blackout paused"
         case .blackedOut: return "Blackout active"
         case .sleeping: return "Displays sleeping"
         case .stopping: return "Stopping…"
@@ -36,7 +38,7 @@ enum ProtectionRuntimeState: Equatable {
         switch self {
         case .disabled: return "shield"
         case .snoozed: return "pause.circle.fill"
-        case .starting, .waiting, .waitingForInput: return "shield.fill"
+        case .starting, .waiting, .waitingForInput, .waitingForPlayback: return "shield.fill"
         case .blackedOut: return "rectangle.fill"
         case .sleeping: return "moon.fill"
         case .stopping: return "shield"
@@ -53,6 +55,7 @@ enum ProtectionRuntimeState: Equatable {
     var detailMessage: String? {
         switch self {
         case .waitingForDisplays(let message), .failed(let message): return message
+        case .waitingForPlayback: return "An active display-sleep prevention assertion was detected. The idle countdown restarts when playback ends."
         case .snoozed(let until):
             return "Resumes \(until.formatted(date: .abbreviated, time: .shortened))"
         default: return nil
@@ -350,6 +353,7 @@ final class ProtectionService {
             switch runtimeState {
             case .waiting: self.state = .waiting
             case .waitingForInput: self.state = .waitingForInput
+            case .waitingForPlayback: self.state = .waitingForPlayback
             case .blackedOut: self.state = .blackedOut
             case .sleeping: self.state = .sleeping
             case .stopped:
@@ -357,7 +361,7 @@ final class ProtectionService {
                     self.state = .stopping
                 }
             }
-            if runtimeState == .waiting {
+            if runtimeState == .waiting || runtimeState == .waitingForPlayback {
                 deliverPendingControl(to: sourceProcess)
             }
         }

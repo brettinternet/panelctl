@@ -249,6 +249,33 @@ final class ProtectionPreferencesTests: XCTestCase {
     }
 
     @MainActor
+    func testPlaybackStatusPropagatesFromHelper() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panelctl-playback-status-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let script = """
+        #!/bin/bash
+        printf '{"state":"waiting_for_playback"}\n'
+        trap 'exit 0' TERM
+        while true; do /bin/sleep 0.02; done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        defer { unsetenv("PANELCTL_HELPER") }
+
+        let service = ProtectionService()
+        service.run(arguments: ["blackout"])
+        try await waitUntil { service.state == .waitingForPlayback }
+        XCTAssertEqual(service.state.label, "Playback detected — automatic blackout paused")
+
+        let stopped = expectation(description: "watcher stopped")
+        service.shutdown { stopped.fulfill() }
+        await fulfillment(of: [stopped], timeout: 3)
+    }
+
+    @MainActor
     func testBlackoutNowRejectsInvalidSettingsWithoutEnabling() throws {
         let suiteName = "panelctl-immediate-invalid-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

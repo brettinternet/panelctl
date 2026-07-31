@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import IOKit.pwr_mgt
 
 public enum BlackoutError: Error, Equatable, CustomStringConvertible {
     case noScreens
@@ -36,6 +37,7 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
 public enum BlackoutRuntimeState: String, Equatable {
     case waiting
     case waitingForInput = "waiting_for_input"
+    case waitingForPlayback = "waiting_for_playback"
     case blackedOut = "blacked_out"
     case sleeping
     case stopped
@@ -69,6 +71,18 @@ struct CombinedSessionIdleTimeSource: IdleTimeSource {
         guard let anyInput = CGEventType(rawValue: UInt32.max) else { return nil }
         return CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput)
     }
+}
+
+/// Returns whether another process is actively preventing the display from
+/// becoming idle (for example, while media playback is in progress).
+/// Assertion API failures intentionally fail open so protection continues.
+func playbackAssertionIsActive() -> Bool {
+    var assertions: Unmanaged<CFDictionary>?
+    guard IOPMCopyAssertionsStatus(&assertions) == kIOReturnSuccess,
+          let dictionary = assertions?.takeRetainedValue() as NSDictionary? else {
+        return false
+    }
+    return (dictionary[kIOPMAssertPreventUserIdleDisplaySleep] as? NSNumber)?.boolValue == true
 }
 
 enum BlackoutLimitAction: Equatable {
@@ -189,6 +203,10 @@ struct BlackoutPolicy {
         idleAfter.map { idleSeconds >= $0 } ?? true
     }
 
+    func shouldDeferForPlayback(assertionActive: Bool, immediateBlackoutRequested: Bool) -> Bool {
+        idleAfter != nil && assertionActive && !immediateBlackoutRequested
+    }
+
     func hasNewInput(_ sample: IdleSample, after baselineUptime: TimeInterval) -> Bool {
         sample.lastInputUptime > baselineUptime + 0.001
     }
@@ -224,12 +242,14 @@ public final class BlackoutController {
     private var dimming: BlackoutDimming?
     private let idleSource: IdleTimeSource
     private let uptime: () -> TimeInterval
+    private let playbackAssertionActive: () -> Bool
     private let stateHandler: ((BlackoutRuntimeState) -> Void)?
 
     public convenience init() {
         self.init(
             idleSource: CombinedSessionIdleTimeSource(),
             uptime: { ProcessInfo.processInfo.systemUptime },
+            playbackAssertionActive: playbackAssertionIsActive,
             stateHandler: nil
         )
     }
@@ -238,6 +258,7 @@ public final class BlackoutController {
         self.init(
             idleSource: CombinedSessionIdleTimeSource(),
             uptime: { ProcessInfo.processInfo.systemUptime },
+            playbackAssertionActive: playbackAssertionIsActive,
             stateHandler: stateHandler
         )
     }
@@ -245,10 +266,12 @@ public final class BlackoutController {
     init(
         idleSource: IdleTimeSource,
         uptime: @escaping () -> TimeInterval,
+        playbackAssertionActive: @escaping () -> Bool = playbackAssertionIsActive,
         stateHandler: ((BlackoutRuntimeState) -> Void)? = nil
     ) {
         self.idleSource = idleSource
         self.uptime = uptime
+        self.playbackAssertionActive = playbackAssertionActive
         self.stateHandler = stateHandler
     }
 
@@ -606,6 +629,8 @@ public final class BlackoutController {
         policy: BlackoutPolicy
     ) throws -> (sample: IdleSample, forced: Bool)? {
         var reportedState: BlackoutRuntimeState?
+        var playbackWasActive = false
+        var playbackDeferralUptime: TimeInterval?
         func reportState(_ state: BlackoutRuntimeState) {
             guard reportedState != state else { return }
             reportedState = state
@@ -613,13 +638,38 @@ public final class BlackoutController {
         }
 
         while !stopRequested {
-            if watchMode && watchState.suspensions.contains(.screensAsleep) {
+            let screensAreSuspended = watchMode &&
+                watchState.suspensions.contains(.screensAsleep)
+            let waitsForInput = watchMode &&
+                !watchState.mayBeginCycle &&
+                !immediateBlackoutRequested
+            if screensAreSuspended {
+                playbackWasActive = false
+                playbackDeferralUptime = nil
                 reportState(.sleeping)
-            } else if watchMode &&
-                        !watchState.mayBeginCycle &&
-                        !immediateBlackoutRequested {
+            } else if waitsForInput {
+                playbackWasActive = false
+                playbackDeferralUptime = nil
                 reportState(.waitingForInput)
             } else {
+                let defersForPlayback = policy.shouldDeferForPlayback(
+                    assertionActive: policy.idleAfter != nil &&
+                        !immediateBlackoutRequested &&
+                        playbackAssertionActive(),
+                    immediateBlackoutRequested: immediateBlackoutRequested
+                )
+                if defersForPlayback {
+                    playbackWasActive = true
+                    playbackDeferralUptime = nil
+                    reportState(.waitingForPlayback)
+                    try ensureCaffeinate()
+                    runLoopTick()
+                    continue
+                }
+                if playbackWasActive {
+                    playbackWasActive = false
+                    playbackDeferralUptime = uptime()
+                }
                 reportState(.waiting)
             }
             try ensureCaffeinate()
@@ -646,9 +696,12 @@ public final class BlackoutController {
             }
             let activationSample = manualActivityUptime.map {
                 sample.applyingSyntheticActivity(at: $0)
+            } ?? playbackDeferralUptime.map {
+                sample.applyingSyntheticActivity(at: $0)
             } ?? sample
             if policy.shouldBegin(idleSeconds: activationSample.seconds) {
                 manualActivityUptime = nil
+                playbackDeferralUptime = nil
                 return (activationSample, false)
             }
             runLoopTick()

@@ -56,6 +56,9 @@ Run `panelctl help` or `panelctl <command> --help` for all options.
 - `--watch` requires `--idle-after` and repeats after each restored cycle.
 - `--all` requires `--timeout` or `--sleep-after`.
 - `--caffeinate` prevents idle system sleep but allows display sleep.
+- Automatic idle blackouts pause while macOS reports an active display-sleep
+  prevention assertion (such as media playback), then restart the full idle
+  countdown when it ends. Manual blackout-now commands are not deferred.
 - `--dim` best-effort dims supported external displays and restores their
   captured brightness. DDC remains experimental.
 

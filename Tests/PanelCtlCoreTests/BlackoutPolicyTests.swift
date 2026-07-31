@@ -9,6 +9,38 @@ final class BlackoutPolicyTests: XCTestCase {
         XCTAssertTrue(policy.shouldBegin(idleSeconds: 60))
     }
 
+    func testPlaybackDeferralOnlyAppliesToAutomaticIdleBlackout() {
+        let automatic = BlackoutPolicy(idleAfter: 60, timeout: nil, sleepAfter: nil)
+        XCTAssertTrue(automatic.shouldDeferForPlayback(
+            assertionActive: true,
+            immediateBlackoutRequested: false
+        ))
+        XCTAssertFalse(automatic.shouldDeferForPlayback(
+            assertionActive: false,
+            immediateBlackoutRequested: false
+        ))
+        XCTAssertFalse(automatic.shouldDeferForPlayback(
+            assertionActive: true,
+            immediateBlackoutRequested: true
+        ))
+
+        let oneShot = BlackoutPolicy(idleAfter: nil, timeout: nil, sleepAfter: nil)
+        XCTAssertFalse(oneShot.shouldDeferForPlayback(
+            assertionActive: true,
+            immediateBlackoutRequested: false
+        ))
+    }
+
+    func testPlaybackDeferralRestartsTheFullIdleCountdown() {
+        let sample = IdleSample(seconds: 300, lastInputUptime: 100)
+        let resumed = sample.applyingSyntheticActivity(at: 395)
+
+        XCTAssertEqual(resumed.lastInputUptime, 395)
+        XCTAssertEqual(resumed.seconds, 5)
+        XCTAssertFalse(BlackoutPolicy(idleAfter: 60, timeout: nil, sleepAfter: nil)
+            .shouldBegin(idleSeconds: resumed.seconds))
+    }
+
     func testInputIsComparedByLastInputEpoch() {
         let policy = BlackoutPolicy(idleAfter: nil, timeout: nil, sleepAfter: nil)
         XCTAssertFalse(policy.hasNewInput(IdleSample(seconds: 20, lastInputUptime: 100), after: 100))
