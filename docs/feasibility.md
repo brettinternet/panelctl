@@ -1,433 +1,127 @@
 # Selected-display panel protection on macOS
 
-Research date: 2026-07-24
-Test host: macOS 26.5.2, Apple Silicon (M1 Max)
+Research date: 2026-07-24; test host: macOS 26.5.2, Apple Silicon (M1 Max)
 
 ## Conclusion
 
-macOS has no public API that sleeps or disconnects one physical external
-display while leaving the others awake.
+macOS has no public API that sleeps or disconnects one external display while
+leaving others awake.
 
-There are four different operations that tools often call "turn off":
-
-| Operation | macOS still uses the desktop? | Panel result | Reliability |
+| Operation | Desktop remains active | Result | Reliability |
 | --- | --- | --- | --- |
-| Render pure black | Yes | OLED pixels are unlit; monitor electronics remain on | High |
-| Set DDC luminance to zero | Yes | Hardware brightness is minimized; exact OLED behavior is monitor-specific | Medium, monitor/connection dependent |
-| Disconnect from the display topology | No | Signal may stop and the monitor may enter standby | Low; private API and recovery is inconsistent |
-| Send DDC power/DPMS | Usually yes until the monitor drops off the bus | Monitor firmware decides whether to sleep or power down | Dangerous without a per-model allowlist |
+| Pure-black window | Yes | OLED pixels are unlit; electronics stay on | High |
+| DDC luminance zero | Yes | Hardware brightness is minimized | Hardware-dependent |
+| Private topology disconnect | No | Signal may stop | Low; recovery varies |
+| DDC power/DPMS | Usually | Firmware decides | Unsafe without an allowlist |
 
-For this project's panel-preservation goal, pure-black output is the safe
-selective baseline. It is immediately reversible when the process exits and
-does not alter display topology or monitor firmware state. For a long
-unattended interval, sleeping all displays is preferable: it lets each monitor
-enter its normal standby/compensation path instead of leaving the electronics
-continuously active behind an app window.
+Pure black is the safest selective default: it is reversible and does not alter
+display topology or firmware state. For long unattended periods, sleep every
+display so monitors can enter their normal standby and compensation paths.
 
-This is specific to emissive panels: Samsung Display's
-[OLED overview](https://oledera.samsungdisplay.com/eng/oled/) confirms that
-black OLED pixels are unlit. The video link and panel electronics remain on,
-but content-driven pixel emission and wear are reduced while the overlay is
-present. This is not a guarantee of total panel longevity: standby and
-compensation behavior remain model-specific.
+`panelctl` therefore implements inventory, reversible blackouts, all-display
+sleep/wake, private-API probes, and verified DDC luminance reads/writes. It does
+not invoke private topology APIs or send DDC power commands.
 
-`panelctl` therefore implements:
-
-- public display inventory;
-- a read-only probe for the relevant private symbols and Apple Silicon display
-  services;
-- a reversible, selected-display black overlay with idle, timeout, and
-  all-display sleep lifecycle options;
-- an explicit all-display sleep/wake command using the public `pmset` tool;
-- DDC luminance Get/Set VCP `0x10` with read-back verification.
-
-It intentionally does not invoke private topology APIs or send DDC DPMS/power
-commands.
-
-### Blackout command and limits
-
-The grammar is:
-
-```text
-blackout ((--display <selector> | --index <n>)... | --all)
-         [--idle-after <duration>]
-         [--timeout <duration> | --sleep-after <duration>]
-         [--caffeinate] [--watch] [--dim]
-```
-
-`--index` is a one-based shortcut for the index printed by `list`; selectors
-also accept a decimal/hexadecimal CG display ID, UUID, or `index:N`.
-`--all` requires a finite `--timeout` or `--sleep-after`, and explicit targets
-cannot include every drawable screen. Duration values accept seconds as a bare
-number or with an `s`, `m`, or `h` suffix (for example, `300`, `300s`, `5m`, or
-`0.5h`). Without
-`--idle-after`, the overlay is installed immediately. With it, `panelctl` waits
-for combined-session idle time. After installation, any new combined-session
-input removes the overlay and exits (one-shot restore behavior).
-
-`--watch` requires `--idle-after` and repeats the AFK cycle. Input ends the
-current cycle and starts waiting for the next idle interval. A timeout,
-`--sleep-after`, sleep notification, or other session/display interruption
-fails open: the overlay is removed and the watcher requires fresh input followed
-by a new full idle interval before another cycle. Signals remove the overlay and
-terminate the watcher. `--caffeinate` holds its idle-sleep assertion for the
-entire watcher lifetime, so a running watcher indefinitely prevents idle system
-sleep (while still allowing display sleep). Explicit watch targets must expose
-a UUID; the watcher retains that identity across display re-enumeration.
-
-`--dim` is an opt-in, best-effort DDC enhancement for selected external
-displays. After the black overlay is verified and visible, it reads and
-journals each supported target's current VCP luminance, sets luminance to zero,
-and restores the captured value by exact UUID before removing the overlay. A
-sleep-after transition restores brightness before invoking
-`pmset displaysleepnow`, because the DDC transport may disappear after sleep.
-Unsupported displays and failed DDC operations do not abort the overlay.
-
-For persisted watchers, resolve targets to UUIDs and store those UUIDs in the
-LaunchAgent arguments. Indexes and CG IDs are inventory values that can change
-when displays reconnect; a persisted configuration must never use either one.
-If no UUID is available, do not persist a fallback selector.
-
-The timeout and sleep-after clocks start when the overlay is installed, not
-when the process starts. In one-shot mode, `--timeout` removes the overlay and
-exits; `--sleep-after` removes it, runs `pmset displaysleepnow` for all
-displays, and exits. In watch mode, either limit resets the cycle after the
-documented fresh-input gate. They are mutually exclusive. `--caffeinate` holds only a
-`caffeinate -i` assertion, so idle system sleep is prevented while display
-sleep remains allowed. Display-layout changes and session/sleep notifications
-fail open by removing the windows and reset a watch cycle as described above.
-Signals fail open and then terminate the process.
-
-The overlay is owned by the logged-in GUI session. `panelctl` hides the macOS
-cursor only while it is over an active blackout window, leaving the cursor on
-unselected displays unchanged. System HUDs, the lock screen, or a higher-level
-system window may appear above it; locking, Fast User Switching, or ending the
-GUI session can replace it. It does not disconnect displays, power them off, or
-guarantee uninterrupted black output.
-Hot-plug and display-layout changes stop it rather than risk covering the wrong
-screen. Windows are prepared before any are shown, pinned to the current full
-`NSScreen.frame`, and rejected unless the actual frame and target screen ID
-match exactly. AppKit points naturally cover Retina scaling, rotation, and
-current logical resolution; WindowServer's documented coordinate/window-size
-limits still apply. The initializer uses a zero-origin content rectangle with
-the target screen passed separately. This is required for screens with offset
-or negative global origins; using the global frame as the content rectangle
-doubles the origin and can produce a small corner blackout instead of full
-coverage. This follows the screen-relative semantics of Apple's
-[`NSWindow` screen initializer](https://developer.apple.com/documentation/appkit/nswindow/init%28contentrect%3Astylemask%3Abacking%3Adefer%3Ascreen%3A).
-
-### True display sleep
-
-`panelctl sleep-displays` invokes `pmset displaysleepnow`, which asks macOS to
-sleep every display without putting the system to sleep. `--keep-system-awake`
-adds `caffeinate -i`; an optional timeout (using the same seconds/s/m/h
-duration syntax) releases that assertion, while
-`wake-displays` sends a short user-activity assertion. These commands do not
-change persistent power settings. This is the recommended mode for a long
-unattended OLED interval when no panel must remain visible.
-
-The two Dell OLEDs on the test host document model-specific standby behavior:
-the [AW3425DW user guide](https://dl.dell.com/content/manual4846619-alienware-34-240hz-qd-oled-gaming-monitor-aw3425dw-user-s-guide.pdf?language=en-us)
-describes automatic Pixel Refresh after four hours when the monitor enters
-standby/power-off, and Dell reports the same automatic refresh behavior for the
-[AW3423DW](https://www.dell.com/support/kbdoc/en-us/000198595/alienware-aw3423dw-pixel-refresh-will-turn-monitor-off).
-That is why true standby is safer for eventual maintenance than leaving a
-black app window up indefinitely.
-
-### DDC luminance qualification on this host
-
-`ddc-luminance` uses only the MCCS luminance feature (`0x10`) through
-dynamically loaded private `IOAVService`/CoreDisplay transport functions.
-Without `--set` it sends a Get VCP query. With `--set`, it first reads the
-current value and maximum, rejects out-of-range values, sends Set VCP `0x10`,
-and reads back the value with one bounded verification retry. It implements no
-DPMS/power operation.
-
-The live qualification results were:
-
-| Display | Result |
-| --- | --- |
-| Dell AW3425DW, UUID `703CA103-...` | Read `75/100`; write/restore `75 → 74 → 75` verified |
-| Dell AW3423DW, UUID `9963A32C-...` | DDC communication failed on the current path |
-
-The second result is not proof that the AW3423DW lacks DDC/CI. Check its OSD
-DDC/CI setting and test without the dock/adapter or through another link before
-classifying the panel as unsupported. DDC is a monitor-firmware and transport
-feature, not a portable macOS display-power API.
-
-The AW3425DW write proves luminance control only for this monitor, firmware
-state, and connection path. A raw `ddc-luminance --set` write persists if the
-process exits, so restoration remains the caller's responsibility. Blackout
-`--dim` instead journals original values before writing, restores them on every
-normal exit, and retries retained entries on a later eligible run or display
-wake. It still cannot guarantee immediate rollback across a crash, cable loss,
-system shutdown, UUID churn, or an unavailable DDC path. No write was sent to
-the AW3423DW because it did not pass the read prerequisite.
-
-BetterDisplay's exact implementation is proprietary. Based on its published
-[integration/CLI documentation](https://github.com/waydabber/BetterDisplay/wiki/Integration-features%2C-CLI),
-the reasonable inference is a layered strategy: private display-topology or
-Apple display services where available, DDC for compatible hardware controls,
-and software color-table/overlay dimming as a fallback. Its `connected`,
-`hardwareBacklight`, and software-dimming controls should not be interpreted as
-a universal per-panel power switch; support varies with monitor, HDR mode, and
-connection path.
-
-These limits need physical testing across the actual idle, lock, sleep, and wake
-lifecycle. The overlay should not be described as panel sleep or as guaranteed
-uninterrupted black output.
-
-## Available control planes
+## API findings
 
 ### Public CoreGraphics
 
 [Quartz Display Services](https://developer.apple.com/documentation/coregraphics/quartz-display-services)
-can enumerate active and online displays and configure modes, origins, and
-mirroring in a transaction.
+can enumerate displays and configure modes, positions, and mirroring.
+`CGDisplayIsAsleep` is only a getter. There is no public per-display sleep,
+enable, or disconnect setter.
 
-Relevant distinctions:
+### Private topology APIs
 
-- `CGGetActiveDisplayList`: displays drawable by applications;
-- `CGGetOnlineDisplayList`: connected displays, including sleeping displays and
-  non-drawable hardware mirrors;
-- `CGDisplayIsAsleep`: a getter only;
-- `CGConfigureDisplayWithDisplayMode`: mode changes;
-- `CGConfigureDisplayMirrorOfDisplay`: mirroring;
-- `CGCompleteDisplayConfiguration`: app, session, or permanent transaction
-  scope.
+`CGSConfigureDisplayEnabled` and `SLSConfigureDisplayEnabled` exist on the test
+host but have no public headers, compatibility contract, or reliable recovery
+behavior. They change display topology, not monitor power.
 
-There is no public enable, disconnect, or per-display sleep setter.
+This explains displayplacer's observed re-enable failure:
 
-Apple does not publish a rationale for keeping those operations private. The
-most likely explanation is architectural and safety-related: a per-path
-disconnect spans WindowServer, display-controller firmware, link training,
-docks/adapters, mirroring, and recovery when the last visible screen vanishes.
-Those states are heterogeneous and can strand a user without a working
-display, so Apple keeps the coordinated topology SPI private rather than
-promising a portable monitor-power contract. This is an inference from the
-public API boundary, not an Apple statement.
+1. It resolves targets through `CGGetOnlineDisplayList`.
+2. Disabling a display can remove it from that list.
+3. The normal enable path then cannot resolve the UUID needed to restore it.
 
-### Private WindowServer topology API
+The maintainer reproduced the disappearance in
+[issue #109](https://github.com/jakehilborn/displayplacer/issues/109); related
+failures appear in [#126](https://github.com/jakehilborn/displayplacer/issues/126)
+and [#137](https://github.com/jakehilborn/displayplacer/issues/137).
+[PR #155](https://github.com/jakehilborn/displayplacer/pull/155) tries numeric
+display IDs, but recovery remains driver-dependent. panelctl does not take this
+risk.
 
-`CGSConfigureDisplayEnabled` is exported by CoreGraphics on the test host, and
-`SLSConfigureDisplayEnabled` is exported by SkyLight. Neither has a public
-header or compatibility contract.
+### IOKit and DisplayServices
 
-`displayplacer` declares this private signature itself and commits changes
-permanently:
+The public IOKit display-parameter API includes power-state keys, but its
+concrete backlight path does not establish control of arbitrary external
+monitors. The old CoreGraphics-to-framebuffer bridge has been unavailable since
+macOS 10.9.
 
-```c
-CGError CGSConfigureDisplayEnabled(
-    CGDisplayConfigRef config,
-    CGDirectDisplayID display,
-    bool enabled
-);
-```
-
-This changes the macOS display topology. It is not a monitor power command.
-Depending on the driver and connection, removing the framebuffer may also stop
-the video signal and cause the monitor to enter its own standby mode.
-
-The symbol's presence proves that a private control plane exists. It does not
-prove stable behavior, a stable ABI, or reliable recovery on a particular Mac,
-dock, adapter, or monitor.
-
-### Public legacy IOKit display parameters
-
-The macOS SDK still declares:
-
-- `IODisplaySetIntegerParameter`;
-- `IODisplaySetFloatParameter`;
-- `kIODisplayPowerStateKey` (`"dsyp"`);
-- states `Off`, `MinUsable`, and `On`.
-
-Apple's current published
-[IOGraphics source](https://github.com/apple-oss-distributions/IOGraphics)
-routes the power-state parameter through display-driver handlers. Its concrete
-backlight implementation is for `IOBacklightDisplay`; this is not evidence that
-arbitrary external monitors implement per-connector power control.
-
-The old bridge from a CoreGraphics display ID to its framebuffer,
-`CGDisplayIOServicePort`, has been unavailable since macOS 10.9. That makes the
-otherwise-public API impractical as a modern general solution.
+Private DisplayServices exports power and brightness functions, but no public
+contract says they support external monitors. They should be treated as
+Apple-display SPI until qualified on specific hardware.
 
 ### DDC/CI
 
-The public `IOKit/i2c/IOI2CInterface.h` API can expose a framebuffer's I2C bus
-and explicitly supports DDC/CI transactions. Its own contract says not every
-graphics device provides this interface.
+Public IOKit I2C interfaces are optional. Apple Silicon tools commonly use the
+private `IOAVServiceReadI2C` and `IOAVServiceWriteI2C` path demonstrated by
+[m1ddc](https://github.com/waydabber/m1ddc), which does not cover every Mac,
+port, adapter, or monitor.
 
-On Apple Silicon, current tools commonly use private `IOAVService` functions
-instead:
+Common VCP codes are luminance `0x10`, input `0x60`, and power `0xD6`.
+Capability discovery or a successful read does not prove a write is safe;
+Microsoft gives the same warning for
+[`SetVCPFeature`](https://learn.microsoft.com/en-us/windows/win32/api/lowlevelmonitorconfigurationapi/nf-lowlevelmonitorconfigurationapi-setvcpfeature).
 
-- `IOAVServiceCreateWithService`;
-- `IOAVServiceReadI2C`;
-- `IOAVServiceWriteI2C`.
+## Hardware results
 
-These symbols are present in IOKit on the test host but have no public SDK
-declarations. The MIT-licensed
-[m1ddc](https://github.com/waydabber/m1ddc) project demonstrates this route for
-USB-C/DisplayPort Alt Mode. It explicitly does not cover every Mac or port.
+| Display | EDID standby/suspend/off | DDC luminance |
+| --- | --- | --- |
+| Dell AW3425DW | Yes / Yes / Yes | Read `75/100`; `75 → 74 → 75` verified |
+| Dell AW3423DW | Yes / No / No | Communication failed; no write attempted |
 
-DDC operations remain monitor-firmware operations:
+EDID flags describe advertised capabilities, not callable public APIs. The
+different flags also show why one power sequence cannot be assumed safe even
+for two OLEDs on the same Mac.
 
-- luminance is usually VCP `0x10`;
-- input selection is usually VCP `0x60`;
-- power mode is VCP `0xD6`.
+The AW3425DW result applies only to that monitor, firmware state, and connection
+path. Raw luminance writes persist, so callers must restore them. Blackout
+`--dim` journals captured values and retries failed restorations, but cannot
+guarantee immediate recovery after a crash, disconnect, shutdown, UUID change,
+or unavailable transport.
 
-DDC capability discovery and reading a value do not guarantee that writing it
-is safe. Microsoft gives the same warning for its public
-[`SetVCPFeature`](https://learn.microsoft.com/en-us/windows/win32/api/lowlevelmonitorconfigurationapi/nf-lowlevelmonitorconfigurationapi-setvcpfeature)
-API: many monitors incompletely implement MCCS and require physical validation.
+DDC power remains excluded. Reports in
+[`ddcctl` issue #89](https://github.com/kfix/ddcctl/issues/89) include broken
+physical controls and monitors requiring power removal. A powered-down monitor
+may also stop accepting the command needed to wake it.
 
-### Private DisplayServices
+## Blackout and sleep implications
 
-The private DisplayServices framework exports:
+Black OLED pixels are unlit, as described in Samsung Display's
+[OLED overview](https://oledera.samsungdisplay.com/eng/oled/), but the video
+link and electronics remain active. A black window reduces content-driven pixel
+emission; it is not hardware sleep or a longevity guarantee.
 
-- `DisplayServicesGetPowerMode`;
-- `DisplayServicesSetPowerMode`;
-- brightness controls.
+The overlay fails open on input, display-layout changes, sleep, session changes,
+or signals. It verifies each window's screen ID and full frame before showing
+it, including scaled, rotated, stacked, and negative-origin layouts. System UI
+may still appear above it.
 
-The symbols exist, but no public contract establishes that they control
-arbitrary external monitors. Open-source Lunar exposes them only through an
-experimental CLI path. They should be treated as built-in/Apple-smart-display
-SPI until a specific monitor proves otherwise.
+`sleep-displays` uses `pmset displaysleepnow` for every display. This is the
+preferred long-idle mode. Dell documents automatic Pixel Refresh in standby for
+the [AW3425DW](https://dl.dell.com/content/manual4846619-alienware-34-240hz-qd-oled-gaming-monitor-aw3425dw-user-s-guide.pdf?language=en-us)
+and [AW3423DW](https://www.dell.com/support/kbdoc/en-us/000198595/alienware-aw3423dw-pixel-refresh-will-turn-monitor-off).
 
-## displayplacer failure diagnosis
+## Qualification commands
 
-ROOT CAUSE PROVEN for displayplacer's normal re-enable path; universal hardware
-recovery remains unproven.
-
-Symptom: `enabled:false` succeeds, but the same display cannot subsequently be
-found or re-enabled.
-
-Reproduction evidence:
-
-- [`displayplacer` issue #109](https://github.com/jakehilborn/displayplacer/issues/109)
-  reports that a disabled display disappears from System Information; the
-  maintainer reproduced this on an M2 Mac.
-- [Issues #126](https://github.com/jakehilborn/displayplacer/issues/126) and
-  [#137](https://github.com/jakehilborn/displayplacer/issues/137) contain
-  additional Apple Silicon and external-monitor failures.
-
-First divergence:
-
-1. `displayplacer` obtains its addressable set from
-   `CGGetOnlineDisplayList`.
-2. It resolves the supplied UUID to a contextual `CGDirectDisplayID`.
-3. It rejects any target that is not in the online list before calling
-   `CGSConfigureDisplayEnabled`.
-4. The private disable operation removes the target from that list, so the
-   normal enable path cannot address it.
-
-Mechanism: private topology removal destroys the public identifier mapping that
-the tool requires for the inverse operation.
-
-Trigger: permanently commit `CGSConfigureDisplayEnabled(..., false)` on a
-display/driver combination that removes the target from public enumeration.
-
-Evidence that distinguishes this from a simple command-syntax problem:
-
-- the source performs the online validation before every enable/disable call;
-- the display is also absent from macOS's own inventory;
-- open, unmerged
-  [`displayplacer` PR #155](https://github.com/jakehilborn/displayplacer/pull/155)
-  bypasses UUID resolution and sweeps numeric IDs 1–10 to recover offline
-  displays.
-
-The PR's numeric sweep works on some Macs and fails on others. That leaves a
-second, driver-specific recovery problem unresolved. It is not safe enough to
-adopt.
-
-## Why Windows appears better integrated
-
-Windows exposes two stable public layers that macOS does not:
-
-1. [`SetDisplayConfig`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setdisplayconfig)
-   explicitly applies and persists active display paths. A caller can validate
-   a proposed topology before applying it.
-2. The monitor-configuration API maps an `HMONITOR` to physical monitor handles
-   and exposes MCCS capability discovery and VCP reads/writes.
-
-macOS exposes public mode, layout, and mirroring APIs, but keeps path
-enable/disable private. Its modern Apple Silicon DDC mapping also relies on
-private `IOAVService` calls.
-
-Windows does not make arbitrary physical-monitor power safe. Its documentation
-warns that DDC/MCCS behavior is undefined until validated on the actual monitor.
-The integration advantage is mainly stable topology and physical-monitor
-addressing, not a universal panel-power command.
-
-## Rejected default mechanisms
-
-### Persistent private disconnect
-
-Do not call `CGSConfigureDisplayEnabled(false)` as the normal inactivity action.
-It can remove the only identifier needed for recovery, and `displayplacer`
-commits the state permanently.
-
-If this is ever added as an experimental mode, minimum safeguards are:
-
-- never target the last usable display;
-- use app-only transaction scope first;
-- retain the original contextual ID and stable EDID identity before changing
-  topology;
-- keep a separate watchdog process with a short automatic restore timer;
-- restore on `SIGINT`, `SIGTERM`, `SIGHUP`, and unexpected parent exit;
-- prove cable hot-plug and reboot recovery on each tested setup;
-- never sweep guessed display IDs.
-
-### DDC power mode
-
-Do not send VCP `0xD6` by default.
-
-[`ddcctl` issue #89](https://github.com/kfix/ddcctl/issues/89) records three
-separate destructive or unrecoverable behaviors, including broken physical
-button behavior and monitors that required power removal. The project replaced
-its former power flag with a no-op because of those reports.
-
-A powered-down monitor may also stop responding to DDC, making software wake
-impossible even when the off command behaved as designed.
-
-### Brightness without state capture
-
-Hardware brightness zero is lower risk than DPMS but must still be treated as a
-per-monitor operation. Always read and retain the previous value, serialize
-writes, and restore only after re-identifying the same physical display.
-
-## Hardware qualification sequence
-
-Run these from a terminal in the logged-in GUI session:
+Run from the logged-in GUI session:
 
 ```sh
 swift run panelctl list
 swift run panelctl probe --json
 ```
 
-The probe output should establish:
-
-- actual online/active contextual IDs and current CG UUIDs;
-- OLED model and serial identities;
-- direct HDMI vs USB-C/DP vs dock/adapter path;
-- Apple Silicon `DCPAVServiceProxy` availability;
-- which private transports are present on this OS build.
-
-The initial read-only registry inspection on this host found two active external
-OLEDs:
-
-| Model | EDID standby | EDID suspend | EDID active-off |
-| --- | --- | --- | --- |
-| Dell AW3425DW | Yes | Yes | Yes |
-| Dell AW3423DW | Yes | No | No |
-
-Those flags describe capabilities advertised to the display driver; they are
-not callable public APIs and do not prove a safe per-display transition. The
-difference does prove that one hard-coded power sequence would be incorrect
-even for the two OLEDs attached to this Mac.
-
-The DDC command is implemented as `panelctl ddc-luminance`. On this host it
-reads `75/100` from the AW3425DW and a one-unit write/restore qualification
-(`75 → 74 → 75`) passed read-back verification. The AW3423DW still reports a
-communication failure on its current path and was not written. DPMS remains out
-of scope unless the exact monitor model and connection path are explicitly
-allowlisted after physical validation.
+Record the display UUID, model and serial, connection path, current macOS build,
+and DDC read result before enabling any hardware write. Do not persist indexes
+or CG IDs because they can change after reconnecting a display.
