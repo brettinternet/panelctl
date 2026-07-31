@@ -51,8 +51,6 @@ struct ProtectionPreferences: Codable, Equatable {
     var idleSeconds: TimeInterval = 5 * 60
     var followUpAction: FollowUpAction = .sleepDisplays
     var followUpSeconds: TimeInterval = 30 * 60
-    /// Legacy compatibility field. GUI no longer emits --caffeinate.
-    var caffeinate = false
     var keepDisplaysAwake = true
     var allDisplays = false
     var selectedDisplayUUIDs: Set<String> = []
@@ -65,7 +63,6 @@ struct ProtectionPreferences: Codable, Equatable {
         case idleSeconds
         case followUpAction
         case followUpSeconds
-        case caffeinate
         case keepDisplaysAwake
         case allDisplays
         case selectedDisplayUUIDs
@@ -82,10 +79,6 @@ struct ProtectionPreferences: Codable, Equatable {
         idleSeconds = try values.decodeIfPresent(TimeInterval.self, forKey: .idleSeconds) ?? 5 * 60
         followUpAction = try values.decodeIfPresent(FollowUpAction.self, forKey: .followUpAction) ?? .sleepDisplays
         followUpSeconds = try values.decodeIfPresent(TimeInterval.self, forKey: .followUpSeconds) ?? 30 * 60
-        // `caffeinate` used to request a persistent system-sleep assertion.
-        // Keep decoding the field for compatibility, but never carry that
-        // behavior into the GUI configuration.
-        caffeinate = false
         keepDisplaysAwake = try values.decodeIfPresent(Bool.self, forKey: .keepDisplaysAwake) ?? true
         allDisplays = try values.decodeIfPresent(Bool.self, forKey: .allDisplays) ?? false
         selectedDisplayUUIDs = try values.decodeIfPresent(Set<String>.self, forKey: .selectedDisplayUUIDs) ?? []

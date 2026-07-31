@@ -20,7 +20,6 @@ final class ProtectionPreferencesTests: XCTestCase {
     func testLegacyCaffeinateDoesNotMigrateToSystemAssertion() throws {
         let data = Data(#"{"followUpAction":"sleepDisplays","caffeinate":true}"#.utf8)
         let preferences = try JSONDecoder().decode(ProtectionPreferences.self, from: data)
-        XCTAssertFalse(preferences.caffeinate)
         XCTAssertTrue(preferences.keepDisplaysAwake)
 
         let restoreData = Data(#"{"followUpAction":"restore","caffeinate":true}"#.utf8)
@@ -135,7 +134,6 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertEqual(preferences.idleSeconds, 120)
         XCTAssertEqual(preferences.followUpAction, .restore)
         XCTAssertEqual(preferences.followUpSeconds, 15)
-        XCTAssertFalse(preferences.caffeinate)
         XCTAssertEqual(preferences.selectedDisplayUUIDs, ["AAAA-UUID"])
         XCTAssertTrue(preferences.didChooseDisplays)
         XCTAssertFalse(preferences.dimDisplaysDuringBlackout)
@@ -244,7 +242,6 @@ final class ProtectionPreferencesTests: XCTestCase {
         preferences.idleSeconds = 120
         preferences.followUpAction = .restore
         preferences.followUpSeconds = 15
-        preferences.caffeinate = false
         defaults.set(
             try JSONEncoder().encode(preferences),
             forKey: "blackoutPreferences"

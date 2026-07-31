@@ -3,7 +3,7 @@ import AppKit
 import Darwin
 
 /// Commands understood by the PanelCtl.app control socket.
-public enum AppControlCommand: String, Codable, Equatable, CaseIterable, Sendable {
+public enum AppControlCommand: String, Codable, Equatable, Sendable {
     case enable
     case disable
     case toggle
@@ -284,8 +284,6 @@ public struct AppControlClient {
             } catch {
                 throw AppControlError.transport(error.localizedDescription)
             }
-        } catch {
-            throw error
         }
     }
 

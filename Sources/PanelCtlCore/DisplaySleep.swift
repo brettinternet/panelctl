@@ -94,13 +94,6 @@ public final class DisplaySleepController {
 enum CaffeinateAssertionKind {
     case system
     case display
-
-    var arguments: [String] {
-        switch self {
-        case .system: return ["-i"]
-        case .display: return []
-        }
-    }
 }
 
 final class CaffeinateAssertion {
@@ -135,7 +128,7 @@ final class CaffeinateAssertion {
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
-        process.arguments = kind.arguments + ["-w", String(ProcessInfo.processInfo.processIdentifier)]
+        process.arguments = ["-i", "-w", String(ProcessInfo.processInfo.processIdentifier)]
         try process.run()
         self.process = process
     }
