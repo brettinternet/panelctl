@@ -25,29 +25,61 @@ final class BlackoutPolicyTests: XCTestCase {
         XCTAssertTrue(policy.shouldBegin(idleSeconds: 60))
     }
 
-    func testPlaybackDeferralOnlyAppliesToAutomaticIdleBlackout() {
+    func testActivityDeferralOnlyAppliesToAutomaticIdleBlackout() {
         let automatic = BlackoutPolicy(idleAfter: 60, timeout: nil, sleepAfter: nil)
-        XCTAssertTrue(automatic.shouldDeferForPlayback(
+        XCTAssertTrue(automatic.shouldDeferForActivity(
             assertionActive: true,
+            cameraActive: false,
             immediateBlackoutRequested: false
         ))
-        XCTAssertFalse(automatic.shouldDeferForPlayback(
+        XCTAssertFalse(automatic.shouldDeferForActivity(
             assertionActive: false,
+            cameraActive: true,
             immediateBlackoutRequested: false
         ))
-        XCTAssertFalse(automatic.shouldDeferForPlayback(
+        XCTAssertFalse(automatic.shouldDeferForActivity(
             assertionActive: true,
+            cameraActive: false,
             immediateBlackoutRequested: true
         ))
 
         let oneShot = BlackoutPolicy(idleAfter: nil, timeout: nil, sleepAfter: nil)
-        XCTAssertFalse(oneShot.shouldDeferForPlayback(
+        XCTAssertFalse(oneShot.shouldDeferForActivity(
             assertionActive: true,
+            cameraActive: false,
             immediateBlackoutRequested: false
         ))
         XCTAssertFalse(BlackoutPolicy(
             idleAfter: 60, timeout: nil, sleepAfter: nil, deferPlayback: false
-        ).shouldDeferForPlayback(assertionActive: true, immediateBlackoutRequested: false))
+        ).shouldDeferForActivity(
+            assertionActive: true,
+            cameraActive: false,
+            immediateBlackoutRequested: false
+        ))
+    }
+
+    func testCameraDeferralIsIndependentlyConfigurable() {
+        let policy = BlackoutPolicy(
+            idleAfter: 60,
+            timeout: nil,
+            sleepAfter: nil,
+            deferCamera: true
+        )
+        XCTAssertTrue(policy.shouldDeferForActivity(
+            assertionActive: false,
+            cameraActive: true,
+            immediateBlackoutRequested: false
+        ))
+        XCTAssertTrue(policy.shouldDeferForActivity(
+            assertionActive: true,
+            cameraActive: false,
+            immediateBlackoutRequested: false
+        ))
+        XCTAssertFalse(policy.shouldDeferForActivity(
+            assertionActive: false,
+            cameraActive: true,
+            immediateBlackoutRequested: true
+        ))
     }
 
     func testPlaybackDeferralRestartsTheFullIdleCountdown() {

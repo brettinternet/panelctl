@@ -11,6 +11,7 @@ public struct BlackoutOptions: Equatable {
     public let watch: Bool
     public let dimDisplays: Bool
     public let deferPlayback: Bool
+    public let deferCamera: Bool
 
     public init(
         selectors: [String],
@@ -22,7 +23,8 @@ public struct BlackoutOptions: Equatable {
         keepDisplaysAwake: Bool = false,
         watch: Bool = false,
         dimDisplays: Bool = false,
-        deferPlayback: Bool = true
+        deferPlayback: Bool = true,
+        deferCamera: Bool = false
     ) {
         self.selectors = selectors
         self.all = all
@@ -34,6 +36,7 @@ public struct BlackoutOptions: Equatable {
         self.watch = watch
         self.dimDisplays = dimDisplays
         self.deferPlayback = deferPlayback
+        self.deferCamera = deferCamera
     }
 }
 
@@ -212,6 +215,7 @@ public enum CLIParser {
         var watch = false
         var dimDisplays = false
         var deferPlayback = true
+        var deferCamera = false
         var i = 0
         while i < args.count {
             switch args[i] {
@@ -251,6 +255,9 @@ public enum CLIParser {
             case "--ignore-playback":
                 guard deferPlayback else { throw CLIParseError.duplicateOption("--ignore-playback") }
                 deferPlayback = false
+            case "--defer-camera":
+                guard !deferCamera else { throw CLIParseError.duplicateOption("--defer-camera") }
+                deferCamera = true
             default:
                 throw CLIParseError.unknownOption(args[i])
             }
@@ -262,7 +269,7 @@ public enum CLIParser {
         if timeout != nil && sleepAfter != nil { throw CLIParseError.conflictingBlackoutLimits }
         if keepDisplaysAwake && sleepAfter == nil { throw CLIParseError.keepDisplaysAwakeRequiresSleepAfter }
         if all && timeout == nil && sleepAfter == nil { throw CLIParseError.allRequiresLimit }
-        return .blackout(BlackoutOptions(selectors: selectors, all: all, idleAfter: idleAfter, timeout: timeout, sleepAfter: sleepAfter, caffeinate: caffeinate, keepDisplaysAwake: keepDisplaysAwake, watch: watch, dimDisplays: dimDisplays, deferPlayback: deferPlayback))
+        return .blackout(BlackoutOptions(selectors: selectors, all: all, idleAfter: idleAfter, timeout: timeout, sleepAfter: sleepAfter, caffeinate: caffeinate, keepDisplaysAwake: keepDisplaysAwake, watch: watch, dimDisplays: dimDisplays, deferPlayback: deferPlayback, deferCamera: deferCamera))
     }
 
     private static func parseDDCLuminance(_ args: [String]) throws -> PanelCommand {

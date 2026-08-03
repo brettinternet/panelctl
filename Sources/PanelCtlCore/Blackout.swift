@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import CoreGraphics
 import IOKit.pwr_mgt
+import CoreMediaIO
 
 public enum BlackoutError: Error, Equatable, CustomStringConvertible {
     case noScreens
@@ -86,6 +87,67 @@ func playbackAssertionIsActive() -> Bool {
         in: dictionary as? [AnyHashable: Any] ?? [:],
         excludingPID: ProcessInfo.processInfo.processIdentifier
     )
+}
+
+/// Returns whether any camera device is currently running. Reading the
+/// CoreMediaIO device state does not open a capture session. Fail open when the
+/// device list or an individual device cannot be queried.
+func cameraCaptureIsActive() -> Bool {
+    var devicesAddress = CMIOObjectPropertyAddress(
+        mSelector: CMIOObjectPropertySelector(kCMIOHardwarePropertyDevices),
+        mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
+        mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain)
+    )
+    var devicesDataSize: UInt32 = 0
+    guard CMIOObjectGetPropertyDataSize(
+        CMIOObjectID(kCMIOObjectSystemObject),
+        &devicesAddress,
+        0,
+        nil,
+        &devicesDataSize
+    ) == noErr else {
+        return false
+    }
+
+    let deviceCount = Int(devicesDataSize) / MemoryLayout<CMIOObjectID>.size
+    guard deviceCount > 0 else { return false }
+    var deviceIDs = [CMIOObjectID](repeating: 0, count: deviceCount)
+    var devicesDataUsed: UInt32 = 0
+    let devicesStatus = deviceIDs.withUnsafeMutableBytes { buffer in
+        CMIOObjectGetPropertyData(
+            CMIOObjectID(kCMIOObjectSystemObject),
+            &devicesAddress,
+            0,
+            nil,
+            devicesDataSize,
+            &devicesDataUsed,
+            buffer.baseAddress!
+        )
+    }
+    guard devicesStatus == noErr else { return false }
+
+    let returnedDeviceCount = Int(devicesDataUsed) / MemoryLayout<CMIOObjectID>.size
+    return deviceIDs.prefix(returnedDeviceCount).contains { deviceID in
+        var runningAddress = CMIOObjectPropertyAddress(
+            mSelector: CMIOObjectPropertySelector(
+                kCMIODevicePropertyDeviceIsRunningSomewhere
+            ),
+            mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
+            mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain)
+        )
+        var isRunning: UInt32 = 0
+        var runningDataUsed: UInt32 = 0
+        let runningDataSize = UInt32(MemoryLayout<UInt32>.size)
+        return CMIOObjectGetPropertyData(
+            deviceID,
+            &runningAddress,
+            0,
+            nil,
+            runningDataSize,
+            &runningDataUsed,
+            &isRunning
+        ) == noErr && isRunning != 0
+    }
 }
 
 /// Interprets IOPMCopyAssertionsByProcess output while ignoring PanelCtl's own
@@ -208,25 +270,34 @@ struct BlackoutPolicy {
     let timeout: TimeInterval?
     let sleepAfter: TimeInterval?
     let deferPlayback: Bool
+    let deferCamera: Bool
 
     init(
         idleAfter: TimeInterval?,
         timeout: TimeInterval?,
         sleepAfter: TimeInterval?,
-        deferPlayback: Bool = true
+        deferPlayback: Bool = true,
+        deferCamera: Bool = false
     ) {
         self.idleAfter = idleAfter
         self.timeout = timeout
         self.sleepAfter = sleepAfter
         self.deferPlayback = deferPlayback
+        self.deferCamera = deferCamera
     }
 
     func shouldBegin(idleSeconds: TimeInterval) -> Bool {
         idleAfter.map { idleSeconds >= $0 } ?? true
     }
 
-    func shouldDeferForPlayback(assertionActive: Bool, immediateBlackoutRequested: Bool) -> Bool {
-        deferPlayback && idleAfter != nil && assertionActive && !immediateBlackoutRequested
+    func shouldDeferForActivity(
+        assertionActive: Bool,
+        cameraActive: Bool,
+        immediateBlackoutRequested: Bool
+    ) -> Bool {
+        idleAfter != nil &&
+            ((deferPlayback && assertionActive) || (deferCamera && cameraActive)) &&
+            !immediateBlackoutRequested
     }
 
     func hasNewInput(_ sample: IdleSample, after baselineUptime: TimeInterval) -> Bool {
@@ -267,6 +338,7 @@ public final class BlackoutController {
     private let idleSource: IdleTimeSource
     private let uptime: () -> TimeInterval
     private let playbackAssertionActive: () -> Bool
+    private let cameraCaptureActive: () -> Bool
     private let stateHandler: ((BlackoutRuntimeState) -> Void)?
 
     public convenience init() {
@@ -274,6 +346,7 @@ public final class BlackoutController {
             idleSource: CombinedSessionIdleTimeSource(),
             uptime: { ProcessInfo.processInfo.systemUptime },
             playbackAssertionActive: playbackAssertionIsActive,
+            cameraCaptureActive: cameraCaptureIsActive,
             stateHandler: nil
         )
     }
@@ -283,6 +356,7 @@ public final class BlackoutController {
             idleSource: CombinedSessionIdleTimeSource(),
             uptime: { ProcessInfo.processInfo.systemUptime },
             playbackAssertionActive: playbackAssertionIsActive,
+            cameraCaptureActive: cameraCaptureIsActive,
             stateHandler: stateHandler
         )
     }
@@ -291,11 +365,13 @@ public final class BlackoutController {
         idleSource: IdleTimeSource,
         uptime: @escaping () -> TimeInterval,
         playbackAssertionActive: @escaping () -> Bool = playbackAssertionIsActive,
+        cameraCaptureActive: @escaping () -> Bool = cameraCaptureIsActive,
         stateHandler: ((BlackoutRuntimeState) -> Void)? = nil
     ) {
         self.idleSource = idleSource
         self.uptime = uptime
         self.playbackAssertionActive = playbackAssertionActive
+        self.cameraCaptureActive = cameraCaptureActive
         self.stateHandler = stateHandler
     }
 
@@ -329,7 +405,8 @@ public final class BlackoutController {
             idleAfter: options.idleAfter,
             timeout: options.timeout,
             sleepAfter: options.sleepAfter,
-            deferPlayback: options.deferPlayback
+            deferPlayback: options.deferPlayback,
+            deferCamera: options.deferCamera
         )
         if !watchMode {
             guard let activation = try waitUntilReady(policy: policy) else {
@@ -657,8 +734,8 @@ public final class BlackoutController {
         policy: BlackoutPolicy
     ) throws -> (sample: IdleSample, forced: Bool)? {
         var reportedState: BlackoutRuntimeState?
-        var playbackWasActive = false
-        var playbackDeferralUptime: TimeInterval?
+        var deferredActivityWasActive = false
+        var activityDeferralUptime: TimeInterval?
         func reportState(_ state: BlackoutRuntimeState) {
             guard reportedState != state else { return }
             reportedState = state
@@ -672,32 +749,34 @@ public final class BlackoutController {
                 !watchState.mayBeginCycle &&
                 !immediateBlackoutRequested
             if screensAreSuspended {
-                playbackWasActive = false
-                playbackDeferralUptime = nil
+                deferredActivityWasActive = false
+                activityDeferralUptime = nil
                 reportState(.sleeping)
             } else if waitsForInput {
-                playbackWasActive = false
-                playbackDeferralUptime = nil
+                deferredActivityWasActive = false
+                activityDeferralUptime = nil
                 reportState(.waitingForInput)
             } else {
-                let defersForPlayback = policy.shouldDeferForPlayback(
-                    assertionActive: policy.deferPlayback &&
-                        policy.idleAfter != nil &&
-                        !immediateBlackoutRequested &&
-                        playbackAssertionActive(),
+                let canAutomaticallyDefer = policy.idleAfter != nil &&
+                    !immediateBlackoutRequested
+                let defersForActivity = policy.shouldDeferForActivity(
+                    assertionActive: canAutomaticallyDefer &&
+                        policy.deferPlayback && playbackAssertionActive(),
+                    cameraActive: canAutomaticallyDefer &&
+                        policy.deferCamera && cameraCaptureActive(),
                     immediateBlackoutRequested: immediateBlackoutRequested
                 )
-                if defersForPlayback {
-                    playbackWasActive = true
-                    playbackDeferralUptime = nil
+                if defersForActivity {
+                    deferredActivityWasActive = true
+                    activityDeferralUptime = nil
                     reportState(.waitingForPlayback)
                     try ensureAssertions()
                     runLoopTick()
                     continue
                 }
-                if playbackWasActive {
-                    playbackWasActive = false
-                    playbackDeferralUptime = uptime()
+                if deferredActivityWasActive {
+                    deferredActivityWasActive = false
+                    activityDeferralUptime = uptime()
                 }
                 reportState(.waiting)
             }
@@ -725,12 +804,12 @@ public final class BlackoutController {
             }
             let activationSample = manualActivityUptime.map {
                 sample.applyingSyntheticActivity(at: $0)
-            } ?? playbackDeferralUptime.map {
+            } ?? activityDeferralUptime.map {
                 sample.applyingSyntheticActivity(at: $0)
             } ?? sample
             if policy.shouldBegin(idleSeconds: activationSample.seconds) {
                 manualActivityUptime = nil
-                playbackDeferralUptime = nil
+                activityDeferralUptime = nil
                 return (activationSample, false)
             }
             runLoopTick()

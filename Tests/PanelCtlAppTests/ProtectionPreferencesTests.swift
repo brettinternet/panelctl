@@ -89,6 +89,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertTrue(defaults.keepDisplaysAwake)
         XCTAssertFalse(defaults.dimDisplaysDuringBlackout)
         XCTAssertTrue(defaults.deferBlackoutDuringPlayback)
+        XCTAssertFalse(defaults.deferBlackoutWhileCameraInUse)
 
         var preferences = defaults
         preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
@@ -122,6 +123,17 @@ final class ProtectionPreferencesTests: XCTestCase {
         )
     }
 
+    func testCameraDeferralOptInEmitsFlag() throws {
+        var preferences = ProtectionPreferences()
+        preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
+        preferences.deferBlackoutWhileCameraInUse = true
+
+        XCTAssertEqual(
+            try preferences.commandArguments(for: displays).last,
+            "--defer-camera"
+        )
+    }
+
     func testLegacyPreferencesDefaultDimmingOff() throws {
         let legacy = Data(#"{"isEnabled":true,"idleSeconds":120,"followUpAction":"restore","followUpSeconds":15,"caffeinate":false,"allDisplays":false,"selectedDisplayUUIDs":["AAAA-UUID"],"didChooseDisplays":true}"#.utf8)
 
@@ -138,6 +150,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertTrue(preferences.didChooseDisplays)
         XCTAssertFalse(preferences.dimDisplaysDuringBlackout)
         XCTAssertTrue(preferences.deferBlackoutDuringPlayback)
+        XCTAssertFalse(preferences.deferBlackoutWhileCameraInUse)
     }
 
     func testInvalidDurationsAreRejectedBeforeIntegerConversion() {
@@ -282,7 +295,7 @@ final class ProtectionPreferencesTests: XCTestCase {
     }
 
     @MainActor
-    func testPlaybackStatusPropagatesFromHelper() async throws {
+    func testDeferredActivityStatusPropagatesFromHelper() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("panelctl-playback-status-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -301,7 +314,10 @@ final class ProtectionPreferencesTests: XCTestCase {
         let service = ProtectionService()
         service.run(arguments: ["blackout"])
         try await waitUntil { service.state == .waitingForPlayback }
-        XCTAssertEqual(service.state.label, "Playback detected — automatic blackout paused")
+        XCTAssertEqual(
+            service.state.label,
+            "Active media or camera detected — blackout paused"
+        )
 
         let stopped = expectation(description: "watcher stopped")
         service.shutdown { stopped.fulfill() }

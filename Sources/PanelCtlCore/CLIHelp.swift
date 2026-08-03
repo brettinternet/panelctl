@@ -43,8 +43,10 @@ public enum CLIHelp {
             macOS may sleep the Mac sooner, and the assertion applies globally. --dim
             experimentally lowers supported external displays to minimum DDC
             luminance, restoring their original values before blackout ends or sleep.
-            --ignore-playback disables system-wide playback/presentation/screen-sharing
-            detection and allows automatic blackout during those activities.
+            By default, automatic blackout defers while another app keeps the display
+            awake; --ignore-playback disables that system-wide detection.
+            --defer-camera additionally defers while any camera is in use without
+            accessing its video. Manual blackout-now commands are never deferred.
 
             Selectors accept a display UUID or decimal/hex CG display ID. Use
             --index <n> or index:<n> for the one-based index from `panelctl list`.

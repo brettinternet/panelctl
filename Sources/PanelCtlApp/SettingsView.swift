@@ -125,11 +125,21 @@ struct SettingsView: View {
                 }
                 Divider()
                 Toggle(
-                    "Defer blackout during playback or presentations",
+                    "Defer when another app keeps the display awake",
                     isOn: preferenceBinding(\.deferBlackoutDuringPlayback)
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Text("Detection is system-wide, not per display, and may include playback, presentations, or screen sharing.")
+                Text("System-wide detection commonly includes playback, presentations, and screen sharing.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Toggle(
+                    "Also defer while a camera is in use",
+                    isOn: preferenceBinding(\.deferBlackoutWhileCameraInUse)
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Text("Useful for calls whose apps do not keep the display awake. Detection is system-wide and does not access camera video.")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)

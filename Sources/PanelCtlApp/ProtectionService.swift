@@ -25,7 +25,7 @@ enum ProtectionRuntimeState: Equatable {
         case .starting: return "Starting…"
         case .waiting: return "Watching for inactivity"
         case .waitingForInput: return "Waiting for activity"
-        case .waitingForPlayback: return "Playback detected — automatic blackout paused"
+        case .waitingForPlayback: return "Active media or camera detected — blackout paused"
         case .blackedOut: return "Blackout active"
         case .sleeping: return "Displays sleeping"
         case .stopping: return "Stopping…"
@@ -55,7 +55,7 @@ enum ProtectionRuntimeState: Equatable {
     var detailMessage: String? {
         switch self {
         case .waitingForDisplays(let message), .failed(let message): return message
-        case .waitingForPlayback: return "An active display-sleep prevention assertion was detected. The idle countdown restarts when playback ends."
+        case .waitingForPlayback: return "Another app is keeping the display awake or using a camera. The full idle countdown restarts when that activity ends."
         case .snoozed(let until):
             return "Resumes \(until.formatted(date: .abbreviated, time: .shortened))"
         default: return nil

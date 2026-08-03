@@ -57,6 +57,7 @@ struct ProtectionPreferences: Codable, Equatable {
     var didChooseDisplays = false
     var dimDisplaysDuringBlackout = false
     var deferBlackoutDuringPlayback = true
+    var deferBlackoutWhileCameraInUse = false
 
     private enum CodingKeys: String, CodingKey {
         case isEnabled
@@ -69,6 +70,7 @@ struct ProtectionPreferences: Codable, Equatable {
         case didChooseDisplays
         case dimDisplaysDuringBlackout
         case deferBlackoutDuringPlayback
+        case deferBlackoutWhileCameraInUse
     }
 
     init() {}
@@ -85,6 +87,10 @@ struct ProtectionPreferences: Codable, Equatable {
         didChooseDisplays = try values.decodeIfPresent(Bool.self, forKey: .didChooseDisplays) ?? false
         dimDisplaysDuringBlackout = try values.decodeIfPresent(Bool.self, forKey: .dimDisplaysDuringBlackout) ?? false
         deferBlackoutDuringPlayback = try values.decodeIfPresent(Bool.self, forKey: .deferBlackoutDuringPlayback) ?? true
+        deferBlackoutWhileCameraInUse = try values.decodeIfPresent(
+            Bool.self,
+            forKey: .deferBlackoutWhileCameraInUse
+        ) ?? false
     }
 
     func commandArguments(for displays: [DisplayRecord]) throws -> [String] {
@@ -170,6 +176,9 @@ struct ProtectionPreferences: Codable, Equatable {
         }
         if !deferBlackoutDuringPlayback {
             arguments.append("--ignore-playback")
+        }
+        if deferBlackoutWhileCameraInUse {
+            arguments.append("--defer-camera")
         }
         return arguments
     }
