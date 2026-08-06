@@ -52,6 +52,8 @@ use UUIDs. Durations accept seconds or an `s`, `m`, or `h` suffix.
 
 Run `panelctl help` or `panelctl <command> --help` for all options.
 
+![settings screenshot](./docs/settings.png)
+
 ### Blackout behavior
 
 When the pointer is on a blacked-out display, the menu-bar app takes focus so
