@@ -139,6 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateBlackoutFocus()
     }
 
+
     private func configureStatusItem() {
         guard model.showMenuBarIcon, statusItem == nil else { return }
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)

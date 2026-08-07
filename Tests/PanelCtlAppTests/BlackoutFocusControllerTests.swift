@@ -45,13 +45,42 @@ final class BlackoutFocusControllerTests: XCTestCase {
             requestActivation: { panelIsActive = true },
             panelIsActive: { panelIsActive },
             hideCursor: { events.append("hide"); return .success },
-            showCursor: { events.append("show"); return .success }
+            restoreCursor: { _ in events.append("show"); return .success }
         )
         let controller = BlackoutFocusController(operations: operations)
         controller.enter(targetFrames: [CGRect(x: 0, y: 0, width: 10_000, height: 10_000)])
         controller.leave()
 
         XCTAssertEqual(events, ["window-show", "hide", "show", "window-close", "yield", "activate"])
+    }
+
+    func testLeavingRestoresTheCapturedCursor() {
+        let cursor = NSCursor(image: NSImage(size: NSSize(width: 2, height: 2)), hotSpot: .zero)
+        var restoredCursor: NSCursor?
+        let operations = makeOperations(
+            currentCursor: { cursor },
+            restoreCursor: {
+                restoredCursor = $0
+                return .success
+            }
+        )
+        let controller = BlackoutFocusController(operations: operations)
+
+        controller.enter(targetFrames: [CGRect(x: 0, y: 0, width: 10_000, height: 10_000)])
+        controller.leave()
+
+        XCTAssertTrue(restoredCursor === cursor)
+    }
+
+    func testTransparentCursorHasTransparentPixel() throws {
+        let representation = try XCTUnwrap(
+            BlackoutFocusOperations.transparentCursor.image.representations
+                .compactMap { $0 as? NSBitmapImageRep }
+                .first
+        )
+
+        let bytes = UnsafeBufferPointer(start: try XCTUnwrap(representation.bitmapData), count: 4)
+        XCTAssertEqual(Array(bytes), [0, 0, 0, 0])
     }
 
     func testDelayedActivationHidesOnlyAfterConfirmation() {
@@ -89,31 +118,42 @@ final class BlackoutFocusControllerTests: XCTestCase {
         XCTAssertEqual(hideCount, 0)
     }
 
-    func testResignDoesNotRestoreFocusToPreviousApplication() {
+    func testResignReactivatesFocusProxyWithoutRestoringPreviousApplication() {
         var panelIsActive = false
-        var activationCount = 0
+        var previousActivationCount = 0
+        var panelActivationCount = 0
+        var hideCount = 0
+        var showCount = 0
         let previous = BlackoutPreviousApplication(
             processIdentifier: 42,
             isRunning: { true },
             activate: {
-                activationCount += 1
+                previousActivationCount += 1
                 return true
             }
         )
         let operations = makeOperations(
             frontmost: { previous },
-            requestActivation: { panelIsActive = true },
+            requestActivation: {
+                panelActivationCount += 1
+                panelIsActive = true
+            },
             panelIsActive: { panelIsActive },
-            hideCursor: { .success },
-            showCursor: { .success }
+            hideCursor: { hideCount += 1; return .success },
+            restoreCursor: { _ in showCount += 1; return .success }
         )
         let controller = BlackoutFocusController(operations: operations)
-        controller.enter(targetFrames: [CGRect(x: 0, y: 0, width: 10_000, height: 10_000)])
-        NotificationCenter.default.post(name: NSApplication.willResignActiveNotification, object: nil)
-        panelIsActive = false
-        controller.leave()
+        let target = CGRect(x: 0, y: 0, width: 10_000, height: 10_000)
 
-        XCTAssertEqual(activationCount, 0)
+        controller.enter(targetFrames: [target])
+        panelIsActive = false
+        NotificationCenter.default.post(name: NSApplication.willResignActiveNotification, object: nil)
+        controller.enter(targetFrames: [target])
+
+        XCTAssertEqual(previousActivationCount, 0)
+        XCTAssertEqual(panelActivationCount, 2)
+        XCTAssertEqual(hideCount, 2)
+        XCTAssertEqual(showCount, 1)
     }
 
     func testRepeatedEnterAndLeaveAreIdempotent() {
@@ -121,7 +161,7 @@ final class BlackoutFocusControllerTests: XCTestCase {
         var showCount = 0
         let operations = makeOperations(
             hideCursor: { hideCount += 1; return .success },
-            showCursor: { showCount += 1; return .success }
+            restoreCursor: { _ in showCount += 1; return .success }
         )
         let controller = BlackoutFocusController(operations: operations)
 
@@ -146,7 +186,7 @@ final class BlackoutFocusControllerTests: XCTestCase {
         let operations = makeOperations(
             frontmost: { previous },
             hideCursor: { .success },
-            showCursor: { showResults.removeFirst() },
+            restoreCursor: { _ in showResults.removeFirst() },
             schedule: { pending = $0 }
         )
         let controller = BlackoutFocusController(operations: operations)
@@ -173,7 +213,7 @@ final class BlackoutFocusControllerTests: XCTestCase {
         let operations = makeOperations(
             frontmost: { previous },
             mouseLocation: { mouseLocation },
-            showCursor: { showCount += 1; return .success }
+            restoreCursor: { _ in showCount += 1; return .success }
         )
         let controller = BlackoutFocusController(operations: operations)
         let target = CGRect(x: 0, y: 0, width: 10, height: 10)
@@ -185,6 +225,63 @@ final class BlackoutFocusControllerTests: XCTestCase {
         XCTAssertEqual(showCount, 1)
         XCTAssertEqual(activationCount, 1)
         XCTAssertFalse(controller.isEngaged)
+    }
+
+    func testReentryWaitsForPreviousApplicationToDeactivate() {
+        var mouseLocation = CGPoint(x: 5, y: 5)
+        var panelIsActive = true
+        var proxyCount = 0
+        var activationRequests = 0
+        var hideCount = 0
+        var showCount = 0
+        var previousActivationRequests = 0
+        let previous = BlackoutPreviousApplication(
+            processIdentifier: 42,
+            isRunning: { true },
+            activate: {
+                previousActivationRequests += 1
+                return true
+            }
+        )
+        let operations = makeOperations(
+            frontmost: { previous },
+            makeProxyWindow: { _ in
+                proxyCount += 1
+                return BlackoutFocusWindow(show: {}, close: {})
+            },
+            requestActivation: {
+                activationRequests += 1
+                panelIsActive = true
+            },
+            panelIsActive: { panelIsActive },
+            mouseLocation: { mouseLocation },
+            hideCursor: { hideCount += 1; return .success },
+            restoreCursor: { _ in showCount += 1; return .success }
+        )
+        let controller = BlackoutFocusController(operations: operations)
+        let target = CGRect(x: 0, y: 0, width: 10, height: 10)
+
+        controller.enter(targetFrames: [target])
+        mouseLocation = CGPoint(x: 20, y: 20)
+        controller.enter(targetFrames: [target])
+        mouseLocation = CGPoint(x: 5, y: 5)
+        controller.enter(targetFrames: [target])
+
+        XCTAssertEqual(proxyCount, 1)
+        XCTAssertEqual(activationRequests, 1)
+        XCTAssertEqual(hideCount, 1)
+        XCTAssertEqual(showCount, 1)
+        XCTAssertEqual(previousActivationRequests, 1)
+
+        panelIsActive = false
+        NotificationCenter.default.post(name: NSApplication.willResignActiveNotification, object: nil)
+        XCTAssertEqual(showCount, 1)
+
+        controller.enter(targetFrames: [target])
+
+        XCTAssertEqual(proxyCount, 2)
+        XCTAssertEqual(activationRequests, 2)
+        XCTAssertEqual(hideCount, 2)
     }
 
     func testBlackoutRestoreKeyAcceptsOnlyPlainNonRepeatingEscape() throws {
@@ -255,8 +352,9 @@ final class BlackoutFocusControllerTests: XCTestCase {
         requestActivation: @escaping () -> Void = {},
         panelIsActive: @escaping () -> Bool = { true },
         mouseLocation: @escaping () -> CGPoint = { CGPoint(x: 5, y: 5) },
+        currentCursor: @escaping () -> NSCursor = { .arrow },
         hideCursor: @escaping () -> CGError = { .success },
-        showCursor: @escaping () -> CGError = { .success },
+        restoreCursor: @escaping (NSCursor) -> CGError = { _ in .success },
         schedule: @escaping (@escaping () -> Void) -> Void = { $0() },
         activationTimeout: TimeInterval = 0.5
     ) -> BlackoutFocusOperations {
@@ -267,8 +365,9 @@ final class BlackoutFocusControllerTests: XCTestCase {
             requestActivation: requestActivation,
             panelIsActive: panelIsActive,
             mouseLocation: mouseLocation,
+            currentCursor: currentCursor,
             hideCursor: hideCursor,
-            showCursor: showCursor,
+            restoreCursor: restoreCursor,
             schedule: schedule,
             activationTimeout: activationTimeout
         )

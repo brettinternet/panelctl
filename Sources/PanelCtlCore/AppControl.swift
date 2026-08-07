@@ -194,24 +194,28 @@ public struct AppControlClient {
     private let launch: () throws -> Void
     private let sleep: (TimeInterval) -> Void
     private let now: () -> Date
+    private let isAppRunning: () -> Bool
 
     public init() throws {
         socketPath = try AppControlSocket.path()
         launch = Self.launchInstalledApp
         sleep = { Thread.sleep(forTimeInterval: $0) }
         now = Date.init
+        isAppRunning = { Self.isAppRunning }
     }
 
     init(
         socketPath: String,
         launch: @escaping () throws -> Void,
         sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        isAppRunning: @escaping () -> Bool = { Self.isAppRunning }
     ) throws {
         self.socketPath = socketPath
         self.launch = launch
         self.sleep = sleep
         self.now = now
+        self.isAppRunning = isAppRunning
     }
 
     /// Sends one request.  Status never starts the app; mutating commands
@@ -238,7 +242,7 @@ public struct AppControlClient {
             return try send(command, durationSeconds: durationSeconds)
         } catch let error as AppControlTransportError {
             if command == .status {
-                if !error.requestBytesWritten, !Self.isAppRunning {
+                if !error.requestBytesWritten, !isAppRunning() {
                     return .unavailable(error.description)
                 }
                 throw AppControlError.transport(error.description)
@@ -247,7 +251,7 @@ public struct AppControlClient {
                 throw AppControlError.transport(error.description)
             }
             let startupDeadline = now().addingTimeInterval(max(0, deadline))
-            if Self.isAppRunning {
+            if isAppRunning() {
                 while now() < startupDeadline {
                     if Self.canConnect(to: socketPath) {
                         do {

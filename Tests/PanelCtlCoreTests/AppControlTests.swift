@@ -79,7 +79,8 @@ final class AppControlTests: XCTestCase {
         var launched = false
         let client = try AppControlClient(
             socketPath: "/private/tmp/panelctl-test-no-such-socket-\(UUID().uuidString)",
-            launch: { launched = true }
+            launch: { launched = true },
+            isAppRunning: { false }
         )
         let response = try client.execute(.status)
         XCTAssertFalse(launched)

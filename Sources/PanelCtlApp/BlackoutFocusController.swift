@@ -71,8 +71,9 @@ struct BlackoutFocusOperations {
     let requestActivation: () -> Void
     let panelIsActive: () -> Bool
     let mouseLocation: () -> CGPoint
+    let currentCursor: () -> NSCursor
     let hideCursor: () -> CGError
-    let showCursor: () -> CGError
+    let restoreCursor: (NSCursor) -> CGError
     let schedule: (@escaping () -> Void) -> Void
     let activationTimeout: TimeInterval
 
@@ -83,8 +84,15 @@ struct BlackoutFocusOperations {
         requestActivation: @escaping () -> Void = { NSApp.activate(ignoringOtherApps: true) },
         panelIsActive: @escaping () -> Bool = { NSApp.isActive },
         mouseLocation: @escaping () -> CGPoint = { NSEvent.mouseLocation },
-        hideCursor: @escaping () -> CGError = { CGDisplayHideCursor(CGMainDisplayID()) },
-        showCursor: @escaping () -> CGError = { CGDisplayShowCursor(CGMainDisplayID()) },
+        currentCursor: @escaping () -> NSCursor = { NSCursor.current },
+        hideCursor: @escaping () -> CGError = {
+            BlackoutFocusOperations.transparentCursor.set()
+            return .success
+        },
+        restoreCursor: @escaping (NSCursor) -> CGError = {
+            $0.set()
+            return .success
+        },
         schedule: @escaping (@escaping () -> Void) -> Void = { callback in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.01, execute: callback)
         },
@@ -96,12 +104,32 @@ struct BlackoutFocusOperations {
         self.requestActivation = requestActivation
         self.panelIsActive = panelIsActive
         self.mouseLocation = mouseLocation
+        self.currentCursor = currentCursor
         self.hideCursor = hideCursor
-        self.showCursor = showCursor
+        self.restoreCursor = restoreCursor
         self.schedule = schedule
         self.activationTimeout = activationTimeout
     }
 
+
+    static let transparentCursor: NSCursor = {
+        let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 1,
+            pixelsHigh: 1,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        )!
+        bitmap.setColor(NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0), atX: 0, y: 0)
+        let image = NSImage(size: NSSize(width: 1, height: 1))
+        image.addRepresentation(bitmap)
+        return NSCursor(image: image, hotSpot: .zero)
+    }()
     private static func defaultFrontmostApplication() -> BlackoutPreviousApplication? {
         guard let application = NSWorkspace.shared.frontmostApplication else { return nil }
         return BlackoutPreviousApplication(
@@ -142,6 +170,9 @@ final class BlackoutFocusController {
     private var cursorHidden = false
     private var ownsActivation = false
     private var activationDeadline = Date.distantPast
+    private var activationInFlight = false
+    private var waitingForPreviousApplicationActivation = false
+    private var cursorBeforeHide: NSCursor?
     private var willResignObserver: NSObjectProtocol?
     private let requestRestore: () -> Bool
     private var escapeRestoreInFlight = false
@@ -168,12 +199,21 @@ final class BlackoutFocusController {
     }
 
     func enter(targetFrames: [CGRect]) {
-        let cursorIsInsideTarget = targetFrames.contains { $0.contains(operations.mouseLocation()) }
-        if proxyWindow != nil, !cursorIsInsideTarget {
-            leave()
+        let cursorIsInsideTarget = targetFrames.contains {
+            $0.contains(operations.mouseLocation())
+        }
+        guard cursorIsInsideTarget else {
+            if proxyWindow != nil { leave() }
             return
         }
-        guard proxyWindow == nil, cursorIsInsideTarget else { return }
+        if waitingForPreviousApplicationActivation {
+            guard !operations.panelIsActive() else { return }
+            waitingForPreviousApplicationActivation = false
+        }
+        if proxyWindow != nil {
+            beginActivation()
+            return
+        }
         previousApplication = operations.frontmostApplication().flatMap {
             $0.processIdentifier == operations.currentProcessIdentifier ? nil : $0
         }
@@ -182,9 +222,7 @@ final class BlackoutFocusController {
         }
         proxyWindow = window
         window.show()
-        operations.requestActivation()
-        activationDeadline = Date(timeIntervalSinceNow: operations.activationTimeout)
-        waitForActivation()
+        beginActivation()
     }
 
     func leave() {
@@ -196,16 +234,29 @@ final class BlackoutFocusController {
         proxyWindow = nil
         let wasOwned = ownsActivation
         ownsActivation = false
+        activationInFlight = false
         escapeRestoreInFlight = false
-        restorePreviousApplicationIfOwned(wasOwned: wasOwned)
+        waitingForPreviousApplicationActivation = restorePreviousApplicationIfOwned(
+            wasOwned: wasOwned
+        )
     }
 
     func shutdown() { leave() }
 
+    private func beginActivation() {
+        guard proxyWindow != nil, !ownsActivation, !activationInFlight else { return }
+        activationInFlight = true
+        operations.requestActivation()
+        activationDeadline = Date(timeIntervalSinceNow: operations.activationTimeout)
+        waitForActivation()
+    }
+
     private func waitForActivation() {
-        guard proxyWindow != nil else { return }
+        guard proxyWindow != nil, activationInFlight else { return }
         guard !operations.panelIsActive() else {
+            activationInFlight = false
             ownsActivation = true
+            if !cursorHidden { cursorBeforeHide = operations.currentCursor() }
             if operations.hideCursor() == .success { cursorHidden = true }
             return
         }
@@ -229,15 +280,21 @@ final class BlackoutFocusController {
 
     private func restoreCursor() -> Bool {
         guard cursorHidden else { return true }
-        if operations.showCursor() == .success { cursorHidden = false }
+        if operations.restoreCursor(cursorBeforeHide ?? .arrow) == .success {
+            cursorHidden = false
+            cursorBeforeHide = nil
+        }
         return !cursorHidden
     }
 
-    private func restorePreviousApplicationIfOwned(wasOwned: Bool) {
-        guard let previousApplication else { return }
+    @discardableResult
+    private func restorePreviousApplicationIfOwned(wasOwned: Bool) -> Bool {
+        guard let previousApplication else { return false }
         self.previousApplication = nil
-        guard wasOwned, operations.panelIsActive(), previousApplication.isRunning() else { return }
+        guard wasOwned, operations.panelIsActive(), previousApplication.isRunning() else { return false }
         previousApplication.yieldActivation()
-        if !previousApplication.activate() { self.previousApplication = previousApplication }
+        if previousApplication.activate() { return true }
+        self.previousApplication = previousApplication
+        return false
     }
 }
