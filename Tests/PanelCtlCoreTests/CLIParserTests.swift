@@ -148,7 +148,7 @@ final class CLIParserTests: XCTestCase {
         XCTAssertEqual(try CLIParser.parse(["help", "blackout"]), .help(command: "blackout"))
         XCTAssertEqual(try CLIParser.parse(["blackout", "-h"]), .help(command: "blackout"))
         XCTAssertEqual(try CLIParser.parse(["--version"]), .version)
-        XCTAssertEqual(CLIHelp.version, "panelctl 0.3.12")
+        XCTAssertEqual(CLIHelp.version, "panelctl 0.3.13")
         XCTAssertTrue(CLIHelp.text(for: "app").contains("snooze --for <duration>"))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--watch"))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--dim"))

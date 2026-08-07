@@ -98,6 +98,49 @@ final class BlackoutPolicyTests: XCTestCase {
         XCTAssertTrue(policy.hasNewInput(IdleSample(seconds: 0, lastInputUptime: 101), after: 100))
     }
 
+    func testManualCommandReceiptBaselineIgnoresPriorInput() {
+        let policy = BlackoutPolicy(idleAfter: nil, timeout: nil, sleepAfter: nil)
+        let receiptUptime: TimeInterval = 100
+        let baseline = BlackoutController.manualActivationBaseline(
+            IdleSample(seconds: 0.2, lastInputUptime: 99.9),
+            acceptedAt: receiptUptime
+        )
+
+        XCTAssertFalse(
+            policy.hasNewInput(
+                IdleSample(seconds: 0.001, lastInputUptime: receiptUptime),
+                after: baseline.lastInputUptime
+            )
+        )
+        XCTAssertTrue(
+            policy.hasNewInput(
+                IdleSample(seconds: 0, lastInputUptime: receiptUptime + 0.01),
+                after: baseline.lastInputUptime
+            )
+        )
+    }
+
+    func testManualCommandReceiptBaselinePreservesPostReceiptInput() {
+        let policy = BlackoutPolicy(idleAfter: nil, timeout: nil, sleepAfter: nil)
+        let receiptUptime: TimeInterval = 100
+        let postReceiptInput = IdleSample(
+            seconds: 0.2,
+            lastInputUptime: receiptUptime + 0.01
+        )
+        let baseline = BlackoutController.manualActivationBaseline(
+            postReceiptInput,
+            acceptedAt: receiptUptime
+        )
+
+        XCTAssertEqual(baseline.lastInputUptime, receiptUptime)
+        XCTAssertTrue(
+            policy.hasNewInput(
+                postReceiptInput,
+                after: baseline.lastInputUptime
+            )
+        )
+    }
+
     func testLimitActionsAreInclusive() {
         let timeout = BlackoutPolicy(idleAfter: nil, timeout: 10, sleepAfter: nil)
         XCTAssertEqual(timeout.limitAction(elapsed: 9.999), .none)

@@ -472,6 +472,10 @@ public final class BlackoutController {
                     stateHandler?(.sleeping)
                 }
             } else {
+                // The input that launched the command can be reported after
+                // its request reaches the watcher. Treat it as pre-existing;
+                // input after this receipt time still restores the blackout.
+                manualActivityUptime = uptime()
                 immediateBlackoutRequested = true
             }
         case .restore:
@@ -793,7 +797,7 @@ public final class BlackoutController {
                watchState.suspensions.isEmpty {
                 watchState.acceptManualActivity()
                 let activationSample = manualActivityUptime.map {
-                    sample.applyingSyntheticActivity(at: $0)
+                    Self.manualActivationBaseline(sample, acceptedAt: $0)
                 } ?? sample
                 manualActivityUptime = nil
                 return (activationSample, true)
@@ -859,9 +863,21 @@ public final class BlackoutController {
             hideWindows()
             throw BlackoutError.idleMonitoringUnavailable
         }
+
         let sample = IdleSample(seconds: seconds, lastInputUptime: now - seconds)
         lastInputUptime = sample.lastInputUptime
         return sample
+    }
+
+    static func manualActivationBaseline(
+        _ sample: IdleSample,
+        acceptedAt uptime: TimeInterval
+    ) -> IdleSample {
+        let sampleUptime = sample.lastInputUptime + sample.seconds
+        return IdleSample(
+            seconds: max(0, sampleUptime - uptime),
+            lastInputUptime: uptime
+        )
     }
 
     private func consumeFreshInput(_ sample: IdleSample) -> Bool {
