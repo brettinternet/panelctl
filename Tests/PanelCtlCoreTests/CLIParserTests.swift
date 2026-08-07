@@ -63,6 +63,11 @@ final class CLIParserTests: XCTestCase {
         ])) {
             XCTAssertEqual($0 as? CLIParseError, .persistentDimming)
         }
+        XCTAssertThrowsError(try CLIParser.parse([
+            "blackout", "--all", "--keep-blackout-on-input", "--dim"
+        ])) {
+            XCTAssertEqual($0 as? CLIParseError, .persistentDimming)
+        }
     }
 
     func testAllBlackoutSafetyOptions() throws {

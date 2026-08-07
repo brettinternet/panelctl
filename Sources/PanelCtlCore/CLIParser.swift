@@ -273,13 +273,13 @@ public enum CLIParser {
             }
             i += 1
         }
+        if keepBlackoutOnInput && dimDisplays { throw CLIParseError.persistentDimming }
         if watch && idleAfter == nil { throw CLIParseError.watchRequiresIdleAfter }
         if all && !selectors.isEmpty { throw CLIParseError.conflictingTargets }
         if !all && selectors.isEmpty { throw CLIParseError.noDisplays }
         if timeout != nil && sleepAfter != nil { throw CLIParseError.conflictingBlackoutLimits }
         if keepDisplaysAwake && sleepAfter == nil { throw CLIParseError.keepDisplaysAwakeRequiresSleepAfter }
         if all && timeout == nil && sleepAfter == nil { throw CLIParseError.allRequiresLimit }
-        if keepBlackoutOnInput && dimDisplays { throw CLIParseError.persistentDimming }
         return .blackout(BlackoutOptions(selectors: selectors, all: all, idleAfter: idleAfter, timeout: timeout, sleepAfter: sleepAfter, caffeinate: caffeinate, keepDisplaysAwake: keepDisplaysAwake, watch: watch, keepBlackoutOnInput: keepBlackoutOnInput, dimDisplays: dimDisplays, deferPlayback: deferPlayback, deferCamera: deferCamera))
     }
 
