@@ -86,7 +86,12 @@ struct SettingsView: View {
                 settingRow("After blackout") {
                     Picker("", selection: preferenceBinding(\.followUpAction)) {
                         ForEach(FollowUpAction.allCases) { action in
-                            Text(action.title).tag(action)
+                            Text(
+                                action == .untilActivity && model.preferences.keepBlackoutOnInput
+                                    ? "Stay black until restored"
+                                    : action.title
+                            )
+                            .tag(action)
                         }
                     }
                     .labelsHidden()
@@ -123,6 +128,17 @@ struct SettingsView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                Divider()
+                Toggle(
+                    "Keep blacked-out displays black during activity",
+                    isOn: preferenceBinding(\.keepBlackoutOnInput)
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Text("While another display remains usable, activity restarts the Restore or Sleep timer. When every display is blacked out, the timer remains fixed. Press Escape with the pointer on a blacked display to restore.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
                 Divider()
                 Toggle(
                     "Defer when another app keeps the display awake",

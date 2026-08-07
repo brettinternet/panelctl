@@ -88,6 +88,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertEqual(defaults.followUpSeconds, 30 * 60)
         XCTAssertTrue(defaults.keepDisplaysAwake)
         XCTAssertFalse(defaults.dimDisplaysDuringBlackout)
+        XCTAssertFalse(defaults.keepBlackoutOnInput)
         XCTAssertTrue(defaults.deferBlackoutDuringPlayback)
         XCTAssertFalse(defaults.deferBlackoutWhileCameraInUse)
 
@@ -110,6 +111,22 @@ final class ProtectionPreferencesTests: XCTestCase {
             try preferences.commandArguments(for: displays),
             ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake", "--dim"]
         )
+    }
+
+    func testPersistentBlackoutEmitsFlagAndRejectsDimming() throws {
+        var preferences = ProtectionPreferences()
+        preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
+        preferences.keepBlackoutOnInput = true
+
+        XCTAssertEqual(
+            try preferences.commandArguments(for: displays),
+            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake", "--keep-blackout-on-input"]
+        )
+
+        preferences.dimDisplaysDuringBlackout = true
+        XCTAssertThrowsError(try preferences.commandArguments(for: displays)) {
+            XCTAssertEqual($0 as? ProtectionConfigurationError, .persistentDimming)
+        }
     }
 
     func testPlaybackDeferralOptOutEmitsIgnoreFlag() throws {
@@ -149,6 +166,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertEqual(preferences.selectedDisplayUUIDs, ["AAAA-UUID"])
         XCTAssertTrue(preferences.didChooseDisplays)
         XCTAssertFalse(preferences.dimDisplaysDuringBlackout)
+        XCTAssertFalse(preferences.keepBlackoutOnInput)
         XCTAssertTrue(preferences.deferBlackoutDuringPlayback)
         XCTAssertFalse(preferences.deferBlackoutWhileCameraInUse)
     }
@@ -1052,6 +1070,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         preferences.isEnabled = true
         preferences.didChooseDisplays = true
         preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
+        preferences.keepBlackoutOnInput = true
         preferences.idleSeconds = 300
         preferences.followUpAction = .restore
         preferences.followUpSeconds = 120
@@ -1077,6 +1096,8 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertEqual(model.secondsRemaining, 120)
         current.addTimeInterval(31)
         XCTAssertEqual(model.secondsRemaining, 89)
+        idle = 0
+        XCTAssertEqual(model.secondsRemaining, 120)
 
         XCTAssertTrue(try model.restoreBlackout())
         try await waitUntil { model.runtimeState == .waiting }
@@ -1087,6 +1108,35 @@ final class ProtectionPreferencesTests: XCTestCase {
         let stopped = expectation(description: "watcher stopped")
         model.shutdown { stopped.fulfill() }
         await fulfillment(of: [stopped], timeout: 3)
+
+        let fullSuiteName = "panelctl-full-countdown-\(UUID().uuidString)"
+        let fullDefaults = try XCTUnwrap(UserDefaults(suiteName: fullSuiteName))
+        defer { fullDefaults.removePersistentDomain(forName: fullSuiteName) }
+        var fullPreferences = preferences
+        fullPreferences.allDisplays = true
+        fullPreferences.selectedDisplayUUIDs = []
+        fullDefaults.set(
+            try JSONEncoder().encode(fullPreferences),
+            forKey: "blackoutPreferences"
+        )
+        var fullCurrent = Date(timeIntervalSince1970: 1_800_000_000)
+        var fullIdle: TimeInterval = 100
+        let fullModel = AppModel(
+            defaults: fullDefaults,
+            displayProvider: { [self.displays[0], self.displays[1]] },
+            now: { fullCurrent },
+            idleSecondsProvider: { fullIdle }
+        )
+        try await waitUntil { fullModel.runtimeState == .waiting }
+        try fullModel.blackoutNow()
+        try await waitUntil { fullModel.runtimeState == .blackedOut }
+        fullCurrent.addTimeInterval(31)
+        fullIdle = 0
+        XCTAssertEqual(fullModel.secondsRemaining, 89)
+
+        let fullStopped = expectation(description: "full watcher stopped")
+        fullModel.shutdown { fullStopped.fulfill() }
+        await fulfillment(of: [fullStopped], timeout: 3)
     }
 
     private func waitForLaunches(

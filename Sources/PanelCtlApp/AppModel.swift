@@ -364,7 +364,11 @@ final class AppModel: ObservableObject {
         case .blackedOut:
             guard preferences.followUpAction != .untilActivity,
                   let stateBeganAt else { return nil }
-            remaining = preferences.followUpSeconds - now().timeIntervalSince(stateBeganAt)
+            let elapsed = now().timeIntervalSince(stateBeganAt)
+            let inputElapsed = idleSecondsProvider() ?? elapsed
+            remaining = preferences.followUpSeconds - (
+                resetsBlackoutLimitOnInput ? min(elapsed, inputElapsed) : elapsed
+            )
         default:
             return nil
         }
@@ -372,6 +376,22 @@ final class AppModel: ObservableObject {
     }
 
     private var stateBeganAt: Date?
+
+    private var resetsBlackoutLimitOnInput: Bool {
+        guard preferences.keepBlackoutOnInput, !preferences.allDisplays else {
+            return false
+        }
+        let selectedDisplayIDs = Set(activeDisplays.compactMap { display -> UInt32? in
+            guard let uuid = display.uuid,
+                  preferences.selectedDisplayUUIDs.contains(where: {
+                      $0.caseInsensitiveCompare(uuid) == .orderedSame
+                  }) else {
+                return nil
+            }
+            return display.id
+        })
+        return selectedDisplayIDs.count < activeDisplays.count
+    }
 
     private func reconcileProtection() {
         if let until = snoozedUntil {

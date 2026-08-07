@@ -98,6 +98,72 @@ final class BlackoutPolicyTests: XCTestCase {
         XCTAssertTrue(policy.hasNewInput(IdleSample(seconds: 0, lastInputUptime: 101), after: 100))
     }
 
+    func testInputActionHonorsPersistenceAndCoverage() {
+        let stale = IdleSample(seconds: 20, lastInputUptime: 100)
+        let fresh = IdleSample(seconds: 0, lastInputUptime: 101)
+        let defaultPolicy = BlackoutPolicy(idleAfter: nil, timeout: nil, sleepAfter: nil)
+        let persistentPolicy = BlackoutPolicy(
+            idleAfter: nil,
+            timeout: nil,
+            sleepAfter: nil,
+            keepBlackoutOnInput: true
+        )
+
+        XCTAssertEqual(
+            defaultPolicy.inputAction(for: stale, after: 100, resetLimitOnInput: true),
+            .none
+        )
+        XCTAssertEqual(
+            defaultPolicy.inputAction(for: fresh, after: 100, resetLimitOnInput: true),
+            .restore
+        )
+        XCTAssertEqual(
+            persistentPolicy.inputAction(for: fresh, after: 100, resetLimitOnInput: true),
+            .resetLimit
+        )
+        XCTAssertEqual(
+            persistentPolicy.inputAction(for: fresh, after: 100, resetLimitOnInput: false),
+            .none
+        )
+    }
+
+    func testPersistentDimmingIsRejectedBeforeRuntimeSetup() {
+        let persistentDimming = BlackoutOptions(
+            selectors: ["1"],
+            all: false,
+            idleAfter: nil,
+            timeout: nil,
+            sleepAfter: nil,
+            caffeinate: false,
+            keepBlackoutOnInput: true,
+            dimDisplays: true
+        )
+        let persistentOnly = BlackoutOptions(
+            selectors: ["1"],
+            all: false,
+            idleAfter: nil,
+            timeout: nil,
+            sleepAfter: nil,
+            caffeinate: false,
+            keepBlackoutOnInput: true
+        )
+        let dimOnly = BlackoutOptions(
+            selectors: ["1"],
+            all: false,
+            idleAfter: nil,
+            timeout: nil,
+            sleepAfter: nil,
+            caffeinate: false,
+            dimDisplays: true
+        )
+
+        XCTAssertThrowsError(try BlackoutController.validateOptions(persistentDimming)) {
+            XCTAssertEqual($0 as? BlackoutError, .persistentDimming)
+        }
+        XCTAssertNoThrow(try BlackoutController.validateOptions(persistentOnly))
+        XCTAssertNoThrow(try BlackoutController.validateOptions(dimOnly))
+    }
+
 
     func testLimitActionsAreInclusive() {
         let timeout = BlackoutPolicy(idleAfter: nil, timeout: 10, sleepAfter: nil)

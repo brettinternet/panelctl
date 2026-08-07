@@ -12,7 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var launchedAsLoginItem = false
     private var suppressInitialSettings = false
     private var terminationPending = false
-    private let blackoutFocusController = BlackoutFocusController()
+    private lazy var blackoutFocusController = BlackoutFocusController { [weak self] in
+        self?.requestBlackoutRestore() ?? false
+    }
     private var blackoutFocusTimer: Timer?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -292,10 +294,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func restoreNow() {
+        _ = requestBlackoutRestore()
+    }
+
+    private func requestBlackoutRestore() -> Bool {
         do {
-            _ = try model.restoreBlackout()
+            return try model.restoreBlackout()
         } catch {
             presentActionError("Could not restore displays", error: error)
+            return false
         }
     }
 

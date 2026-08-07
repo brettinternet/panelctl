@@ -36,7 +36,7 @@ final class BlackoutFocusControllerTests: XCTestCase {
         )
         let operations = makeOperations(
             frontmost: { previous },
-            makeProxyWindow: {
+            makeProxyWindow: { _ in
                 BlackoutFocusWindow(
                     show: { events.append("window-show") },
                     close: { events.append("window-close") }
@@ -187,9 +187,69 @@ final class BlackoutFocusControllerTests: XCTestCase {
         XCTAssertFalse(controller.isEngaged)
     }
 
+    func testBlackoutRestoreKeyAcceptsOnlyPlainNonRepeatingEscape() throws {
+        func event(
+            keyCode: UInt16 = 53,
+            modifiers: NSEvent.ModifierFlags = [],
+            repeats: Bool = false
+        ) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: modifiers,
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                characters: "\u{1B}",
+                charactersIgnoringModifiers: "\u{1B}",
+                isARepeat: repeats,
+                keyCode: keyCode
+            ))
+        }
+
+        XCTAssertTrue(isBlackoutRestoreKey(try event()))
+        XCTAssertFalse(isBlackoutRestoreKey(try event(modifiers: .command)))
+        XCTAssertFalse(isBlackoutRestoreKey(try event(modifiers: .shift)))
+        XCTAssertFalse(isBlackoutRestoreKey(try event(repeats: true)))
+        XCTAssertFalse(isBlackoutRestoreKey(try event(keyCode: 36)))
+    }
+
+    func testEscapeRestoreRequiresActivationAndLatchesOnlyAfterAcceptance() {
+        var active = false
+        var scheduled: [() -> Void] = []
+        var escape: (() -> Void)?
+        var restoreAttempts = 0
+        let operations = makeOperations(
+            makeProxyWindow: { callback in
+                escape = callback
+                return BlackoutFocusWindow(show: {}, close: {})
+            },
+            panelIsActive: { active },
+            schedule: { scheduled.append($0) }
+        )
+        let controller = BlackoutFocusController(operations: operations) {
+            restoreAttempts += 1
+            return restoreAttempts > 1
+        }
+
+        controller.enter(targetFrames: [CGRect(x: 0, y: 0, width: 10, height: 10)])
+        escape?()
+        XCTAssertEqual(restoreAttempts, 0)
+
+        active = true
+        scheduled.removeFirst()()
+        escape?()
+        escape?()
+        XCTAssertEqual(restoreAttempts, 2)
+
+        controller.leave()
+        escape?()
+        XCTAssertEqual(restoreAttempts, 2)
+    }
+
     private func makeOperations(
         frontmost: @escaping () -> BlackoutPreviousApplication? = { nil },
-        makeProxyWindow: @escaping () -> BlackoutFocusWindow = {
+        makeProxyWindow: @escaping (@escaping () -> Void) -> BlackoutFocusWindow = { _ in
             BlackoutFocusWindow(show: {}, close: {})
         },
         requestActivation: @escaping () -> Void = {},

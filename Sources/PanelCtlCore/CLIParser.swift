@@ -9,6 +9,7 @@ public struct BlackoutOptions: Equatable {
     public let caffeinate: Bool
     public let keepDisplaysAwake: Bool
     public let watch: Bool
+    public let keepBlackoutOnInput: Bool
     public let dimDisplays: Bool
     public let deferPlayback: Bool
     public let deferCamera: Bool
@@ -22,6 +23,7 @@ public struct BlackoutOptions: Equatable {
         caffeinate: Bool,
         keepDisplaysAwake: Bool = false,
         watch: Bool = false,
+        keepBlackoutOnInput: Bool = false,
         dimDisplays: Bool = false,
         deferPlayback: Bool = true,
         deferCamera: Bool = false
@@ -34,6 +36,7 @@ public struct BlackoutOptions: Equatable {
         self.caffeinate = caffeinate
         self.keepDisplaysAwake = keepDisplaysAwake
         self.watch = watch
+        self.keepBlackoutOnInput = keepBlackoutOnInput
         self.dimDisplays = dimDisplays
         self.deferPlayback = deferPlayback
         self.deferCamera = deferCamera
@@ -71,10 +74,10 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case conflictingBlackoutLimits
     case allRequiresLimit
     case watchRequiresIdleAfter
+    case persistentDimming
     case invalidLuminance
     case missingAppCommand
     case snoozeDurationTooLong
-
     public var description: String {
         switch self {
         case .missingCommand: return "missing command (use 'panelctl help' for usage)"
@@ -92,6 +95,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
         case .conflictingBlackoutLimits: return "--timeout and --sleep-after are mutually exclusive"
         case .allRequiresLimit: return "--all requires --timeout or --sleep-after"
         case .watchRequiresIdleAfter: return "--watch requires --idle-after"
+        case .persistentDimming: return "--keep-blackout-on-input cannot be combined with --dim"
         case .invalidLuminance: return "luminance must be an integer from 0 through 65535"
         case .missingAppCommand: return "missing app command (use 'panelctl help app' for usage)"
         case .snoozeDurationTooLong: return "snooze duration must not exceed 30 days"
@@ -213,6 +217,7 @@ public enum CLIParser {
         var caffeinate = false
         var keepDisplaysAwake = false
         var watch = false
+        var keepBlackoutOnInput = false
         var dimDisplays = false
         var deferPlayback = true
         var deferCamera = false
@@ -249,6 +254,11 @@ public enum CLIParser {
             case "--watch":
                 guard !watch else { throw CLIParseError.duplicateOption("--watch") }
                 watch = true
+            case "--keep-blackout-on-input":
+                guard !keepBlackoutOnInput else {
+                    throw CLIParseError.duplicateOption("--keep-blackout-on-input")
+                }
+                keepBlackoutOnInput = true
             case "--dim":
                 guard !dimDisplays else { throw CLIParseError.duplicateOption("--dim") }
                 dimDisplays = true
@@ -269,7 +279,8 @@ public enum CLIParser {
         if timeout != nil && sleepAfter != nil { throw CLIParseError.conflictingBlackoutLimits }
         if keepDisplaysAwake && sleepAfter == nil { throw CLIParseError.keepDisplaysAwakeRequiresSleepAfter }
         if all && timeout == nil && sleepAfter == nil { throw CLIParseError.allRequiresLimit }
-        return .blackout(BlackoutOptions(selectors: selectors, all: all, idleAfter: idleAfter, timeout: timeout, sleepAfter: sleepAfter, caffeinate: caffeinate, keepDisplaysAwake: keepDisplaysAwake, watch: watch, dimDisplays: dimDisplays, deferPlayback: deferPlayback, deferCamera: deferCamera))
+        if keepBlackoutOnInput && dimDisplays { throw CLIParseError.persistentDimming }
+        return .blackout(BlackoutOptions(selectors: selectors, all: all, idleAfter: idleAfter, timeout: timeout, sleepAfter: sleepAfter, caffeinate: caffeinate, keepDisplaysAwake: keepDisplaysAwake, watch: watch, keepBlackoutOnInput: keepBlackoutOnInput, dimDisplays: dimDisplays, deferPlayback: deferPlayback, deferCamera: deferCamera))
     }
 
     private static func parseDDCLuminance(_ args: [String]) throws -> PanelCommand {

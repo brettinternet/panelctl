@@ -16,7 +16,7 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
     case idleMonitoringUnavailable
     case caffeinateExited
     case watchRequiresStableUUID(String)
-
+    case persistentDimming
     public var description: String {
         switch self {
         case .noScreens: return "no drawable screens are available (headless or no WindowServer context)"
@@ -31,6 +31,8 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
         case .caffeinateExited: return "caffeinate exited before blackout completed"
         case .watchRequiresStableUUID(let selector):
             return "--watch requires a display with a stable UUID: \(selector)"
+        case .persistentDimming:
+            return "refusing persistent blackout with --dim because DDC restore is not time-bounded"
         }
     }
 }
@@ -179,6 +181,12 @@ enum BlackoutLimitAction: Equatable {
     case sleep
 }
 
+enum BlackoutInputAction: Equatable {
+    case none
+    case restore
+    case resetLimit
+}
+
 /// The small, deterministic part of the watch lifecycle.  A suspension is
 /// cleared only by its matching wake event; this matters when wake
 /// notifications arrive in a different order than their sleep notifications.
@@ -269,6 +277,7 @@ struct BlackoutPolicy {
     let idleAfter: TimeInterval?
     let timeout: TimeInterval?
     let sleepAfter: TimeInterval?
+    let keepBlackoutOnInput: Bool
     let deferPlayback: Bool
     let deferCamera: Bool
 
@@ -276,12 +285,14 @@ struct BlackoutPolicy {
         idleAfter: TimeInterval?,
         timeout: TimeInterval?,
         sleepAfter: TimeInterval?,
+        keepBlackoutOnInput: Bool = false,
         deferPlayback: Bool = true,
         deferCamera: Bool = false
     ) {
         self.idleAfter = idleAfter
         self.timeout = timeout
         self.sleepAfter = sleepAfter
+        self.keepBlackoutOnInput = keepBlackoutOnInput
         self.deferPlayback = deferPlayback
         self.deferCamera = deferCamera
     }
@@ -302,6 +313,16 @@ struct BlackoutPolicy {
 
     func hasNewInput(_ sample: IdleSample, after baselineUptime: TimeInterval) -> Bool {
         sample.lastInputUptime > baselineUptime + 0.001
+    }
+
+    func inputAction(
+        for sample: IdleSample,
+        after baselineUptime: TimeInterval,
+        resetLimitOnInput: Bool
+    ) -> BlackoutInputAction {
+        guard hasNewInput(sample, after: baselineUptime) else { return .none }
+        guard keepBlackoutOnInput else { return .restore }
+        return resetLimitOnInput ? .resetLimit : .none
     }
 
     func limitAction(elapsed: TimeInterval) -> BlackoutLimitAction {
@@ -378,6 +399,7 @@ public final class BlackoutController {
     }
 
     public func run(options: BlackoutOptions) throws {
+        try Self.validateOptions(options)
         watchMode = options.watch
         keepDisplaysAwake = options.keepDisplaysAwake
         let app = NSApplication.shared
@@ -407,6 +429,7 @@ public final class BlackoutController {
             idleAfter: options.idleAfter,
             timeout: options.timeout,
             sleepAfter: options.sleepAfter,
+            keepBlackoutOnInput: options.keepBlackoutOnInput,
             deferPlayback: options.deferPlayback,
             deferCamera: options.deferCamera
         )
@@ -415,11 +438,12 @@ public final class BlackoutController {
                 return
             }
             if stopRequested { return }
-            let currentSelection = try resolveCurrentScreens(options: options)
-            try showWindows(on: currentSelection)
+            let selection = try resolveCurrentScreens(options: options)
+            try showWindows(on: selection.screens)
             try runBlackoutCycle(
                 policy: policy,
                 baseline: activation.sample,
+                resetLimitOnInput: options.keepBlackoutOnInput && !selection.coversAllDisplays,
                 watch: false,
                 restoreGeneration: restoreGeneration
             )
@@ -434,8 +458,8 @@ public final class BlackoutController {
             if stopRequested { return }
             let cycleRestoreGeneration = restoreGeneration
             do {
-                let currentSelection = try resolveCurrentScreens(options: options)
-                try showWindows(on: currentSelection)
+                let selection = try resolveCurrentScreens(options: options)
+                try showWindows(on: selection.screens)
                 let cycleBaseline: IdleSample
                 if activation.forced {
                     immediateBlackoutRequested = false
@@ -448,6 +472,7 @@ public final class BlackoutController {
                 try runBlackoutCycle(
                     policy: policy,
                     baseline: cycleBaseline,
+                    resetLimitOnInput: options.keepBlackoutOnInput && !selection.coversAllDisplays,
                     watch: true,
                     restoreGeneration: cycleRestoreGeneration
                 )
@@ -514,22 +539,40 @@ public final class BlackoutController {
     private func runBlackoutCycle(
         policy: BlackoutPolicy,
         baseline: IdleSample,
+        resetLimitOnInput: Bool,
         watch: Bool,
         restoreGeneration cycleRestoreGeneration: UInt64
     ) throws {
-        let startedAt = uptime()
+        var limitBeganAt = uptime()
+        var inputBaselineUptime = baseline.lastInputUptime
+
+        func consumeInputAction(_ sample: IdleSample) -> Bool {
+            switch policy.inputAction(
+                for: sample,
+                after: inputBaselineUptime,
+                resetLimitOnInput: resetLimitOnInput
+            ) {
+            case .none:
+                return false
+            case .restore:
+                hideWindows()
+                if watch {
+                    watchState.reset(.input, after: inputBaselineUptime)
+                }
+                return true
+            case .resetLimit:
+                limitBeganAt = uptime()
+                inputBaselineUptime = sample.lastInputUptime
+                return false
+            }
+        }
+
         if watch, cycleRestoreGeneration != restoreGeneration {
             hideWindows()
             return
         }
         let installedSample = try idleSample()
-        if policy.hasNewInput(installedSample, after: baseline.lastInputUptime) {
-            hideWindows()
-            if watch {
-                watchState.reset(.input, after: baseline.lastInputUptime)
-            }
-            return
-        }
+        if consumeInputAction(installedSample) { return }
 
         while !stopRequested {
             try ensureAssertions()
@@ -540,20 +583,14 @@ public final class BlackoutController {
                 return
             }
             let sample = try idleSample()
-            if policy.hasNewInput(sample, after: baseline.lastInputUptime) {
-                hideWindows()
-                if watch {
-                    watchState.reset(.input, after: baseline.lastInputUptime)
-                }
-                return
-            }
+            if consumeInputAction(sample) { return }
             if stopRequested { return }
             if watch && !watchState.mayBeginCycle {
                 hideWindows()
                 return
             }
 
-            switch policy.limitAction(elapsed: uptime() - startedAt) {
+            switch policy.limitAction(elapsed: uptime() - limitBeganAt) {
             case .none:
                 continue
             case .finish:
@@ -564,12 +601,24 @@ public final class BlackoutController {
                 return
             case .sleep:
                 let finalSample = try idleSample()
-                if stopRequested || policy.hasNewInput(finalSample, after: baseline.lastInputUptime) {
+                if stopRequested { return }
+                switch policy.inputAction(
+                    for: finalSample,
+                    after: inputBaselineUptime,
+                    resetLimitOnInput: resetLimitOnInput
+                ) {
+                case .restore:
                     hideWindows()
                     if watch {
-                        watchState.reset(.input, after: baseline.lastInputUptime)
+                        watchState.reset(.input, after: inputBaselineUptime)
                     }
                     return
+                case .resetLimit:
+                    limitBeganAt = uptime()
+                    inputBaselineUptime = finalSample.lastInputUptime
+                    continue
+                case .none:
+                    break
                 }
                 intentionalDisplaySleep = true
                 hideWindows()
@@ -591,9 +640,18 @@ public final class BlackoutController {
         }
     }
 
-    private func resolveTargets(options: BlackoutOptions, screens: [NSScreen], drawableScreens: [NSScreen]) throws -> [BlackoutScreenTarget] {
+    private func resolveTargets(
+        options: BlackoutOptions,
+        screens: [NSScreen],
+        drawableScreens: [NSScreen]
+    ) throws -> [BlackoutScreenTarget] {
         if options.all {
             guard !drawableScreens.isEmpty else { throw BlackoutError.noScreens }
+            try Self.validateSelection(
+                selectedCount: drawableScreens.count,
+                drawableCount: drawableScreens.count,
+                hasSafetyLimit: Self.hasSafetyLimit(options)
+            )
             if options.watch { return [] }
             return try drawableScreens.map { screen in
                 guard let id = Self.screenID(screen) else { throw BlackoutError.topologyChanged }
@@ -629,12 +687,22 @@ public final class BlackoutController {
         return selected
     }
 
-    private func resolveCurrentScreens(options: BlackoutOptions) throws -> [NSScreen] {
+    private func resolveCurrentScreens(options: BlackoutOptions) throws -> (
+        screens: [NSScreen],
+        coversAllDisplays: Bool
+    ) {
         let currentScreens = NSScreen.screens
         let drawable = currentScreens.filter { Self.isValidScreenFrame($0.frame) }
         guard !drawable.isEmpty else { throw BlackoutError.noScreens }
         if options.all {
-            if watchMode { return drawable }
+            if watchMode {
+                try Self.validateSelection(
+                    selectedCount: drawable.count,
+                    drawableCount: drawable.count,
+                    hasSafetyLimit: Self.hasSafetyLimit(options)
+                )
+                return (drawable, true)
+            }
             var currentByID: [CGDirectDisplayID: NSScreen] = [:]
             for screen in drawable {
                 guard let id = Self.screenID(screen), currentByID[id] == nil else {
@@ -645,7 +713,13 @@ public final class BlackoutController {
             guard Set(targets.map(\.id)) == Set(currentByID.keys) else {
                 throw BlackoutError.topologyChanged
             }
-            return targets.compactMap { currentByID[$0.id] }
+            let selected = targets.compactMap { currentByID[$0.id] }
+            try Self.validateSelection(
+                selectedCount: selected.count,
+                drawableCount: drawable.count,
+                hasSafetyLimit: Self.hasSafetyLimit(options)
+            )
+            return (selected, true)
         }
 
         let records = watchMode ? DisplayInventory.records() : []
@@ -665,7 +739,7 @@ public final class BlackoutController {
             drawableCount: drawable.count,
             hasSafetyLimit: Self.hasSafetyLimit(options)
         )
-        return selected
+        return (selected, selected.count >= drawable.count)
     }
 
     private func showWindows(on screens: [NSScreen]) throws {
@@ -1103,6 +1177,12 @@ public final class BlackoutController {
 
     static func validateTarget(isMirrored: Bool, selector: String) throws {
         if isMirrored { throw BlackoutError.mirroredDisplay(selector) }
+    }
+
+    static func validateOptions(_ options: BlackoutOptions) throws {
+        if options.keepBlackoutOnInput && options.dimDisplays {
+            throw BlackoutError.persistentDimming
+        }
     }
 
     static func validateSelection(

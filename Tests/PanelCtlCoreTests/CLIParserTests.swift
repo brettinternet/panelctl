@@ -28,6 +28,43 @@ final class CLIParserTests: XCTestCase {
         )
     }
 
+    func testKeepBlackoutOnInputOptions() throws {
+        let defaultOptions = BlackoutOptions(
+            selectors: ["1"],
+            all: false,
+            idleAfter: nil,
+            timeout: nil,
+            sleepAfter: nil,
+            caffeinate: false
+        )
+        XCTAssertFalse(defaultOptions.keepBlackoutOnInput)
+
+        let command = try CLIParser.parse([
+            "blackout", "--display", "1", "--keep-blackout-on-input"
+        ])
+        guard case .blackout(let options) = command else {
+            return XCTFail("expected blackout command")
+        }
+        XCTAssertTrue(options.keepBlackoutOnInput)
+
+        XCTAssertThrowsError(try CLIParser.parse([
+            "blackout", "--display", "1",
+            "--keep-blackout-on-input", "--keep-blackout-on-input"
+        ])) {
+            XCTAssertEqual($0 as? CLIParseError, .duplicateOption("--keep-blackout-on-input"))
+        }
+        XCTAssertThrowsError(try CLIParser.parse([
+            "blackout", "--all", "--keep-blackout-on-input"
+        ])) {
+            XCTAssertEqual($0 as? CLIParseError, .allRequiresLimit)
+        }
+        XCTAssertThrowsError(try CLIParser.parse([
+            "blackout", "--display", "1", "--keep-blackout-on-input", "--dim"
+        ])) {
+            XCTAssertEqual($0 as? CLIParseError, .persistentDimming)
+        }
+    }
+
     func testAllBlackoutSafetyOptions() throws {
         let options = BlackoutOptions(selectors: [], all: true, idleAfter: 10, timeout: nil, sleepAfter: 60, caffeinate: true)
         XCTAssertEqual(try CLIParser.parse(["blackout", "--all", "--idle-after", "10", "--sleep-after", "60", "--caffeinate"]), .blackout(options))
@@ -154,6 +191,7 @@ final class CLIParserTests: XCTestCase {
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--dim"))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--ignore-playback"))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--defer-camera"))
+        XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--keep-blackout-on-input"))
         XCTAssertEqual(CLIParseError.unknownOption("--bad").description, "unknown option: --bad")
     }
 

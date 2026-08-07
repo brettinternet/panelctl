@@ -38,15 +38,18 @@ public enum CLIHelp {
             restores then sleeps all displays. These limits are mutually exclusive;
             --all requires one. --watch keeps watching for future idle periods and
             requires --idle-after; explicit watch targets must expose a stable
-            display UUID. --caffeinate prevents idle system sleep (advanced).
-            --keep-displays-awake keeps displays awake until --sleep-after;
-            macOS may sleep the Mac sooner, and the assertion applies globally. --dim
-            experimentally lowers supported external displays to minimum DDC
-            luminance, restoring their original values before blackout ends or sleep.
-            By default, automatic blackout defers while another app keeps the display
-            awake; --ignore-playback disables that system-wide detection.
-            --defer-camera additionally defers while any camera is in use without
-            accessing its video. Manual blackout-now commands are never deferred.
+            display UUID. --keep-blackout-on-input keeps a partial blackout installed
+            during activity and restarts its Restore or Sleep timer; full coverage
+            always retains its fixed finite endpoint. --caffeinate prevents idle system
+            sleep (advanced). --keep-displays-awake keeps displays awake until
+            --sleep-after; macOS may sleep the Mac sooner, and the assertion applies
+            globally. --dim experimentally lowers supported external displays to
+            minimum DDC luminance, restoring their original values before blackout ends
+            or sleep; it cannot be combined with --keep-blackout-on-input. By default,
+            automatic blackout defers while another app keeps the display awake;
+            --ignore-playback disables that system-wide detection. --defer-camera
+            additionally defers while any camera is in use without accessing its video.
+            Manual blackout-now commands are never deferred.
 
             Selectors accept a display UUID or decimal/hex CG display ID. Use
             --index <n> or index:<n> for the one-based index from `panelctl list`.

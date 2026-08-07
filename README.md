@@ -58,15 +58,20 @@ Run `panelctl help` or `panelctl <command> --help` for all options.
 
 When the pointer is on a blacked-out display, the menu-bar app takes focus so
 macOS will hide the cursor. Moving to an active display or restoring the
-blackout returns focus to the previous app. This applies only to blackouts
-managed by the menu-bar app; the standalone CLI cannot reliably hide the macOS
-cursor while it is in the background.
+blackout returns focus to the previous app. Plain Escape is a best-effort,
+app-managed restore only after that proxy has activated. This applies only to
+blackouts managed by the menu-bar app; the standalone CLI has no background
+Escape or cursor guarantee.
 
 - Without `--idle-after`, blackout starts immediately.
 - Input restores the display. `--timeout` restores after a limit;
   `--sleep-after` instead sleeps every display.
+- `--keep-blackout-on-input` keeps a partial blackout installed during activity
+  and restarts its configured Restore or Sleep duration. When every drawable
+  display is blacked out, activity never extends the original finite endpoint.
 - `--watch` requires `--idle-after` and repeats after each restored cycle.
-- `--all` requires `--timeout` or `--sleep-after`.
+- `--all` requires `--timeout` or `--sleep-after`; finite Restore/Sleep remains
+  mandatory for every full-coverage selection.
 - `--caffeinate` explicitly prevents idle system sleep (advanced behavior).
   `--keep-displays-awake` is valid with `--sleep-after` and keeps displays
   awake until that endpoint while allowing macOS to sleep the Mac sooner. The
@@ -76,7 +81,8 @@ cursor while it is in the background.
   activity can also defer blackout when configured. Manual blackout-now commands
   are not deferred.
 - `--dim` best-effort dims supported external displays and restores their
-  captured brightness. DDC remains experimental.
+  captured brightness. DDC remains experimental and cannot be combined with
+  `--keep-blackout-on-input`.
 
 Display, session, or sleep changes fail open by removing the blackout. Windows
 are shown only after their screen IDs and frames are verified.

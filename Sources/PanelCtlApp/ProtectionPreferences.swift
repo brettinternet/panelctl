@@ -23,6 +23,7 @@ enum ProtectionConfigurationError: Error, Equatable, LocalizedError {
     case selectedDisplayUnavailable(String)
     case allDisplaysRequireLimit
     case selectionWouldCoverAllDisplays
+    case persistentDimming
     case invalidIdleDuration
     case invalidFollowUpDuration
 
@@ -38,6 +39,8 @@ enum ProtectionConfigurationError: Error, Equatable, LocalizedError {
             return "When every display is selected, choose Restore or Sleep as a safety limit."
         case .selectionWouldCoverAllDisplays:
             return "To protect every display, choose All connected displays and a safety limit."
+        case .persistentDimming:
+            return "Turn off hardware dimming to keep blackout active during input."
         case .invalidIdleDuration:
             return "Choose a valid inactivity delay."
         case .invalidFollowUpDuration:
@@ -56,6 +59,7 @@ struct ProtectionPreferences: Codable, Equatable {
     var selectedDisplayUUIDs: Set<String> = []
     var didChooseDisplays = false
     var dimDisplaysDuringBlackout = false
+    var keepBlackoutOnInput = false
     var deferBlackoutDuringPlayback = true
     var deferBlackoutWhileCameraInUse = false
 
@@ -69,6 +73,7 @@ struct ProtectionPreferences: Codable, Equatable {
         case selectedDisplayUUIDs
         case didChooseDisplays
         case dimDisplaysDuringBlackout
+        case keepBlackoutOnInput
         case deferBlackoutDuringPlayback
         case deferBlackoutWhileCameraInUse
     }
@@ -86,6 +91,7 @@ struct ProtectionPreferences: Codable, Equatable {
         selectedDisplayUUIDs = try values.decodeIfPresent(Set<String>.self, forKey: .selectedDisplayUUIDs) ?? []
         didChooseDisplays = try values.decodeIfPresent(Bool.self, forKey: .didChooseDisplays) ?? false
         dimDisplaysDuringBlackout = try values.decodeIfPresent(Bool.self, forKey: .dimDisplaysDuringBlackout) ?? false
+        keepBlackoutOnInput = try values.decodeIfPresent(Bool.self, forKey: .keepBlackoutOnInput) ?? false
         deferBlackoutDuringPlayback = try values.decodeIfPresent(Bool.self, forKey: .deferBlackoutDuringPlayback) ?? true
         deferBlackoutWhileCameraInUse = try values.decodeIfPresent(
             Bool.self,
@@ -101,6 +107,9 @@ struct ProtectionPreferences: Codable, Equatable {
             guard Self.isValidDuration(followUpSeconds) else {
                 throw ProtectionConfigurationError.invalidFollowUpDuration
             }
+        }
+        if keepBlackoutOnInput && dimDisplaysDuringBlackout {
+            throw ProtectionConfigurationError.persistentDimming
         }
 
         let drawable = displays.filter {
@@ -170,6 +179,9 @@ struct ProtectionPreferences: Codable, Equatable {
         }
         if followUpAction == .sleepDisplays && keepDisplaysAwake {
             arguments.append("--keep-displays-awake")
+        }
+        if keepBlackoutOnInput {
+            arguments.append("--keep-blackout-on-input")
         }
         if dimDisplaysDuringBlackout {
             arguments.append("--dim")
