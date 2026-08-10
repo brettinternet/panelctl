@@ -71,9 +71,8 @@ struct BlackoutFocusOperations {
     let requestActivation: () -> Void
     let panelIsActive: () -> Bool
     let mouseLocation: () -> CGPoint
-    let currentCursor: () -> NSCursor
     let hideCursor: () -> CGError
-    let restoreCursor: (NSCursor) -> CGError
+    let showCursor: () -> CGError
     let schedule: (@escaping () -> Void) -> Void
     let activationTimeout: TimeInterval
 
@@ -84,15 +83,8 @@ struct BlackoutFocusOperations {
         requestActivation: @escaping () -> Void = { NSApp.activate(ignoringOtherApps: true) },
         panelIsActive: @escaping () -> Bool = { NSApp.isActive },
         mouseLocation: @escaping () -> CGPoint = { NSEvent.mouseLocation },
-        currentCursor: @escaping () -> NSCursor = { NSCursor.current },
-        hideCursor: @escaping () -> CGError = {
-            BlackoutFocusOperations.transparentCursor.set()
-            return .success
-        },
-        restoreCursor: @escaping (NSCursor) -> CGError = {
-            $0.set()
-            return .success
-        },
+        hideCursor: @escaping () -> CGError = { CGDisplayHideCursor(CGMainDisplayID()) },
+        showCursor: @escaping () -> CGError = { CGDisplayShowCursor(CGMainDisplayID()) },
         schedule: @escaping (@escaping () -> Void) -> Void = { callback in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.01, execute: callback)
         },
@@ -104,32 +96,12 @@ struct BlackoutFocusOperations {
         self.requestActivation = requestActivation
         self.panelIsActive = panelIsActive
         self.mouseLocation = mouseLocation
-        self.currentCursor = currentCursor
         self.hideCursor = hideCursor
-        self.restoreCursor = restoreCursor
+        self.showCursor = showCursor
         self.schedule = schedule
         self.activationTimeout = activationTimeout
     }
 
-
-    static let transparentCursor: NSCursor = {
-        let bitmap = NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: 1,
-            pixelsHigh: 1,
-            bitsPerSample: 8,
-            samplesPerPixel: 4,
-            hasAlpha: true,
-            isPlanar: false,
-            colorSpaceName: .deviceRGB,
-            bytesPerRow: 0,
-            bitsPerPixel: 0
-        )!
-        bitmap.setColor(NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0), atX: 0, y: 0)
-        let image = NSImage(size: NSSize(width: 1, height: 1))
-        image.addRepresentation(bitmap)
-        return NSCursor(image: image, hotSpot: .zero)
-    }()
     private static func defaultFrontmostApplication() -> BlackoutPreviousApplication? {
         guard let application = NSWorkspace.shared.frontmostApplication else { return nil }
         return BlackoutPreviousApplication(
@@ -172,7 +144,6 @@ final class BlackoutFocusController {
     private var activationDeadline = Date.distantPast
     private var activationInFlight = false
     private var waitingForPreviousApplicationActivation = false
-    private var cursorBeforeHide: NSCursor?
     private var willResignObserver: NSObjectProtocol?
     private let requestRestore: () -> Bool
     private var escapeRestoreInFlight = false
@@ -256,8 +227,7 @@ final class BlackoutFocusController {
         guard !operations.panelIsActive() else {
             activationInFlight = false
             ownsActivation = true
-            if !cursorHidden { cursorBeforeHide = operations.currentCursor() }
-            if operations.hideCursor() == .success { cursorHidden = true }
+            if !cursorHidden, operations.hideCursor() == .success { cursorHidden = true }
             return
         }
         guard Date() < activationDeadline else {
@@ -280,10 +250,7 @@ final class BlackoutFocusController {
 
     private func restoreCursor() -> Bool {
         guard cursorHidden else { return true }
-        if operations.restoreCursor(cursorBeforeHide ?? .arrow) == .success {
-            cursorHidden = false
-            cursorBeforeHide = nil
-        }
+        if operations.showCursor() == .success { cursorHidden = false }
         return !cursorHidden
     }
 

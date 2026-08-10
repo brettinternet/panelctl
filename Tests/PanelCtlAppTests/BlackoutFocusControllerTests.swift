@@ -45,42 +45,13 @@ final class BlackoutFocusControllerTests: XCTestCase {
             requestActivation: { panelIsActive = true },
             panelIsActive: { panelIsActive },
             hideCursor: { events.append("hide"); return .success },
-            restoreCursor: { _ in events.append("show"); return .success }
+            showCursor: { events.append("show"); return .success }
         )
         let controller = BlackoutFocusController(operations: operations)
         controller.enter(targetFrames: [CGRect(x: 0, y: 0, width: 10_000, height: 10_000)])
         controller.leave()
 
         XCTAssertEqual(events, ["window-show", "hide", "show", "window-close", "yield", "activate"])
-    }
-
-    func testLeavingRestoresTheCapturedCursor() {
-        let cursor = NSCursor(image: NSImage(size: NSSize(width: 2, height: 2)), hotSpot: .zero)
-        var restoredCursor: NSCursor?
-        let operations = makeOperations(
-            currentCursor: { cursor },
-            restoreCursor: {
-                restoredCursor = $0
-                return .success
-            }
-        )
-        let controller = BlackoutFocusController(operations: operations)
-
-        controller.enter(targetFrames: [CGRect(x: 0, y: 0, width: 10_000, height: 10_000)])
-        controller.leave()
-
-        XCTAssertTrue(restoredCursor === cursor)
-    }
-
-    func testTransparentCursorHasTransparentPixel() throws {
-        let representation = try XCTUnwrap(
-            BlackoutFocusOperations.transparentCursor.image.representations
-                .compactMap { $0 as? NSBitmapImageRep }
-                .first
-        )
-
-        let bytes = UnsafeBufferPointer(start: try XCTUnwrap(representation.bitmapData), count: 4)
-        XCTAssertEqual(Array(bytes), [0, 0, 0, 0])
     }
 
     func testDelayedActivationHidesOnlyAfterConfirmation() {
@@ -140,7 +111,7 @@ final class BlackoutFocusControllerTests: XCTestCase {
             },
             panelIsActive: { panelIsActive },
             hideCursor: { hideCount += 1; return .success },
-            restoreCursor: { _ in showCount += 1; return .success }
+            showCursor: { showCount += 1; return .success }
         )
         let controller = BlackoutFocusController(operations: operations)
         let target = CGRect(x: 0, y: 0, width: 10_000, height: 10_000)
@@ -156,12 +127,31 @@ final class BlackoutFocusControllerTests: XCTestCase {
         XCTAssertEqual(showCount, 1)
     }
 
+    func testFailedCursorShowDoesNotIncrementHideCountOnReactivation() {
+        var hideCount = 0
+        var showResults: [CGError] = [.failure, .success]
+        let operations = makeOperations(
+            hideCursor: { hideCount += 1; return .success },
+            showCursor: { showResults.removeFirst() }
+        )
+        let controller = BlackoutFocusController(operations: operations)
+        let target = CGRect(x: 0, y: 0, width: 10_000, height: 10_000)
+
+        controller.enter(targetFrames: [target])
+        NotificationCenter.default.post(name: NSApplication.willResignActiveNotification, object: nil)
+        controller.enter(targetFrames: [target])
+        controller.leave()
+
+        XCTAssertEqual(hideCount, 1)
+        XCTAssertTrue(showResults.isEmpty)
+    }
+
     func testRepeatedEnterAndLeaveAreIdempotent() {
         var hideCount = 0
         var showCount = 0
         let operations = makeOperations(
             hideCursor: { hideCount += 1; return .success },
-            restoreCursor: { _ in showCount += 1; return .success }
+            showCursor: { showCount += 1; return .success }
         )
         let controller = BlackoutFocusController(operations: operations)
 
@@ -186,7 +176,7 @@ final class BlackoutFocusControllerTests: XCTestCase {
         let operations = makeOperations(
             frontmost: { previous },
             hideCursor: { .success },
-            restoreCursor: { _ in showResults.removeFirst() },
+            showCursor: { showResults.removeFirst() },
             schedule: { pending = $0 }
         )
         let controller = BlackoutFocusController(operations: operations)
@@ -213,7 +203,7 @@ final class BlackoutFocusControllerTests: XCTestCase {
         let operations = makeOperations(
             frontmost: { previous },
             mouseLocation: { mouseLocation },
-            restoreCursor: { _ in showCount += 1; return .success }
+            showCursor: { showCount += 1; return .success }
         )
         let controller = BlackoutFocusController(operations: operations)
         let target = CGRect(x: 0, y: 0, width: 10, height: 10)
@@ -256,7 +246,7 @@ final class BlackoutFocusControllerTests: XCTestCase {
             panelIsActive: { panelIsActive },
             mouseLocation: { mouseLocation },
             hideCursor: { hideCount += 1; return .success },
-            restoreCursor: { _ in showCount += 1; return .success }
+            showCursor: { showCount += 1; return .success }
         )
         let controller = BlackoutFocusController(operations: operations)
         let target = CGRect(x: 0, y: 0, width: 10, height: 10)
@@ -352,9 +342,8 @@ final class BlackoutFocusControllerTests: XCTestCase {
         requestActivation: @escaping () -> Void = {},
         panelIsActive: @escaping () -> Bool = { true },
         mouseLocation: @escaping () -> CGPoint = { CGPoint(x: 5, y: 5) },
-        currentCursor: @escaping () -> NSCursor = { .arrow },
         hideCursor: @escaping () -> CGError = { .success },
-        restoreCursor: @escaping (NSCursor) -> CGError = { _ in .success },
+        showCursor: @escaping () -> CGError = { .success },
         schedule: @escaping (@escaping () -> Void) -> Void = { $0() },
         activationTimeout: TimeInterval = 0.5
     ) -> BlackoutFocusOperations {
@@ -365,9 +354,8 @@ final class BlackoutFocusControllerTests: XCTestCase {
             requestActivation: requestActivation,
             panelIsActive: panelIsActive,
             mouseLocation: mouseLocation,
-            currentCursor: currentCursor,
             hideCursor: hideCursor,
-            restoreCursor: restoreCursor,
+            showCursor: showCursor,
             schedule: schedule,
             activationTimeout: activationTimeout
         )
