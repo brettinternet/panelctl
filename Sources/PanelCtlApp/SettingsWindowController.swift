@@ -13,7 +13,8 @@ final class SettingsWindowController: NSWindowController {
         )
         window.title = "PanelCtl Settings"
         window.contentView = hostingView
-        window.contentMinSize = NSSize(width: 620, height: 480)
+        window.contentMinSize = NSSize(width: 680, height: 480)
+        window.standardWindowButton(.zoomButton)?.isEnabled = false
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("PanelCtlSettingsWindow")
         window.center()

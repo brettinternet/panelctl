@@ -8,6 +8,47 @@ private enum SettingsDestination: Hashable, CaseIterable {
     case startup
 }
 
+private final class DropdownPickerTarget: NSObject {
+    var onChange: (Int) -> Void = { _ in }
+
+    @objc func selectionChanged(_ sender: NSPopUpButton) {
+        onChange(sender.indexOfSelectedItem)
+    }
+}
+
+private struct DropdownPicker<Value: Hashable>: NSViewRepresentable {
+    @Binding var selection: Value
+    let options: [(Value, String)]
+
+    func makeCoordinator() -> DropdownPickerTarget {
+        DropdownPickerTarget()
+    }
+
+    func makeNSView(context: Context) -> NSPopUpButton {
+        let button = NSPopUpButton()
+        button.controlSize = .small
+        button.target = context.coordinator
+        button.action = #selector(DropdownPickerTarget.selectionChanged(_:))
+        button.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        return button
+    }
+
+    func updateNSView(_ button: NSPopUpButton, context: Context) {
+        let titles = options.map(\.1)
+        if button.itemTitles != titles {
+            button.removeAllItems()
+            button.addItems(withTitles: titles)
+        }
+        if let index = options.firstIndex(where: { $0.0 == selection }) {
+            button.selectItem(at: index)
+        }
+        context.coordinator.onChange = { index in
+            guard options.indices.contains(index) else { return }
+            selection = options[index].0
+        }
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @State private var selection: SettingsDestination? = .automation
@@ -16,23 +57,24 @@ struct SettingsView: View {
     private let followUpOptions: [TimeInterval] = [5 * 60, 15 * 60, 30 * 60, 60 * 60, 2 * 60 * 60]
 
     var body: some View {
-        NavigationSplitView {
+        HStack(spacing: 0) {
             VStack(spacing: 0) {
                 List(selection: $selection) {
                     ForEach(SettingsDestination.allCases, id: \.self) { destination in
                         destinationLabel(destination)
+                            .padding(.vertical, 2)
                             .tag(destination)
                     }
                 }
                 .listStyle(.sidebar)
-
-                Divider()
+                .scrollContentBackground(.hidden)
 
                 sidebarFooter
                     .padding(12)
             }
-            .navigationSplitViewColumnWidth(min: 168, ideal: 180, max: 200)
-        } detail: {
+            .frame(width: 180)
+
+            Divider()
             VStack(spacing: 0) {
                 statusHeader
                     .padding(.top, 16)
@@ -45,6 +87,7 @@ struct SettingsView: View {
                         .padding(.bottom, 16)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .controlSize(.small)
         .font(.system(size: 13))
@@ -133,15 +176,18 @@ struct SettingsView: View {
         )
     }
     private var automationSection: some View {
-        GroupBox("Automation") {
-            VStack(spacing: 9) {
-                settingRow("Display treatment") {
-                    Picker("", selection: preferenceBinding(\.mode)) {
-                        Text("Blackout").tag(BlackoutMode.blocking)
-                        Text("Working dimming").tag(BlackoutMode.working)
-                    }
-                    .labelsHidden()
-                    .frame(width: 205)
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Automation")
+                .font(.system(size: 14, weight: .semibold))
+                .padding(.bottom, 4)
+            settingRow("Display treatment") {
+                    dropdownPicker(
+                        selection: preferenceBinding(\.mode),
+                        options: [
+                            (.blocking, "Blackout"),
+                            (.working, "Working dimming")
+                        ]
+                    )
                 }
                 if model.preferences.mode == .working {
                     Toggle(
@@ -179,13 +225,12 @@ struct SettingsView: View {
                 settingRow(
                     model.preferences.mode == .working ? "After dimming" : "After blackout"
                 ) {
-                    Picker("", selection: preferenceBinding(\.followUpAction)) {
-                        ForEach(FollowUpAction.allCases) { action in
-                            Text(followUpTitle(action)).tag(action)
+                    dropdownPicker(
+                        selection: preferenceBinding(\.followUpAction),
+                        options: FollowUpAction.allCases.map {
+                            ($0, followUpTitle($0))
                         }
-                    }
-                    .labelsHidden()
-                    .frame(width: 205)
+                    )
                 }
                 if model.preferences.followUpAction != .untilActivity {
                     settingRow(
@@ -287,60 +332,57 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.top, 3)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var displaysSection: some View {
-        GroupBox {
-            VStack(spacing: 7) {
-                HStack {
-                    Toggle(
-                        "All connected displays",
-                        isOn: preferenceBinding(\.allDisplays)
-                    )
-                    Spacer()
-                    Button("Refresh") {
-                        model.refreshDisplays()
-                    }
-                }
-                if model.preferences.allDisplays {
-                    Text("Includes displays connected while protection is enabled.")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                Divider()
-                if displayRowCount == 0 {
-                    Text("No active displays found.")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
-                } else {
-                    ScrollView(.vertical) {
-                        LazyVStack(alignment: .leading, spacing: 7) {
-                            ForEach(model.activeDisplays, id: \.id) { display in
-                                displayRow(display)
-                            }
-                            ForEach(model.unavailableSelectedDisplayUUIDs, id: \.self) { uuid in
-                                unavailableDisplayRow(uuid)
-                            }
-                        }
-                    }
-                    .frame(height: displayListHeight)
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Displays")
+                .font(.system(size: 14, weight: .semibold))
+                .padding(.bottom, 4)
+            HStack {
+                Toggle(
+                    "All connected displays",
+                    isOn: preferenceBinding(\.allDisplays)
+                )
+                Spacer()
+                Button("Refresh") {
+                    model.refreshDisplays()
                 }
             }
-            .padding(.top, 3)
-        } label: {
-            Text("Displays")
+            if model.preferences.allDisplays {
+                Text("Includes displays connected while protection is enabled.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+            if displayRowCount == 0 {
+                Text("No active displays found.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
+            } else {
+                LazyVStack(alignment: .leading, spacing: 9) {
+                    ForEach(model.activeDisplays, id: \.id) { display in
+                        displayRow(display)
+                    }
+                    ForEach(model.unavailableSelectedDisplayUUIDs, id: \.self) { uuid in
+                        unavailableDisplayRow(uuid)
+                    }
+                }
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var startupSection: some View {
-        GroupBox("Startup") {
-            VStack(alignment: .leading, spacing: 6) {
-                Toggle(
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Startup")
+                .font(.system(size: 14, weight: .semibold))
+                .padding(.bottom, 4)
+            Toggle(
                     "Launch PanelCtl at login",
                     isOn: Binding(
                         get: { model.launchAtLoginEnabled },
@@ -358,26 +400,28 @@ struct SettingsView: View {
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.top, 3)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var sidebarFooter: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(model.version)
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
-            Link("View on GitHub", destination: AppModel.githubURL)
-                .font(.system(size: 11.5))
             Button {
                 NSApp.terminate(nil)
             } label: {
                 Text("Quit")
-                    .frame(width: 54)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            .buttonStyle(.plain)
+            .padding(.vertical, 4)
+
+            Text(model.version)
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .padding(.top, 8)
+            Link("View on GitHub", destination: AppModel.githubURL)
+                .font(.system(size: 11.5))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -459,13 +503,20 @@ struct SettingsView: View {
         selection: Binding<TimeInterval>,
         options: [TimeInterval]
     ) -> some View {
-        Picker("", selection: selection) {
-            ForEach(options, id: \.self) { seconds in
-                Text(AppModel.durationLabel(seconds)).tag(seconds)
+        dropdownPicker(
+            selection: selection,
+            options: options.map {
+                ($0, AppModel.durationLabel($0))
             }
-        }
-        .labelsHidden()
-        .frame(width: 150)
+        )
+    }
+
+    private func dropdownPicker<Value: Hashable>(
+        selection: Binding<Value>,
+        options: [(Value, String)]
+    ) -> some View {
+        DropdownPicker(selection: selection, options: options)
+            .frame(maxWidth: .infinity)
     }
 
     private func percentageStepper(
@@ -502,10 +553,11 @@ struct SettingsView: View {
         _ label: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        HStack {
+        HStack(spacing: 12) {
             Text(label)
-            Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
             content()
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -537,7 +589,4 @@ struct SettingsView: View {
         model.activeDisplays.count + model.unavailableSelectedDisplayUUIDs.count
     }
 
-    private var displayListHeight: CGFloat {
-        CGFloat(min(displayRowCount, 4)) * 34
-    }
 }
