@@ -6,7 +6,7 @@ final class SettingsWindowController: NSWindowController {
     init(model: AppModel) {
         let hostingView = NSHostingView(rootView: SettingsView(model: model))
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 490, height: 590),
+            contentRect: NSRect(x: 0, y: 0, width: 490, height: 640),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false

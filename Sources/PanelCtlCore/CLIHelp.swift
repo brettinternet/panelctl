@@ -38,14 +38,17 @@ public enum CLIHelp {
             restores then sleeps all displays. These limits are mutually exclusive;
             --all requires one. --watch keeps watching for future idle periods and
             requires --idle-after; explicit watch targets must expose a stable
-            display UUID. --keep-blackout-on-input keeps a partial blackout installed
+            display UUID. --blackout-empty-displays additionally blacks out each
+            selected display after it has no app windows and no pointer for one second.
+            --keep-blackout-on-input keeps a partial full-cycle blackout installed
             during activity and restarts its Restore or Sleep timer; full coverage
             always retains its fixed finite endpoint. --caffeinate prevents idle system
             sleep (advanced). --keep-displays-awake keeps displays awake until
             --sleep-after; macOS may sleep the Mac sooner, and the assertion applies
             globally. --dim experimentally lowers supported external displays to
             minimum DDC luminance, restoring their original values before blackout ends
-            or sleep; it cannot be combined with --keep-blackout-on-input. By default,
+            or sleep; it cannot be combined with --keep-blackout-on-input.
+            Hardware dimming applies to inactivity and Blackout Now cycles, not empty-display-only blackouts. By default,
             automatic blackout defers while another app keeps the display awake;
             --ignore-playback disables that system-wide detection. --defer-camera
             additionally defers while any camera is in use without accessing its video.

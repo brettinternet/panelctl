@@ -98,7 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func updateBlackoutFocus() {
         guard let model else { return }
-        if case .blackedOut = model.runtimeState {
+        if !model.blackedOutDisplayIDs.isEmpty {
             if blackoutFocusTimer == nil {
                 let timer = Timer(
                     timeInterval: 0.05,
@@ -110,21 +110,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 RunLoop.main.add(timer, forMode: .common)
                 blackoutFocusTimer = timer
             }
-            let selectedIDs: Set<UInt32>
-            if model.preferences.allDisplays {
-                selectedIDs = Set(model.activeDisplays.map(\.id))
-            } else {
-                selectedIDs = Set(model.activeDisplays.compactMap { display in
-                    guard let uuid = display.uuid,
-                          model.preferences.selectedDisplayUUIDs.contains(where: {
-                              $0.caseInsensitiveCompare(uuid) == .orderedSame
-                          }) else { return nil }
-                    return display.id
-                })
-            }
             let frames = NSScreen.screens.compactMap { screen -> CGRect? in
                 guard let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
-                      selectedIDs.contains(id) else { return nil }
+                      model.blackedOutDisplayIDs.contains(id) else { return nil }
                 return screen.frame
             }
             blackoutFocusController.enter(targetFrames: frames)
@@ -176,7 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         configureStatusItem()
         guard let statusItem else { return }
         let image = NSImage(
-            systemSymbolName: model.runtimeState.systemImage,
+            systemSymbolName: model.statusSystemImage,
             accessibilityDescription: model.statusSummary
         ) ?? NSImage(systemSymbolName: "shield", accessibilityDescription: "PanelCtl")
         image?.isTemplate = true
@@ -193,7 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let status = NSMenuItem(title: model.statusSummary, action: nil, keyEquivalent: "")
         status.image = NSImage(
-            systemSymbolName: model.runtimeState.systemImage,
+            systemSymbolName: model.statusSystemImage,
             accessibilityDescription: nil
         )
         status.isEnabled = false
@@ -223,6 +211,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(item("Restore", action: #selector(restoreNow)))
         default:
             menu.addItem(item("Blackout Now", action: #selector(blackoutNow)))
+            if !model.blackedOutDisplayIDs.isEmpty {
+                menu.addItem(item("Restore", action: #selector(restoreNow)))
+            }
         }
         menu.addItem(item("Sleep All Now", action: #selector(sleepAllNow)))
 
@@ -252,7 +243,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let status = menu.items.first else { return }
         status.title = model.statusSummary
         status.image = NSImage(
-            systemSymbolName: model.runtimeState.systemImage,
+            systemSymbolName: model.statusSystemImage,
             accessibilityDescription: nil
         )
         statusItem?.button?.toolTip = "PanelCtl — \(model.statusSummary)"

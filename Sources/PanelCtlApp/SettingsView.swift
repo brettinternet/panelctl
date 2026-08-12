@@ -41,7 +41,7 @@ struct SettingsView: View {
 
     private var statusHeader: some View {
         HStack(spacing: 10) {
-            Image(systemName: model.runtimeState.systemImage)
+            Image(systemName: model.statusSystemImage)
                 .font(.system(size: 22, weight: .medium))
                 .foregroundStyle(statusColor)
                 .frame(width: 28)
@@ -130,6 +130,17 @@ struct SettingsView: View {
                 }
                 Divider()
                 Toggle(
+                    "Also black out empty displays",
+                    isOn: preferenceBinding(\.blackoutEmptyDisplays)
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Text("Restores when a window or the pointer enters; re-blacks after 1 second empty.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Divider()
+                Toggle(
                     "Keep blacked-out displays black during activity",
                     isOn: preferenceBinding(\.keepBlackoutOnInput)
                 )
@@ -166,7 +177,7 @@ struct SettingsView: View {
                     isOn: preferenceBinding(\.dimDisplaysDuringBlackout)
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Text("Experimental · DDC support varies by monitor and connection. PanelCtl attempts restoration before blackout ends or displays sleep.")
+                Text("Experimental · DDC support varies by monitor and connection. PanelCtl attempts restoration before blackout ends or displays sleep. Hardware dimming applies to inactivity and Blackout Now cycles, not empty-display-only blackouts.")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)

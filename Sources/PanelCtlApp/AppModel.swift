@@ -45,6 +45,13 @@ final class AppModel: ObservableObject {
             }
         }
     }
+    @Published private(set) var blackedOutDisplayIDs: Set<UInt32> = [] {
+        didSet {
+            if oldValue != blackedOutDisplayIDs {
+                onStatusChange?()
+            }
+        }
+    }
     @Published private(set) var launchAtLoginEnabled: Bool
     @Published var notice: AppNotice?
     @Published private(set) var countdownDate = Date()
@@ -123,6 +130,9 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+        service.onMembershipChange = { [weak self] displayIDs in
+            self?.blackedOutDisplayIDs = displayIDs
+        }
         savePreferences()
         defaults.set(showMenuBarIcon, forKey: Self.showMenuBarIconKey)
         reconcileProtection()
@@ -170,7 +180,17 @@ final class AppModel: ObservableObject {
         return CLIHelp.version.replacingOccurrences(of: "panelctl ", with: "")
     }
 
+    var statusSystemImage: String {
+        blackedOutDisplayIDs.isEmpty ? runtimeState.systemImage : "rectangle.fill"
+    }
+
     var statusSummary: String {
+        if !blackedOutDisplayIDs.isEmpty, runtimeState != .blackedOut {
+            if let secondsRemaining, let nextAction {
+                return "Empty-display blackout active · \(Self.countdownLabel(secondsRemaining)) to \(nextAction)"
+            }
+            return "Empty-display blackout active · \(runtimeState.label)"
+        }
         if let secondsRemaining, let nextAction {
             switch runtimeState {
             case .snoozed(let until):

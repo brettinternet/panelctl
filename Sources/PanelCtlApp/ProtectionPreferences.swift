@@ -58,6 +58,7 @@ struct ProtectionPreferences: Codable, Equatable {
     var allDisplays = false
     var selectedDisplayUUIDs: Set<String> = []
     var didChooseDisplays = false
+    var blackoutEmptyDisplays = false
     var dimDisplaysDuringBlackout = false
     var keepBlackoutOnInput = false
     var deferBlackoutDuringPlayback = true
@@ -72,6 +73,7 @@ struct ProtectionPreferences: Codable, Equatable {
         case allDisplays
         case selectedDisplayUUIDs
         case didChooseDisplays
+        case blackoutEmptyDisplays
         case dimDisplaysDuringBlackout
         case keepBlackoutOnInput
         case deferBlackoutDuringPlayback
@@ -90,6 +92,10 @@ struct ProtectionPreferences: Codable, Equatable {
         allDisplays = try values.decodeIfPresent(Bool.self, forKey: .allDisplays) ?? false
         selectedDisplayUUIDs = try values.decodeIfPresent(Set<String>.self, forKey: .selectedDisplayUUIDs) ?? []
         didChooseDisplays = try values.decodeIfPresent(Bool.self, forKey: .didChooseDisplays) ?? false
+        blackoutEmptyDisplays = try values.decodeIfPresent(
+            Bool.self,
+            forKey: .blackoutEmptyDisplays
+        ) ?? false
         dimDisplaysDuringBlackout = try values.decodeIfPresent(Bool.self, forKey: .dimDisplaysDuringBlackout) ?? false
         keepBlackoutOnInput = try values.decodeIfPresent(Bool.self, forKey: .keepBlackoutOnInput) ?? false
         deferBlackoutDuringPlayback = try values.decodeIfPresent(Bool.self, forKey: .deferBlackoutDuringPlayback) ?? true
@@ -169,6 +175,9 @@ struct ProtectionPreferences: Codable, Equatable {
         }
 
         arguments += ["--idle-after", Self.durationArgument(idleSeconds), "--watch"]
+        if blackoutEmptyDisplays {
+            arguments.append("--blackout-empty-displays")
+        }
         switch followUpAction {
         case .untilActivity:
             break

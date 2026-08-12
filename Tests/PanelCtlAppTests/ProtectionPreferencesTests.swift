@@ -113,6 +113,27 @@ final class ProtectionPreferencesTests: XCTestCase {
         )
     }
 
+    func testEmptyDisplayBlackoutPreferenceDefaultsAndArgumentOrder() throws {
+        let legacy = try JSONDecoder().decode(
+            ProtectionPreferences.self,
+            from: Data(#"{"isEnabled":true}"#.utf8)
+        )
+        XCTAssertFalse(legacy.blackoutEmptyDisplays)
+
+        var preferences = ProtectionPreferences()
+        preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
+        preferences.blackoutEmptyDisplays = true
+        preferences.dimDisplaysDuringBlackout = true
+        XCTAssertEqual(
+            try preferences.commandArguments(for: displays),
+            [
+                "blackout", "--display", "AAAA-UUID", "--idle-after", "300",
+                "--watch", "--blackout-empty-displays", "--sleep-after", "1800",
+                "--keep-displays-awake", "--dim"
+            ]
+        )
+    }
+
     func testPersistentBlackoutEmitsFlagAndRejectsDimming() throws {
         var preferences = ProtectionPreferences()
         preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
@@ -252,7 +273,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         let script = """
         #!/bin/bash
         printf 'launch:%s\\n' "$*" >> "$PANELCTL_TEST_LOG"
-        printf '{"state":"waiting"}\\n'
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         trap 'exit 0' TERM
         while IFS= read -r command; do
             printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
@@ -320,7 +341,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         let helper = directory.appendingPathComponent("fake-panelctl")
         let script = """
         #!/bin/bash
-        printf '{"state":"waiting_for_playback"}\n'
+        printf '{"state":"waiting_for_playback","blackedOutDisplayIDs":[]}\n'
         trap 'exit 0' TERM
         while true; do /bin/sleep 0.02; done
         """
@@ -380,7 +401,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         let script = """
         #!/bin/bash
         printf 'launch:%s\\n' "$1" >> "$PANELCTL_TEST_LOG"
-        printf '{"state":"waiting"}\\n'
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         trap 'exit 0' TERM
         while IFS= read -r command; do
             printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
@@ -443,7 +464,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         let script = """
         #!/bin/bash
         printf 'launch:%s\\n' "$1" >> "$PANELCTL_TEST_LOG"
-        printf '{"state":"waiting"}\\n'
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         trap 'exit 0' TERM
         while IFS= read -r command; do
             printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
@@ -499,21 +520,21 @@ final class ProtectionPreferencesTests: XCTestCase {
         let script = """
         #!/bin/bash
         printf 'launch:%s\\n' "$1" >> "$PANELCTL_TEST_LOG"
-        printf '{"state":"waiting"}\\n'
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         if [[ "$1" == "D" ]]; then
-            printf '{"state":"sleeping"}\\n'
+            printf '{"state":"sleeping","blackedOutDisplayIDs":[]}\\n'
         fi
         restore_attempt=0
-        trap 'if [[ "$1" == "C" ]]; then printf "{\\"state\\":\\"blacked_out\\"}\\n"; elif [[ "$1" == "E" ]]; then printf "{\\"state\\":\\"blacked_out\\"}\\n{\\"state\\":\\"waiting\\"}\\n"; fi; exit 0' TERM
+        trap 'if [[ "$1" == "C" ]]; then printf "{\\"state\\":\\"blacked_out\\",\\"blackedOutDisplayIDs\\":[7]}\\n"; elif [[ "$1" == "E" ]]; then printf "{\\"state\\":\\"blacked_out\\",\\"blackedOutDisplayIDs\\":[7]}\\n{\\"state\\":\\"waiting\\",\\"blackedOutDisplayIDs\\":[]}\\n"; fi; exit 0' TERM
         while IFS= read -r command; do
             printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
             if [[ "$command" == "blackout-now" && "$1" != "E" ]]; then
-                printf '{"state":"blacked_out"}\\n'
+                printf '{"state":"blacked_out","blackedOutDisplayIDs":[7]}\\n'
             elif [[ "$1" == "D" && "$restore_attempt" == 0 ]]; then
                 restore_attempt=1
-                printf '{"state":"sleeping"}\\n'
+                printf '{"state":"sleeping","blackedOutDisplayIDs":[]}\\n'
             else
-                printf '{"state":"waiting"}\\n'
+                printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
             fi
         done
         """
@@ -618,7 +639,7 @@ final class ProtectionPreferencesTests: XCTestCase {
             done
             exit 0
         fi
-        printf '{"state":"waiting"}\\n'
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         trap 'exit 0' TERM
         while IFS= read -r command; do
             printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
@@ -685,7 +706,7 @@ final class ProtectionPreferencesTests: XCTestCase {
             done
             exit 0
         fi
-        printf '{"state":"waiting"}\\n'
+        printf '{"state":"waiting","blackedOutDisplayIDs":[7]}\\n'
         IFS= read -r command
         printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
         exit 0
@@ -723,6 +744,7 @@ final class ProtectionPreferencesTests: XCTestCase {
             ["launch:A", "launch:A", "command:blackout-now"]
         )
         XCTAssertFalse(service.hasManagedProcess)
+        XCTAssertTrue(service.blackedOutDisplayIDs.isEmpty)
     }
 
     @MainActor
@@ -736,8 +758,8 @@ final class ProtectionPreferencesTests: XCTestCase {
         let helper = directory.appendingPathComponent("fake-panelctl")
         let script = """
         #!/bin/bash
-        trap 'printf "{\\"state\\":\\"blacked_out\\"}\\n"; /bin/sleep 0.1; exit 0' TERM
-        printf '{"state":"waiting"}\\n'
+        trap 'printf "{\\"state\\":\\"blacked_out\\",\\"blackedOutDisplayIDs\\":[7]}\\n"; /bin/sleep 0.1; exit 0' TERM
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         while true; do /bin/sleep 0.02; done
         """
         try Data(script.utf8).write(to: helper)
@@ -751,6 +773,8 @@ final class ProtectionPreferencesTests: XCTestCase {
         let service = ProtectionService()
         var observed: [ProtectionRuntimeState] = []
         service.onStateChange = { observed.append($0) }
+        var observedMembership: [Set<UInt32>] = []
+        service.onMembershipChange = { observedMembership.append($0) }
         service.run(arguments: ["A"])
         try await waitUntil { service.state == .waiting }
 
@@ -759,6 +783,8 @@ final class ProtectionPreferencesTests: XCTestCase {
 
         let stoppingIndex = try XCTUnwrap(observed.firstIndex(of: .stopping))
         XCTAssertFalse(observed[stoppingIndex...].contains(.blackedOut))
+        XCTAssertFalse(observedMembership.contains([7]))
+        XCTAssertTrue(service.blackedOutDisplayIDs.isEmpty)
     }
 
     @MainActor
@@ -774,7 +800,11 @@ final class ProtectionPreferencesTests: XCTestCase {
         let script = """
         #!/bin/bash
         printf 'launch:%s\\n' "$*" >> "$PANELCTL_TEST_LOG"
-        printf '{"state":"waiting"}\\n'
+        if [[ "$*" == *"BBBB-UUID"* ]]; then
+            printf '{"state":"waiting","blackedOutDisplayIDs":[202]}\\n'
+        else
+            printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
+        fi
         trap 'exit 0' TERM
         while true; do /bin/sleep 0.02; done
         """
@@ -806,6 +836,7 @@ final class ProtectionPreferencesTests: XCTestCase {
             displayProvider: { currentDisplays }
         )
         try await waitUntil { model.runtimeState == .waiting }
+        try await waitUntil { model.blackedOutDisplayIDs == [202] }
         let initialLaunches = try await waitForLaunches(1, at: log)
         XCTAssertEqual(initialLaunches, [
             "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake"
@@ -813,6 +844,7 @@ final class ProtectionPreferencesTests: XCTestCase {
 
         currentDisplays = [displays[0], displays[2]]
         model.refreshDisplays()
+        XCTAssertTrue(model.blackedOutDisplayIDs.isEmpty)
         try await waitUntil { model.runtimeState == .waiting }
         let partialLaunches = try await waitForLaunches(2, at: log)
         XCTAssertEqual(partialLaunches, [
@@ -823,6 +855,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         currentDisplays = displays
         model.refreshDisplays()
         try await waitUntil { model.runtimeState == .waiting }
+        try await waitUntil { model.blackedOutDisplayIDs == [202] }
         let recoveredLaunches = try await waitForLaunches(3, at: log)
         XCTAssertEqual(recoveredLaunches, [
             "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake",
@@ -832,6 +865,7 @@ final class ProtectionPreferencesTests: XCTestCase {
 
         currentDisplays = [displays[2]]
         model.refreshDisplays()
+        XCTAssertTrue(model.blackedOutDisplayIDs.isEmpty)
         try await waitUntil {
             if case .waitingForDisplays = model.runtimeState {
                 return true
@@ -911,7 +945,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         let helper = directory.appendingPathComponent("fake-panelctl")
         let script = """
         #!/bin/bash
-        printf '{"state":"waiting_for_input"}\\n'
+        printf '{"state":"waiting_for_input","blackedOutDisplayIDs":[]}\\n'
         trap 'exit 0' TERM
         while true; do /bin/sleep 0.02; done
         """
@@ -1050,13 +1084,13 @@ final class ProtectionPreferencesTests: XCTestCase {
         let helper = directory.appendingPathComponent("fake-panelctl")
         let script = """
         #!/bin/bash
-        printf '{"state":"waiting"}\\n'
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         trap 'exit 0' TERM
         while IFS= read -r command; do
             if [[ "$command" == "blackout-now" ]]; then
-                printf '{"state":"blacked_out"}\\n'
+                printf '{"state":"blacked_out","blackedOutDisplayIDs":[7]}\\n'
             elif [[ "$command" == "restore" ]]; then
-                printf '{"state":"waiting"}\\n'
+                printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
             fi
         done
         """
@@ -1137,6 +1171,90 @@ final class ProtectionPreferencesTests: XCTestCase {
         let fullStopped = expectation(description: "full watcher stopped")
         fullModel.shutdown { fullStopped.fulfill() }
         await fulfillment(of: [fullStopped], timeout: 3)
+    }
+
+    @MainActor
+    func testPartialMembershipUpdatesModelAndRestoreWithoutFullLifecycle() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panelctl-membership-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let log = directory.appendingPathComponent("control.log")
+        let script = """
+        #!/bin/bash
+        printf '{"state":"waiting","blackedOutDisplayIDs":[202]}\\n'
+        trap 'exit 0' TERM
+        while IFS= read -r command; do
+            printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
+            if [[ "$command" == "restore" ]]; then
+                printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
+                /bin/sleep 0.05
+                printf '{"state":"waiting","blackedOutDisplayIDs":[202]}\\n'
+            elif [[ "$command" == "blackout-now" ]]; then
+                printf '{"state":"waiting","blackedOutDisplayIDs":[202]}\\n'
+            fi
+        done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: helper.path
+        )
+
+        let suiteName = "panelctl-membership-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var preferences = ProtectionPreferences()
+        preferences.isEnabled = true
+        preferences.didChooseDisplays = true
+        preferences.selectedDisplayUUIDs = ["AAAA-UUID", "BBBB-UUID"]
+        preferences.followUpAction = .restore
+        defaults.set(
+            try JSONEncoder().encode(preferences),
+            forKey: "blackoutPreferences"
+        )
+
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        defer {
+            unsetenv("PANELCTL_HELPER")
+            unsetenv("PANELCTL_TEST_LOG")
+        }
+
+        let model = AppModel(
+            defaults: defaults,
+            displayProvider: { [self.displays[0], self.displays[1]] },
+            idleSecondsProvider: { 0 }
+        )
+        var statusChanges = 0
+        model.onStatusChange = { statusChanges += 1 }
+        try await waitUntil { model.blackedOutDisplayIDs == [202] }
+
+        XCTAssertEqual(model.runtimeState, .waiting)
+        XCTAssertEqual(model.statusSystemImage, "rectangle.fill")
+        XCTAssertTrue(model.statusSummary.hasPrefix("Empty-display blackout active"))
+        XCTAssertTrue(model.statusSummary.contains("to blackout"))
+        XCTAssertEqual(model.nextAction, "blackout")
+        XCTAssertEqual(model.secondsRemaining, 300)
+        XCTAssertGreaterThan(statusChanges, 0)
+
+        XCTAssertTrue(try model.restoreBlackout())
+        try await waitUntil { model.blackedOutDisplayIDs.isEmpty }
+        try await waitUntil { model.blackedOutDisplayIDs == [202] }
+        XCTAssertEqual(model.runtimeState, .waiting)
+
+        try model.blackoutNow()
+        _ = try await waitForLogLines(2, at: log)
+        XCTAssertEqual(model.runtimeState, .waiting)
+        XCTAssertEqual(model.blackedOutDisplayIDs, [202])
+
+        let stopped = expectation(description: "watcher stopped")
+        model.shutdown { stopped.fulfill() }
+        await fulfillment(of: [stopped], timeout: 2)
+        XCTAssertTrue(model.blackedOutDisplayIDs.isEmpty)
     }
 
     private func waitForLaunches(

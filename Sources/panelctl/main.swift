@@ -91,9 +91,10 @@ struct PanelCtlMain {
     private static func blackoutController() -> BlackoutController {
         let controller: BlackoutController
         if ProcessInfo.processInfo.environment["PANELCTL_EMIT_STATUS"] == "1" {
-            controller = BlackoutController { state in
-                let line = #"{"state":"\#(state.rawValue)"}"# + "\n"
-                FileHandle.standardOutput.write(Data(line.utf8))
+            controller = BlackoutController { status in
+                guard let data = try? JSONEncoder().encode(status) else { return }
+                FileHandle.standardOutput.write(data)
+                FileHandle.standardOutput.write(Data([0x0A]))
             }
         } else {
             controller = BlackoutController()

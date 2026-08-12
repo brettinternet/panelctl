@@ -69,6 +69,47 @@ final class CLIParserTests: XCTestCase {
             XCTAssertEqual($0 as? CLIParseError, .persistentDimming)
         }
     }
+    func testEmptyDisplayBlackoutOptions() throws {
+        let defaults = BlackoutOptions(
+            selectors: ["1"],
+            all: false,
+            idleAfter: nil,
+            timeout: nil,
+            sleepAfter: nil,
+            caffeinate: false
+        )
+        XCTAssertFalse(defaults.blackoutEmptyDisplays)
+
+        let command = try CLIParser.parse([
+            "blackout", "--display", "1", "--idle-after", "10", "--watch",
+            "--blackout-empty-displays", "--dim"
+        ])
+        guard case .blackout(let options) = command else {
+            return XCTFail("expected blackout command")
+        }
+        XCTAssertTrue(options.blackoutEmptyDisplays)
+        XCTAssertTrue(options.dimDisplays)
+
+        XCTAssertThrowsError(try CLIParser.parse([
+            "blackout", "--display", "1", "--idle-after", "10", "--watch",
+            "--blackout-empty-displays", "--blackout-empty-displays"
+        ])) {
+            XCTAssertEqual(
+                $0 as? CLIParseError,
+                .duplicateOption("--blackout-empty-displays")
+            )
+        }
+        XCTAssertThrowsError(try CLIParser.parse([
+            "blackout", "--display", "1", "--idle-after", "10",
+            "--blackout-empty-displays"
+        ])) {
+            XCTAssertEqual(
+                $0 as? CLIParseError,
+                .emptyDisplayBlackoutRequiresWatch
+            )
+        }
+    }
+
 
     func testAllBlackoutSafetyOptions() throws {
         let options = BlackoutOptions(selectors: [], all: true, idleAfter: 10, timeout: nil, sleepAfter: 60, caffeinate: true)
@@ -197,6 +238,10 @@ final class CLIParserTests: XCTestCase {
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--ignore-playback"))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--defer-camera"))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--keep-blackout-on-input"))
+        XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--blackout-empty-displays"))
+        XCTAssertTrue(CLIHelp.text(for: "blackout").contains(
+            "Hardware dimming applies to inactivity and Blackout Now cycles, not empty-display-only blackouts."
+        ))
         XCTAssertEqual(CLIParseError.unknownOption("--bad").description, "unknown option: --bad")
     }
 

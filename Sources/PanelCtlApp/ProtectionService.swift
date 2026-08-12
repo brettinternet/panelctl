@@ -87,11 +87,19 @@ final class ProtectionService {
 
     private let displaysAreAsleep: () -> Bool
     var onStateChange: ((ProtectionRuntimeState) -> Void)?
+    var onMembershipChange: ((Set<UInt32>) -> Void)?
 
     private(set) var state: ProtectionRuntimeState = .disabled {
         didSet {
             if oldValue != state {
                 onStateChange?(state)
+            }
+        }
+    }
+    private(set) var blackedOutDisplayIDs: Set<UInt32> = [] {
+        didSet {
+            if oldValue != blackedOutDisplayIDs {
+                onMembershipChange?(blackedOutDisplayIDs)
             }
         }
     }
@@ -139,6 +147,7 @@ final class ProtectionService {
                process.isRunning {
                 return
             }
+            blackedOutDisplayIDs = []
             pendingArguments = arguments
             if pendingControlIntent == nil {
                 pendingControlIntent = inFlightControlIntent
@@ -152,6 +161,7 @@ final class ProtectionService {
             requestTermination(of: process)
             return
         }
+        blackedOutDisplayIDs = []
         launch(arguments: arguments)
     }
 
@@ -173,6 +183,7 @@ final class ProtectionService {
         if command == .restore {
             let hasActiveBlackout = state == .blackedOut ||
                 state == .sleeping ||
+                !blackedOutDisplayIDs.isEmpty ||
                 displaysAreAsleep() ||
                 existingIntent?.command == .blackoutNow ||
                 existingIntent?.command == .restore
@@ -215,6 +226,7 @@ final class ProtectionService {
         inFlightControlIntent = nil
         stateAfterTermination = .disabled
         shutdownCompletion = completion
+        blackedOutDisplayIDs = []
         guard let process else {
             shutdownCompletion = nil
             completion()
@@ -230,6 +242,7 @@ final class ProtectionService {
         pendingControlSourceProcess = nil
         inFlightControlIntent = nil
         stateAfterTermination = finalState
+        blackedOutDisplayIDs = []
         guard let process else {
             self.process = nil
             currentArguments = nil
@@ -338,18 +351,19 @@ final class ProtectionService {
         while let newline = statusBuffer.firstIndex(of: 0x0A) {
             let line = statusBuffer[..<newline]
             statusBuffer.removeSubrange(...newline)
-            guard let event = try? JSONDecoder().decode(StatusEvent.self, from: Data(line)),
-                  let runtimeState = BlackoutRuntimeState(rawValue: event.state) else {
+            guard let status = try? JSONDecoder().decode(
+                BlackoutRuntimeStatus.self,
+                from: Data(line)
+            ) else {
                 continue
             }
+            let runtimeState = status.state
             if state == .stopping {
-                updateInheritedControlIntent(
-                    for: runtimeState,
-                    from: sourceProcess
-                )
+                updateInheritedControlIntent(for: status, from: sourceProcess)
                 continue
             }
-            updateControlIntent(for: runtimeState)
+            blackedOutDisplayIDs = Set(status.blackedOutDisplayIDs)
+            updateControlIntent(for: status)
             switch runtimeState {
             case .waiting: self.state = .waiting
             case .waitingForInput: self.state = .waitingForInput
@@ -390,35 +404,32 @@ final class ProtectionService {
     }
 
     private func updateInheritedControlIntent(
-        for runtimeState: BlackoutRuntimeState,
+        for status: BlackoutRuntimeStatus,
         from sourceProcess: Process
     ) {
         guard pendingControlSourceProcess === sourceProcess,
               let intent = pendingControlIntent else {
             return
         }
-        pendingControlIntent = Self.transition(
-            intent,
-            for: runtimeState
-        )
+        pendingControlIntent = Self.transition(intent, for: status)
         if pendingControlIntent == nil {
             pendingControlSourceProcess = nil
         }
     }
 
-    private func updateControlIntent(for runtimeState: BlackoutRuntimeState) {
+    private func updateControlIntent(for status: BlackoutRuntimeStatus) {
         guard let intent = inFlightControlIntent else { return }
-        inFlightControlIntent = Self.transition(intent, for: runtimeState)
+        inFlightControlIntent = Self.transition(intent, for: status)
     }
 
     private static func transition(
         _ currentIntent: ControlIntent,
-        for runtimeState: BlackoutRuntimeState
+        for status: BlackoutRuntimeStatus
     ) -> ControlIntent? {
         var intent = currentIntent
         switch intent.command {
         case .blackoutNow:
-            switch runtimeState {
+            switch status.state {
             case .blackedOut, .sleeping:
                 intent.isApplied = true
             case .waiting where intent.isApplied:
@@ -427,13 +438,10 @@ final class ProtectionService {
                 break
             }
         case .restore:
-            switch runtimeState {
-            case .waiting:
+            if status.state == .waiting && status.blackedOutDisplayIDs.isEmpty {
                 intent.isApplied = true
-            case .blackedOut where intent.isApplied:
+            } else if !status.blackedOutDisplayIDs.isEmpty && intent.isApplied {
                 return nil
-            default:
-                break
             }
         }
         return intent
@@ -477,6 +485,7 @@ final class ProtectionService {
         process = nil
         currentArguments = nil
         statusBuffer.removeAll(keepingCapacity: true)
+        blackedOutDisplayIDs = []
 
         if let pendingArguments {
             self.pendingArguments = nil
@@ -577,9 +586,6 @@ final class ProtectionService {
     }
 }
 
-private struct StatusEvent: Decodable {
-    let state: String
-}
 
 private enum HelperError: Error, LocalizedError {
     case notFound
