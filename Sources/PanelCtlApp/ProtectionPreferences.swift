@@ -24,6 +24,8 @@ enum ProtectionConfigurationError: Error, Equatable, LocalizedError {
     case allDisplaysRequireLimit
     case selectionWouldCoverAllDisplays
     case persistentDimming
+    case invalidOverlayOpacityPercent
+    case invalidHardwareBrightnessPercent
     case invalidIdleDuration
     case invalidFollowUpDuration
 
@@ -40,7 +42,11 @@ enum ProtectionConfigurationError: Error, Equatable, LocalizedError {
         case .selectionWouldCoverAllDisplays:
             return "To protect every display, choose All connected displays and a safety limit."
         case .persistentDimming:
-            return "Turn off hardware dimming to keep blackout active during input."
+            return "Use Working dimming or turn off hardware brightness to keep a blocking blackout active during input."
+        case .invalidOverlayOpacityPercent:
+            return "Choose an overlay darkness from 1% through 100%."
+        case .invalidHardwareBrightnessPercent:
+            return "Choose a hardware target brightness from 0% through 100%."
         case .invalidIdleDuration:
             return "Choose a valid inactivity delay."
         case .invalidFollowUpDuration:
@@ -59,7 +65,11 @@ struct ProtectionPreferences: Codable, Equatable {
     var selectedDisplayUUIDs: Set<String> = []
     var didChooseDisplays = false
     var blackoutEmptyDisplays = false
-    var dimDisplaysDuringBlackout = false
+    var mode: BlackoutMode = .blocking
+    var workingOverlayEnabled = true
+    var workingOverlayOpacityPercent = 60
+    var hardwareDimmingEnabled = false
+    var hardwareBrightnessPercent = 25
     var keepBlackoutOnInput = false
     var deferBlackoutDuringPlayback = true
     var deferBlackoutWhileCameraInUse = false
@@ -74,6 +84,11 @@ struct ProtectionPreferences: Codable, Equatable {
         case selectedDisplayUUIDs
         case didChooseDisplays
         case blackoutEmptyDisplays
+        case mode
+        case workingOverlayEnabled
+        case workingOverlayOpacityPercent
+        case hardwareDimmingEnabled
+        case hardwareBrightnessPercent
         case dimDisplaysDuringBlackout
         case keepBlackoutOnInput
         case deferBlackoutDuringPlayback
@@ -96,13 +111,54 @@ struct ProtectionPreferences: Codable, Equatable {
             Bool.self,
             forKey: .blackoutEmptyDisplays
         ) ?? false
-        dimDisplaysDuringBlackout = try values.decodeIfPresent(Bool.self, forKey: .dimDisplaysDuringBlackout) ?? false
+        mode = try values.decodeIfPresent(BlackoutMode.self, forKey: .mode) ?? .blocking
+        workingOverlayEnabled = try values.decodeIfPresent(
+            Bool.self,
+            forKey: .workingOverlayEnabled
+        ) ?? true
+        workingOverlayOpacityPercent = try values.decodeIfPresent(
+            Int.self,
+            forKey: .workingOverlayOpacityPercent
+        ) ?? 60
+        let legacyDimming = try values.decodeIfPresent(
+            Bool.self,
+            forKey: .dimDisplaysDuringBlackout
+        )
+        hardwareDimmingEnabled = try values.decodeIfPresent(
+            Bool.self,
+            forKey: .hardwareDimmingEnabled
+        ) ?? legacyDimming ?? false
+        hardwareBrightnessPercent = try values.decodeIfPresent(
+            Int.self,
+            forKey: .hardwareBrightnessPercent
+        ) ?? (legacyDimming == true ? 0 : 25)
         keepBlackoutOnInput = try values.decodeIfPresent(Bool.self, forKey: .keepBlackoutOnInput) ?? false
         deferBlackoutDuringPlayback = try values.decodeIfPresent(Bool.self, forKey: .deferBlackoutDuringPlayback) ?? true
         deferBlackoutWhileCameraInUse = try values.decodeIfPresent(
             Bool.self,
             forKey: .deferBlackoutWhileCameraInUse
         ) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(isEnabled, forKey: .isEnabled)
+        try values.encode(idleSeconds, forKey: .idleSeconds)
+        try values.encode(followUpAction, forKey: .followUpAction)
+        try values.encode(followUpSeconds, forKey: .followUpSeconds)
+        try values.encode(keepDisplaysAwake, forKey: .keepDisplaysAwake)
+        try values.encode(allDisplays, forKey: .allDisplays)
+        try values.encode(selectedDisplayUUIDs, forKey: .selectedDisplayUUIDs)
+        try values.encode(didChooseDisplays, forKey: .didChooseDisplays)
+        try values.encode(blackoutEmptyDisplays, forKey: .blackoutEmptyDisplays)
+        try values.encode(mode, forKey: .mode)
+        try values.encode(workingOverlayEnabled, forKey: .workingOverlayEnabled)
+        try values.encode(workingOverlayOpacityPercent, forKey: .workingOverlayOpacityPercent)
+        try values.encode(hardwareDimmingEnabled, forKey: .hardwareDimmingEnabled)
+        try values.encode(hardwareBrightnessPercent, forKey: .hardwareBrightnessPercent)
+        try values.encode(keepBlackoutOnInput, forKey: .keepBlackoutOnInput)
+        try values.encode(deferBlackoutDuringPlayback, forKey: .deferBlackoutDuringPlayback)
+        try values.encode(deferBlackoutWhileCameraInUse, forKey: .deferBlackoutWhileCameraInUse)
     }
 
     func commandArguments(for displays: [DisplayRecord]) throws -> [String] {
@@ -114,7 +170,13 @@ struct ProtectionPreferences: Codable, Equatable {
                 throw ProtectionConfigurationError.invalidFollowUpDuration
             }
         }
-        if keepBlackoutOnInput && dimDisplaysDuringBlackout {
+        guard (1...100).contains(workingOverlayOpacityPercent) else {
+            throw ProtectionConfigurationError.invalidOverlayOpacityPercent
+        }
+        guard (0...100).contains(hardwareBrightnessPercent) else {
+            throw ProtectionConfigurationError.invalidHardwareBrightnessPercent
+        }
+        if mode == .blocking && keepBlackoutOnInput && hardwareDimmingEnabled {
             throw ProtectionConfigurationError.persistentDimming
         }
 
@@ -173,7 +235,16 @@ struct ProtectionPreferences: Codable, Equatable {
                 arguments += ["--display", uuid]
             }
         }
-
+        arguments += ["--mode", mode.rawValue]
+        if mode == .working {
+            if workingOverlayEnabled {
+                arguments += ["--overlay-opacity", String(workingOverlayOpacityPercent)]
+            } else {
+                arguments.append("--no-overlay")
+            }
+        } else {
+            arguments += ["--overlay-opacity", "100"]
+        }
         arguments += ["--idle-after", Self.durationArgument(idleSeconds), "--watch"]
         if blackoutEmptyDisplays {
             arguments.append("--blackout-empty-displays")
@@ -192,8 +263,8 @@ struct ProtectionPreferences: Codable, Equatable {
         if keepBlackoutOnInput {
             arguments.append("--keep-blackout-on-input")
         }
-        if dimDisplaysDuringBlackout {
-            arguments.append("--dim")
+        if hardwareDimmingEnabled {
+            arguments += ["--dim-to", String(hardwareBrightnessPercent)]
         }
         if !deferBlackoutDuringPlayback {
             arguments.append("--ignore-playback")

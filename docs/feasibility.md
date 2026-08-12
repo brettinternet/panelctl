@@ -9,14 +9,18 @@ leaving others awake.
 
 | Operation | Desktop remains active | Result | Reliability |
 | --- | --- | --- | --- |
-| Pure-black window | Yes | OLED pixels are unlit; electronics stay on | High |
-| DDC luminance zero | Yes | Hardware brightness is minimized | Hardware-dependent |
+| Opaque pure-black window | Yes | OLED pixels are unlit; electronics stay on | High |
+| Partially transparent overlay | Yes | Visible output is reduced; OLED pixels may remain lit | High |
+| DDC luminance target | Yes | Hardware brightness is lowered | Hardware-dependent |
 | Private topology disconnect | No | Signal may stop | Low; recovery varies |
 | DDC power/DPMS | Usually | Firmware decides | Unsafe without an allowlist |
 
-Pure black is the safest selective default: it is reversible and does not alter
-display topology or firmware state. For long unattended periods, sleep every
-display so monitors can enter their normal standby and compensation paths.
+Opaque pure black is the safest selective OLED-protection default: it is
+reversible and does not alter display topology or firmware state. A partially
+transparent composited overlay reduces visible output but does not guarantee
+unlit OLED pixels, hardware sleep, or panel longevity. For long unattended
+periods, sleep every display so monitors can enter their normal standby and
+compensation paths.
 
 `panelctl` therefore implements inventory, reversible blackouts, all-display
 sleep/wake, private-API probes, and verified DDC luminance reads/writes. It does
@@ -87,7 +91,7 @@ for two OLEDs on the same Mac.
 
 The AW3425DW result applies only to that monitor, firmware state, and connection
 path. Raw luminance writes persist, so callers must restore them. Blackout
-`--dim` journals captured values and retries failed restorations, but cannot
+`--dim-to` journals captured values and retries failed restorations, but cannot
 guarantee immediate recovery after a crash, disconnect, shutdown, UUID change,
 or unavailable transport.
 
@@ -98,15 +102,16 @@ may also stop accepting the command needed to wake it.
 
 ## Blackout and sleep implications
 
-Black OLED pixels are unlit, as described in Samsung Display's
-[OLED overview](https://oledera.samsungdisplay.com/eng/oled/), but the video
-link and electronics remain active. A black window reduces content-driven pixel
-emission; it is not hardware sleep or a longevity guarantee.
+Black OLED pixels under an opaque pure-black window are unlit, as described in
+Samsung Display's [OLED overview](https://oledera.samsungdisplay.com/eng/oled/),
+but the video link and electronics remain active. A partially transparent
+working overlay only reduces visible output; underlying OLED pixels may remain
+lit. Neither treatment is hardware sleep or a longevity guarantee.
 
-The overlay fails open on input, display-layout changes, sleep, session changes,
-or signals. It verifies each window's screen ID and full frame before showing
-it, including scaled, rotated, stacked, and negative-origin layouts. System UI
-may still appear above it.
+The overlay fails open on display-layout changes, sleep, session changes, or
+signals; blocking mode also fails open on input. It verifies each window's
+screen ID and full frame before showing it, including scaled, rotated, stacked,
+and negative-origin layouts. System UI may still appear above it.
 
 `sleep-displays` uses `pmset displaysleepnow` for every display. This is the
 preferred long-idle mode. Dell documents automatic Pixel Refresh in standby for

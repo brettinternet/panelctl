@@ -33,26 +33,35 @@ public enum CLIHelp {
             Usage: panelctl blackout (--display <selector> | --index <n> ... | --all) [options]
 
             Select one or more displays with --display/--index, or use --all.
+            --mode <blocking|working> selects an opaque, input-blocking blackout or
+            click-through working dimming that leaves focus and the pointer unchanged.
+            --overlay-opacity <1...100> sets overlay darkness; --no-overlay disables
+            composited darkening. Values below 100 and --no-overlay require working
+            mode, and those two overlay options cannot be combined. --dim-to <0...100>
+            experimentally lowers each supported external display to that percentage
+            of its DDC luminance maximum, never raises brightness, and restores the
+            captured value before dimming ends or sleep. DDC support is best-effort.
             --idle-after <duration> waits for inactivity before showing blackout.
             --timeout <duration> restores after the duration; --sleep-after <duration>
             restores then sleeps all displays. These limits are mutually exclusive;
             --all requires one. --watch keeps watching for future idle periods and
             requires --idle-after; explicit watch targets must expose a stable
-            display UUID. --blackout-empty-displays additionally blacks out each
-            selected display after it has no app windows and no pointer for one second.
-            --keep-blackout-on-input keeps a partial full-cycle blackout installed
-            during activity and restarts its Restore or Sleep timer; full coverage
-            always retains its fixed finite endpoint. --caffeinate prevents idle system
-            sleep (advanced). --keep-displays-awake keeps displays awake until
-            --sleep-after; macOS may sleep the Mac sooner, and the assertion applies
-            globally. --dim experimentally lowers supported external displays to
-            minimum DDC luminance, restoring their original values before blackout ends
-            or sleep; it cannot be combined with --keep-blackout-on-input.
-            Hardware dimming applies to inactivity and Blackout Now cycles, not empty-display-only blackouts. By default,
-            automatic blackout defers while another app keeps the display awake;
-            --ignore-playback disables that system-wide detection. --defer-camera
-            additionally defers while any camera is in use without accessing its video.
-            Manual blackout-now commands are never deferred.
+            display UUID. --blackout-empty-displays additionally treats each selected
+            display after it has no app windows and no pointer for one second.
+            --keep-blackout-on-input keeps a partial blocking blackout installed during
+            activity and restarts its Restore or Sleep timer; it cannot be combined
+            with --dim-to. Working dimming always applies the same timer extension to
+            partial selections, including hardware brightness. Full coverage always
+            retains its fixed finite endpoint. Restore working dimming from the status
+            menu or `panelctl app restore`. --caffeinate prevents idle system sleep
+            (advanced). --keep-displays-awake keeps displays awake until --sleep-after;
+            macOS may sleep the Mac sooner, and the assertion applies globally.
+            Hardware dimming applies to inactivity and Blackout Now cycles, not empty-display-only blackouts.
+            By default, automatic treatment defers while
+            another app keeps the display awake; --ignore-playback disables that
+            system-wide detection. --defer-camera additionally defers while any camera
+            is in use without accessing its video. Manual blackout-now commands are
+            never deferred.
 
             Selectors accept a display UUID or decimal/hex CG display ID. Use
             --index <n> or index:<n> for the one-based index from `panelctl list`.

@@ -16,13 +16,16 @@ final class CLIParserTests: XCTestCase {
             sleepAfter: nil,
             caffeinate: true,
             watch: true,
-            dimDisplays: true
+            mode: .working,
+            overlayOpacityPercent: 60,
+            hardwareBrightnessPercent: 25
         )
         XCTAssertEqual(
             try CLIParser.parse([
                 "blackout", "--display", "1", "--index", "3",
                 "--idle-after", "10m", "--timeout", "2.5s",
-                "--caffeinate", "--watch", "--dim"
+                "--caffeinate", "--watch", "--mode", "working",
+                "--overlay-opacity", "60", "--dim-to", "25"
             ]),
             .blackout(options)
         )
@@ -38,6 +41,7 @@ final class CLIParserTests: XCTestCase {
             caffeinate: false
         )
         XCTAssertFalse(defaultOptions.keepBlackoutOnInput)
+        XCTAssertFalse(defaultOptions.effectiveKeepBlackoutOnInput)
 
         let command = try CLIParser.parse([
             "blackout", "--display", "1", "--keep-blackout-on-input"
@@ -46,6 +50,16 @@ final class CLIParserTests: XCTestCase {
             return XCTFail("expected blackout command")
         }
         XCTAssertTrue(options.keepBlackoutOnInput)
+        XCTAssertTrue(options.effectiveKeepBlackoutOnInput)
+
+        let working = try CLIParser.parse([
+            "blackout", "--display", "1", "--mode", "working"
+        ])
+        guard case .blackout(let workingOptions) = working else {
+            return XCTFail("expected blackout command")
+        }
+        XCTAssertFalse(workingOptions.keepBlackoutOnInput)
+        XCTAssertTrue(workingOptions.effectiveKeepBlackoutOnInput)
 
         XCTAssertThrowsError(try CLIParser.parse([
             "blackout", "--display", "1",
@@ -59,14 +73,78 @@ final class CLIParserTests: XCTestCase {
             XCTAssertEqual($0 as? CLIParseError, .allRequiresLimit)
         }
         XCTAssertThrowsError(try CLIParser.parse([
-            "blackout", "--display", "1", "--keep-blackout-on-input", "--dim"
+            "blackout", "--display", "1", "--keep-blackout-on-input", "--dim-to", "0"
         ])) {
             XCTAssertEqual($0 as? CLIParseError, .persistentDimming)
         }
+        XCTAssertNoThrow(try CLIParser.parse([
+            "blackout", "--display", "1", "--mode", "working",
+            "--keep-blackout-on-input", "--dim-to", "0"
+        ]))
+    }
+    func testBlackoutModeAndChannelDefaults() throws {
+        let command = try CLIParser.parse(["blackout", "--display", "1"])
+        guard case .blackout(let options) = command else {
+            return XCTFail("expected blackout command")
+        }
+        XCTAssertEqual(options.mode, .blocking)
+        XCTAssertEqual(options.overlayOpacityPercent, 100)
+        XCTAssertNil(options.hardwareBrightnessPercent)
+
+        let noOverlay = try CLIParser.parse([
+            "blackout", "--display", "1", "--mode", "working", "--no-overlay"
+        ])
+        guard case .blackout(let noOverlayOptions) = noOverlay else {
+            return XCTFail("expected blackout command")
+        }
+        XCTAssertNil(noOverlayOptions.overlayOpacityPercent)
+    }
+
+    func testBlackoutModeAndOverlayValidation() {
+        let errors: [([String], CLIParseError)] = [
+            (["--mode", "other"], .invalidBlackoutMode("other")),
+            (["--mode", "working", "--overlay-opacity", "0"], .invalidOverlayOpacity("0")),
+            (["--mode", "working", "--overlay-opacity", "101"], .invalidOverlayOpacity("101")),
+            (["--mode", "working", "--overlay-opacity", "1.5"], .invalidOverlayOpacity("1.5")),
+            (["--mode", "working", "--overlay-opacity", "+1"], .invalidOverlayOpacity("+1")),
+            (["--mode", "working", "--no-overlay", "--overlay-opacity", "60"], .conflictingOverlayOptions),
+            (["--no-overlay"], .workingOverlayRequired),
+            (["--overlay-opacity", "99"], .workingOverlayRequired)
+        ]
+        for (arguments, expected) in errors {
+            XCTAssertThrowsError(
+                try CLIParser.parse(["blackout", "--display", "1"] + arguments)
+            ) {
+                XCTAssertEqual($0 as? CLIParseError, expected)
+            }
+        }
+        XCTAssertNoThrow(try CLIParser.parse([
+            "blackout", "--display", "1", "--overlay-opacity", "100"
+        ]))
+        XCTAssertNoThrow(try CLIParser.parse([
+            "blackout", "--display", "1", "--mode", "working",
+            "--overlay-opacity", "1"
+        ]))
+    }
+
+    func testHardwareBrightnessValidation() {
+        for value in ["-1", "101", "1.5", "+1", "NaN", "inf"] {
+            XCTAssertThrowsError(try CLIParser.parse([
+                "blackout", "--display", "1", "--dim-to", value
+            ])) {
+                XCTAssertEqual($0 as? CLIParseError, .invalidHardwareBrightness(value))
+            }
+        }
+        XCTAssertNoThrow(try CLIParser.parse([
+            "blackout", "--display", "1", "--dim-to", "0"
+        ]))
+        XCTAssertNoThrow(try CLIParser.parse([
+            "blackout", "--display", "1", "--dim-to", "100"
+        ]))
         XCTAssertThrowsError(try CLIParser.parse([
-            "blackout", "--all", "--keep-blackout-on-input", "--dim"
+            "blackout", "--display", "1", "--dim"
         ])) {
-            XCTAssertEqual($0 as? CLIParseError, .persistentDimming)
+            XCTAssertEqual($0 as? CLIParseError, .unknownOption("--dim"))
         }
     }
     func testEmptyDisplayBlackoutOptions() throws {
@@ -82,13 +160,13 @@ final class CLIParserTests: XCTestCase {
 
         let command = try CLIParser.parse([
             "blackout", "--display", "1", "--idle-after", "10", "--watch",
-            "--blackout-empty-displays", "--dim"
+            "--blackout-empty-displays", "--dim-to", "0"
         ])
         guard case .blackout(let options) = command else {
             return XCTFail("expected blackout command")
         }
         XCTAssertTrue(options.blackoutEmptyDisplays)
-        XCTAssertTrue(options.dimDisplays)
+        XCTAssertEqual(options.hardwareBrightnessPercent, 0)
 
         XCTAssertThrowsError(try CLIParser.parse([
             "blackout", "--display", "1", "--idle-after", "10", "--watch",
@@ -234,7 +312,8 @@ final class CLIParserTests: XCTestCase {
         XCTAssertEqual(CLIHelp.version, "panelctl 0.3.15")
         XCTAssertTrue(CLIHelp.text(for: "app").contains("snooze --for <duration>"))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--watch"))
-        XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--dim"))
+        XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--dim-to"))
+        XCTAssertFalse(CLIHelp.text(for: "blackout").contains("--dim "))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--ignore-playback"))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--defer-camera"))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--keep-blackout-on-input"))
@@ -250,7 +329,10 @@ final class CLIParserTests: XCTestCase {
             (["list", "--json", "--json"], .duplicateOption("--json")),
             (["blackout", "--display", "1", "--idle-after", "1m", "--idle-after", "2m"], .duplicateOption("--idle-after")),
             (["blackout", "--display", "1", "--caffeinate", "--caffeinate"], .duplicateOption("--caffeinate")),
-            (["blackout", "--display", "1", "--dim", "--dim"], .duplicateOption("--dim")),
+            (["blackout", "--display", "1", "--mode", "working", "--mode", "blocking"], .duplicateOption("--mode")),
+            (["blackout", "--display", "1", "--mode", "working", "--overlay-opacity", "60", "--overlay-opacity", "70"], .duplicateOption("--overlay-opacity")),
+            (["blackout", "--display", "1", "--mode", "working", "--no-overlay", "--no-overlay"], .duplicateOption("--no-overlay")),
+            (["blackout", "--display", "1", "--dim-to", "1", "--dim-to", "2"], .duplicateOption("--dim-to")),
             (["blackout", "--display", "1", "--ignore-playback", "--ignore-playback"], .duplicateOption("--ignore-playback")),
             (["blackout", "--display", "1", "--defer-camera", "--defer-camera"], .duplicateOption("--defer-camera")),
             (["ddc-luminance", "--display", "1", "--display", "2"], .duplicateOption("--display")),

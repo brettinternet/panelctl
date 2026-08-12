@@ -9,14 +9,16 @@ struct SettingsView: View {
     private let followUpOptions: [TimeInterval] = [5 * 60, 15 * 60, 30 * 60, 60 * 60, 2 * 60 * 60]
 
     var body: some View {
-        VStack(spacing: 12) {
-            statusHeader
-            automationSection
-            displaysSection
-            startupSection
-            footer
+        ScrollView(.vertical) {
+            VStack(spacing: 12) {
+                statusHeader
+                automationSection
+                displaysSection
+                startupSection
+                footer
+            }
+            .padding(16)
         }
-        .padding(16)
         .frame(width: 490)
         .controlSize(.small)
         .font(.system(size: 13))
@@ -73,25 +75,56 @@ struct SettingsView: View {
                 .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
         )
     }
-
     private var automationSection: some View {
         GroupBox("Automation") {
             VStack(spacing: 9) {
-                settingRow("Black out after") {
+                settingRow("Display treatment") {
+                    Picker("", selection: preferenceBinding(\.mode)) {
+                        Text("Blackout").tag(BlackoutMode.blocking)
+                        Text("Working dimming").tag(BlackoutMode.working)
+                    }
+                    .labelsHidden()
+                    .frame(width: 205)
+                }
+                if model.preferences.mode == .working {
+                    Toggle(
+                        "Black overlay",
+                        isOn: preferenceBinding(\.workingOverlayEnabled)
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if model.preferences.workingOverlayEnabled {
+                        settingRow("Overlay darkness") {
+                            percentageStepper(
+                                selection: preferenceBinding(\.workingOverlayOpacityPercent),
+                                range: 1...100
+                            )
+                        }
+                    }
+                    Text("Input passes through dimmed displays. PanelCtl leaves the pointer visible and keeps your current app focused.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Activity restarts Restore or Sleep for partial selections. Full-display safety limits stay fixed. Restore from the menu or CLI.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                settingRow(
+                    model.preferences.mode == .working ? "Dim after" : "Black out after"
+                ) {
                     durationPicker(
                         selection: preferenceBinding(\.idleSeconds),
                         options: idleOptions
                     )
                 }
-                settingRow("After blackout") {
+                settingRow(
+                    model.preferences.mode == .working ? "After dimming" : "After blackout"
+                ) {
                     Picker("", selection: preferenceBinding(\.followUpAction)) {
                         ForEach(FollowUpAction.allCases) { action in
-                            Text(
-                                action == .untilActivity && model.preferences.keepBlackoutOnInput
-                                    ? "Stay black until restored"
-                                    : action.title
-                            )
-                            .tag(action)
+                            Text(followUpTitle(action)).tag(action)
                         }
                     }
                     .labelsHidden()
@@ -139,17 +172,19 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
-                Divider()
-                Toggle(
-                    "Keep blacked-out displays black during activity",
-                    isOn: preferenceBinding(\.keepBlackoutOnInput)
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Text("While another display remains usable, activity restarts the Restore or Sleep timer. When every display is blacked out, the timer remains fixed. Press Escape with the pointer on a blacked display to restore.")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
+                if model.preferences.mode == .blocking {
+                    Divider()
+                    Toggle(
+                        "Keep blacked-out displays black during activity",
+                        isOn: preferenceBinding(\.keepBlackoutOnInput)
+                    )
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
+                    Text("While another display remains usable, activity restarts the Restore or Sleep timer. When every display is blacked out, the timer remains fixed. Press Escape with the pointer on a blacked display to restore.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Divider()
                 Toggle(
                     "Defer when another app keeps the display awake",
@@ -173,11 +208,24 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Divider()
                 Toggle(
-                    "Dim supported external displays during blackout",
-                    isOn: preferenceBinding(\.dimDisplaysDuringBlackout)
+                    "Hardware brightness",
+                    isOn: preferenceBinding(\.hardwareDimmingEnabled)
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Text("Experimental · DDC support varies by monitor and connection. PanelCtl attempts restoration before blackout ends or displays sleep. Hardware dimming applies to inactivity and Blackout Now cycles, not empty-display-only blackouts.")
+                if model.preferences.hardwareDimmingEnabled {
+                    settingRow("Target brightness") {
+                        percentageStepper(
+                            selection: preferenceBinding(\.hardwareBrightnessPercent),
+                            range: 0...100
+                        )
+                    }
+                }
+                Text("Experimental · DDC support varies by monitor and connection. PanelCtl only lowers brightness and restores the captured value.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Hardware dimming applies to inactivity and Blackout Now cycles, not empty-display-only blackouts.")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -376,6 +424,36 @@ struct SettingsView: View {
         }
         .labelsHidden()
         .frame(width: 150)
+    }
+
+    private func percentageStepper(
+        selection: Binding<Int>,
+        range: ClosedRange<Int>
+    ) -> some View {
+        Stepper(
+            value: selection,
+            in: range,
+            step: 5
+        ) {
+            Text("\(selection.wrappedValue)%")
+                .monospacedDigit()
+        }
+        .frame(width: 120)
+    }
+
+    private func followUpTitle(_ action: FollowUpAction) -> String {
+        switch action {
+        case .untilActivity:
+            if model.preferences.mode == .working {
+                return "Stay dim until restored"
+            }
+            if model.preferences.keepBlackoutOnInput {
+                return "Stay black until restored"
+            }
+            return action.title
+        case .restore, .sleepDisplays:
+            return action.title
+        }
     }
 
     private func settingRow<Content: View>(

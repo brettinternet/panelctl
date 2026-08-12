@@ -127,7 +127,92 @@ final class BlackoutPolicyTests: XCTestCase {
         )
     }
 
-    func testPersistentDimmingIsRejectedBeforeRuntimeSetup() {
+    func testWorkingModeUsesEffectivePersistenceForPartialSelections() {
+        let workingOptions = BlackoutOptions(
+            selectors: ["1"],
+            all: false,
+            idleAfter: nil,
+            timeout: 60,
+            sleepAfter: nil,
+            caffeinate: false,
+            mode: .working
+        )
+        XCTAssertFalse(workingOptions.keepBlackoutOnInput)
+        XCTAssertTrue(workingOptions.effectiveKeepBlackoutOnInput)
+
+        let policy = BlackoutPolicy(
+            idleAfter: workingOptions.idleAfter,
+            timeout: workingOptions.timeout,
+            sleepAfter: workingOptions.sleepAfter,
+            keepBlackoutOnInput: workingOptions.effectiveKeepBlackoutOnInput
+        )
+        let fresh = IdleSample(seconds: 0, lastInputUptime: 101)
+        XCTAssertEqual(
+            policy.inputAction(for: fresh, after: 100, resetLimitOnInput: true),
+            .resetLimit
+        )
+        XCTAssertEqual(
+            policy.inputAction(for: fresh, after: 100, resetLimitOnInput: false),
+            .none
+        )
+    }
+
+    func testDirectOptionsValidateWorkingOverlayAndHardwarePercentages() {
+        let invalidOverlay = BlackoutOptions(
+            selectors: ["1"],
+            all: false,
+            idleAfter: nil,
+            timeout: nil,
+            sleepAfter: nil,
+            caffeinate: false,
+            mode: .working,
+            overlayOpacityPercent: 0
+        )
+        XCTAssertThrowsError(try BlackoutController.validateOptions(invalidOverlay)) {
+            XCTAssertEqual($0 as? BlackoutError, .invalidOverlayOpacity)
+        }
+
+        let invalidHardware = BlackoutOptions(
+            selectors: ["1"],
+            all: false,
+            idleAfter: nil,
+            timeout: nil,
+            sleepAfter: nil,
+            caffeinate: false,
+            hardwareBrightnessPercent: 101
+        )
+        XCTAssertThrowsError(try BlackoutController.validateOptions(invalidHardware)) {
+            XCTAssertEqual($0 as? BlackoutError, .invalidHardwareBrightness)
+        }
+
+        let blockingWithoutOpaqueOverlay = BlackoutOptions(
+            selectors: ["1"],
+            all: false,
+            idleAfter: nil,
+            timeout: nil,
+            sleepAfter: nil,
+            caffeinate: false,
+            overlayOpacityPercent: nil
+        )
+        XCTAssertThrowsError(try BlackoutController.validateOptions(blockingWithoutOpaqueOverlay)) {
+            XCTAssertEqual($0 as? BlackoutError, .workingOverlayRequired)
+        }
+
+        let validWorkingNoOverlay = BlackoutOptions(
+            selectors: ["1"],
+            all: false,
+            idleAfter: nil,
+            timeout: nil,
+            sleepAfter: nil,
+            caffeinate: false,
+            mode: .working,
+            overlayOpacityPercent: nil,
+            hardwareBrightnessPercent: 0
+        )
+        XCTAssertNoThrow(try BlackoutController.validateOptions(validWorkingNoOverlay))
+    }
+
+    func testPersistentDimmingIsRejectedOnlyForBlockingRawFlag() {
         let persistentDimming = BlackoutOptions(
             selectors: ["1"],
             all: false,
@@ -136,7 +221,18 @@ final class BlackoutPolicyTests: XCTestCase {
             sleepAfter: nil,
             caffeinate: false,
             keepBlackoutOnInput: true,
-            dimDisplays: true
+            hardwareBrightnessPercent: 25
+        )
+        let workingDimming = BlackoutOptions(
+            selectors: ["1"],
+            all: false,
+            idleAfter: nil,
+            timeout: nil,
+            sleepAfter: nil,
+            caffeinate: false,
+            keepBlackoutOnInput: true,
+            mode: .working,
+            hardwareBrightnessPercent: 25
         )
         let persistentOnly = BlackoutOptions(
             selectors: ["1"],
@@ -147,22 +243,14 @@ final class BlackoutPolicyTests: XCTestCase {
             caffeinate: false,
             keepBlackoutOnInput: true
         )
-        let dimOnly = BlackoutOptions(
-            selectors: ["1"],
-            all: false,
-            idleAfter: nil,
-            timeout: nil,
-            sleepAfter: nil,
-            caffeinate: false,
-            dimDisplays: true
-        )
 
         XCTAssertThrowsError(try BlackoutController.validateOptions(persistentDimming)) {
             XCTAssertEqual($0 as? BlackoutError, .persistentDimming)
         }
+        XCTAssertNoThrow(try BlackoutController.validateOptions(workingDimming))
         XCTAssertNoThrow(try BlackoutController.validateOptions(persistentOnly))
-        XCTAssertNoThrow(try BlackoutController.validateOptions(dimOnly))
     }
+
 
 
     func testLimitActionsAreInclusive() {

@@ -98,7 +98,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func updateBlackoutFocus() {
         guard let model else { return }
-        if !model.blackedOutDisplayIDs.isEmpty {
+        if Self.shouldEngageBlackoutFocus(
+            runtimeState: model.runtimeState,
+            mode: model.preferences.mode,
+            hasBlackedOutDisplays: !model.blackedOutDisplayIDs.isEmpty
+        ) {
             if blackoutFocusTimer == nil {
                 let timer = Timer(
                     timeInterval: 0.05,
@@ -122,6 +126,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             blackoutFocusController.leave()
         }
     }
+
+    static func shouldEngageBlackoutFocus(
+        runtimeState: ProtectionRuntimeState,
+        mode: BlackoutMode,
+        hasBlackedOutDisplays: Bool = false
+    ) -> Bool {
+        mode == .blocking &&
+            (runtimeState == .blackedOut || hasBlackedOutDisplays)
+    }
+    static func blackoutActionTitle(for mode: BlackoutMode) -> String {
+        mode == .working ? "Dim Now" : "Blackout Now"
+    }
+
+    static func blackoutRequestSummary(
+        for mode: BlackoutMode,
+        succeeded: Bool
+    ) -> String {
+        switch (mode, succeeded) {
+        case (.working, true): return "Dimming requested"
+        case (.working, false): return "Dimming request failed"
+        case (.blocking, true): return "Blackout requested"
+        case (.blocking, false): return "Blackout request failed"
+        }
+    }
+
 
     @objc private func pollBlackoutFocus() {
         updateBlackoutFocus()
@@ -210,7 +239,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .blackedOut, .sleeping:
             menu.addItem(item("Restore", action: #selector(restoreNow)))
         default:
-            menu.addItem(item("Blackout Now", action: #selector(blackoutNow)))
+            menu.addItem(item(
+                Self.blackoutActionTitle(for: model.preferences.mode),
+                action: #selector(blackoutNow)
+            ))
             if !model.blackedOutDisplayIDs.isEmpty {
                 menu.addItem(item("Restore", action: #selector(restoreNow)))
             }
@@ -360,12 +392,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try model.blackoutNow()
                 return controlResponse(
                     ok: true,
-                    summary: "Blackout requested"
+                    summary: Self.blackoutRequestSummary(
+                        for: model.preferences.mode,
+                        succeeded: true
+                    )
                 )
             } catch {
                 return controlResponse(
                     ok: false,
-                    summary: "Blackout request failed",
+                    summary: Self.blackoutRequestSummary(
+                        for: model.preferences.mode,
+                        succeeded: false
+                    ),
                     error: error.localizedDescription
                 )
             }
