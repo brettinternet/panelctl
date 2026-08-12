@@ -2,24 +2,50 @@ import AppKit
 import SwiftUI
 import PanelCtlCore
 
+private enum SettingsDestination: Hashable, CaseIterable {
+    case automation
+    case displays
+    case startup
+}
+
 struct SettingsView: View {
     @ObservedObject var model: AppModel
+    @State private var selection: SettingsDestination? = .automation
 
     private let idleOptions: [TimeInterval] = [60, 2 * 60, 5 * 60, 10 * 60, 15 * 60, 30 * 60, 60 * 60]
     private let followUpOptions: [TimeInterval] = [5 * 60, 15 * 60, 30 * 60, 60 * 60, 2 * 60 * 60]
 
     var body: some View {
-        ScrollView(.vertical) {
-            VStack(spacing: 12) {
-                statusHeader
-                automationSection
-                displaysSection
-                startupSection
-                footer
+        NavigationSplitView {
+            VStack(spacing: 0) {
+                List(selection: $selection) {
+                    ForEach(SettingsDestination.allCases, id: \.self) { destination in
+                        destinationLabel(destination)
+                            .tag(destination)
+                    }
+                }
+                .listStyle(.sidebar)
+
+                Divider()
+
+                sidebarFooter
+                    .padding(12)
             }
-            .padding(16)
+            .navigationSplitViewColumnWidth(min: 168, ideal: 180, max: 200)
+        } detail: {
+            VStack(spacing: 0) {
+                statusHeader
+                    .padding(.top, 16)
+                    .padding(.horizontal, 16)
+
+                ScrollView(.vertical) {
+                    destinationSection
+                        .padding(.top, 12)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 16)
+                }
+            }
         }
-        .frame(width: 490)
         .controlSize(.small)
         .font(.system(size: 13))
         .alert(item: $model.notice) { notice in
@@ -41,6 +67,30 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private func destinationLabel(_ destination: SettingsDestination) -> some View {
+        switch destination {
+        case .automation:
+            Label("Automation", systemImage: "clock")
+        case .displays:
+            Label("Displays", systemImage: "display.2")
+        case .startup:
+            Label("Startup", systemImage: "power")
+        }
+    }
+
+    @ViewBuilder
+    private var destinationSection: some View {
+        switch selection ?? .automation {
+        case .automation:
+            automationSection
+        case .displays:
+            displaysSection
+        case .startup:
+            startupSection
+        }
+    }
+
     private var statusHeader: some View {
         HStack(spacing: 10) {
             Image(systemName: model.statusSystemImage)
@@ -54,6 +104,13 @@ struct SettingsView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                if let message = model.validationMessage ?? model.runtimeState.errorMessage {
+                    Text(message)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer()
             Toggle(
@@ -273,19 +330,6 @@ struct SettingsView: View {
                     }
                     .frame(height: displayListHeight)
                 }
-                if let message = model.validationMessage {
-                    Text(message)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.orange)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else if let message = model.runtimeState.errorMessage {
-                    Text(message)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.orange)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
             .padding(.top, 3)
         } label: {
@@ -320,24 +364,22 @@ struct SettingsView: View {
         }
     }
 
-    private var footer: some View {
-        HStack(alignment: .bottom) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.version)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                Link("View on GitHub", destination: AppModel.githubURL)
-                    .font(.system(size: 11.5))
-            }
-            Spacer()
+    private var sidebarFooter: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(model.version)
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+            Link("View on GitHub", destination: AppModel.githubURL)
+                .font(.system(size: 11.5))
             Button {
                 NSApp.terminate(nil)
             } label: {
                 Text("Quit")
                     .frame(width: 54)
             }
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .padding(.horizontal, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func displayRow(_ display: DisplayRecord) -> some View {

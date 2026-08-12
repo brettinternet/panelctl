@@ -6,13 +6,14 @@ final class SettingsWindowController: NSWindowController {
     init(model: AppModel) {
         let hostingView = NSHostingView(rootView: SettingsView(model: model))
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 490, height: 590),
-            styleMask: [.titled, .closable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 590),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "PanelCtl Settings"
         window.contentView = hostingView
+        window.contentMinSize = NSSize(width: 620, height: 480)
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("PanelCtlSettingsWindow")
         window.center()
