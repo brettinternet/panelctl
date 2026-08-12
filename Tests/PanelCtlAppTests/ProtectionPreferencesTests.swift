@@ -31,7 +31,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         var preferences = ProtectionPreferences()
         preferences.allDisplays = true
 
-        let expected = ["blackout", "--all", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake"]
+        let expected = ["blackout", "--all", "--mode", "blocking", "--overlay-opacity", "100", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake"]
         XCTAssertEqual(try preferences.commandArguments(for: displays), expected)
 
         preferences.followUpAction = .untilActivity
@@ -47,7 +47,7 @@ final class ProtectionPreferencesTests: XCTestCase {
 
         XCTAssertEqual(
             try preferences.commandArguments(for: displays),
-            ["blackout", "--display", "AAAA-UUID", "--display", "BBBB-UUID", "--idle-after", "300", "--watch", "--timeout", "1800"]
+            ["blackout", "--display", "AAAA-UUID", "--display", "BBBB-UUID", "--mode", "blocking", "--overlay-opacity", "100", "--idle-after", "300", "--watch", "--timeout", "1800"]
         )
     }
 
@@ -77,7 +77,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         preferences.selectedDisplayUUIDs = ["AAAA-UUID", "MISSING-UUID"]
         XCTAssertEqual(
             try preferences.commandArguments(for: displays),
-            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake"]
+            ["blackout", "--display", "AAAA-UUID", "--mode", "blocking", "--overlay-opacity", "100", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake"]
         )
     }
 
@@ -87,7 +87,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertEqual(defaults.followUpAction, .sleepDisplays)
         XCTAssertEqual(defaults.followUpSeconds, 30 * 60)
         XCTAssertTrue(defaults.keepDisplaysAwake)
-        XCTAssertFalse(defaults.dimDisplaysDuringBlackout)
+        XCTAssertFalse(defaults.hardwareDimmingEnabled)
         XCTAssertFalse(defaults.keepBlackoutOnInput)
         XCTAssertTrue(defaults.deferBlackoutDuringPlayback)
         XCTAssertFalse(defaults.deferBlackoutWhileCameraInUse)
@@ -96,20 +96,26 @@ final class ProtectionPreferencesTests: XCTestCase {
         preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
         XCTAssertEqual(
             try preferences.commandArguments(for: displays),
-            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake"]
+            ["blackout", "--display", "AAAA-UUID", "--mode", "blocking", "--overlay-opacity", "100", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake"]
         )
     }
 
-    func testDimmingIsOptInAndEmitsFlag() throws {
+    func testWorkingDimmingEmitsCanonicalFlags() throws {
         var preferences = ProtectionPreferences()
         preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
+        preferences.mode = .working
 
-        XCTAssertFalse(try preferences.commandArguments(for: displays).contains("--dim"))
-
-        preferences.dimDisplaysDuringBlackout = true
         XCTAssertEqual(
             try preferences.commandArguments(for: displays),
-            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake", "--dim"]
+            ["blackout", "--display", "AAAA-UUID", "--mode", "working", "--overlay-opacity", "60", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake"]
+        )
+
+        preferences.workingOverlayEnabled = false
+        preferences.hardwareDimmingEnabled = true
+        preferences.hardwareBrightnessPercent = 25
+        XCTAssertEqual(
+            try preferences.commandArguments(for: displays),
+            ["blackout", "--display", "AAAA-UUID", "--mode", "working", "--no-overlay", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake", "--dim-to", "25"]
         )
     }
 
@@ -120,13 +126,16 @@ final class ProtectionPreferencesTests: XCTestCase {
 
         XCTAssertEqual(
             try preferences.commandArguments(for: displays),
-            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake", "--keep-blackout-on-input"]
+            ["blackout", "--display", "AAAA-UUID", "--mode", "blocking", "--overlay-opacity", "100", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake", "--keep-blackout-on-input"]
         )
 
-        preferences.dimDisplaysDuringBlackout = true
+        preferences.hardwareDimmingEnabled = true
         XCTAssertThrowsError(try preferences.commandArguments(for: displays)) {
             XCTAssertEqual($0 as? ProtectionConfigurationError, .persistentDimming)
         }
+
+        preferences.mode = .working
+        XCTAssertNoThrow(try preferences.commandArguments(for: displays))
     }
 
     func testPlaybackDeferralOptOutEmitsIgnoreFlag() throws {
@@ -165,10 +174,86 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertEqual(preferences.followUpSeconds, 15)
         XCTAssertEqual(preferences.selectedDisplayUUIDs, ["AAAA-UUID"])
         XCTAssertTrue(preferences.didChooseDisplays)
-        XCTAssertFalse(preferences.dimDisplaysDuringBlackout)
+        XCTAssertEqual(preferences.mode, .blocking)
+        XCTAssertTrue(preferences.workingOverlayEnabled)
+        XCTAssertEqual(preferences.workingOverlayOpacityPercent, 60)
+        XCTAssertFalse(preferences.hardwareDimmingEnabled)
+        XCTAssertEqual(preferences.hardwareBrightnessPercent, 25)
         XCTAssertFalse(preferences.keepBlackoutOnInput)
         XCTAssertTrue(preferences.deferBlackoutDuringPlayback)
         XCTAssertFalse(preferences.deferBlackoutWhileCameraInUse)
+    }
+
+    func testLegacyHardwareDimmingMigrationAndNewKeyPrecedence() throws {
+        let enabledLegacy = try JSONDecoder().decode(
+            ProtectionPreferences.self,
+            from: Data(#"{"dimDisplaysDuringBlackout":true}"#.utf8)
+        )
+        XCTAssertTrue(enabledLegacy.hardwareDimmingEnabled)
+        XCTAssertEqual(enabledLegacy.hardwareBrightnessPercent, 0)
+
+        let disabledLegacy = try JSONDecoder().decode(
+            ProtectionPreferences.self,
+            from: Data(#"{"dimDisplaysDuringBlackout":false}"#.utf8)
+        )
+        XCTAssertFalse(disabledLegacy.hardwareDimmingEnabled)
+        XCTAssertEqual(disabledLegacy.hardwareBrightnessPercent, 25)
+
+        let newKeysWin = try JSONDecoder().decode(
+            ProtectionPreferences.self,
+            from: Data(#"{"dimDisplaysDuringBlackout":true,"hardwareDimmingEnabled":false,"hardwareBrightnessPercent":25}"#.utf8)
+        )
+        XCTAssertFalse(newKeysWin.hardwareDimmingEnabled)
+        XCTAssertEqual(newKeysWin.hardwareBrightnessPercent, 25)
+    }
+
+    func testEncodingWritesCurrentKeysAndOmitsLegacyDimmingKey() throws {
+        var preferences = ProtectionPreferences()
+        preferences.mode = .working
+        preferences.workingOverlayEnabled = false
+        preferences.workingOverlayOpacityPercent = 42
+        preferences.hardwareDimmingEnabled = true
+        preferences.hardwareBrightnessPercent = 0
+
+        let object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(preferences)
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(object["mode"] as? String, "working")
+        XCTAssertEqual(object["workingOverlayEnabled"] as? Bool, false)
+        XCTAssertEqual(object["workingOverlayOpacityPercent"] as? Int, 42)
+        XCTAssertEqual(object["hardwareDimmingEnabled"] as? Bool, true)
+        XCTAssertEqual(object["hardwareBrightnessPercent"] as? Int, 0)
+        XCTAssertNil(object["dimDisplaysDuringBlackout"])
+    }
+
+    func testStoredPercentageBoundariesAndErrors() throws {
+        var preferences = ProtectionPreferences()
+        preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
+
+        for value in [1, 100] {
+            preferences.workingOverlayOpacityPercent = value
+            XCTAssertNoThrow(try preferences.commandArguments(for: displays))
+        }
+        for value in [0, 101, -1] {
+            preferences.workingOverlayOpacityPercent = value
+            XCTAssertThrowsError(try preferences.commandArguments(for: displays)) {
+                XCTAssertEqual($0 as? ProtectionConfigurationError, .invalidOverlayOpacityPercent)
+            }
+        }
+
+        preferences.workingOverlayOpacityPercent = 60
+        for value in [0, 100] {
+            preferences.hardwareBrightnessPercent = value
+            XCTAssertNoThrow(try preferences.commandArguments(for: displays))
+        }
+        for value in [-1, 101] {
+            preferences.hardwareBrightnessPercent = value
+            XCTAssertThrowsError(try preferences.commandArguments(for: displays)) {
+                XCTAssertEqual($0 as? ProtectionConfigurationError, .invalidHardwareBrightnessPercent)
+            }
+        }
     }
 
     func testInvalidDurationsAreRejectedBeforeIntegerConversion() {
@@ -214,7 +299,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertEqual(model.preferences.selectedDisplayUUIDs, ["AAAA-UUID"])
         XCTAssertEqual(
             try model.preferences.commandArguments(for: [onlyDisplay]),
-            ["blackout", "--display", "AAAA-UUID", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake"]
+            ["blackout", "--display", "AAAA-UUID", "--mode", "blocking", "--overlay-opacity", "100", "--idle-after", "300", "--watch", "--sleep-after", "1800", "--keep-displays-awake"]
         )
     }
 
@@ -297,7 +382,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertEqual(
             lines,
             [
-                "launch:blackout --display AAAA-UUID --idle-after 120 --watch --timeout 15",
+                "launch:blackout --display AAAA-UUID --mode blocking --overlay-opacity 100 --idle-after 120 --watch --timeout 15",
                 "command:blackout-now"
             ]
         )
@@ -808,7 +893,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         try await waitUntil { model.runtimeState == .waiting }
         let initialLaunches = try await waitForLaunches(1, at: log)
         XCTAssertEqual(initialLaunches, [
-            "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake"
+            "launch:blackout --display AAAA-UUID --display BBBB-UUID --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake"
         ])
 
         currentDisplays = [displays[0], displays[2]]
@@ -816,8 +901,8 @@ final class ProtectionPreferencesTests: XCTestCase {
         try await waitUntil { model.runtimeState == .waiting }
         let partialLaunches = try await waitForLaunches(2, at: log)
         XCTAssertEqual(partialLaunches, [
-            "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake",
-            "launch:blackout --display AAAA-UUID --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake"
+            "launch:blackout --display AAAA-UUID --display BBBB-UUID --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake",
+            "launch:blackout --display AAAA-UUID --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake"
         ])
 
         currentDisplays = displays
@@ -825,9 +910,9 @@ final class ProtectionPreferencesTests: XCTestCase {
         try await waitUntil { model.runtimeState == .waiting }
         let recoveredLaunches = try await waitForLaunches(3, at: log)
         XCTAssertEqual(recoveredLaunches, [
-            "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake",
-            "launch:blackout --display AAAA-UUID --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake",
-            "launch:blackout --display AAAA-UUID --display BBBB-UUID --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake"
+            "launch:blackout --display AAAA-UUID --display BBBB-UUID --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake",
+            "launch:blackout --display AAAA-UUID --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake",
+            "launch:blackout --display AAAA-UUID --display BBBB-UUID --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake"
         ])
 
         currentDisplays = [displays[2]]
@@ -1043,7 +1128,7 @@ final class ProtectionPreferencesTests: XCTestCase {
     }
 
     @MainActor
-    func testWaitingCountdownUsesCombinedIdleAndManualActivityClamp() async throws {
+    func testWorkingCountdownResetsPartialButNotFullSelection() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("panelctl-countdown-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1070,7 +1155,8 @@ final class ProtectionPreferencesTests: XCTestCase {
         preferences.isEnabled = true
         preferences.didChooseDisplays = true
         preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
-        preferences.keepBlackoutOnInput = true
+        preferences.mode = .working
+        preferences.keepBlackoutOnInput = false
         preferences.idleSeconds = 300
         preferences.followUpAction = .restore
         preferences.followUpSeconds = 120
@@ -1087,12 +1173,13 @@ final class ProtectionPreferencesTests: XCTestCase {
             idleSecondsProvider: { idle }
         )
         try await waitUntil { model.runtimeState == .waiting }
-        XCTAssertEqual(model.nextAction, "blackout")
+        XCTAssertEqual(model.nextAction, "dim")
         XCTAssertEqual(model.secondsRemaining, 200)
 
         try model.blackoutNow()
         try await waitUntil { model.runtimeState == .blackedOut }
         XCTAssertEqual(model.nextAction, "restore")
+        XCTAssertTrue(model.statusSummary.hasPrefix("Dimming active"))
         XCTAssertEqual(model.secondsRemaining, 120)
         current.addTimeInterval(31)
         XCTAssertEqual(model.secondsRemaining, 89)
@@ -1128,6 +1215,7 @@ final class ProtectionPreferencesTests: XCTestCase {
             idleSecondsProvider: { fullIdle }
         )
         try await waitUntil { fullModel.runtimeState == .waiting }
+        XCTAssertEqual(fullModel.nextAction, "dim")
         try fullModel.blackoutNow()
         try await waitUntil { fullModel.runtimeState == .blackedOut }
         fullCurrent.addTimeInterval(31)

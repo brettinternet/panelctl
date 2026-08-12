@@ -4,6 +4,63 @@ import XCTest
 
 @MainActor
 final class BlackoutFocusControllerTests: XCTestCase {
+    func testFocusPredicateEngagesOnlyForBlockingBlackout() {
+        XCTAssertTrue(
+            AppDelegate.shouldEngageBlackoutFocus(
+                runtimeState: .blackedOut,
+                mode: .blocking
+            )
+        )
+        XCTAssertFalse(
+            AppDelegate.shouldEngageBlackoutFocus(
+                runtimeState: .blackedOut,
+                mode: .working
+            )
+        )
+
+        let nonBlackoutStates: [ProtectionRuntimeState] = [
+            .disabled,
+            .snoozed(Date()),
+            .starting,
+            .waiting,
+            .waitingForInput,
+            .waitingForPlayback,
+            .sleeping,
+            .stopping,
+            .waitingForDisplays(""),
+            .failed("")
+        ]
+        for state in nonBlackoutStates {
+            XCTAssertFalse(
+                AppDelegate.shouldEngageBlackoutFocus(
+                    runtimeState: state,
+                    mode: .blocking
+                ),
+                "\(state) should not engage focus"
+            )
+        }
+    }
+    func testModeAwareActionAndRequestSummaries() {
+        XCTAssertEqual(AppDelegate.blackoutActionTitle(for: .blocking), "Blackout Now")
+        XCTAssertEqual(AppDelegate.blackoutActionTitle(for: .working), "Dim Now")
+        XCTAssertEqual(
+            AppDelegate.blackoutRequestSummary(for: .blocking, succeeded: true),
+            "Blackout requested"
+        )
+        XCTAssertEqual(
+            AppDelegate.blackoutRequestSummary(for: .blocking, succeeded: false),
+            "Blackout request failed"
+        )
+        XCTAssertEqual(
+            AppDelegate.blackoutRequestSummary(for: .working, succeeded: true),
+            "Dimming requested"
+        )
+        XCTAssertEqual(
+            AppDelegate.blackoutRequestSummary(for: .working, succeeded: false),
+            "Dimming request failed"
+        )
+    }
+
     func testOutsideTargetDoesNotCaptureOrActivate() {
         var captures = 0
         var activations = 0

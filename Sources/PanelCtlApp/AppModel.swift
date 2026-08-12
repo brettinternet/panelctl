@@ -171,18 +171,18 @@ final class AppModel: ObservableObject {
     }
 
     var statusSummary: String {
+        let label = runtimeState == .blackedOut && preferences.mode == .working
+            ? "Dimming active"
+            : runtimeState.label
         if let secondsRemaining, let nextAction {
             switch runtimeState {
             case .snoozed(let until):
-                return "\(runtimeState.label) until \(Self.expiryFormatter.string(from: until)) · \(Self.countdownLabel(secondsRemaining)) to \(nextAction)"
+                return "\(label) until \(Self.expiryFormatter.string(from: until)) · \(Self.countdownLabel(secondsRemaining)) to \(nextAction)"
             default:
-                return "\(runtimeState.label) · \(Self.countdownLabel(secondsRemaining)) to \(nextAction)"
+                return "\(label) · \(Self.countdownLabel(secondsRemaining)) to \(nextAction)"
             }
         }
-        switch runtimeState {
-        default:
-            return runtimeState.label
-        }
+        return label
     }
 
     func setProtectionEnabled(_ enabled: Bool) {
@@ -338,7 +338,7 @@ final class AppModel: ObservableObject {
         case .snoozed:
             return "resume"
         case .waiting:
-            return "blackout"
+            return preferences.mode == .working ? "dim" : "blackout"
         case .blackedOut:
             switch preferences.followUpAction {
             case .restore: return "restore"
@@ -378,7 +378,8 @@ final class AppModel: ObservableObject {
     private var stateBeganAt: Date?
 
     private var resetsBlackoutLimitOnInput: Bool {
-        guard preferences.keepBlackoutOnInput, !preferences.allDisplays else {
+        guard (preferences.mode == .working || preferences.keepBlackoutOnInput),
+              !preferences.allDisplays else {
             return false
         }
         let selectedDisplayIDs = Set(activeDisplays.compactMap { display -> UInt32? in

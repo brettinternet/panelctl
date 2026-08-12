@@ -16,6 +16,9 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
     case idleMonitoringUnavailable
     case caffeinateExited
     case watchRequiresStableUUID(String)
+    case invalidOverlayOpacity
+    case invalidHardwareBrightness
+    case workingOverlayRequired
     case persistentDimming
     public var description: String {
         switch self {
@@ -31,9 +34,15 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
         case .caffeinateExited: return "caffeinate exited before blackout completed"
         case .watchRequiresStableUUID(let selector):
             return "--watch requires a display with a stable UUID: \(selector)"
+        case .invalidOverlayOpacity:
+            return "overlay opacity must be an integer from 1 through 100"
+        case .invalidHardwareBrightness:
+            return "hardware brightness must be an integer from 0 through 100"
+        case .workingOverlayRequired:
+            return "a partial or disabled overlay requires working mode"
         case .persistentDimming:
-            return "refusing persistent blackout with --dim because DDC restore is not time-bounded"
-        }
+            return "refusing persistent blackout with --dim-to because DDC restore is not time-bounded"
+    }
     }
 }
 
@@ -417,7 +426,7 @@ public final class BlackoutController {
         let drawableScreens = screens.filter { Self.isValidScreenFrame($0.frame) }
         guard !drawableScreens.isEmpty else { throw BlackoutError.noScreens }
         targets = try resolveTargets(options: options, screens: screens, drawableScreens: drawableScreens)
-        if options.dimDisplays {
+        if options.hardwareBrightnessPercent != nil {
             let dimming = BlackoutDimming()
             dimming.start()
             self.dimming = dimming
@@ -429,7 +438,7 @@ public final class BlackoutController {
             idleAfter: options.idleAfter,
             timeout: options.timeout,
             sleepAfter: options.sleepAfter,
-            keepBlackoutOnInput: options.keepBlackoutOnInput,
+            keepBlackoutOnInput: options.effectiveKeepBlackoutOnInput,
             deferPlayback: options.deferPlayback,
             deferCamera: options.deferCamera
         )
@@ -439,11 +448,16 @@ public final class BlackoutController {
             }
             if stopRequested { return }
             let selection = try resolveCurrentScreens(options: options)
-            try showWindows(on: selection.screens)
+            try showWindows(
+                on: selection.screens,
+                mode: options.mode,
+                overlayOpacityPercent: options.overlayOpacityPercent,
+                hardwareBrightnessPercent: options.hardwareBrightnessPercent
+            )
             try runBlackoutCycle(
                 policy: policy,
                 baseline: activation.sample,
-                resetLimitOnInput: options.keepBlackoutOnInput && !selection.coversAllDisplays,
+                resetLimitOnInput: options.effectiveKeepBlackoutOnInput && !selection.coversAllDisplays,
                 watch: false,
                 restoreGeneration: restoreGeneration
             )
@@ -459,7 +473,12 @@ public final class BlackoutController {
             let cycleRestoreGeneration = restoreGeneration
             do {
                 let selection = try resolveCurrentScreens(options: options)
-                try showWindows(on: selection.screens)
+                try showWindows(
+                    on: selection.screens,
+                    mode: options.mode,
+                    overlayOpacityPercent: options.overlayOpacityPercent,
+                    hardwareBrightnessPercent: options.hardwareBrightnessPercent
+                )
                 let cycleBaseline: IdleSample
                 if activation.forced {
                     immediateBlackoutRequested = false
@@ -472,7 +491,7 @@ public final class BlackoutController {
                 try runBlackoutCycle(
                     policy: policy,
                     baseline: cycleBaseline,
-                    resetLimitOnInput: options.keepBlackoutOnInput && !selection.coversAllDisplays,
+                    resetLimitOnInput: options.effectiveKeepBlackoutOnInput && !selection.coversAllDisplays,
                     watch: true,
                     restoreGeneration: cycleRestoreGeneration
                 )
@@ -742,7 +761,12 @@ public final class BlackoutController {
         return (selected, selected.count >= drawable.count)
     }
 
-    private func showWindows(on screens: [NSScreen]) throws {
+    private func showWindows(
+        on screens: [NSScreen],
+        mode: BlackoutMode,
+        overlayOpacityPercent: Int?,
+        hardwareBrightnessPercent: Int?
+    ) throws {
         guard windows.isEmpty else { return }
         var prepared: [NSWindow] = []
         var committed = false
@@ -767,18 +791,11 @@ public final class BlackoutController {
                 defer: false,
                 screen: screen
             )
-            window.backgroundColor = .black
-            window.isOpaque = true
-            window.hasShadow = false
-            window.level = .screenSaver
-            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            window.ignoresMouseEvents = false
-            window.isReleasedWhenClosed = false
-            window.animationBehavior = .none
-            let contentView = NSView(frame: Self.windowContentRect(for: screen.frame))
-            contentView.wantsLayer = true
-            contentView.layer?.backgroundColor = NSColor.black.cgColor
-            window.contentView = contentView
+            Self.configureWindow(
+                window,
+                mode: mode,
+                overlayOpacityPercent: overlayOpacityPercent
+            )
             window.setFrame(screen.frame, display: false)
 
             guard Self.exactlyCovers(
@@ -808,7 +825,13 @@ public final class BlackoutController {
         }
         windows = prepared
         committed = true
-        dimming?.dim(targets, screenIDs: screens.compactMap(Self.screenID))
+        if let hardwareBrightnessPercent {
+            dimming?.dim(
+                targets,
+                to: hardwareBrightnessPercent,
+                screenIDs: screens.compactMap(Self.screenID)
+            )
+        }
         stateHandler?(.blackedOut)
     }
 
@@ -1180,7 +1203,20 @@ public final class BlackoutController {
     }
 
     static func validateOptions(_ options: BlackoutOptions) throws {
-        if options.keepBlackoutOnInput && options.dimDisplays {
+        if let opacity = options.overlayOpacityPercent,
+           !(1...100).contains(opacity) {
+            throw BlackoutError.invalidOverlayOpacity
+        }
+        if options.mode == .blocking, options.overlayOpacityPercent != 100 {
+            throw BlackoutError.workingOverlayRequired
+        }
+        if let brightness = options.hardwareBrightnessPercent,
+           !(0...100).contains(brightness) {
+            throw BlackoutError.invalidHardwareBrightness
+        }
+        if options.mode == .blocking,
+           options.keepBlackoutOnInput,
+           options.hardwareBrightnessPercent != nil {
             throw BlackoutError.persistentDimming
         }
     }
@@ -1200,6 +1236,28 @@ public final class BlackoutController {
             guard let duration = $0 else { return false }
             return duration > 0 && duration.isFinite
         }
+    }
+
+    static func configureWindow(
+        _ window: NSWindow,
+        mode: BlackoutMode,
+        overlayOpacityPercent: Int?
+    ) {
+        window.backgroundColor = .black
+        window.alphaValue = CGFloat(overlayOpacityPercent ?? 0) / 100
+        window.isOpaque = mode == .blocking && overlayOpacityPercent == 100
+        window.hasShadow = false
+        window.level = .screenSaver
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.ignoresMouseEvents = mode == .working
+        window.isReleasedWhenClosed = false
+        window.animationBehavior = .none
+
+        let contentView = NSView(frame: window.contentView?.bounds ?? .zero)
+        contentView.autoresizingMask = [.width, .height]
+        contentView.wantsLayer = true
+        contentView.layer?.backgroundColor = NSColor.black.cgColor
+        window.contentView = contentView
     }
 
     static func windowContentRect(for screenFrame: CGRect) -> CGRect {

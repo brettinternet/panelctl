@@ -4,8 +4,8 @@
 
 <h1 align="center">panelctl</h1>
 
-A macOS CLI and menu-bar app for OLED blackouts, display sleep, inventory, and
-experimental DDC luminance control.
+A macOS CLI and menu-bar app for OLED blackouts, click-through working dimming,
+display sleep, inventory, and experimental DDC luminance control.
 
 ## Install
 
@@ -38,6 +38,7 @@ stops the watcher. Reopen the app to show Settings when its menu icon is hidden.
 ```sh
 panelctl list
 panelctl blackout --display DISPLAY_UUID --idle-after 5m --watch
+panelctl blackout --display DISPLAY_UUID --mode working --overlay-opacity 60 --dim-to 25 --timeout 1h
 panelctl blackout --index 3 --timeout 1h
 panelctl blackout --all --idle-after 5m --sleep-after 30m --keep-displays-awake
 panelctl sleep-displays --keep-system-awake
@@ -56,19 +57,25 @@ Run `panelctl help` or `panelctl <command> --help` for all options.
 
 ### Blackout behavior
 
-When the pointer is on a blacked-out display, the menu-bar app takes focus so
-macOS will hide the cursor. Moving to an active display or restoring the
-blackout returns focus to the previous app. Plain Escape is a best-effort,
-app-managed restore only after that proxy has activated. This applies only to
-blackouts managed by the menu-bar app; the standalone CLI has no background
-Escape or cursor guarantee.
+Blocking mode is the default. When the pointer is on a display blacked out by
+the menu-bar app, PanelCtl takes focus so macOS will hide the cursor. Moving to
+an active display or restoring returns focus to the previous app. Plain Escape
+is a best-effort, app-managed restore only after that proxy has activated. The
+standalone CLI has no background Escape or cursor guarantee.
 
-- Without `--idle-after`, blackout starts immediately.
-- Input restores the display. `--timeout` restores after a limit;
+`--mode working` instead installs a click-through dimming overlay. PanelCtl
+does not activate, change focus, hide the pointer, or consume keyboard input.
+Use `--overlay-opacity 1...100` to set overlay darkness or `--no-overlay` to
+disable composited darkening. Restore working dimming from the status menu,
+`panelctl app restore`, or its configured Restore/Sleep endpoint.
+
+- Without `--idle-after`, treatment starts immediately.
+- Input restores a blocking blackout. `--timeout` restores after a limit;
   `--sleep-after` instead sleeps every display.
-- `--keep-blackout-on-input` keeps a partial blackout installed during activity
-  and restarts its configured Restore or Sleep duration. When every drawable
-  display is blacked out, activity never extends the original finite endpoint.
+- `--keep-blackout-on-input` keeps a partial blocking blackout installed during
+  activity and restarts its configured Restore or Sleep duration. Working mode
+  always uses this behavior for partial selections. When every drawable display
+  is selected, activity never extends the original finite endpoint.
 - `--watch` requires `--idle-after` and repeats after each restored cycle.
 - `--all` requires `--timeout` or `--sleep-after`; finite Restore/Sleep remains
   mandatory for every full-coverage selection.
@@ -76,13 +83,14 @@ Escape or cursor guarantee.
   `--keep-displays-awake` is valid with `--sleep-after` and keeps displays
   awake until that endpoint while allowing macOS to sleep the Mac sooner. The
   display assertion is global, so it applies to all displays.
-- Automatic idle blackouts pause while macOS reports that another app is keeping
-  the display awake, then restart the full idle countdown when it ends. Camera
-  activity can also defer blackout when configured. Manual blackout-now commands
-  are not deferred.
-- `--dim` best-effort dims supported external displays and restores their
-  captured brightness. DDC remains experimental and cannot be combined with
-  `--keep-blackout-on-input`.
+- Automatic idle treatment pauses while macOS reports that another app is
+  keeping the display awake, then restarts the full idle countdown when it ends.
+  Camera activity can also defer treatment when configured. Manual blackout-now
+  commands are not deferred.
+- `--dim-to 0...100` best-effort lowers each supported external display to that
+  percentage of its reported DDC luminance maximum and restores the captured
+  value. It never raises brightness. Blocking `--keep-blackout-on-input` cannot
+  use hardware brightness; explicit working mode can.
 
 Display, session, or sleep changes fail open by removing the blackout. Windows
 are shown only after their screen IDs and frames are verified.
@@ -120,9 +128,11 @@ For a persistent CLI watcher, edit the executable path and display UUID in the
 
 ## Limits and safety
 
-A pure-black window minimizes OLED pixel emission but does not sleep the display
-electronics or guarantee a panel compensation cycle. System UI may appear above
-it. Use all-display sleep for long unattended periods.
+An opaque pure-black window minimizes OLED pixel emission but does not sleep
+the display electronics or guarantee a panel compensation cycle. A partially
+transparent working overlay only reduces visible output; it does not guarantee
+unlit OLED pixels or panel longevity. Use all-display sleep for long unattended
+periods.
 
 macOS provides no public per-display sleep or disconnect setter. Private
 topology calls can make a display difficult to recover, so panelctl does not use
@@ -130,9 +140,9 @@ them. See [the feasibility note](docs/feasibility.md) for the API and hardware
 evidence.
 
 DDC depends on the monitor and connection. `ddc-luminance --set` persists and
-does not restore the previous value. Blackout `--dim` journals captured values,
-but recovery can be delayed after a crash or disconnect. DDC power/DPMS is not
-implemented.
+does not restore the previous value. Blackout `--dim-to` journals captured
+values, but recovery can be delayed after a crash or disconnect. DDC power/DPMS
+is not implemented.
 
 ## Development
 

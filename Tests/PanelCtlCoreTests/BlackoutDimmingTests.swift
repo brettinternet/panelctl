@@ -21,7 +21,10 @@ final class BlackoutDimmingTests: XCTestCase {
             journalWriter: { entries in events.append("journal:\(entries[0].uuid):\(entries[0].original)") }
         )
         manager.start()
-        manager.dim([BlackoutScreenTarget(id: 7, uuid: "Exact-UUID", selector: "Exact-UUID")])
+        manager.dim(
+            [BlackoutScreenTarget(id: 7, uuid: "Exact-UUID", selector: "Exact-UUID")],
+            to: 0
+        )
 
         XCTAssertEqual(selector, "Exact-UUID")
         XCTAssertEqual(events, ["journal:Exact-UUID:55", "set:Exact-UUID:0"])
@@ -43,10 +46,13 @@ final class BlackoutDimmingTests: XCTestCase {
             journalWriter: { latestJournal = $0 }
         )
         manager.start()
-        manager.dim([
-            BlackoutScreenTarget(id: 1, uuid: "one", selector: "one"),
-            BlackoutScreenTarget(id: 2, uuid: "two", selector: "two")
-        ])
+        manager.dim(
+            [
+                BlackoutScreenTarget(id: 1, uuid: "one", selector: "one"),
+                BlackoutScreenTarget(id: 2, uuid: "two", selector: "two")
+            ],
+            to: 0
+        )
 
         XCTAssertEqual(writes.filter { $0.1 == 0 }.map(\.0), ["one", "two"])
 
@@ -88,7 +94,7 @@ final class BlackoutDimmingTests: XCTestCase {
         )
         manager.start()
 
-        manager.dim([], screenIDs: [1, 2])
+        manager.dim([], to: 0, screenIDs: [1, 2])
 
         XCTAssertEqual(writes.count, 1)
         XCTAssertEqual(writes.first?.0, "external")
@@ -105,7 +111,10 @@ final class BlackoutDimmingTests: XCTestCase {
             }
         )
         manager.start()
-        manager.dim([BlackoutScreenTarget(id: 1, uuid: "one", selector: "one")])
+        manager.dim(
+            [BlackoutScreenTarget(id: 1, uuid: "one", selector: "one")],
+            to: 0
+        )
         manager.restore()
         manager.restore()
         XCTAssertEqual(restoreCount, 1)
@@ -123,7 +132,10 @@ final class BlackoutDimmingTests: XCTestCase {
             journalWriter: { latest = $0 }
         )
         manager.start()
-        manager.dim([BlackoutScreenTarget(id: 1, uuid: "one", selector: "one")])
+        manager.dim(
+            [BlackoutScreenTarget(id: 1, uuid: "one", selector: "one")],
+            to: 0
+        )
         manager.restore()
         XCTAssertEqual(latest, [BlackoutLuminanceEntry(uuid: "one", original: 20)])
         shouldFail = false
@@ -141,8 +153,138 @@ final class BlackoutDimmingTests: XCTestCase {
             }
         )
         manager.start()
-        manager.dim([BlackoutScreenTarget(id: 1, uuid: "one", selector: "one")])
+        manager.dim(
+            [BlackoutScreenTarget(id: 1, uuid: "one", selector: "one")],
+            to: 0
+        )
         XCTAssertEqual(writes, 0)
+    }
+
+    func testPercentageTargetUsesEachMaximumAndFloorRounding() {
+        var writes: [(String, UInt16)] = []
+        let manager = makeManager(
+            records: [
+                displayRecord(id: 1, uuid: "one"),
+                displayRecord(id: 2, uuid: "two"),
+                displayRecord(id: 3, uuid: "three")
+            ],
+            read: { uuid in
+                switch uuid {
+                case "one":
+                    return DDCLuminanceReading(
+                        displayID: 1,
+                        uuid: uuid,
+                        current: 90,
+                        maximum: 100
+                    )
+                case "two":
+                    return DDCLuminanceReading(
+                        displayID: 2,
+                        uuid: uuid,
+                        current: 190,
+                        maximum: 200
+                    )
+                default:
+                    return DDCLuminanceReading(
+                        displayID: 3,
+                        uuid: uuid,
+                        current: 200,
+                        maximum: 255
+                    )
+                }
+            },
+            set: { uuid, value in
+                writes.append((uuid, value))
+                return DDCLuminanceWriteResult(
+                    displayID: uuid == "one" ? 1 : uuid == "two" ? 2 : 3,
+                    uuid: uuid,
+                    original: 0,
+                    requested: value,
+                    observed: value,
+                    maximum: uuid == "one" ? 100 : uuid == "two" ? 200 : 255
+                )
+            }
+        )
+        manager.start()
+        manager.dim([
+            BlackoutScreenTarget(id: 1, uuid: "one", selector: "one"),
+            BlackoutScreenTarget(id: 2, uuid: "two", selector: "two"),
+            BlackoutScreenTarget(id: 3, uuid: "three", selector: "three")
+        ], to: 25)
+
+        XCTAssertEqual(
+            writes.map { "\($0.0):\($0.1)" },
+            ["one:25", "two:50", "three:63"]
+        )
+    }
+
+    func testEqualOrHigherTargetNeverBrightensOrJournals() {
+        var writes: [(String, UInt16)] = []
+        var journalWrites = 0
+        let manager = makeManager(
+            read: {
+                DDCLuminanceReading(
+                    displayID: 1,
+                    uuid: $0,
+                    current: 40,
+                    maximum: 100
+                )
+            },
+            set: { uuid, value in
+                writes.append((uuid, value))
+                return DDCLuminanceWriteResult(
+                    displayID: 1,
+                    uuid: uuid,
+                    original: 40,
+                    requested: value,
+                    observed: value,
+                    maximum: 100
+                )
+            },
+            journalWriter: { _ in journalWrites += 1 }
+        )
+        manager.start()
+        let target = [BlackoutScreenTarget(id: 1, uuid: "one", selector: "one")]
+        manager.dim(target, to: 50)
+        manager.dim(target, to: 40)
+
+        XCTAssertTrue(writes.isEmpty)
+        XCTAssertEqual(journalWrites, 0)
+    }
+
+    func testZeroPercentageTargetWritesZeroForNonzeroCurrentLuminance() {
+        var writes: [(String, UInt16)] = []
+        let manager = makeManager(
+            read: {
+                DDCLuminanceReading(
+                    displayID: 1,
+                    uuid: $0,
+                    current: 55,
+                    maximum: 120
+                )
+            },
+            set: { uuid, value in
+                writes.append((uuid, value))
+                return DDCLuminanceWriteResult(
+                    displayID: 1,
+                    uuid: uuid,
+                    original: 55,
+                    requested: value,
+                    observed: value,
+                    maximum: 120
+                )
+            }
+        )
+        manager.start()
+        manager.dim(
+            [BlackoutScreenTarget(id: 1, uuid: "one", selector: "one")],
+            to: 0
+        )
+
+        XCTAssertEqual(
+            writes.map { "\($0.0):\($0.1)" },
+            ["one:0"]
+        )
     }
 
     func testStaleJournalIsRecoveredAtStart() throws {
@@ -156,7 +298,7 @@ final class BlackoutDimmingTests: XCTestCase {
             set: { _, _ in throw TestError.failed }
         )
         first.start()
-        first.dim([])
+        first.dim([], to: 0)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let data = try JSONEncoder().encode([BlackoutLuminanceEntry(uuid: "stale", original: 33)])
         try data.write(to: url)

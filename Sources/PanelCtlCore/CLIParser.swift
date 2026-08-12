@@ -1,5 +1,10 @@
 import Foundation
 
+public enum BlackoutMode: String, Codable, CaseIterable {
+    case blocking
+    case working
+}
+
 public struct BlackoutOptions: Equatable {
     public let selectors: [String]
     public let all: Bool
@@ -10,9 +15,15 @@ public struct BlackoutOptions: Equatable {
     public let keepDisplaysAwake: Bool
     public let watch: Bool
     public let keepBlackoutOnInput: Bool
-    public let dimDisplays: Bool
+    public let mode: BlackoutMode
+    public let overlayOpacityPercent: Int?
+    public let hardwareBrightnessPercent: Int?
     public let deferPlayback: Bool
     public let deferCamera: Bool
+
+    var effectiveKeepBlackoutOnInput: Bool {
+        mode == .working || keepBlackoutOnInput
+    }
 
     public init(
         selectors: [String],
@@ -24,7 +35,9 @@ public struct BlackoutOptions: Equatable {
         keepDisplaysAwake: Bool = false,
         watch: Bool = false,
         keepBlackoutOnInput: Bool = false,
-        dimDisplays: Bool = false,
+        mode: BlackoutMode = .blocking,
+        overlayOpacityPercent: Int? = 100,
+        hardwareBrightnessPercent: Int? = nil,
         deferPlayback: Bool = true,
         deferCamera: Bool = false
     ) {
@@ -37,7 +50,9 @@ public struct BlackoutOptions: Equatable {
         self.keepDisplaysAwake = keepDisplaysAwake
         self.watch = watch
         self.keepBlackoutOnInput = keepBlackoutOnInput
-        self.dimDisplays = dimDisplays
+        self.mode = mode
+        self.overlayOpacityPercent = overlayOpacityPercent
+        self.hardwareBrightnessPercent = hardwareBrightnessPercent
         self.deferPlayback = deferPlayback
         self.deferCamera = deferCamera
     }
@@ -78,6 +93,11 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case invalidLuminance
     case missingAppCommand
     case snoozeDurationTooLong
+    case invalidBlackoutMode(String)
+    case invalidOverlayOpacity(String)
+    case invalidHardwareBrightness(String)
+    case conflictingOverlayOptions
+    case workingOverlayRequired
     public var description: String {
         switch self {
         case .missingCommand: return "missing command (use 'panelctl help' for usage)"
@@ -95,7 +115,17 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
         case .conflictingBlackoutLimits: return "--timeout and --sleep-after are mutually exclusive"
         case .allRequiresLimit: return "--all requires --timeout or --sleep-after"
         case .watchRequiresIdleAfter: return "--watch requires --idle-after"
-        case .persistentDimming: return "--keep-blackout-on-input cannot be combined with --dim"
+        case .persistentDimming: return "--keep-blackout-on-input cannot be combined with --dim-to in blocking mode"
+        case .invalidBlackoutMode(let value):
+            return "invalid blackout mode: \(value) (expected blocking or working)"
+        case .invalidOverlayOpacity(let value):
+            return "invalid overlay opacity: \(value) (expected an integer from 1 through 100)"
+        case .invalidHardwareBrightness(let value):
+            return "invalid hardware brightness: \(value) (expected an integer from 0 through 100)"
+        case .conflictingOverlayOptions:
+            return "--no-overlay cannot be combined with --overlay-opacity"
+        case .workingOverlayRequired:
+            return "--no-overlay or overlay opacity below 100 requires --mode working"
         case .invalidLuminance: return "luminance must be an integer from 0 through 65535"
         case .missingAppCommand: return "missing app command (use 'panelctl help app' for usage)"
         case .snoozeDurationTooLong: return "snooze duration must not exceed 30 days"
@@ -218,7 +248,12 @@ public enum CLIParser {
         var keepDisplaysAwake = false
         var watch = false
         var keepBlackoutOnInput = false
-        var dimDisplays = false
+        var mode: BlackoutMode = .blocking
+        var modeSupplied = false
+        var overlayOpacityPercent: Int? = 100
+        var overlayOpacitySupplied = false
+        var noOverlay = false
+        var hardwareBrightnessPercent: Int?
         var deferPlayback = true
         var deferCamera = false
         var i = 0
@@ -259,9 +294,42 @@ public enum CLIParser {
                     throw CLIParseError.duplicateOption("--keep-blackout-on-input")
                 }
                 keepBlackoutOnInput = true
-            case "--dim":
-                guard !dimDisplays else { throw CLIParseError.duplicateOption("--dim") }
-                dimDisplays = true
+            case "--mode":
+                guard !modeSupplied else { throw CLIParseError.duplicateOption("--mode") }
+                modeSupplied = true
+                i += 1
+                guard i < args.count, !args[i].hasPrefix("--") else {
+                    throw CLIParseError.missingValue("--mode")
+                }
+                guard let parsed = BlackoutMode(rawValue: args[i]) else {
+                    throw CLIParseError.invalidBlackoutMode(args[i])
+                }
+                mode = parsed
+            case "--overlay-opacity":
+                guard !overlayOpacitySupplied else {
+                    throw CLIParseError.duplicateOption("--overlay-opacity")
+                }
+                overlayOpacitySupplied = true
+                overlayOpacityPercent = try percentage(
+                    option: "--overlay-opacity",
+                    args: args,
+                    index: &i,
+                    range: 1...100
+                ) { CLIParseError.invalidOverlayOpacity($0) }
+            case "--no-overlay":
+                guard !noOverlay else { throw CLIParseError.duplicateOption("--no-overlay") }
+                noOverlay = true
+                overlayOpacityPercent = nil
+            case "--dim-to":
+                guard hardwareBrightnessPercent == nil else {
+                    throw CLIParseError.duplicateOption("--dim-to")
+                }
+                hardwareBrightnessPercent = try percentage(
+                    option: "--dim-to",
+                    args: args,
+                    index: &i,
+                    range: 0...100
+                ) { CLIParseError.invalidHardwareBrightness($0) }
             case "--ignore-playback":
                 guard deferPlayback else { throw CLIParseError.duplicateOption("--ignore-playback") }
                 deferPlayback = false
@@ -273,14 +341,35 @@ public enum CLIParser {
             }
             i += 1
         }
-        if keepBlackoutOnInput && dimDisplays { throw CLIParseError.persistentDimming }
+        if noOverlay && overlayOpacitySupplied { throw CLIParseError.conflictingOverlayOptions }
+        if mode == .blocking && overlayOpacityPercent != 100 {
+            throw CLIParseError.workingOverlayRequired
+        }
+        if mode == .blocking && keepBlackoutOnInput && hardwareBrightnessPercent != nil {
+            throw CLIParseError.persistentDimming
+        }
         if watch && idleAfter == nil { throw CLIParseError.watchRequiresIdleAfter }
         if all && !selectors.isEmpty { throw CLIParseError.conflictingTargets }
         if !all && selectors.isEmpty { throw CLIParseError.noDisplays }
         if timeout != nil && sleepAfter != nil { throw CLIParseError.conflictingBlackoutLimits }
         if keepDisplaysAwake && sleepAfter == nil { throw CLIParseError.keepDisplaysAwakeRequiresSleepAfter }
         if all && timeout == nil && sleepAfter == nil { throw CLIParseError.allRequiresLimit }
-        return .blackout(BlackoutOptions(selectors: selectors, all: all, idleAfter: idleAfter, timeout: timeout, sleepAfter: sleepAfter, caffeinate: caffeinate, keepDisplaysAwake: keepDisplaysAwake, watch: watch, keepBlackoutOnInput: keepBlackoutOnInput, dimDisplays: dimDisplays, deferPlayback: deferPlayback, deferCamera: deferCamera))
+        return .blackout(BlackoutOptions(
+            selectors: selectors,
+            all: all,
+            idleAfter: idleAfter,
+            timeout: timeout,
+            sleepAfter: sleepAfter,
+            caffeinate: caffeinate,
+            keepDisplaysAwake: keepDisplaysAwake,
+            watch: watch,
+            keepBlackoutOnInput: keepBlackoutOnInput,
+            mode: mode,
+            overlayOpacityPercent: overlayOpacityPercent,
+            hardwareBrightnessPercent: hardwareBrightnessPercent,
+            deferPlayback: deferPlayback,
+            deferCamera: deferCamera
+        ))
     }
 
     private static func parseDDCLuminance(_ args: [String]) throws -> PanelCommand {
@@ -332,6 +421,26 @@ public enum CLIParser {
         }
         if timeout != nil && !keepSystemAwake { throw CLIParseError.timeoutRequiresKeepAwake }
         return .sleepDisplays(keepSystemAwake: keepSystemAwake, timeout: timeout)
+    }
+
+    private static func percentage(
+        option: String,
+        args: [String],
+        index: inout Int,
+        range: ClosedRange<Int>,
+        error: (String) -> CLIParseError
+    ) throws -> Int {
+        index += 1
+        guard index < args.count, !args[index].hasPrefix("--") else {
+            throw CLIParseError.missingValue(option)
+        }
+        let raw = args[index]
+        guard raw.range(of: "^[0-9]+$", options: .regularExpression) != nil,
+              let value = Int(raw),
+              range.contains(value) else {
+            throw error(raw)
+        }
+        return value
     }
 
     private static func duration(option: String, args: [String], index: inout Int) throws -> TimeInterval {

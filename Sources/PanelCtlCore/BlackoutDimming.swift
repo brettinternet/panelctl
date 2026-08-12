@@ -97,11 +97,17 @@ final class BlackoutDimming {
         }
     }
 
-    /// Dims selected active external displays to zero. Every non-zero read is
-    /// journaled before attempting the write; a failed write leaves the entry
-    /// persisted for a later recovery attempt.
-    func dim(_ targets: [BlackoutScreenTarget], screenIDs: [UInt32] = []) {
-        guard lockFD != nil else { return }
+    /// Dims selected active external displays to the requested percentage of
+    /// each monitor's reported luminance maximum. A target that is equal to or
+    /// above the sampled current value is skipped so dimming never brightens a
+    /// display. Every changed non-zero read is journaled before attempting the
+    /// write; a failed write leaves the entry persisted for later recovery.
+    func dim(
+        _ targets: [BlackoutScreenTarget],
+        to targetPercent: Int,
+        screenIDs: [UInt32] = []
+    ) {
+        guard lockFD != nil, (0...100).contains(targetPercent) else { return }
         let currentRecords = records()
         var targetIDs = targets.map(\.id)
         if targetIDs.isEmpty {
@@ -124,8 +130,13 @@ final class BlackoutDimming {
                   !uuid.isEmpty else { continue }
             do {
                 let reading = try read(uuid)
-                guard reading.uuid.caseInsensitiveCompare(uuid) == .orderedSame,
-                      reading.current != 0 else { continue }
+                guard reading.uuid.caseInsensitiveCompare(uuid) == .orderedSame else {
+                    continue
+                }
+                let requested = UInt16(
+                    (UInt32(reading.maximum) * UInt32(targetPercent)) / 100
+                )
+                guard requested < reading.current else { continue }
                 let entry = BlackoutLuminanceEntry(uuid: uuid, original: reading.current)
                 let key = uuid.lowercased()
                 if entries[key] == nil {
@@ -133,7 +144,7 @@ final class BlackoutDimming {
                     try persist()
                 }
                 do {
-                    _ = try set(uuid, 0)
+                    _ = try set(uuid, requested)
                 } catch {
                     // Keep the journal entry: the write may have succeeded
                     // without a verified response.
