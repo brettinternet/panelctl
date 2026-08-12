@@ -13,10 +13,18 @@ final class SettingsWindowController: NSWindowController {
         )
         window.title = "PanelCtl Settings"
         window.contentView = hostingView
-        window.contentMinSize = NSSize(width: 680, height: 480)
         window.standardWindowButton(.zoomButton)?.isEnabled = false
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("PanelCtlSettingsWindow")
+        let minimumFrameSize = window.frameRect(
+            forContentRect: NSRect(x: 0, y: 0, width: 440, height: 480)
+        ).size
+        window.minSize = minimumFrameSize
+        window.maxSize = NSSize(width: 680, height: CGFloat.greatestFiniteMagnitude)
+        var restoredFrame = window.frame
+        restoredFrame.size.width = min(max(restoredFrame.width, minimumFrameSize.width), 680)
+        restoredFrame.size.height = max(restoredFrame.height, minimumFrameSize.height)
+        window.setFrame(restoredFrame, display: false)
         window.center()
         super.init(window: window)
     }

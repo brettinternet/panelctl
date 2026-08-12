@@ -57,37 +57,41 @@ struct SettingsView: View {
     private let followUpOptions: [TimeInterval] = [5 * 60, 15 * 60, 30 * 60, 60 * 60, 2 * 60 * 60]
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                List(selection: $selection) {
-                    ForEach(SettingsDestination.allCases, id: \.self) { destination in
-                        destinationLabel(destination)
-                            .padding(.vertical, 2)
-                            .tag(destination)
+        GeometryReader { geometry in
+            let isCompact = geometry.size.width < 560
+
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    List(selection: $selection) {
+                        ForEach(SettingsDestination.allCases, id: \.self) { destination in
+                            destinationLabel(destination)
+                                .padding(.vertical, 2)
+                                .tag(destination)
+                        }
+                    }
+                    .listStyle(.sidebar)
+                    .scrollContentBackground(.hidden)
+
+                    sidebarFooter
+                        .padding(12)
+                }
+                .frame(width: isCompact ? 120 : 180)
+
+                Divider()
+                VStack(spacing: 0) {
+                    statusHeader(isCompact: isCompact)
+                        .padding(.top, 16)
+                        .padding(.horizontal, 16)
+
+                    ScrollView(.vertical) {
+                        destinationSection
+                            .padding(.top, 12)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 16)
                     }
                 }
-                .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
-
-                sidebarFooter
-                    .padding(12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(width: 180)
-
-            Divider()
-            VStack(spacing: 0) {
-                statusHeader
-                    .padding(.top, 16)
-                    .padding(.horizontal, 16)
-
-                ScrollView(.vertical) {
-                    destinationSection
-                        .padding(.top, 12)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 16)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .controlSize(.small)
         .font(.system(size: 13))
@@ -134,36 +138,51 @@ struct SettingsView: View {
         }
     }
 
-    private var statusHeader: some View {
+    private func statusHeader(isCompact: Bool) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: model.statusSystemImage)
-                .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(statusColor)
-                .frame(width: 28)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("OLED Protection")
+            if isCompact {
+                Text("Protect")
                     .font(.system(size: 15, weight: .semibold))
-                Text(model.statusSummary)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                if let message = model.validationMessage ?? model.runtimeState.errorMessage {
-                    Text(message)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.orange)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Spacer()
-            Toggle(
-                "Enabled",
-                isOn: Binding(
-                    get: { model.preferences.isEnabled },
-                    set: model.setProtectionEnabled
+                Spacer()
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { model.preferences.isEnabled },
+                        set: model.setProtectionEnabled
+                    )
                 )
-            )
-            .toggleStyle(.switch)
+                .labelsHidden()
+                .toggleStyle(.switch)
+            } else {
+                Image(systemName: model.statusSystemImage)
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(statusColor)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("OLED Protection")
+                        .font(.system(size: 15, weight: .semibold))
+                    Text(model.statusSummary)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if let message = model.validationMessage ?? model.runtimeState.errorMessage {
+                        Text(message)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.orange)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer()
+                Toggle(
+                    "Enabled",
+                    isOn: Binding(
+                        get: { model.preferences.isEnabled },
+                        set: model.setProtectionEnabled
+                    )
+                )
+                .toggleStyle(.switch)
+            }
         }
         .padding(11)
         .background(
@@ -516,7 +535,7 @@ struct SettingsView: View {
         options: [(Value, String)]
     ) -> some View {
         DropdownPicker(selection: selection, options: options)
-            .frame(maxWidth: .infinity)
+            .frame(width: 220)
     }
 
     private func percentageStepper(
@@ -553,9 +572,8 @@ struct SettingsView: View {
         _ label: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 5) {
             Text(label)
-                .frame(maxWidth: .infinity, alignment: .leading)
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
