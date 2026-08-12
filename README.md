@@ -7,6 +7,26 @@
 A macOS CLI and menu-bar app for OLED blackouts, click-through working dimming,
 display sleep, inventory, and experimental DDC luminance control.
 
+## Features
+
+- Menu-bar app and standalone CLI with per-display or all-display targeting.
+- Opaque blocking blackouts for OLED protection, plus click-through working
+  dimming with configurable overlay darkness.
+- Automatic treatment after inactivity, repeated watch cycles, and optional
+  per-display blackouts when no app window or pointer occupies a selected
+  display.
+- Restore, fixed timeout, or all-display sleep endpoints, with snooze and
+  manual blackout, restore, sleep, and wake controls.
+- Playback, presentation, screen-sharing, and optional camera-use deferrals.
+- Experimental DDC luminance reads, writes, and reversible target brightness
+  during normal blackout or working-dimming cycles.
+- Display inventory and capability probing with human-readable or JSON output,
+  plus UUID, Core Graphics ID, and one-based index selectors.
+- Script and Shortcuts automation for enabling, disabling, toggling, status,
+  immediate treatment, restore, sleep, snooze, resume, and opening Settings.
+- Settings for Automation, Displays, and Startup, including launch at login and
+  an optional menu-bar icon.
+
 ## Install
 
 Download the universal app or CLI from
@@ -39,6 +59,7 @@ stops the watcher. Reopen the app to show Settings when its menu icon is hidden.
 panelctl list
 panelctl blackout --display DISPLAY_UUID --idle-after 5m --watch
 panelctl blackout --display DISPLAY_UUID --mode working --overlay-opacity 60 --dim-to 25 --timeout 1h
+panelctl blackout --display DISPLAY_UUID --idle-after 5m --watch --blackout-empty-displays
 panelctl blackout --index 3 --timeout 1h
 panelctl blackout --all --idle-after 5m --sleep-after 30m --keep-displays-awake
 panelctl sleep-displays --keep-system-awake
