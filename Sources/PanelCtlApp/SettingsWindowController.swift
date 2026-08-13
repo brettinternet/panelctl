@@ -1,11 +1,33 @@
 import AppKit
 import SwiftUI
 
+private final class SettingsWindow: NSWindow {
+    private var enforcedMinSize: NSSize?
+    private var enforcedMaxSize: NSSize?
+
+    override var minSize: NSSize {
+        get { enforcedMinSize ?? super.minSize }
+        set { super.minSize = enforcedMinSize ?? newValue }
+    }
+
+    override var maxSize: NSSize {
+        get { enforcedMaxSize ?? super.maxSize }
+        set { super.maxSize = enforcedMaxSize ?? newValue }
+    }
+
+    func enforceResizeLimits(minSize: NSSize, maxSize: NSSize) {
+        enforcedMinSize = minSize
+        enforcedMaxSize = maxSize
+        super.minSize = minSize
+        super.maxSize = maxSize
+    }
+}
+
 @MainActor
 final class SettingsWindowController: NSWindowController {
     init(model: AppModel) {
         let hostingView = NSHostingView(rootView: SettingsView(model: model))
-        let window = NSWindow(
+        let window = SettingsWindow(
             contentRect: NSRect(x: 0, y: 0, width: 680, height: 590),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
@@ -16,30 +38,33 @@ final class SettingsWindowController: NSWindowController {
         window.standardWindowButton(.zoomButton)?.isEnabled = false
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("PanelCtlSettingsWindow")
+        window.center()
+        super.init(window: window)
+        applySizeConstraints(to: window)
+    }
+
+    private func applySizeConstraints(to window: SettingsWindow) {
         let minimumFrameSize = window.frameRect(
             forContentRect: NSRect(x: 0, y: 0, width: 440, height: 480)
         ).size
         let maximumFrameWidth = window.frameRect(
             forContentRect: NSRect(x: 0, y: 0, width: 680, height: 480)
         ).width
-        window.minSize = minimumFrameSize
-        window.maxSize = NSSize(
-            width: maximumFrameWidth,
-            height: CGFloat.greatestFiniteMagnitude
+        window.enforceResizeLimits(
+            minSize: minimumFrameSize,
+            maxSize: NSSize(
+                width: maximumFrameWidth,
+                height: CGFloat.greatestFiniteMagnitude
+            )
         )
 
-        var restoredFrame = window.frame
-        restoredFrame.size.width = min(
-            max(restoredFrame.width, minimumFrameSize.width),
+        var frame = window.frame
+        frame.size.width = min(
+            max(frame.width, minimumFrameSize.width),
             maximumFrameWidth
         )
-        restoredFrame.size.height = max(
-            restoredFrame.height,
-            minimumFrameSize.height
-        )
-        window.setFrame(restoredFrame, display: false)
-        window.center()
-        super.init(window: window)
+        frame.size.height = max(frame.height, minimumFrameSize.height)
+        window.setFrame(frame, display: false)
     }
 
     @available(*, unavailable)
@@ -48,9 +73,10 @@ final class SettingsWindowController: NSWindowController {
     }
 
     func present() {
-        guard let window else { return }
+        guard let window = window as? SettingsWindow else { return }
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window.makeKeyAndOrderFront(nil)
+        applySizeConstraints(to: window)
     }
 }
