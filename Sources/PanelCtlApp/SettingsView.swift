@@ -141,7 +141,7 @@ struct SettingsView: View {
     private func statusHeader(isCompact: Bool) -> some View {
         HStack(spacing: 10) {
             if isCompact {
-                Text("Protect")
+                Text("Enabled")
                     .font(.system(size: 15, weight: .semibold))
                 Spacer()
                 Toggle(
