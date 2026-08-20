@@ -2,7 +2,39 @@ import XCTest
 @testable import PanelCtlCore
 
 final class BlackoutGeometryTests: XCTestCase {
-    func testContentRectUsesTargetScreenFrameAtCreation() {
+    @MainActor
+    func testWindowPlacementOnConnectedExternalScreens() throws {
+        let screens = NSScreen.screens.filter { $0.frame.origin != .zero }
+        guard !screens.isEmpty else { throw XCTSkip("requires a non-origin display") }
+
+        let controller = BlackoutController()
+        for screen in screens {
+            let window = controller.makeWindow(
+                for: screen,
+                mode: .blocking,
+                overlayOpacityPercent: 100
+            )
+            let screenNumberKey = NSDeviceDescriptionKey("NSScreenNumber")
+            let targetID = try XCTUnwrap(
+                (screen.deviceDescription[screenNumberKey] as? NSNumber)?.uint32Value
+            )
+            let windowScreenID = (
+                window.screen?.deviceDescription[screenNumberKey] as? NSNumber
+            )?.uint32Value
+
+            XCTAssertEqual(window.frame, screen.frame)
+            XCTAssertEqual(windowScreenID, targetID)
+            XCTAssertTrue(BlackoutController.exactlyCovers(
+                windowFrame: window.frame,
+                screenFrame: screen.frame,
+                windowScreenID: windowScreenID,
+                targetScreenID: targetID
+            ))
+            window.close()
+        }
+    }
+
+    func testContentRectUsesEveryScreenSizeWithoutGlobalOrigin() {
         let frames = [
             CGRect(x: 0, y: 0, width: 1728, height: 1117),
             CGRect(x: -3440, y: -1440, width: 3440, height: 1440),
@@ -13,7 +45,7 @@ final class BlackoutGeometryTests: XCTestCase {
         for frame in frames {
             XCTAssertEqual(
                 BlackoutController.windowContentRect(for: frame),
-                frame
+                CGRect(origin: .zero, size: frame.size)
             )
         }
     }

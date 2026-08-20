@@ -926,7 +926,7 @@ public final class BlackoutController {
         committed = true
     }
 
-    private func makeWindow(
+    func makeWindow(
         for screen: NSScreen,
         mode: BlackoutMode,
         overlayOpacityPercent: Int?
@@ -943,6 +943,7 @@ public final class BlackoutController {
             mode: mode,
             overlayOpacityPercent: overlayOpacityPercent
         )
+        window.setFrame(screen.frame, display: false)
         return window
     }
 
@@ -1511,7 +1512,7 @@ public final class BlackoutController {
     }
 
     static func windowContentRect(for screenFrame: CGRect) -> CGRect {
-        screenFrame
+        CGRect(origin: .zero, size: screenFrame.size)
     }
 
     static func isValidScreenFrame(_ frame: CGRect) -> Bool {

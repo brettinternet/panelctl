@@ -367,10 +367,10 @@ final class CLIParserTests: XCTestCase {
         XCTAssertNoThrow(try BlackoutController.validateTarget(isMirrored: false, selector: "1"))
     }
 
-    func testBlackoutWindowRectUsesTargetScreenCoordinates() {
+    func testBlackoutWindowRectIsRelativeToTargetScreen() {
         let negativeOrigin = CGRect(x: -2560, y: 0, width: 2560, height: 1440)
         let stacked = CGRect(x: 1728, y: 415, width: 3440, height: 1440)
-        XCTAssertEqual(BlackoutController.windowContentRect(for: negativeOrigin), negativeOrigin)
-        XCTAssertEqual(BlackoutController.windowContentRect(for: stacked), stacked)
+        XCTAssertEqual(BlackoutController.windowContentRect(for: negativeOrigin), CGRect(x: 0, y: 0, width: 2560, height: 1440))
+        XCTAssertEqual(BlackoutController.windowContentRect(for: stacked), CGRect(x: 0, y: 0, width: 3440, height: 1440))
     }
 }
