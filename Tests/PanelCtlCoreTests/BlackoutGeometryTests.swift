@@ -2,7 +2,7 @@ import XCTest
 @testable import PanelCtlCore
 
 final class BlackoutGeometryTests: XCTestCase {
-    func testContentRectUsesEveryScreenSizeWithoutGlobalOrigin() {
+    func testContentRectUsesTargetScreenFrameAtCreation() {
         let frames = [
             CGRect(x: 0, y: 0, width: 1728, height: 1117),
             CGRect(x: -3440, y: -1440, width: 3440, height: 1440),
@@ -13,7 +13,7 @@ final class BlackoutGeometryTests: XCTestCase {
         for frame in frames {
             XCTAssertEqual(
                 BlackoutController.windowContentRect(for: frame),
-                CGRect(origin: .zero, size: frame.size)
+                frame
             )
         }
     }

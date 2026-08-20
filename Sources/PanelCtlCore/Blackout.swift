@@ -943,7 +943,6 @@ public final class BlackoutController {
             mode: mode,
             overlayOpacityPercent: overlayOpacityPercent
         )
-        window.setFrame(screen.frame, display: false)
         return window
     }
 
@@ -1512,7 +1511,7 @@ public final class BlackoutController {
     }
 
     static func windowContentRect(for screenFrame: CGRect) -> CGRect {
-        CGRect(origin: .zero, size: screenFrame.size)
+        screenFrame
     }
 
     static func isValidScreenFrame(_ frame: CGRect) -> Bool {
