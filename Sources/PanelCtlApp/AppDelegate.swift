@@ -1,6 +1,12 @@
 import AppKit
 import Combine
+import OSLog
 import PanelCtlCore
+
+private let shutdownLogger = Logger(
+    subsystem: "com.brettinternet.panelctl",
+    category: "shutdown"
+)
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -80,7 +86,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let model else { return .terminateNow }
         guard !terminationPending else { return .terminateLater }
         terminationPending = true
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        shutdownLogger.info("Application termination requested")
         model.shutdown {
+            let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+            let duration = String(format: "%.3f", elapsed)
+            shutdownLogger.info(
+                "Application termination cleanup completed in \(duration, privacy: .public)s"
+            )
             DispatchQueue.main.async {
                 sender.reply(toApplicationShouldTerminate: true)
             }

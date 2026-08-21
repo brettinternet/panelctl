@@ -3,6 +3,12 @@ import AppKit
 import CoreGraphics
 import IOKit.pwr_mgt
 import CoreMediaIO
+import OSLog
+
+private let shutdownLogger = Logger(
+    subsystem: "com.brettinternet.panelctl",
+    category: "shutdown"
+)
 
 public enum BlackoutError: Error, Equatable, CustomStringConvertible {
     case noScreens
@@ -1256,8 +1262,19 @@ public final class BlackoutController {
 
     private func clearAllCoverage(resetGrace: Bool) {
         fullCycleActive = false
+        let restoreStartedAt = uptime()
         dimming?.restore()
+        let restoreElapsed = uptime() - restoreStartedAt
+        let closeStartedAt = uptime()
         closeAllWindows()
+        let closeElapsed = uptime() - closeStartedAt
+        if restoreElapsed >= 0.1 || closeElapsed >= 0.1 {
+            let restoreDuration = String(format: "%.3f", restoreElapsed)
+            let closeDuration = String(format: "%.3f", closeElapsed)
+            shutdownLogger.notice(
+                "Slow blackout cleanup: DDC restore \(restoreDuration, privacy: .public)s, window close \(closeDuration, privacy: .public)s"
+            )
+        }
         if resetGrace {
             emptyDisplayPolicy.reset()
         }

@@ -1,9 +1,14 @@
 import Foundation
 import PanelCtlCore
 import Darwin
+import OSLog
 
 private let maximumStatusBufferBytes = 8 * 1024
 private let maximumErrorBufferBytes = 16 * 1024
+private let shutdownLogger = Logger(
+    subsystem: "com.brettinternet.panelctl",
+    category: "shutdown"
+)
 
 enum ProtectionRuntimeState: Equatable {
     case disabled
@@ -116,6 +121,7 @@ final class ProtectionService {
     private var lifetimeWriteHandle: FileHandle?
     private var forceTerminationWorkItem: DispatchWorkItem?
     private var shutdownCompletion: (() -> Void)?
+    private var shutdownStartedAt: TimeInterval?
 
     init(
         displaysAreAsleep: @escaping () -> Bool = {
@@ -220,6 +226,8 @@ final class ProtectionService {
     }
 
     func shutdown(completion: @escaping () -> Void) {
+        shutdownStartedAt = ProcessInfo.processInfo.systemUptime
+        shutdownLogger.info("Blackout helper shutdown requested")
         pendingArguments = nil
         pendingControlIntent = nil
         pendingControlSourceProcess = nil
@@ -228,6 +236,8 @@ final class ProtectionService {
         shutdownCompletion = completion
         blackedOutDisplayIDs = []
         guard let process else {
+            shutdownLogger.info("Blackout helper was not running")
+            shutdownStartedAt = nil
             shutdownCompletion = nil
             completion()
             return
@@ -469,6 +479,9 @@ final class ProtectionService {
                   runningProcess.isRunning else {
                 return
             }
+            shutdownLogger.error(
+                "Blackout helper did not exit within 2 seconds; sending SIGKILL"
+            )
             Darwin.kill(runningProcess.processIdentifier, SIGKILL)
         }
         forceTerminationWorkItem = work
@@ -500,6 +513,14 @@ final class ProtectionService {
             state = finalState
             let completion = shutdownCompletion
             shutdownCompletion = nil
+            if let startedAt = shutdownStartedAt {
+                let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+                let duration = String(format: "%.3f", elapsed)
+                shutdownLogger.info(
+                    "Blackout helper exited in \(duration, privacy: .public)s (reason: \(String(describing: finished.terminationReason), privacy: .public), status: \(finished.terminationStatus))"
+                )
+            }
+            shutdownStartedAt = nil
             completion?()
             return
         }
