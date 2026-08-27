@@ -1272,6 +1272,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         )
         let helper = directory.appendingPathComponent("fake-panelctl")
         let log = directory.appendingPathComponent("control.log")
+        let allowReblackout = directory.appendingPathComponent("allow-reblackout")
         let script = """
         #!/bin/bash
         printf '{"state":"waiting","blackedOutDisplayIDs":[202]}\\n'
@@ -1280,7 +1281,9 @@ final class ProtectionPreferencesTests: XCTestCase {
             printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
             if [[ "$command" == "restore" ]]; then
                 printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
-                /bin/sleep 0.05
+                while [[ ! -e "$PANELCTL_TEST_ALLOW_REBLACKOUT" ]]; do
+                    /bin/sleep 0.01
+                done
                 printf '{"state":"waiting","blackedOutDisplayIDs":[202]}\\n'
             elif [[ "$command" == "blackout-now" ]]; then
                 printf '{"state":"waiting","blackedOutDisplayIDs":[202]}\\n'
@@ -1308,9 +1311,11 @@ final class ProtectionPreferencesTests: XCTestCase {
 
         setenv("PANELCTL_HELPER", helper.path, 1)
         setenv("PANELCTL_TEST_LOG", log.path, 1)
+        setenv("PANELCTL_TEST_ALLOW_REBLACKOUT", allowReblackout.path, 1)
         defer {
             unsetenv("PANELCTL_HELPER")
             unsetenv("PANELCTL_TEST_LOG")
+            unsetenv("PANELCTL_TEST_ALLOW_REBLACKOUT")
         }
 
         let model = AppModel(
@@ -1332,6 +1337,7 @@ final class ProtectionPreferencesTests: XCTestCase {
 
         XCTAssertTrue(try model.restoreBlackout())
         try await waitUntil { model.blackedOutDisplayIDs.isEmpty }
+        try Data().write(to: allowReblackout)
         try await waitUntil { model.blackedOutDisplayIDs == [202] }
         XCTAssertEqual(model.runtimeState, .waiting)
 
