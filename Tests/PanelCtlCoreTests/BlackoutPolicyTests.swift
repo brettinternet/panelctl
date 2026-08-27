@@ -414,6 +414,14 @@ final class BlackoutPolicyTests: XCTestCase {
             BlackoutController.workspaceEvent(for: NSWorkspace.screensDidWakeNotification),
             .resume(.screensAsleep)
         )
+        XCTAssertEqual(
+            BlackoutController.workspaceEvent(for: BlackoutController.screenLockedNotification),
+            .reset(.suspension(.screenLocked))
+        )
+        XCTAssertEqual(
+            BlackoutController.workspaceEvent(for: BlackoutController.screenUnlockedNotification),
+            .resume(.screenLocked)
+        )
         XCTAssertNil(BlackoutController.workspaceEvent(for: Notification.Name("unrelated")))
     }
 

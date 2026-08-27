@@ -53,8 +53,8 @@ configured Restore/Sleep endpoint.
 - `--all` requires `--timeout` or `--sleep-after`. Every full-display selection
   requires a finite Restore/Sleep endpoint, including explicit selectors.
 - `--caffeinate` prevents idle system sleep. `--keep-displays-awake` keeps all
-  displays awake until a `--sleep-after` endpoint while allowing the Mac to
-  sleep sooner.
+  displays awake until a `--sleep-after` endpoint while the screen is unlocked,
+  while still allowing the Mac to sleep sooner.
 - Automatic treatment waits while another app keeps the display awake, then
   restarts the full idle countdown. It can also wait for configured camera
   activity. Manual commands are not deferred.

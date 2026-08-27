@@ -54,8 +54,8 @@ public enum CLIHelp {
             partial selections, including hardware brightness. Full coverage always
             retains its fixed finite endpoint. Restore working dimming from the status
             menu or `panelctl app restore`. --caffeinate prevents idle system sleep
-            (advanced). --keep-displays-awake keeps displays awake until --sleep-after;
-            macOS may sleep the Mac sooner, and the assertion applies globally.
+            (advanced). --keep-displays-awake keeps displays awake until --sleep-after
+            while the screen is unlocked; macOS may sleep the Mac sooner, and the assertion applies globally.
             Hardware dimming applies to inactivity and Blackout Now cycles, not empty-display-only blackouts.
             By default, automatic treatment defers while
             another app keeps the display awake; --ignore-playback disables that

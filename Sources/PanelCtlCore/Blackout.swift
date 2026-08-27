@@ -235,6 +235,7 @@ enum BlackoutInputAction: Equatable {
 /// notifications arrive in a different order than their sleep notifications.
 enum BlackoutWatchSuspension: Hashable {
     case sessionInactive
+    case screenLocked
     case systemSleeping
     case screensAsleep
 }
@@ -387,11 +388,16 @@ public final class BlackoutController {
     }
 
     private static let manualBlackoutInputSettlingDuration: TimeInterval = 0.25
+    // NSWorkspace session notifications cover user switching, not screen locking.
+    // loginwindow publishes lock state through these distributed notifications.
+    static let screenLockedNotification = Notification.Name("com.apple.screenIsLocked")
+    static let screenUnlockedNotification = Notification.Name("com.apple.screenIsUnlocked")
 
     private var windows: [CGDirectDisplayID: NSWindow] = [:]
     private var signalSources: [DispatchSourceSignal] = []
     private var screenObserver: NSObjectProtocol?
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var distributedObservers: [NSObjectProtocol] = []
     private var assertion: CaffeinateAssertion?
     private var displayAssertion: CaffeinateAssertion?
     private var keepDisplaysAwake = false
@@ -1355,6 +1361,20 @@ public final class BlackoutController {
                 self.requestStop()
             }
         })
+
+        let distributedCenter = DistributedNotificationCenter.default()
+        for name in [Self.screenLockedNotification, Self.screenUnlockedNotification] {
+            distributedObservers.append(
+                distributedCenter.addObserver(
+                    forName: name,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    guard let self, let event = Self.workspaceEvent(for: name) else { return }
+                    self.handleWorkspaceEvent(event)
+                }
+            )
+        }
     }
 
     private func requestStop() {
@@ -1421,6 +1441,10 @@ public final class BlackoutController {
             return .reset(.suspension(.sessionInactive))
         case NSWorkspace.sessionDidBecomeActiveNotification:
             return .resume(.sessionInactive)
+        case screenLockedNotification:
+            return .reset(.suspension(.screenLocked))
+        case screenUnlockedNotification:
+            return .resume(.screenLocked)
         case NSWorkspace.willSleepNotification:
             return .reset(.suspension(.systemSleeping))
         case NSWorkspace.didWakeNotification:
@@ -1451,6 +1475,9 @@ public final class BlackoutController {
         let center = NSWorkspace.shared.notificationCenter
         workspaceObservers.forEach { center.removeObserver($0) }
         workspaceObservers.removeAll()
+        let distributedCenter = DistributedNotificationCenter.default()
+        distributedObservers.forEach { distributedCenter.removeObserver($0) }
+        distributedObservers.removeAll()
         assertion?.stop()
         assertion = nil
         releaseDisplayAssertion()

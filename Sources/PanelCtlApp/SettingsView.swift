@@ -276,7 +276,7 @@ struct SettingsView: View {
                         isOn: preferenceBinding(\.keepDisplaysAwake)
                     )
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    Text("Keeps displays awake until the configured sleep time; macOS may sleep the Mac sooner. This assertion applies to all displays.")
+                    Text("Keeps displays awake until the configured sleep time while your screen is unlocked; macOS may sleep the Mac sooner. This assertion applies to all displays.")
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)

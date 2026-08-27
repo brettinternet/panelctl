@@ -108,7 +108,7 @@ final class CaffeinateAssertion {
             let status = IOPMAssertionCreateWithDescription(
                 kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
                 "PanelCtl display sleep timer" as CFString,
-                "Keep displays awake until the configured sleep timeout" as CFString,
+                "Keep displays awake until the configured timeout while unlocked" as CFString,
                 nil,
                 nil,
                 0,
