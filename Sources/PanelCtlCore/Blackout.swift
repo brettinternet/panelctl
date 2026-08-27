@@ -485,7 +485,9 @@ public final class BlackoutController {
         }
 
         let screens = NSScreen.screens
-        let drawableScreens = screens.filter { Self.isValidScreenFrame($0.frame) }
+        let drawableScreens = screens.filter {
+            Self.currentFrame(for: $0).map(Self.isValidScreenFrame) == true
+        }
         guard !drawableScreens.isEmpty else { throw BlackoutError.noScreens }
         targets = try resolveTargets(options: options, screens: screens, drawableScreens: drawableScreens)
         if options.hardwareBrightnessPercent != nil {
@@ -761,7 +763,8 @@ public final class BlackoutController {
                   let screen = screens.first(where: { Self.screenID($0) == record.id }) else {
                 throw BlackoutError.unknownSelector(selector)
             }
-            guard Self.isValidScreenFrame(screen.frame) else {
+            guard let frame = Self.currentFrame(for: screen),
+                  Self.isValidScreenFrame(frame) else {
                 throw BlackoutError.nonDrawable(selector)
             }
             try Self.validateTarget(isMirrored: CGDisplayIsInMirrorSet(record.id) != 0, selector: selector)
@@ -786,7 +789,9 @@ public final class BlackoutController {
         coversAllDisplays: Bool
     ) {
         let currentScreens = NSScreen.screens
-        let drawable = currentScreens.filter { Self.isValidScreenFrame($0.frame) }
+        let drawable = currentScreens.filter {
+            Self.currentFrame(for: $0).map(Self.isValidScreenFrame) == true
+        }
         guard !drawable.isEmpty else { throw BlackoutError.noScreens }
         if options.all {
             if watchMode {
@@ -820,7 +825,9 @@ public final class BlackoutController {
         let selected = try targets.map { target -> NSScreen in
             let currentID = try target.resolvedID(in: records, watch: watchMode)
             let screen = currentScreens.first(where: { Self.screenID($0) == currentID })
-            guard let screen, Self.isValidScreenFrame(screen.frame) else {
+            guard let screen,
+                  let frame = Self.currentFrame(for: screen),
+                  Self.isValidScreenFrame(frame) else {
                 throw BlackoutError.topologyChanged
             }
             guard let id = Self.screenID(screen) else { throw BlackoutError.topologyChanged }
@@ -864,14 +871,15 @@ public final class BlackoutController {
         mode: BlackoutMode,
         overlayOpacityPercent: Int?
     ) throws {
-        var screensByID: [CGDirectDisplayID: NSScreen] = [:]
+        var screensByID: [CGDirectDisplayID: (screen: NSScreen, frame: CGRect)] = [:]
         for screen in desiredScreens {
-            guard Self.isValidScreenFrame(screen.frame),
-                  let targetID = Self.screenID(screen),
+            guard let targetID = Self.screenID(screen),
+                  let frame = Self.currentFrame(for: screen),
+                  Self.isValidScreenFrame(frame),
                   screensByID[targetID] == nil else {
                 throw BlackoutError.invalidScreenFrame(screen.localizedName)
             }
-            screensByID[targetID] = screen
+            screensByID[targetID] = (screen, frame)
         }
 
         var prepared: [CGDirectDisplayID: NSWindow] = [:]
@@ -885,46 +893,47 @@ public final class BlackoutController {
             }
         }
 
-        for (targetID, screen) in screensByID {
+        for (targetID, target) in screensByID {
             if let existing = windows[targetID] {
                 guard Self.exactlyCovers(
                     windowFrame: existing.frame,
-                    screenFrame: screen.frame,
+                    screenFrame: target.frame,
                     windowScreenID: existing.screen.flatMap(Self.screenID),
                     targetScreenID: targetID
                 ) else {
-                    throw BlackoutError.coverageMismatch(screen.localizedName)
+                    throw BlackoutError.coverageMismatch(target.screen.localizedName)
                 }
                 continue
             }
             let window = makeWindow(
-                for: screen,
+                for: target.screen,
+                frame: target.frame,
                 mode: mode,
                 overlayOpacityPercent: overlayOpacityPercent
             )
             guard Self.exactlyCovers(
                 windowFrame: window.frame,
-                screenFrame: screen.frame,
+                screenFrame: target.frame,
                 windowScreenID: window.screen.flatMap(Self.screenID),
                 targetScreenID: targetID
             ) else {
                 window.close()
-                throw BlackoutError.coverageMismatch(screen.localizedName)
+                throw BlackoutError.coverageMismatch(target.screen.localizedName)
             }
             prepared[targetID] = window
         }
 
         if stopRequested { throw BlackoutError.topologyChanged }
         prepared.keys.sorted().forEach { prepared[$0]?.orderFrontRegardless() }
-        for (targetID, screen) in screensByID {
+        for (targetID, target) in screensByID {
             guard let window = prepared[targetID] ?? windows[targetID],
                   Self.exactlyCovers(
                     windowFrame: window.frame,
-                    screenFrame: screen.frame,
+                    screenFrame: target.frame,
                     windowScreenID: window.screen.flatMap(Self.screenID),
                     targetScreenID: targetID
                   ) else {
-                throw BlackoutError.coverageMismatch(screen.localizedName)
+                throw BlackoutError.coverageMismatch(target.screen.localizedName)
             }
         }
 
@@ -943,8 +952,22 @@ public final class BlackoutController {
         mode: BlackoutMode,
         overlayOpacityPercent: Int?
     ) -> NSWindow {
+        makeWindow(
+            for: screen,
+            frame: Self.currentFrame(for: screen) ?? screen.frame,
+            mode: mode,
+            overlayOpacityPercent: overlayOpacityPercent
+        )
+    }
+
+    private func makeWindow(
+        for screen: NSScreen,
+        frame: CGRect,
+        mode: BlackoutMode,
+        overlayOpacityPercent: Int?
+    ) -> NSWindow {
         let window = NSWindow(
-            contentRect: Self.windowContentRect(for: screen.frame),
+            contentRect: Self.windowContentRect(for: frame),
             styleMask: .borderless,
             backing: .buffered,
             defer: false,
@@ -955,7 +978,7 @@ public final class BlackoutController {
             mode: mode,
             overlayOpacityPercent: overlayOpacityPercent
         )
-        window.setFrame(screen.frame, display: false)
+        window.setFrame(frame, display: false)
         return window
     }
 
@@ -1557,6 +1580,28 @@ public final class BlackoutController {
 
     static func windowContentRect(for screenFrame: CGRect) -> CGRect {
         CGRect(origin: .zero, size: screenFrame.size)
+    }
+
+    static func appKitFrame(
+        forQuartzBounds bounds: CGRect,
+        mainQuartzBounds: CGRect
+    ) -> CGRect {
+        CGRect(
+            x: bounds.minX - mainQuartzBounds.minX,
+            y: mainQuartzBounds.maxY - bounds.maxY,
+            width: bounds.width,
+            height: bounds.height
+        )
+    }
+
+    private static func currentFrame(for screen: NSScreen) -> CGRect? {
+        guard let id = screenID(screen) else { return nil }
+        let bounds = CGDisplayBounds(id)
+        let mainBounds = CGDisplayBounds(CGMainDisplayID())
+        guard isValidScreenFrame(bounds), isValidScreenFrame(mainBounds) else {
+            return nil
+        }
+        return appKitFrame(forQuartzBounds: bounds, mainQuartzBounds: mainBounds)
     }
 
     static func isValidScreenFrame(_ frame: CGRect) -> Bool {

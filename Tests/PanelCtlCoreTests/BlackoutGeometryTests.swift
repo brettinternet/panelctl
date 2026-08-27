@@ -4,8 +4,11 @@ import XCTest
 final class BlackoutGeometryTests: XCTestCase {
     @MainActor
     func testWindowPlacementOnConnectedExternalScreens() throws {
-        let screens = NSScreen.screens.filter { $0.frame.origin != .zero }
-        guard !screens.isEmpty else { throw XCTSkip("requires a non-origin display") }
+        let screens = NSScreen.screens.filter { screen in
+            let key = NSDeviceDescriptionKey("NSScreenNumber")
+            return (screen.deviceDescription[key] as? NSNumber)?.uint32Value != CGMainDisplayID()
+        }
+        guard !screens.isEmpty else { throw XCTSkip("requires an external display") }
 
         let controller = BlackoutController()
         for screen in screens {
@@ -21,16 +24,63 @@ final class BlackoutGeometryTests: XCTestCase {
             let windowScreenID = (
                 window.screen?.deviceDescription[screenNumberKey] as? NSNumber
             )?.uint32Value
+            let expectedQuartzBounds = CGDisplayBounds(targetID)
+            let expectedFrame = BlackoutController.appKitFrame(
+                forQuartzBounds: expectedQuartzBounds,
+                mainQuartzBounds: CGDisplayBounds(CGMainDisplayID())
+            )
 
-            XCTAssertEqual(window.frame, screen.frame)
+            XCTAssertEqual(window.frame, expectedFrame)
             XCTAssertEqual(windowScreenID, targetID)
             XCTAssertTrue(BlackoutController.exactlyCovers(
                 windowFrame: window.frame,
-                screenFrame: screen.frame,
+                screenFrame: expectedFrame,
                 windowScreenID: windowScreenID,
                 targetScreenID: targetID
             ))
+
+            window.orderFrontRegardless()
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
+            let windowInfo = try XCTUnwrap(
+                CGWindowListCopyWindowInfo(
+                    [.optionIncludingWindow],
+                    CGWindowID(window.windowNumber)
+                ) as? [[String: Any]]
+            ).first {
+                ($0[kCGWindowNumber as String] as? NSNumber)?.intValue == window.windowNumber
+            }
+            let rawBounds = try XCTUnwrap(windowInfo?[kCGWindowBounds as String])
+            var compositorBounds = CGRect.zero
+            XCTAssertTrue(
+                CGRectMakeWithDictionaryRepresentation(
+                    rawBounds as! CFDictionary,
+                    &compositorBounds
+                )
+            )
+            XCTAssertEqual(compositorBounds, expectedQuartzBounds)
             window.close()
+        }
+    }
+
+    func testQuartzBoundsConvertToAppKitCoordinatesAroundMainDisplay() {
+        let main = CGRect(x: 0, y: 0, width: 1728, height: 1117)
+        let cases: [(quartz: CGRect, appKit: CGRect)] = [
+            (CGRect(x: 1728, y: -738, width: 3440, height: 1440),
+             CGRect(x: 1728, y: 415, width: 3440, height: 1440)),
+            (CGRect(x: 1728, y: 702, width: 3440, height: 1440),
+             CGRect(x: 1728, y: -1025, width: 3440, height: 1440)),
+            (CGRect(x: -3440, y: 1117, width: 3440, height: 1440),
+             CGRect(x: -3440, y: -1440, width: 3440, height: 1440))
+        ]
+
+        for testCase in cases {
+            XCTAssertEqual(
+                BlackoutController.appKitFrame(
+                    forQuartzBounds: testCase.quartz,
+                    mainQuartzBounds: main
+                ),
+                testCase.appKit
+            )
         }
     }
 
