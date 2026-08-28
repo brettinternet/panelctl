@@ -3,20 +3,23 @@ import AppKit
 @testable import PanelCtlCore
 
 final class BlackoutPolicyTests: XCTestCase {
-    func testExternalPlaybackAssertionIgnoresPanelCtlPID() {
-        let assertion: [AnyHashable: Any] = [
-            "AssertType": "PreventUserIdleDisplaySleep",
-            "AssertLevel": NSNumber(value: 255)
-        ]
-        let assertions: [AnyHashable: Any] = [
-            NSNumber(value: 42): [assertion],
-            NSNumber(value: 99): [assertion]
-        ]
-        XCTAssertTrue(hasExternalDisplaySleepAssertion(in: assertions, excludingPID: 42))
-        XCTAssertFalse(hasExternalDisplaySleepAssertion(
-            in: [NSNumber(value: 42): [assertion]],
-            excludingPID: 42
-        ))
+    func testExternalPlaybackAssertionRecognizesCanonicalAndLegacyDisplayTypes() {
+        for type in ["PreventUserIdleDisplaySleep", "NoDisplaySleepAssertion"] {
+            let assertion: [AnyHashable: Any] = [
+                "AssertType": type,
+                "AssertLevel": NSNumber(value: 255)
+            ]
+            let assertions: [AnyHashable: Any] = [
+                NSNumber(value: 42): [assertion],
+                NSNumber(value: 99): [assertion]
+            ]
+
+            XCTAssertTrue(hasExternalDisplaySleepAssertion(in: assertions, excludingPID: 42))
+            XCTAssertFalse(hasExternalDisplaySleepAssertion(
+                in: [NSNumber(value: 42): [assertion]],
+                excludingPID: 42
+            ))
+        }
     }
 
     func testIdleThresholdIsInclusive() {

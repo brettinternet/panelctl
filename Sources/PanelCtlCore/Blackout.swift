@@ -202,6 +202,7 @@ func hasExternalDisplaySleepAssertion(
     excludingPID: Int32
 ) -> Bool {
     let expectedType = kIOPMAssertPreventUserIdleDisplaySleep as String
+    let legacyType = kIOPMAssertionTypeNoDisplaySleep as String
     for (rawPID, rawEntries) in assertions {
         guard let pid = (rawPID as? NSNumber)?.int32Value,
               pid != excludingPID,
@@ -209,7 +210,7 @@ func hasExternalDisplaySleepAssertion(
         for rawEntry in entries {
             guard let entry = rawEntry as? [AnyHashable: Any],
                   let type = entry[kIOPMAssertionTypeKey as String] as? String,
-                  type == expectedType else { continue }
+                  type == expectedType || type == legacyType else { continue }
             if (entry[kIOPMAssertionLevelKey as String] as? NSNumber)?.intValue ?? 0 > 0 {
                 return true
             }
