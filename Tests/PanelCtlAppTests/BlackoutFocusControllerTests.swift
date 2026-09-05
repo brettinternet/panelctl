@@ -54,6 +54,28 @@ final class BlackoutFocusControllerTests: XCTestCase {
             )
         }
     }
+
+    func testWatcherRestartsAfterDisplayTransitions() {
+        XCTAssertTrue(
+            AppDelegate.shouldRestartWatcher(
+                after: Notification.Name("com.apple.screenIsUnlocked")
+            )
+        )
+        XCTAssertTrue(
+            AppDelegate.shouldRestartWatcher(
+                after: NSWorkspace.screensDidWakeNotification
+            )
+        )
+        XCTAssertTrue(
+            AppDelegate.shouldRestartWatcher(
+                after: NSApplication.didChangeScreenParametersNotification
+            )
+        )
+        XCTAssertFalse(
+            AppDelegate.shouldRestartWatcher(after: Notification.Name("unrelated"))
+        )
+    }
+
     func testModeAwareActionAndRequestSummaries() {
         XCTAssertEqual(AppDelegate.blackoutActionTitle(for: .blocking), "Blackout Now")
         XCTAssertEqual(AppDelegate.blackoutActionTitle(for: .working), "Dim Now")

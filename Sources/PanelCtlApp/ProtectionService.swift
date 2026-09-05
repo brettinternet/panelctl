@@ -114,6 +114,7 @@ final class ProtectionService {
     private var pendingArguments: [String]?
     private var pendingControlIntent: ControlIntent?
     private var pendingControlSourceProcess: Process?
+    private var pendingDisplayRearm = false
     private var inFlightControlIntent: ControlIntent?
     private var stateAfterTermination: ProtectionRuntimeState?
     private var statusBuffer = Data()
@@ -145,9 +146,13 @@ final class ProtectionService {
         )
     }
 
-    func run(arguments: [String]) {
+    func run(arguments: [String], restartForDisplayChange: Bool = false) {
+        if restartForDisplayChange {
+            pendingDisplayRearm = true
+        }
         if let process {
-            if currentArguments == arguments,
+            if !restartForDisplayChange,
+               currentArguments == arguments,
                pendingArguments == nil,
                stateAfterTermination == nil,
                process.isRunning {
@@ -231,6 +236,7 @@ final class ProtectionService {
         pendingArguments = nil
         pendingControlIntent = nil
         pendingControlSourceProcess = nil
+        pendingDisplayRearm = false
         inFlightControlIntent = nil
         stateAfterTermination = .disabled
         shutdownCompletion = completion
@@ -250,6 +256,7 @@ final class ProtectionService {
         pendingArguments = nil
         pendingControlIntent = nil
         pendingControlSourceProcess = nil
+        pendingDisplayRearm = false
         inFlightControlIntent = nil
         stateAfterTermination = finalState
         blackedOutDisplayIDs = []
@@ -278,6 +285,10 @@ final class ProtectionService {
             var environment = ProcessInfo.processInfo.environment
             environment["PANELCTL_EMIT_STATUS"] = "1"
             environment["PANELCTL_PARENT_PIPE"] = "1"
+            if pendingDisplayRearm {
+                environment["PANELCTL_REARM_ON_START"] = "1"
+            }
+            pendingDisplayRearm = false
             process.environment = environment
             guard fcntl(
                 lifetimePipe.fileHandleForWriting.fileDescriptor,

@@ -292,10 +292,10 @@ final class AppModel: ObservableObject {
         reconcileProtection()
     }
 
-    func refreshDisplays() {
+    func refreshDisplays(restartWatcher: Bool = false) {
         displays = displayProvider()
         if preferences.isEnabled {
-            reconcileProtection()
+            reconcileProtection(restartWatcher: restartWatcher)
         }
         runtimeState = presentedRuntimeState(for: service.state)
         onStatusChange?()
@@ -414,7 +414,7 @@ final class AppModel: ObservableObject {
         return selectedDisplayIDs.count < activeDisplays.count
     }
 
-    private func reconcileProtection() {
+    private func reconcileProtection(restartWatcher: Bool = false) {
         if let until = snoozedUntil {
             runtimeState = .snoozed(until)
             service.disable()
@@ -425,7 +425,10 @@ final class AppModel: ObservableObject {
             return
         }
         do {
-            service.run(arguments: try preferences.commandArguments(for: displays))
+            service.run(
+                arguments: try preferences.commandArguments(for: displays),
+                restartForDisplayChange: restartWatcher
+            )
         } catch ProtectionConfigurationError.noDisplays {
             service.waitForDisplays(ProtectionConfigurationError.noDisplays.localizedDescription)
         } catch let error as ProtectionConfigurationError {

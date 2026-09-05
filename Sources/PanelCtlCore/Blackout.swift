@@ -480,6 +480,12 @@ public final class BlackoutController {
 
         installSignals()
         installObservers()
+        if watchMode,
+           ProcessInfo.processInfo.environment["PANELCTL_REARM_ON_START"] == "1" {
+            // A fresh process has no knowledge of lock/sleep notifications that
+            // preceded it. Require input after launch before using idle time.
+            watchState.reset(.topologyChanged, after: observedInputBaseline())
+        }
         defer {
             stop()
             setRuntimeState(.stopped)

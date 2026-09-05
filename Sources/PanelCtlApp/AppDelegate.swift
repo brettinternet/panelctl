@@ -140,6 +140,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    static func shouldRestartWatcher(after notification: Notification.Name) -> Bool {
+        notification == NSApplication.didChangeScreenParametersNotification ||
+            notification == NSWorkspace.screensDidWakeNotification ||
+            notification == screenUnlockedNotification
+    }
+
     static func shouldEngageBlackoutFocus(
         runtimeState: ProtectionRuntimeState,
         mode: BlackoutMode,
@@ -492,7 +498,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func screenConfigurationChanged(_ notification: Notification) {
-        model.refreshDisplays()
+        guard !terminationPending else { return }
+        // AppKit can retain stale display coordinate transforms after a display
+        // transition. Replace the helper's WindowServer connection; the service
+        // rearms the idle interval so replacement cannot cause a blackout.
+        model.refreshDisplays(
+            restartWatcher: Self.shouldRestartWatcher(after: notification.name)
+        )
     }
 
     private func presentNoticeIfNeeded(_ notice: AppNotice) {
@@ -536,10 +548,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             name: NSWorkspace.screensDidWakeNotification,
             object: nil
         )
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(screenConfigurationChanged),
+            name: Self.screenUnlockedNotification,
+            object: nil
+        )
     }
 }
 
 private extension AppDelegate {
+    static let screenUnlockedNotification = Notification.Name(
+        "com.apple.screenIsUnlocked"
+    )
     static let iso8601 = ISO8601DateFormatter()
 }
 

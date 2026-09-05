@@ -642,7 +642,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         try service.sendControl(.blackoutNow)
         try await waitUntil { service.state == .blackedOut }
 
-        service.run(arguments: ["B"])
+        service.run(arguments: ["B"], restartForDisplayChange: true)
         _ = try await waitForLogLines(4, at: log)
         try await waitUntil { service.state == .blackedOut }
         try service.sendControl(.restore)
@@ -968,7 +968,7 @@ final class ProtectionPreferencesTests: XCTestCase {
     }
 
     @MainActor
-    func testLatestConfigurationWinsWhileWatcherIsStopping() async throws {
+    func testForcedRestartAndLatestConfigurationWinWhileWatcherIsStopping() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("panelctl-service-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(
@@ -979,7 +979,8 @@ final class ProtectionPreferencesTests: XCTestCase {
         let log = directory.appendingPathComponent("launches.log")
         let script = """
         #!/bin/bash
-        printf '%s\\n' "$1" >> "$PANELCTL_TEST_LOG"
+        printf '%s:%s\\n' "$1" "${PANELCTL_REARM_ON_START:-0}" >> "$PANELCTL_TEST_LOG"
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         trap 'exit 0' TERM
         while true; do /bin/sleep 0.05; done
         """
@@ -999,15 +1000,19 @@ final class ProtectionPreferencesTests: XCTestCase {
         service.run(arguments: ["A"])
         _ = try await waitForLaunches(1, at: log)
 
+        service.run(arguments: ["A"], restartForDisplayChange: true)
+        let afterForcedRestart = try await waitForLaunches(2, at: log)
+        XCTAssertEqual(afterForcedRestart, ["A:0", "A:1"])
+
         service.run(arguments: ["B"])
         service.run(arguments: ["A"])
-        let afterConfigurationChange = try await waitForLaunches(2, at: log)
-        XCTAssertEqual(afterConfigurationChange, ["A", "A"])
+        let afterConfigurationChange = try await waitForLaunches(3, at: log)
+        XCTAssertEqual(afterConfigurationChange, ["A:0", "A:1", "A:0"])
 
         service.disable()
         service.run(arguments: ["A"])
-        let afterDisableAndEnable = try await waitForLaunches(3, at: log)
-        XCTAssertEqual(afterDisableAndEnable, ["A", "A", "A"])
+        let afterDisableAndEnable = try await waitForLaunches(4, at: log)
+        XCTAssertEqual(afterDisableAndEnable, ["A:0", "A:1", "A:0", "A:0"])
 
         let stopped = expectation(description: "watcher stopped")
         service.shutdown {
