@@ -167,21 +167,9 @@ public enum CLIParser {
 
         switch command {
         case "list":
-            var json = false
-            for option in rest {
-                guard option == "--json" else { throw CLIParseError.unknownOption(option) }
-                guard !json else { throw CLIParseError.duplicateOption("--json") }
-                json = true
-            }
-            return .list(json: json)
+            return try parseJSONFlagCommand(rest, builder: { .list(json: $0) })
         case "probe":
-            var json = false
-            for option in rest {
-                guard option == "--json" else { throw CLIParseError.unknownOption(option) }
-                guard !json else { throw CLIParseError.duplicateOption("--json") }
-                json = true
-            }
-            return .probe(json: json)
+            return try parseJSONFlagCommand(rest, builder: { .probe(json: $0) })
         case "blackout":
             return try parseBlackout(rest)
         case "ddc-luminance":
@@ -196,6 +184,19 @@ public enum CLIParser {
         default:
             throw CLIParseError.unknownCommand(command)
         }
+    }
+
+    private static func parseJSONFlagCommand(
+        _ args: [String],
+        builder: (Bool) -> PanelCommand
+    ) throws -> PanelCommand {
+        var json = false
+        for option in args {
+            guard option == "--json" else { throw CLIParseError.unknownOption(option) }
+            guard !json else { throw CLIParseError.duplicateOption("--json") }
+            json = true
+        }
+        return builder(json)
     }
 
     private static func parseApp(_ args: [String]) throws -> PanelCommand {
