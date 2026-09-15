@@ -29,12 +29,21 @@ final class SettingsWindowController: NSWindowController {
         let hostingView = NSHostingView(rootView: SettingsView(model: model))
         let window = SettingsWindow(
             contentRect: NSRect(x: 0, y: 0, width: 680, height: 590),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [
+                .titled,
+                .closable,
+                .miniaturizable,
+                .resizable,
+                .fullSizeContentView
+            ],
             backing: .buffered,
             defer: false
         )
         window.title = "PanelCtl Settings"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
         window.contentView = hostingView
+        window.autorecalculatesKeyViewLoop = true
         window.standardWindowButton(.zoomButton)?.isEnabled = false
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("PanelCtlSettingsWindow")

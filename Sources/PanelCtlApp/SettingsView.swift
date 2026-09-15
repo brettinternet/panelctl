@@ -26,7 +26,6 @@ private struct DropdownPicker<Value: Hashable>: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSPopUpButton {
         let button = NSPopUpButton()
-        button.controlSize = .small
         button.target = context.coordinator
         button.action = #selector(DropdownPickerTarget.selectionChanged(_:))
         button.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -58,28 +57,18 @@ struct SettingsView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let isCompact = geometry.size.width < 560
-
-            HStack(spacing: 0) {
-                VStack(spacing: 0) {
-                    List(selection: $selection) {
-                        ForEach(SettingsDestination.allCases, id: \.self) { destination in
-                            destinationLabel(destination)
-                                .padding(.vertical, 2)
-                                .tag(destination)
-                        }
+            NavigationSplitView {
+                List(selection: $selection) {
+                    ForEach(SettingsDestination.allCases, id: \.self) { destination in
+                        destinationLabel(destination)
+                            .tag(destination)
                     }
-                    .listStyle(.sidebar)
-                    .scrollContentBackground(.hidden)
-
-                    sidebarFooter
-                        .padding(12)
                 }
-                .frame(width: isCompact ? 120 : 180)
-
-                Divider()
+                .listStyle(.sidebar)
+                .navigationSplitViewColumnWidth(min: 150, ideal: 180, max: 220)
+            } detail: {
                 VStack(spacing: 0) {
-                    statusHeader(isCompact: isCompact)
+                    statusHeader(isCompact: geometry.size.width < 560)
                         .padding(.top, 16)
                         .padding(.horizontal, 16)
 
@@ -92,9 +81,8 @@ struct SettingsView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .navigationSplitViewStyle(.balanced)
         }
-        .controlSize(.small)
-        .font(.system(size: 13))
         .alert(item: $model.notice) { notice in
             if notice.opensLoginItemSettings {
                 return Alert(
@@ -139,61 +127,55 @@ struct SettingsView: View {
     }
 
     private func statusHeader(isCompact: Bool) -> some View {
-        HStack(spacing: 10) {
-            if isCompact {
-                Text("Enabled")
-                    .font(.system(size: 15, weight: .semibold))
-                Spacer()
-                Toggle(
-                    "",
-                    isOn: Binding(
-                        get: { model.preferences.isEnabled },
-                        set: model.setProtectionEnabled
+        GroupBox {
+            HStack(spacing: 10) {
+                if isCompact {
+                    Text("Enabled")
+                        .font(.headline)
+                    Spacer()
+                    Toggle(
+                        "",
+                        isOn: Binding(
+                            get: { model.preferences.isEnabled },
+                            set: model.setProtectionEnabled
+                        )
                     )
-                )
-                .labelsHidden()
-                .toggleStyle(.switch)
-            } else {
-                Image(systemName: model.statusSystemImage)
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundStyle(statusColor)
-                    .frame(width: 28)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("OLED Protection")
-                        .font(.system(size: 15, weight: .semibold))
-                    Text(model.statusSummary)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    if let message = model.validationMessage ?? model.runtimeState.errorMessage {
-                        Text(message)
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.orange)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .fixedSize(horizontal: false, vertical: true)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                } else {
+                    Image(systemName: model.statusSystemImage)
+                        .font(.title2.weight(.medium))
+                        .foregroundStyle(statusColor)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("OLED Protection")
+                            .font(.headline)
+                        Text(model.statusSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        if let message = model.validationMessage ?? model.runtimeState.errorMessage {
+                            Text(message)
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
-                }
-                Spacer()
-                Toggle(
-                    "Enabled",
-                    isOn: Binding(
-                        get: { model.preferences.isEnabled },
-                        set: model.setProtectionEnabled
+                    Spacer()
+                    Toggle(
+                        "Enabled",
+                        isOn: Binding(
+                            get: { model.preferences.isEnabled },
+                            set: model.setProtectionEnabled
+                        )
                     )
-                )
-                .toggleStyle(.switch)
+                    .toggleStyle(.switch)
+                }
             }
         }
-        .padding(11)
-        .background(
-            RoundedRectangle(cornerRadius: 9)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 9)
-                .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
-        )
     }
+
     private var automationSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Automation")
@@ -419,28 +401,9 @@ struct SettingsView: View {
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var sidebarFooter: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Button {
-                NSApp.terminate(nil)
-            } label: {
-                Text("Quit")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.vertical, 4)
-
-            Text(model.version)
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
-                .padding(.top, 8)
-            Link("View on GitHub", destination: AppModel.githubURL)
-                .font(.system(size: 11.5))
+                Divider()
+                LabeledContent("Version", value: model.version)
+                Link("View PanelCtl on GitHub", destination: AppModel.githubURL)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
