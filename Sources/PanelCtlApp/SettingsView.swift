@@ -57,18 +57,34 @@ struct SettingsView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            NavigationSplitView {
-                List(selection: $selection) {
-                    ForEach(SettingsDestination.allCases, id: \.self) { destination in
-                        destinationLabel(destination)
-                            .tag(destination)
-                    }
-                }
-                .listStyle(.sidebar)
-                .navigationSplitViewColumnWidth(min: 150, ideal: 180, max: 220)
-            } detail: {
+            let isCompact = geometry.size.width < 560
+
+            HStack(spacing: 0) {
                 VStack(spacing: 0) {
-                    statusHeader(isCompact: geometry.size.width < 560)
+                    List(selection: $selection) {
+                        ForEach(SettingsDestination.allCases, id: \.self) { destination in
+                            destinationLabel(destination)
+                                .padding(.vertical, 2)
+                                .tag(destination)
+                        }
+                    }
+                    .listStyle(.sidebar)
+                    .scrollContentBackground(.hidden)
+
+                    sidebarFooter
+                        .padding(12)
+                }
+                .frame(width: isCompact ? 140 : 180)
+                .background {
+                    Rectangle()
+                        .fill(.regularMaterial)
+                        .ignoresSafeArea()
+                }
+
+                Divider()
+
+                VStack(spacing: 0) {
+                    statusHeader(isCompact: isCompact)
                         .padding(.top, 16)
                         .padding(.horizontal, 16)
 
@@ -81,7 +97,6 @@ struct SettingsView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .navigationSplitViewStyle(.balanced)
         }
         .alert(item: $model.notice) { notice in
             if notice.opensLoginItemSettings {
@@ -401,9 +416,28 @@ struct SettingsView: View {
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Divider()
-                LabeledContent("Version", value: model.version)
-                Link("View PanelCtl on GitHub", destination: AppModel.githubURL)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var sidebarFooter: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Button {
+                NSApp.terminate(nil)
+            } label: {
+                Text("Quit")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 4)
+
+            Text(model.version)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.top, 8)
+            Link("View on GitHub", destination: AppModel.githubURL)
+                .font(.caption)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
