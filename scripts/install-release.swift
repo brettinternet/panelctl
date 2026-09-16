@@ -1,11 +1,13 @@
 #!/usr/bin/env swift
 
+import AppKit
 import Foundation
 
 enum InstallError: LocalizedError {
     case usage
     case invalidSource(String)
     case invalidDestination(String)
+    case destinationRunning(String)
 
     var errorDescription: String? {
         switch self {
@@ -15,7 +17,28 @@ enum InstallError: LocalizedError {
             return "source app bundle not found: \(path)"
         case .invalidDestination(let path):
             return "destination must be an absolute .app path: \(path)"
+        case .destinationRunning(let path):
+            return "app is still running after being asked to quit: \(path)"
         }
+    }
+}
+
+func terminateRunningApp(at destination: URL) throws {
+    guard let bundleIdentifier = Bundle(url: destination)?.bundleIdentifier else { return }
+    let runningApps = NSRunningApplication.runningApplications(
+        withBundleIdentifier: bundleIdentifier
+    ).filter { app in
+        app.bundleURL?.standardizedFileURL == destination
+    }
+    guard !runningApps.isEmpty else { return }
+
+    runningApps.forEach { $0.terminate() }
+    let deadline = Date().addingTimeInterval(5)
+    while runningApps.contains(where: { !$0.isTerminated }), Date() < deadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    }
+    guard runningApps.allSatisfy(\.isTerminated) else {
+        throw InstallError.destinationRunning(destination.path)
     }
 }
 
@@ -32,6 +55,10 @@ func install(sourcePath: String, destinationPath: String) throws {
     }
     guard destinationPath.hasPrefix("/"), destination.pathExtension == "app" else {
         throw InstallError.invalidDestination(destination.path)
+    }
+
+    if fileManager.fileExists(atPath: destination.path) {
+        try terminateRunningApp(at: destination)
     }
 
     let staging = destination
