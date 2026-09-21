@@ -250,26 +250,17 @@ public struct AppControlClient {
             if command == .toggle && error.requestBytesWritten {
                 throw AppControlError.transport(error.description)
             }
-            let startupDeadline = now().addingTimeInterval(max(0, deadline))
             if isAppRunning() {
-                while now() < startupDeadline {
-                    if Self.canConnect(to: socketPath) {
-                        do {
-                            return try send(
-                                command,
-                                durationSeconds: durationSeconds
-                            )
-                        } catch {
-                            throw AppControlError.transport(
-                                error.localizedDescription
-                            )
-                        }
-                    }
-                    sleep(Self.pollInterval)
+                guard waitForSocket(deadline: deadline) else {
+                    throw AppControlError.transport(
+                        "PanelCtl.app is running but its control endpoint is unavailable"
+                    )
                 }
-                throw AppControlError.transport(
-                    "PanelCtl.app is running but its control endpoint is unavailable"
-                )
+                do {
+                    return try send(command, durationSeconds: durationSeconds)
+                } catch {
+                    throw AppControlError.transport(error.localizedDescription)
+                }
             }
             do {
                 try launch()
@@ -278,17 +269,22 @@ public struct AppControlClient {
             } catch {
                 throw AppControlError.launchFailed(error.localizedDescription)
             }
-            let launchDeadline = now().addingTimeInterval(max(0, deadline))
-            while now() < launchDeadline {
-                if Self.canConnect(to: socketPath) { break }
-                sleep(Self.pollInterval)
-            }
+            _ = waitForSocket(deadline: deadline)
             do {
                 return try send(command, durationSeconds: durationSeconds)
             } catch {
                 throw AppControlError.transport(error.localizedDescription)
             }
         }
+    }
+
+    private func waitForSocket(deadline: TimeInterval) -> Bool {
+        let socketDeadline = now().addingTimeInterval(max(0, deadline))
+        while now() < socketDeadline {
+            if Self.canConnect(to: socketPath) { return true }
+            sleep(Self.pollInterval)
+        }
+        return false
     }
 
     private func send(
