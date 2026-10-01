@@ -24,11 +24,13 @@ tasks:
       - /bin/test ! -e "{{.APP_PATH}}" || /usr/bin/trash "{{.APP_PATH}}"
       - |
         version=$(/usr/bin/sed -n 's/.*public static let version = "panelctl \([^"]*\)".*/\1/p' Sources/PanelCtlCore/CLIHelp.swift)
+        arm64_bin=$(swift build --disable-sandbox --configuration release --triple arm64-apple-macosx13.0 --scratch-path "{{.ARM64_BUILD_DIR}}" --show-bin-path)
+        x86_64_bin=$(swift build --disable-sandbox --configuration release --triple x86_64-apple-macosx13.0 --scratch-path "{{.X86_64_BUILD_DIR}}" --show-bin-path)
         ./scripts/package-app.sh "v$version" \
-          "{{.ARM64_BUILD_DIR}}/arm64-apple-macosx/release/PanelCtlApp" \
-          "{{.X86_64_BUILD_DIR}}/x86_64-apple-macosx/release/PanelCtlApp" \
-          "{{.ARM64_BUILD_DIR}}/arm64-apple-macosx/release/panelctl" \
-          "{{.X86_64_BUILD_DIR}}/x86_64-apple-macosx/release/panelctl" \
+          "$arm64_bin/PanelCtlApp" \
+          "$x86_64_bin/PanelCtlApp" \
+          "$arm64_bin/panelctl" \
+          "$x86_64_bin/panelctl" \
           "{{.APP_PATH}}"
 
   copy:release:
