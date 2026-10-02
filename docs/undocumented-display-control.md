@@ -9,6 +9,9 @@ reconnection follows from that distinction. Recovery is the unresolved gate.
 
 This is an exploration, not a qualified implementation. No display-disable,
 link-control, power, or DDC commands were executed during this investigation.
+[Recovery tooling](display-recovery.md) now implements snapshot/journal handling,
+public-configuration restoration, a timed helper, and no-write crash rehearsals.
+Private reconnection and safe disable qualification remain future work.
 
 ## Read-only host evidence
 

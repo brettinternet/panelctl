@@ -16,6 +16,8 @@ struct RecoveryJournal: Codable {
     var state: RecoveryState
     var trigger: String?
     var failure: String?
+    // Diagnostics only; never used to signal or identify a process for recovery.
+    var watchdogPID: Int32?
 
     init(snapshot: RecoverySnapshot, verifyOnly: Bool = false, timeout: TimeInterval? = nil) {
         let now = Date()
@@ -62,6 +64,12 @@ struct RecoveryJournal: Codable {
 final class RecoveryStore {
     static let defaultURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         .appendingPathComponent("Library/Application Support/PanelCtl/Recovery/current.json")
+    // All CLI recovery writers/helpers also hold this lock, including those
+    // using custom journals. Other display applications cannot honor it.
+    static func operationLock() -> RecoveryStore {
+        RecoveryStore(url: defaultURL.deletingLastPathComponent().appendingPathComponent("operation"))
+    }
+
     let url: URL
     private var lockFD: Int32?
 
@@ -114,7 +122,15 @@ final class RecoveryStore {
             }
             let archive = url.deletingLastPathComponent().appendingPathComponent("recovery-\(previous.id.uuidString).json")
             // Preserve the previous evidence before replacing current.json.
-            try FileManager.default.copyItem(at: url, to: archive)
+            if FileManager.default.fileExists(atPath: archive.path) {
+                // A previous create may have archived successfully but failed
+                // to replace current.json. Permit only a byte-identical retry.
+                guard try Data(contentsOf: archive) == Data(contentsOf: url) else {
+                    throw RecoveryError.unsafe("conflicting recovery archive; preserve both files for inspection")
+                }
+            } else {
+                try FileManager.default.copyItem(at: url, to: archive)
+            }
         } else if errno != ENOENT {
             throw RecoveryError.unsafe("cannot inspect existing journal")
         }

@@ -31,18 +31,19 @@ public enum CLIHelp {
             return "Usage: panelctl probe [--json]\nProbe display capabilities."
         case "recovery":
             return """
-            Usage: panelctl recovery <capture|status|verify|restore|rehearse> [--journal <path>]
-            Usage: panelctl recovery rehearse [--timeout <1s...60s>] [--journal <path>]
+            Usage: panelctl recovery <capture|status|verify|restore|rehearse|guard> [--journal <path>]
+            Usage: panelctl recovery <rehearse|guard> [--timeout <1s...60s>] [--journal <path>]
 
             capture journals the current display identities, modes, rotation, origins,
-            mirroring, main display, and color-space name. status prints the journal;
+            mirroring, main display, and available color-space/ICC profile identity. status prints the journal;
             verify compares without display writes. restore explicitly restores public
             modes, origins, and mirroring for the same online displays, then verifies.
             Missing/ambiguous displays or changed rotation/color space require manual
             intervention. Private reconnection and HDR/profile restoration are NOT implemented.
 
             rehearse starts an independent, no-write verification helper (default 5s).
-            It checks on deadline or parent exit; it does not arm a real display experiment.
+            guard instead arms public-configuration restoration on deadline or parent
+            exit. Neither can reconnect a missing display or qualify a private experiment.
             Failed or unresolved journals are retained and block subsequent captures.
             Resolved journals are archived on the next capture. Output includes JSON.
             The default journal is ~/Library/Application Support/PanelCtl/Recovery/current.json.

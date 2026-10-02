@@ -53,7 +53,8 @@ final class DisplayRecoveryTests: XCTestCase {
         for (key, value): (String, Any) in [
             ("uuid", "00000000-0000-0000-0000-000000000002"), ("id", 8),
             ("vendor", 99), ("model", 99), ("serial", 99), ("builtin", true),
-            ("connector", "different"), ("rotation", 90), ("colorSpace", "different")
+            ("connector", "different"), ("rotation", 90), ("colorSpace", "different"),
+            ("colorProfileDigest", String(repeating: "a", count: 64))
         ] {
             XCTAssertThrowsError(try original.validateRestoration(to: changedDisplay(key, value)), key)
         }
@@ -119,6 +120,18 @@ final class DisplayRecoveryTests: XCTestCase {
         XCTAssertEqual(try store.load().id, next.id)
         let archive = directory.appendingPathComponent("recovery-\(journal.id.uuidString).json")
         XCTAssertEqual(try JSONDecoder().decode(RecoveryJournal.self, from: Data(contentsOf: archive)).id, journal.id)
+    }
+
+    func testArchiveCreationCanResumeAfterInterruptedReplacement() throws {
+        let store = store(); try store.lock()
+        var journal = RecoveryJournal(snapshot: try snapshot())
+        journal.state = .verified
+        try store.create(journal)
+        let archive = directory.appendingPathComponent("recovery-\(journal.id.uuidString).json")
+        try FileManager.default.copyItem(at: store.url, to: archive)
+        let next = RecoveryJournal(snapshot: try snapshot())
+        try store.create(next)
+        XCTAssertEqual(try store.load().id, next.id)
     }
 
     func testCorruptAndFutureJournalsAreNotOverwritten() throws {
@@ -226,6 +239,32 @@ final class DisplayRecoveryTests: XCTestCase {
         XCTAssertEqual(try store.load().state, .needsAttention)
     }
 
+    func testIdentityChangeAfterIntentPersistenceStillPreventsWriter() throws {
+        let store = store(); try store.lock()
+        let original = try snapshot()
+        var journal = RecoveryJournal(snapshot: original)
+        try store.create(journal)
+        let recycled = try changedDisplay("id", 99)
+        var samples = 0
+        let engine = RecoveryEngine(capture: {
+            samples += 1
+            return samples == 1 ? original : recycled
+        }, apply: { _ in XCTFail("identity changed before writer") })
+        XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test"))
+        XCTAssertEqual(try store.load().state, .needsAttention)
+    }
+
+    func testSuccessfulRehearsalNeverCallsWriter() throws {
+        let store = store(); try store.lock()
+        let original = try snapshot()
+        var journal = RecoveryJournal(snapshot: original, verifyOnly: true)
+        try store.create(journal)
+        let engine = RecoveryEngine(capture: { original }, apply: { _ in XCTFail("rehearsal wrote") })
+        try engine.finish(&journal, store: store, verifyOnly: true, trigger: "parent-exit")
+        XCTAssertEqual(try store.load().state, .verified)
+        XCTAssertEqual(try store.load().trigger, "parent-exit")
+    }
+
     func testPersistenceFailurePreventsWriter() throws {
         let store = store() // Deliberately no lock: journal save must fail.
         var journal = RecoveryJournal(snapshot: try snapshot())
@@ -235,7 +274,7 @@ final class DisplayRecoveryTests: XCTestCase {
     }
 
     func testRecoveryCLIValidation() throws {
-        for action in ["capture", "status", "verify", "restore", "rehearse"] {
+        for action in ["capture", "status", "verify", "restore", "rehearse", "guard"] {
             XCTAssertEqual(try CLIParser.parse(["recovery", action]),
                            .recovery(action: RecoveryAction(rawValue: action)!, timeout: nil, journalPath: nil))
         }
@@ -251,6 +290,8 @@ final class DisplayRecoveryTests: XCTestCase {
             ["recovery", "capture", "--journal", "a", "--journal", "b"],
             ["_recovery-helper", "--journal", "a", "--id", "not-a-uuid"]
         ] { XCTAssertThrowsError(try CLIParser.parse(args), args.joined(separator: " ")) }
+        XCTAssertEqual(try CLIParser.parse(["recovery", "guard", "--timeout", "15s"]),
+                       .recovery(action: .guard, timeout: 15, journalPath: nil))
         XCTAssertTrue(CLIHelp.text(for: "recovery").contains("no-write"))
     }
 }

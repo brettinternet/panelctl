@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 public enum RecoveryAction: String, Equatable {
-    case capture, status, verify, restore, rehearse
+    case capture, status, verify, restore, rehearse, `guard`
 }
 
 public enum DisplayRecovery {
@@ -12,18 +12,22 @@ public enum DisplayRecovery {
             try printJournal(store.load())
             return
         }
-        if action == .rehearse {
-            let session = try RecoveryWatchdog.start(store: store, executable: executable, timeout: timeout ?? 5)
-            print("Rehearsal armed; no display writes. Journal: \(store.url.path)")
+        if action == .rehearse || action == .guard {
+            let verifyOnly = action == .rehearse
+            let session = try RecoveryWatchdog.start(store: store, executable: executable, timeout: timeout ?? 5, verifyOnly: verifyOnly)
+            print("\(verifyOnly ? "Rehearsal armed; no display writes" : "Public-configuration recovery armed; private reconnection unavailable"). Journal: \(store.url.path)")
             fflush(stdout)
             session.wait()
             let journal = try store.load()
             try printJournal(journal)
-            guard journal.id == session.id, journal.state == .verified else {
+            guard journal.id == session.id, journal.state == (verifyOnly ? .verified : .restored) else {
                 throw RecoveryError.unsafe(journal.failure ?? "watchdog did not verify the snapshot")
             }
             return
         }
+        let operationLock = RecoveryStore.operationLock()
+        try operationLock.lock()
+        defer { operationLock.unlock() }
         try store.lock()
         defer { store.unlock() }
         if action == .capture {
@@ -68,9 +72,9 @@ public enum DisplayRecovery {
     }
 }
 
-/// The CLI exposes only a no-write rehearsal. A future control operation must
-/// not mutate anything until start() has returned (READY handshake). There is
-/// intentionally no arbitrary command hook and no private disable API here.
+/// A future control operation must not mutate anything until start() returns
+/// (READY handshake), and must add missing-display reconnection first. There
+/// is intentionally no arbitrary command hook and no private disable API here.
 final class RecoveryWatchdog {
     let id: UUID
     private let process: Process
@@ -88,22 +92,26 @@ final class RecoveryWatchdog {
 
     func wait() { process.waitUntilExit() }
 
-    static func start(store: RecoveryStore, executable: URL, timeout: TimeInterval) throws -> RecoveryWatchdog {
+    static func start(store: RecoveryStore, executable: URL, timeout: TimeInterval, verifyOnly: Bool) throws -> RecoveryWatchdog {
         guard timeout.isFinite, (1...60).contains(timeout) else {
-            throw RecoveryError.unsafe("rehearsal timeout must be 1–60 seconds")
+            throw RecoveryError.unsafe("watchdog timeout must be 1–60 seconds")
         }
+        let operationLock = RecoveryStore.operationLock()
+        try operationLock.lock()
+        defer { operationLock.unlock() }
         try store.lock()
         let journal: RecoveryJournal
         do {
             let snapshot = try RecoverySnapshot.capture()
             try snapshot.verify(.capture())
-            journal = RecoveryJournal(snapshot: snapshot, verifyOnly: true, timeout: timeout)
+            journal = RecoveryJournal(snapshot: snapshot, verifyOnly: verifyOnly, timeout: timeout)
             try store.create(journal)
         } catch {
             store.unlock()
             throw error
         }
         store.unlock()
+        operationLock.unlock()
         let input = Pipe(), output = Pipe()
         let process = Process()
         process.executableURL = executable
@@ -159,14 +167,18 @@ final class RecoveryWatchdog {
         }
         // Survive a parent closing the readiness pipe before startup completes.
         signal(SIGPIPE, SIG_IGN)
+        let operationLock = RecoveryStore.operationLock()
+        try operationLock.lock()
+        defer { operationLock.unlock() }
         try store.lock()
         defer { store.unlock() }
         var journal = try store.load()
         guard journal.id == id, journal.state == .captured,
-              journal.verifyOnly, let deadline = journal.deadline else {
+              let deadline = journal.deadline else {
             throw RecoveryError.unsafe("watchdog journal identity/state mismatch")
         }
         try journal.snapshot.verify(.capture())
+        _ = try RecoveryConfiguration.resolveModes(journal.snapshot)
         let remaining = deadline.timeIntervalSinceNow
         guard remaining > 0, remaining <= 60 else {
             throw RecoveryError.unsafe("watchdog deadline expired or invalid; no mutation allowed")
@@ -180,7 +192,7 @@ final class RecoveryWatchdog {
             guard !finished else { return }
             finished = true
             do {
-                try RecoveryEngine().finish(&journal, store: store, verifyOnly: true, trigger: trigger)
+                try RecoveryEngine().finish(&journal, store: store, verifyOnly: journal.verifyOnly, trigger: trigger)
             } catch { result = error }
             timer.cancel(); input.cancel()
             signals.forEach { $0.cancel() }
@@ -202,6 +214,7 @@ final class RecoveryWatchdog {
         }
         timer.resume(); input.resume()
         journal.state = .armed
+        journal.watchdogPID = getpid()
         try store.save(journal)
         let ready = Data("READY \(id.uuidString)\n".utf8)
         let written = ready.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress, $0.count) }

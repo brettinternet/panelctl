@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import CryptoKit
 import Darwin
 
 public enum RecoveryError: Error, CustomStringConvertible {
@@ -45,6 +46,7 @@ struct RecoveryDisplay: Codable, Equatable {
     let mirrorUUID: String?
     let mode: RecoveryMode
     let colorSpace: String?
+    let colorProfileDigest: String?
     let connector: String?
 }
 
@@ -90,14 +92,18 @@ struct RecoverySnapshot: Codable, Equatable {
                 throw RecoveryError.unsafe("display \(id) has an unknown mirror source")
             }
             let info = metadata?.info(id)?.takeRetainedValue() as? [String: Any]
+            let colorSpace = CGDisplayCopyColorSpace(id)
+            let profileDigest = (colorSpace.copyICCData() as Data?).map {
+                SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined()
+            }
             return RecoveryDisplay(
                 uuid: identities[id]!, id: id, vendor: CGDisplayVendorNumber(id),
                 model: CGDisplayModelNumber(id), serial: CGDisplaySerialNumber(id),
                 builtin: CGDisplayIsBuiltin(id) != 0, main: CGDisplayIsMain(id) != 0,
                 active: CGDisplayIsActive(id) != 0, x: x, y: y,
                 rotation: CGDisplayRotation(id), mirrorUUID: identities[mirrored],
-                mode: RecoveryMode(mode), colorSpace: CGDisplayCopyColorSpace(id).name as String?,
-                connector: info?["IODisplayLocation"] as? String
+                mode: RecoveryMode(mode), colorSpace: colorSpace.name as String?,
+                colorProfileDigest: profileDigest, connector: info?["IODisplayLocation"] as? String
             )
         }
         return Self(bootSession: try systemString("kern.bootsessionuuid"),
@@ -123,7 +129,8 @@ struct RecoverySnapshot: Codable, Equatable {
                   original.builtin == now.builtin, original.connector == now.connector else {
                 throw RecoveryError.unsafe("identity or connector changed for \(original.uuid); refusing to guess")
             }
-            guard original.rotation == now.rotation, original.colorSpace == now.colorSpace else {
+            guard original.rotation == now.rotation, original.colorSpace == now.colorSpace,
+                  original.colorProfileDigest == now.colorProfileDigest else {
                 throw RecoveryError.unsafe("rotation or color space changed for \(original.uuid); restore it manually first")
             }
         }
@@ -161,27 +168,28 @@ enum RecoveryConfiguration {
         try snapshot.validateRestoration(to: before)
         // Resolve every mode before starting the transaction. No approximate
         // resolution/refresh-rate fallback, even if macOS offers one.
-        let modes = try snapshot.displays.map { display -> CGDisplayMode in
-            let options = [kCGDisplayShowDuplicateLowResolutionModes as String: true] as CFDictionary
-            let available = CGDisplayCopyAllDisplayModes(display.id, options) as? [CGDisplayMode] ?? []
-            guard let mode = available.first(where: { RecoveryMode($0) == display.mode }) else {
-                throw RecoveryError.unsafe("original mode unavailable for \(display.uuid)")
-            }
-            return mode
-        }
+        let modes = try resolveModes(snapshot)
         var config: CGDisplayConfigRef?
         try checked(CGBeginDisplayConfiguration(&config), "begin configuration")
         guard let config else { throw RecoveryError.unsafe("missing configuration transaction") }
         var completed = false
         defer { if !completed { CGCancelDisplayConfiguration(config) } }
-        for display in snapshot.displays {
+        let current = Dictionary(uniqueKeysWithValues: before.displays.map { ($0.uuid, $0) })
+        for display in snapshot.displays where current[display.uuid]!.mirrorUUID != display.mirrorUUID {
             try checked(CGConfigureDisplayMirrorOfDisplay(config, display.id, kCGNullDirectDisplay), "clear mirror")
         }
-        for (display, mode) in zip(snapshot.displays, modes) {
+        for (display, mode) in zip(snapshot.displays, modes) where current[display.uuid]!.mode != display.mode {
             try checked(CGConfigureDisplayWithDisplayMode(config, display.id, mode, nil), "restore mode")
-            try checked(CGConfigureDisplayOrigin(config, display.id, display.x, display.y), "restore origin")
         }
-        for display in snapshot.displays {
+        // Avoid resetting unchanged modes/mirror groups, and restore the main
+        // display's origin last (CoreGraphics uses origin 0,0 to select it).
+        for display in snapshot.displays.sorted(by: { !$0.main && $1.main }) {
+            let now = current[display.uuid]!
+            if display.x != now.x || display.y != now.y || display.main != now.main {
+                try checked(CGConfigureDisplayOrigin(config, display.id, display.x, display.y), "restore origin")
+            }
+        }
+        for display in snapshot.displays where current[display.uuid]!.mirrorUUID != display.mirrorUUID {
             if let mirror = display.mirrorUUID {
                 guard let source = snapshot.displays.first(where: { $0.uuid == mirror }) else {
                     throw RecoveryError.unsafe("invalid mirror identity")
@@ -195,6 +203,19 @@ enum RecoveryConfiguration {
         let result = CGCompleteDisplayConfiguration(config, .forSession)
         completed = true
         try checked(result, "commit configuration")
+    }
+
+    /// Read-only recoverability preflight, also exercised by rehearsal before
+    /// READY. This establishes mode availability, not successful restoration.
+    static func resolveModes(_ snapshot: RecoverySnapshot) throws -> [CGDisplayMode] {
+        try snapshot.displays.map { display in
+            let options = [kCGDisplayShowDuplicateLowResolutionModes as String: true] as CFDictionary
+            let available = CGDisplayCopyAllDisplayModes(display.id, options) as? [CGDisplayMode] ?? []
+            guard let mode = available.first(where: { RecoveryMode($0) == display.mode }) else {
+                throw RecoveryError.unsafe("original mode unavailable for \(display.uuid)")
+            }
+            return mode
+        }
     }
 }
 
@@ -213,6 +234,7 @@ struct RecoveryEngine {
                 journal.state = .restoring
                 try store.save(journal)
                 let current = try capture()
+                try journal.snapshot.validateRestoration(to: current)
                 if (try? journal.snapshot.verify(current)) == nil {
                     try apply(journal.snapshot)
                 }

@@ -139,7 +139,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
         case .invalidLuminance: return "luminance must be an integer from 0 through 65535"
         case .missingAppCommand: return "missing app command (use 'panelctl help app' for usage)"
         case .missingRecoveryAction: return "missing recovery action (use 'panelctl help recovery' for usage)"
-        case .invalidRecoveryTimeout: return "recovery rehearsal timeout must be from 1 through 60 seconds"
+        case .invalidRecoveryTimeout: return "recovery watchdog timeout must be from 1 through 60 seconds"
         case .snoozeDurationTooLong: return "snooze duration must not exceed 30 days"
         }
     }
@@ -209,7 +209,7 @@ public enum CLIParser {
         while i < args.count {
             switch args[i] {
             case "--timeout":
-                guard action == .rehearse else { throw CLIParseError.unknownOption(args[i]) }
+                guard action == .rehearse || action == .guard else { throw CLIParseError.unknownOption(args[i]) }
                 guard timeout == nil else { throw CLIParseError.duplicateOption(args[i]) }
                 timeout = try duration(option: "--timeout", args: args, index: &i)
                 guard (1...60).contains(timeout!) else { throw CLIParseError.invalidRecoveryTimeout }
