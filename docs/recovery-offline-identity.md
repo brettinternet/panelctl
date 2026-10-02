@@ -49,6 +49,14 @@ is a CG ID. Four registered DCPAVServiceProxy objects expose external location
 and Unit 0 but no direct per-monitor identity in their property dictionaries.
 No user client or IOAV/DDC/link-control operation was opened or called.
 
+Independent service paths correlate Dell's `dispext3` shim with a proxy path
+under `dcpext3@6E00000/.../dispext3:dcpav-service-epic:0/DCPAVServiceProxy`
+(entry `4294977726`). The shim and proxy are on different registry branches;
+matching path tokens are controller correlation, not an independently established
+physical-sink → offline-CG-ID binding. The proxy's complete property-key list
+contains no CG ID, CG UUID, product identity, or EDID. No AppleCLCD2 services
+were found. These are observations of this host, not universal driver contracts.
+
 ## What lifetime evidence actually establishes
 
 The installed SDK's `IOKitLib.h` documents:
@@ -98,6 +106,49 @@ would need to capture it before disappearance and revalidate through the existin
 locked, durable one-shot/watchdog path. Do not backfill journals or add another
 writer/lock mechanism. The existing injection-only identity tests check policy
 against asserted inventories, not whether real driver metadata is trustworthy.
+
+## Diagnostic and checks
+
+`scripts/inspect-recovery-identity.swift` now additionally records independent,
+bounded class inventories (at most 32 entries each), registry paths/entry IDs,
+API statuses, service-plane membership, busy state, selected driver properties,
+and same-object path relookup. It records public online enumeration and
+boot/build before and after collection, plus active/main/built-in/origin fields.
+It saves `report.json` in a fresh 0700 `panelctl-identity-inspection-*` OS temp
+directory, mode 0600, and still prints JSON to stdout (artifact path to stderr).
+No existing evidence or recovery journal is replaced.
+
+`complete` means the **class iterator** exhausted while valid, not that every
+property/API succeeded, every physical display was found, or any offline
+binding was validated. Per-entry return codes must be inspected. No lifetime
+notifications were collected; same-object relookup is only a within-sample
+observation. The collector is non-atomic and cannot rule out changes between
+reads, or prove absence of events between separate runs. Failure/partial output
+must not be treated as equality or qualification.
+
+Two retained reports matched after sorting enumerations and excluding capture
+time; boot/build, all reported CG rows and all selected registry evidence were
+unchanged. Dell was active, external, non-main at `(3440,-4)` in both. Direct
+assertions checked JSON output equals the saved artifact, 0700/0600 permissions,
+all class iterators complete, successful per-entry APIs, all path relookups equal,
+CG/shim product/path correlation, and the unidentified offline entry. Reports:
+
+- `/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-identity-inspection-C35A3441-5F0A-47D2-BD2F-9CD002C6272E/report.json`
+- `/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-identity-inspection-BAD65F6B-00A9-4131-A892-E61679DF3136/report.json`
+
+Validation: `swiftc -typecheck scripts/inspect-recovery-identity.swift` passed;
+the diagnostic ran successfully twice. Full `swift test`: 177 tests, 175 passed,
+2 skipped (explicit live origin trial and optional retained ICC replay), zero
+failures. All trial variables and `PANELCTL_ICC_EVIDENCE_DIR` were explicitly
+unset. Release `panelctl` build passed. LSP reported unknown, not clean. No new
+provider policy or synthetic qualification tests were added: existing rejection,
+one-shot/no-replay, and no-write tests were rerun unchanged. This small diagnostic
+delta was checked directly; no new subagent review is claimed.
+
+The original receipt and journals remain unchanged. No recovery helper remains
+running. The adopted worktree is retained for further explicitly scoped work;
+no additional worktree/workspace was created. No display configuration, private
+enable/disable, power, firmware, link, or permanent-preference write occurred.
 
 ## Exact missing evidence / stop boundary
 

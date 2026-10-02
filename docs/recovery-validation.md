@@ -1,5 +1,21 @@
 # Recovery validation checkpoint
 
+## Read-only offline identity checkpoint
+
+- [Service-lifetime research](recovery-offline-identity.md) confirms registered,
+  active framebuffer objects are insufficient physical identity evidence. The
+  unidentified offline ID 4 has one too. Private re-enable remains blocked.
+- Diagnostic now retains independent bounded registry inventories, context,
+  API statuses and same-object path relookup in private artifacts. Two read-only
+  reports matched; Dell remained active/non-main/external at `(3440,-4)`.
+- Script typecheck and direct JSON/permissions/correlation assertions passed.
+  Full suite: 177 tests, 175 passed, 2 skipped (live origin and optional ICC
+  replay), zero failures, with trial/replay variables explicitly unset. Release
+  build passed. LSP unknown. No production recovery code or tests changed.
+- No display writes or manufactured disconnect, no helper left running, no
+  journal edits. Exact missing transition/freshness evidence and rejection rules
+  are documented; further live experimentation needs separate approval.
+
 ## ICC follow-up checkpoint
 
 - Read-only reconstruction proved the failed trial's two ICC hash changes are
