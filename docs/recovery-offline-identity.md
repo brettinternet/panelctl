@@ -7,6 +7,20 @@ live monitor identity. No production provider, journal migration, or display
 write is justified by the current evidence. DELL S2721DGF has not been observed
 offline during this investigation; no disconnected state was manufactured.
 
+## Connector-binding follow-up (2026-10-02)
+
+[SDK and pinned implementation research](recovery-connector-binding.md) found no
+qualified independent fresh offline binding. Public IODisplay info copies
+registry metadata; MonitorControl uses the same private CoreDisplay location
+mapping. The public UUID conversion lives in ColorSync, without a freshness
+contract. A synthetic-only fixture confirmed IODisplay dictionary matching can
+succeed with serial and location absent; it must not replace strict policy.
+
+Ten additional offline collector failure tests pass. No new passive recording,
+disconnect or display-configuration operation ran. Full-suite live-window
+geometry failure is retained separately from passing focused observer/recovery
+checks; see the linked validation record. Production enable remains blocked.
+
 ## Passive observer checkpoint (2026-10-02)
 
 The [bounded read-only observer](recovery-identity-observer.md) completed one

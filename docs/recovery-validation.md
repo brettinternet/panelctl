@@ -1,5 +1,21 @@
 # Recovery validation checkpoint
 
+## Connector-binding and offline failure-test follow-up
+
+- [Source research and evidence](recovery-connector-binding.md): no qualified
+  fresh, independent offline connector-to-CG-ID contract found. Synthetic
+  dictionary-only matching fixture confirmed absent serial/location can match.
+- `d5a8323`: ten additional offline collector tests; all 23 observer tests pass.
+  Focused recovery/identity/ICC suite: 60 passed, two intentional skips, zero
+  failures; release panelctl/observer builds pass. LSP unknown.
+- Full suite ran 200 tests but is **not green**: two bounds assertions failed in
+  the existing connected-screen window-placement test. Cause unestablished;
+  test not retried or modified. Details/logs in the research record. Do not
+  describe this follow-up as a full-suite pass.
+- No further observer recording, display configuration writer, guard/restore,
+  origin trial, device-client/DDC transaction or disconnect experiment. The full
+  suite's existing window-placement test created temporary test windows.
+
 ## Bounded observer checkpoint
 
 - [Read-only lifetime observer](recovery-identity-observer.md) implemented with
