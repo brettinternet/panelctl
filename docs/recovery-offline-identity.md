@@ -167,3 +167,8 @@ disconnect. This continuation stops at that boundary; it does not request or
 execute a trial. Any future experiment needs a separate exact scope, physical
 fallback plan, fresh baseline, and explicit approval. Origin correction also
 remains separately gated; `(3440,-20)` has not been restored.
+
+A subsequent [draft investigation plan](recovery-identity-investigation-plan.md)
+proposes a passive control and one separately approved physical negative control.
+It is not execution approval, and cannot qualify a physically attached but
+logically offline Dell or any private enable call.
