@@ -16,11 +16,13 @@ Target: DELL S2721DGF, historical CG UUID
 not authorization. The latest observed origin is `(3440,-4)`; no correction to
 `(3440,-20)` is included.
 
-**Only drafting this plan is currently approved.** Do not implement or invoke
+**Observer implementation/tests and one passive stage A control are now approved.**
+See the [bounded observer](recovery-identity-observer.md). Stage B physical
+unplug/replug remains unapproved. Do not implement or invoke
 display disabling, private enable, DDC, IOAV/user-client/link control, power/input
 changes, permanent configuration, preference deletion, WindowServer termination,
-or reboot. No experiment, observer implementation, or display write is performed
-by this document. Production re-enable remains blocked throughout.
+or reboot. This document never authorizes a display write or physical-disconnect
+experiment. Production re-enable remains blocked throughout.
 
 ## Questions and required evidence
 

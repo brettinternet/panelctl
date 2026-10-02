@@ -6,10 +6,12 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [
         .executable(name: "panelctl", targets: ["panelctl"]),
+        .executable(name: "observe-recovery-identity", targets: ["IdentityObserver"]),
         .executable(name: "PanelCtlApp", targets: ["PanelCtlApp"])
     ],
     targets: [
         .target(name: "PanelCtlCore"),
+        .executableTarget(name: "IdentityObserver", dependencies: ["PanelCtlCore"]),
         .executableTarget(name: "panelctl", dependencies: ["PanelCtlCore"]),
         .executableTarget(name: "PanelCtlApp", dependencies: ["PanelCtlCore"]),
         .testTarget(name: "PanelCtlCoreTests", dependencies: ["PanelCtlCore"]),
