@@ -1,5 +1,22 @@
 # Recovery validation checkpoint
 
+## Bounded observer checkpoint
+
+- [Read-only lifetime observer](recovery-identity-observer.md) implemented with
+  existing recovery operation lock and fresh verify-only baseline journal.
+- 13 focused offline tests pass, including queue/output bounds, readiness,
+  failed callback removal, summary publication failure and service-read errors.
+  Independent review found four issues; fixes passed follow-up review.
+- At `001846a`, full suite: 190 tests, 188 passed, two intentionally skipped,
+  zero failures. Trial/replay variables unset. Both release builds pass; LSP
+  unknown. No recovery guard/restore or origin trial ran.
+- One 60.012-second passive control passed, with 37 records, six valid initial
+  iterator drains, nine initial services and no subsequent callbacks received.
+  Two inventories and before/after snapshots matched exactly, including raw ICC
+  hashes. Artifact permissions and lock release independently verified.
+- No disconnect/state change; no private enable qualification. See the observer
+  record for private artifact paths, context and interpretation limits.
+
 ## Read-only offline identity checkpoint
 
 - [Service-lifetime research](recovery-offline-identity.md) confirms registered,

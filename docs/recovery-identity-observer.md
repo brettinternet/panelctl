@@ -82,7 +82,7 @@ console context, failed/successful callback removal, terminal sync/close failure
 service-read errors and pre-readiness queue overflow. A NaN fixture initially
 exposed an Objective-C JSON exception; validating JSON before serialization
 fixed it. Fresh independent review identified the latter four failure paths;
-fixes and direct regression tests are under follow-up review.
+fixes and direct regression tests passed follow-up review (`6c2fb1d9`).
 
 Preflight found no `kCGSSessionIDKey` and `proc_pidinfo` denied WindowServer with
 EPERM. The observer now requires the actual console session UUID plus audit ID
@@ -92,7 +92,52 @@ origin `(3440,-4)`, OS/build/boot and five/four/zero service counts still match.
 The existing operation lock was free; no recovery helper was running. Unrelated
 blackout process remains untouched.
 
-The full suite and release builds passed before these review fixes. Updated
-full validation and the single passive control remain pending. LSP returned
-unknown, not clean. No lifetime observation or display-state change has yet
-been run with this implementation.
+At `001846a`, full suite: 190 tests, 188 passed, two intentionally skipped
+(live origin trial and optional retained ICC replay), zero failures. All trial
+and ICC-replay variables were explicitly unset. Release builds of `panelctl`
+and `observe-recovery-identity` passed. LSP returned unknown, not clean.
+Test log: `/tmp/panelctl-observer-001846a-tests.log`. Synthetic test evidence is
+retained in OS temporary `panelctl-observer-tests-*` directories.
+
+## Single passive control — completed 2026-10-02
+
+Ran the release executable at `001846a` once after preflight and review. No
+physical action, state change, guard/restore, origin trial, or private enable
+was performed. Recording completed with no reported failure:
+
+- 60.011999125 seconds from readiness receipt to end receipt, 37 records,
+  57,892 event-stream bytes, no application overflow or collector restart.
+- Seven successful primary registrations (CG plus six IOKit iterators), nine
+  successful general-interest registrations, six valid initial drains before
+  readiness. Nine initial services: five shims and four proxies; no AppleCLCD2.
+- **Zero subsequent publication/termination/general-interest or CG callbacks
+  received.** This does not prove no events occurred or complete delivery.
+- Two matching bounded inventories: public IDs `1,2,3,5`; private IDs
+  `1,2,3,4,5`. Unknown offline ID 4 was not filtered or treated as a monitor.
+  All nine retained service property/path/entry-ID records matched.
+- Dell stayed ID 1, active/non-main/external at `(3440,-4)`, with the expected
+  CG UUID, vendor/model/serial and shim entry `4294970171`. No origin correction.
+- Boot/build/user, console UUID/audit ID and WindowServer lifetime matched at
+  inventory boundaries. WindowServer PID 475, start `(1790881673,730621)`;
+  boot `9D95EE40-D277-457A-8A81-A2BCBB7F1CF5`, build `26A434`.
+- Fresh baseline and after snapshots were exactly equal, including raw ICC
+  hashes. All four retained raw ICC files independently hashed to baseline.
+- Independent JSON/sequence/bounds/permissions checks passed: directory 0700,
+  all files 0600. CG removal returned success. Operation lock independently
+  reacquired/released afterward; no helper/observer remained. Existing blackout
+  PID 60480 was left untouched. No visible-output or window-placement claim.
+
+Private artifacts:
+
+- Recording, baseline, raw ICCs, after snapshot, and completion summary:
+  `/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-identity-observation-72615DA4-A28B-40AE-99A4-E6655B86796D/`
+- Preflight and independent artifact-validation record:
+  `/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-observer-preflight.XmXuIgfdUy/`
+- Preflight identity diagnostic:
+  `/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-identity-inspection-06B410D2-206D-429C-B0E7-62516961D5AC/report.json`
+
+**Disposition:** passive startup/recording/cleanup control passed. No disconnect
+transition, physical monitor lifetime or logically-offline hardware-to-CG-ID
+binding was tested. Private re-enable remains blocked. Stage B is not approved
+and must not follow automatically. Retain the existing checkout and all old
+journals unchanged; no push, PR or merge.

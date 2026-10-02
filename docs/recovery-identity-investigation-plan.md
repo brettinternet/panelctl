@@ -85,8 +85,10 @@ journal/locking infrastructure without promising restoration on parent death.
 
 ## Proposed sequence — separately approve each stage
 
-**A. No-disruption control:** after observer implementation and offline tests,
-run one 60-second passive recording with the Dell online and no requested
+**A. No-disruption control — completed once:** see the
+[observer result and limits](recovery-identity-observer.md#single-passive-control--completed-2026-10-02).
+No permission to repeat or proceed to B follows from this result. Original
+sequence: after observer implementation and offline tests, run one 60-second passive recording with the Dell online and no requested
 hardware action. Check artifacts, API failures, event initialization, bounded
 termination, and clean lock release. This is not evidence of complete hotplug
 event delivery. Retain the run; review it before requesting stage B approval.

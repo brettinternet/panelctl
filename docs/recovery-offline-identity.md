@@ -7,6 +7,19 @@ live monitor identity. No production provider, journal migration, or display
 write is justified by the current evidence. DELL S2721DGF has not been observed
 offline during this investigation; no disconnected state was manufactured.
 
+## Passive observer checkpoint (2026-10-02)
+
+The [bounded read-only observer](recovery-identity-observer.md) completed one
+60-second passive control at `001846a`. Initial notification iterators drained
+before recording readiness; nine service interests were registered. No subsequent
+IOKit/CG callbacks were received. Two inventories and all recovery snapshot/ICC
+fields matched; unknown offline ID 4 remained present. Cleanup and private
+artifact permissions passed independent checks. No display state changed.
+
+This qualifies the passive recording path only, not event-delivery completeness,
+physical monitor lifetime, or logically-offline identity. Physical disconnect
+has not been tested or approved. Private re-enable remains blocked.
+
 ## Continuation checkpoint (2026-10-02)
 
 Reused `.worktrees/recovery-enable`, branch `recovery-enable`, clean at
@@ -120,8 +133,8 @@ No existing evidence or recovery journal is replaced.
 
 `complete` means the **class iterator** exhausted while valid, not that every
 property/API succeeded, every physical display was found, or any offline
-binding was validated. Per-entry return codes must be inspected. No lifetime
-notifications were collected; same-object relookup is only a within-sample
+binding was validated. Per-entry return codes must be inspected. These snapshot
+reports did not collect lifetime notifications; same-object relookup is only a within-sample
 observation. The collector is non-atomic and cannot rule out changes between
 reads, or prove absence of events between separate runs. Failure/partial output
 must not be treated as equality or qualification.
@@ -168,7 +181,7 @@ execute a trial. Any future experiment needs a separate exact scope, physical
 fallback plan, fresh baseline, and explicit approval. Origin correction also
 remains separately gated; `(3440,-20)` has not been restored.
 
-A subsequent [draft investigation plan](recovery-identity-investigation-plan.md)
-proposes a passive control and one separately approved physical negative control.
-It is not execution approval, and cannot qualify a physically attached but
-logically offline Dell or any private enable call.
+The [investigation plan](recovery-identity-investigation-plan.md) separates the
+now-completed passive control from a still-unapproved physical negative control.
+It is not physical-disconnect approval, and cannot qualify a physically attached
+but logically offline Dell or any private enable call.
