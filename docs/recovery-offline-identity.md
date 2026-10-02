@@ -1,0 +1,118 @@
+# Offline identity: read-only lifetime investigation
+
+## Decision
+
+**Private re-enable remains blocked.** A live IORegistry object is not proof of
+live monitor identity. No production provider, journal migration, or display
+write is justified by the current evidence. DELL S2721DGF has not been observed
+offline during this investigation; no disconnected state was manufactured.
+
+## Continuation checkpoint (2026-10-02)
+
+Reused `.worktrees/recovery-enable`, branch `recovery-enable`, clean at
+`01880c5`; main remains `e12b2b7`. The Git-local `agent-creation.json` matches
+this checkout, branch, creation commit, and prior session
+`01a0fd62-0feb-7628-91a8-71b3c2f09949`. Its transcript ends in the matching
+completed handoff at 18:02:24Z. The same Pi process is now running successor
+session `01a0fdc9-2526-7628-91a8-71d1e20bf4fc`, not concurrent prior work.
+Both prior delegated runs have terminal exit-code-zero metadata; process
+inspection found no subagent or recovery helper. Existing PanelCtl app/blackout
+processes were left untouched. The original receipt was not overwritten.
+A receipt copy and adoption evidence are retained privately in
+`/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-identity-lifetime.TuDhtEXMRC/continuation.json`.
+
+Rechecked macOS 27.0.1, build `26A434`, boot session
+`9D95EE40-D277-457A-8A81-A2BCBB7F1CF5`. Read-only enumeration again returned
+private IDs `5,1,2,3,4`; IDs `5,1,2,3` report online. Dell ID `1` still has UUID
+`09084682-3c42-4455-aab8-126a7431125b`, vendor/model/serial
+`4268/16857/1094800204`, shim entry ID `4294970171`, product name
+`DELL S2721DGF`, and `DisplayAttributes.PortID=32`. Connector:
+
+```text
+IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext3@4000000/IOMobileFramebufferShim
+```
+
+Independent `ioreg -a -l -r -c IOMobileFramebufferShim` enumeration found five
+shims. Both Dell's shim and the unidentified offline ID `4`'s shim
+(entry `4294970215`, `disp0@88000000`) report `IOServiceState=30`, busy state
+zero, `IOMatchedAtBoot=true`, and `external=true`. `ioreg` describes state 30
+as registered, matched, active. The offline entry lacks `IOMFBUUID` and
+`DisplayAttributes`; CG still returns no UUID and zero vendor/model/serial.
+Thus a registered/active external shim is **not sufficient hardware evidence**.
+This does not prove that ID 4 was ever a connected monitor.
+
+`NormalModeActive` is true on the four online shims and false on the offline
+shim. `NormalModeEnable` is false on **all five**, including the working Dell.
+These observations do not establish an offline identity or a documented link
+state contract. DCPIndex is 4 on Dell and 0 on the offline shim; neither index
+is a CG ID. Four registered DCPAVServiceProxy objects expose external location
+and Unit 0 but no direct per-monitor identity in their property dictionaries.
+No user client or IOAV/DDC/link-control operation was opened or called.
+
+## What lifetime evidence actually establishes
+
+The installed SDK's `IOKitLib.h` documents:
+
+- `IOObjectIsEqualTo`: same kernel object, not same physical monitor.
+- `IOServiceGetMatchingServices`: registered service objects.
+- `IOServiceGetBusyState`: asynchronous registration/matching/termination work,
+  not physical connectivity or current EDID acquisition.
+- `IOServiceAddMatchingNotification`: publication/matching/termination of service
+  instances; notifications only arm after draining the returned iterator.
+- `IOServiceAddInterestNotification`: messages sent by the service. There is no
+  generic promise that replacing a monitor behind a persistent framebuffer
+  terminates that service or emits a particular identity-invalidating message.
+
+Apple's [IORegistryEntry.cpp at f6217f8](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/iokit/Kernel/IORegistryEntry.cpp)
+was inspected using `gh api`: `attachToParent` assigns an entry ID when absent,
+`getRegistryEntryID` returns the object's stored ID, and `getProperty` reads its
+property table. Properties can change without creating a new object. This is
+generic implementation evidence, **not** the source of this host's private
+framebuffer/DCP drivers or proof of their disconnect behavior.
+
+A fresh registry property read is a fresh read of driver-published metadata,
+not necessarily a fresh hardware read. Multiple APIs repeating the same value
+may share its original producer/cache. A retained service handle, stable entry
+ID/path, repeated matching product data, EDID hash, or absent termination event
+alone cannot prove that the same physical sink remains attached. The shim's
+`IOMFBUUID`/`EDID UUID` remains distinct from the CG UUID; do not translate one
+into the other by assumption.
+
+## Required rejection rules (not a qualified provider)
+
+Retain the existing strict inventory/context checks. Additional lifetime
+observations may reject a candidate; they must not turn unknown into approved.
+
+| Observation | Required disposition |
+| --- | --- |
+| Same CG ID, different/missing UUID or vendor/model/serial | Reject ID reuse or unknown identity; never search nearby IDs. |
+| Duplicate identities, multiple candidate connectors/services, truncated/invalid enumeration, extra unknown ID | Reject ambiguity/incomplete inventory; do not filter the ghost to make it pass. |
+| Same path but changed registry entry ID, or lost/terminated/replaced service | Invalidate old binding. A new object is not a continuation token. |
+| Same object/path but changed product, EDID, port, ancestry, adapter, or connector | Reject hardware/connection change; persistent objects do not override it. |
+| Unchanged cached metadata without independent offline physical-sink/CG-ID evidence | Reject as unqualified, not a successful match. |
+| Changed boot, OS build, console user/session, or WindowServer lifetime | Invalidate prior qualification. Existing boot/build/user checks are necessary, not a substitute for tracking a display-server lifetime. |
+| Read failure, notification gap, collector restart, or observed race/mismatch | Stop, retain evidence, no retry writes or weaker fallback. |
+
+Current journals have no qualified service-lifetime evidence. A future provider
+would need to capture it before disappearance and revalidate through the existing
+locked, durable one-shot/watchdog path. Do not backfill journals or add another
+writer/lock mechanism. The existing injection-only identity tests check policy
+against asserted inventories, not whether real driver metadata is trustworthy.
+
+## Exact missing evidence / stop boundary
+
+Not established: (1) whether the same Dell remains physically attached while CG
+marks it offline; (2) which hardware-derived sink/connector observation remains
+fresh then; (3) how that observation binds uniquely to the offline CG ID without
+WindowServer's cached mapping; (4) whether sink replacement/replug/ID reuse
+invalidates the binding even when the shim persists; (5) whether relevant events
+are complete and ordered around the CG transition and a prospective enable.
+
+An online-only observation cannot answer these transition questions. Observing
+a separately approved disconnect transition would be necessary for further host
+qualification, but **would not by itself be sufficient** to prove freshness or
+all invalidation cases. A physical unplug also need not model a private soft
+disconnect. This continuation stops at that boundary; it does not request or
+execute a trial. Any future experiment needs a separate exact scope, physical
+fallback plan, fresh baseline, and explicit approval. Origin correction also
+remains separately gated; `(3440,-20)` has not been restored.

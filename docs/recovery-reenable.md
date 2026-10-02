@@ -91,6 +91,10 @@ validated offline, and rejected across boot/OS/hardware/connector changes. The
 current journal does not capture that evidence. No numeric-ID or cached-metadata
 fallback is acceptable. Existing journals do not authorize private enable.
 
+See the [read-only service-lifetime follow-up](recovery-offline-identity.md) for
+current evidence, rejection rules, and the exact remaining disconnect boundary.
+Registered/active service objects do not establish an offline physical identity.
+
 ## Injected lifecycle and tests
 
 The injected backend requires exactly one missing active, non-main external
