@@ -92,7 +92,12 @@ final class RecoveryWatchdog {
 
     func wait() { process.waitUntilExit() }
 
-    static func start(store: RecoveryStore, executable: URL, timeout: TimeInterval, verifyOnly: Bool) throws -> RecoveryWatchdog {
+    func requestOriginTrial() throws {
+        try lease.write(contentsOf: Data([0x54]))
+    }
+
+    static func start(store: RecoveryStore, executable: URL, timeout: TimeInterval, verifyOnly: Bool,
+                      originTrial: RecoveryOriginTrial? = nil) throws -> RecoveryWatchdog {
         guard timeout.isFinite, (1...60).contains(timeout) else {
             throw RecoveryError.unsafe("watchdog timeout must be 1–60 seconds")
         }
@@ -100,11 +105,12 @@ final class RecoveryWatchdog {
         try operationLock.lock()
         defer { operationLock.unlock() }
         try store.lock()
-        let journal: RecoveryJournal
+        var journal: RecoveryJournal
         do {
             let snapshot = try RecoverySnapshot.capture()
             try snapshot.verify(.capture())
             journal = RecoveryJournal(snapshot: snapshot, verifyOnly: verifyOnly, timeout: timeout)
+            journal.originTrial = originTrial
             try store.create(journal)
         } catch {
             store.unlock()
@@ -192,8 +198,15 @@ final class RecoveryWatchdog {
             guard !finished else { return }
             finished = true
             do {
+                if let trial = journal.originTrial, journal.trigger == "origin-trial-applied" {
+                    try trial.target(in: journal.snapshot).verify(.capture())
+                }
                 try RecoveryEngine().finish(&journal, store: store, verifyOnly: journal.verifyOnly, trigger: trigger)
-            } catch { result = error }
+            } catch {
+                journal.state = .needsAttention; journal.failure = String(describing: error)
+                try? store.save(journal)
+                result = error
+            }
             timer.cancel(); input.cancel()
             signals.forEach { $0.cancel() }
         }
@@ -203,6 +216,28 @@ final class RecoveryWatchdog {
             var buffer = [UInt8](repeating: 0, count: 64)
             let count = Darwin.read(STDIN_FILENO, &buffer, buffer.count)
             if count == 0 { finish("parent-exit") }
+            else if count == 1, buffer[0] == 0x54, let trial = journal.originTrial,
+                    journal.trigger == nil {
+                // Serialized with timer/EOF: the helper cannot restore and then
+                // have a late external writer move the display again.
+                do {
+                    guard deadline.timeIntervalSinceNow > 2 else {
+                        throw RecoveryError.unsafe("too late to start origin trial")
+                    }
+                    journal.trigger = "origin-trial-intent"
+                    try store.save(journal)
+                    try trial.apply(snapshot: journal.snapshot)
+                    journal.trigger = "origin-trial-applied"
+                    try store.save(journal)
+                } catch {
+                    // Unknown result: stop writes, preserving the baseline.
+                    journal.state = .needsAttention
+                    journal.failure = String(describing: error)
+                    try? store.save(journal)
+                    result = error; finished = true
+                    timer.cancel(); input.cancel(); signals.forEach { $0.cancel() }
+                }
+            }
             else if count > 0 { finish("parent-request") }
             else if errno != EINTR && errno != EAGAIN { finish("parent-pipe-error") }
         }

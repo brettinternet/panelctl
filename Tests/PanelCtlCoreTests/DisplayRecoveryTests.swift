@@ -273,6 +273,66 @@ final class DisplayRecoveryTests: XCTestCase {
         XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test"))
     }
 
+    func testOriginTrialOnlyChangesSelectedOrigin() throws {
+        let original = try snapshot { data in
+            var displays = data["displays"] as! [[String: Any]]
+            var target = displays[0]
+            target["uuid"] = "00000000-0000-0000-0000-000000000002"
+            target["id"] = 8; target["main"] = false; target["x"] = 1920
+            displays.append(target); data["displays"] = displays
+        }
+        let uuid = original.displays[1].uuid
+        let moved = try RecoveryOriginTrial(uuid: uuid, x: 1920, y: 16).target(in: original)
+        XCTAssertEqual(moved.displays[0], original.displays[0])
+        var expected = original.displays[1]; expected.y = 16
+        XCTAssertEqual(moved.displays[1], expected)
+        for trial in [RecoveryOriginTrial(uuid: uuid, x: 1921, y: 16),
+                      RecoveryOriginTrial(uuid: uuid, x: 1920, y: 17),
+                      RecoveryOriginTrial(uuid: original.displays[0].uuid, x: 0, y: 16)] {
+            XCTAssertThrowsError(try trial.target(in: original))
+        }
+    }
+
+    /// Explicit opt-in only. The parent may kill ITSELF; never a journal PID.
+    func testApprovedLiveOriginTrial() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let trialMode = env["PANELCTL_APPROVED_ORIGIN_TRIAL"],
+              ["timed", "parent-kill"].contains(trialMode),
+              let binary = env["PANELCTL_TRIAL_BINARY"],
+              let journalPath = env["PANELCTL_TRIAL_JOURNAL"] else {
+            throw XCTSkip("requires specific live-trial approval and artifact paths")
+        }
+        let baseline = try RecoverySnapshot.capture()
+        let uuid = "09084682-3c42-4455-aab8-126a7431125b"
+        let target = try XCTUnwrap(baseline.displays.first { $0.uuid == uuid })
+        XCTAssertEqual(target.vendor, 4268); XCTAssertEqual(target.model, 16857)
+        XCTAssertEqual(target.serial, 1094800204)
+        guard target.x == 3440, target.y == -20, target.vendor == 4268,
+              target.model == 16857, target.serial == 1094800204 else {
+            throw RecoveryError.unsafe("approved DELL S2721DGF baseline changed")
+        }
+        let store = RecoveryStore(url: URL(fileURLWithPath: journalPath))
+        let session = try RecoveryWatchdog.start(store: store, executable: URL(fileURLWithPath: binary),
+                                                timeout: 10, verifyOnly: false,
+                                                originTrial: RecoveryOriginTrial(uuid: uuid, x: 3440, y: -4))
+        try session.requestOriginTrial()
+        if trialMode == "parent-kill" {
+            let until = Date().addingTimeInterval(3)
+            while try store.load().trigger != "origin-trial-applied", Date() < until {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            }
+            guard try store.load().trigger == "origin-trial-applied" else {
+                throw RecoveryError.unsafe("trial did not apply; will not kill parent")
+            }
+            raise(SIGKILL)
+        }
+        session.wait()
+        let final = try store.load()
+        XCTAssertEqual(final.state, .restored, final.failure ?? "")
+        XCTAssertEqual(final.trigger, "deadline")
+        try baseline.verify(.capture())
+    }
+
     func testRecoveryCLIValidation() throws {
         for action in ["capture", "status", "verify", "restore", "rehearse", "guard"] {
             XCTAssertEqual(try CLIParser.parse(["recovery", action]),

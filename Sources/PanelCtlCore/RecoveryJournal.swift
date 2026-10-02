@@ -18,6 +18,7 @@ struct RecoveryJournal: Codable {
     var failure: String?
     // Diagnostics only; never used to signal or identify a process for recovery.
     var watchdogPID: Int32?
+    var originTrial: RecoveryOriginTrial?
 
     init(snapshot: RecoverySnapshot, verifyOnly: Bool = false, timeout: TimeInterval? = nil) {
         let now = Date()
@@ -42,6 +43,10 @@ struct RecoveryJournal: Codable {
             guard (1...60).contains(deadline.timeIntervalSince(createdAt)) else {
                 throw RecoveryError.unsafe("watchdog deadline must be 1–60 seconds after capture")
             }
+        }
+        if let originTrial {
+            guard !verifyOnly, deadline != nil else { throw RecoveryError.unsafe("invalid origin trial journal") }
+            _ = try originTrial.target(in: snapshot)
         }
         for display in displays {
             guard UUID(uuidString: display.uuid) != nil, display.id != 0,

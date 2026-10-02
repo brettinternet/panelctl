@@ -40,8 +40,8 @@ struct RecoveryDisplay: Codable, Equatable {
     let builtin: Bool
     let main: Bool
     let active: Bool
-    let x: Int32
-    let y: Int32
+    var x: Int32
+    var y: Int32
     let rotation: Double
     let mirrorUUID: String?
     let mode: RecoveryMode
