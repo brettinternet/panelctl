@@ -1,0 +1,256 @@
+import XCTest
+import Darwin
+@testable import PanelCtlCore
+
+final class DisplayRecoveryTests: XCTestCase {
+    private var directory: URL!
+
+    override func setUpWithError() throws {
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent("panelctl-recovery-tests-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                                               attributes: [.posixPermissions: 0o700])
+    }
+
+    override func tearDownWithError() throws {
+        try FileManager.default.removeItem(at: directory)
+    }
+
+    private func store() -> RecoveryStore { RecoveryStore(url: directory.appendingPathComponent("current.json")) }
+
+    private func snapshot(_ modify: (inout [String: Any]) -> Void = { _ in }) throws -> RecoverySnapshot {
+        var value: [String: Any] = [
+            "bootSession": "test-boot", "osBuild": "test-build", "userID": getuid(),
+            "displays": [[
+                "uuid": "00000000-0000-0000-0000-000000000001", "id": 7,
+                "vendor": 1, "model": 2, "serial": 3, "builtin": false,
+                "main": true, "active": true, "x": 0, "y": 0, "rotation": 0,
+                "colorSpace": "test-color", "connector": "test-connector",
+                "mode": ["id": 9, "width": 1920, "height": 1080,
+                         "pixelWidth": 1920, "pixelHeight": 1080, "refreshRate": 60, "flags": 0]
+            ]]
+        ]
+        modify(&value)
+        return try JSONDecoder().decode(RecoverySnapshot.self, from: JSONSerialization.data(withJSONObject: value))
+    }
+
+    private func changedDisplay(_ key: String, _ value: Any) throws -> RecoverySnapshot {
+        try snapshot { data in
+            var displays = data["displays"] as! [[String: Any]]
+            displays[0][key] = value
+            data["displays"] = displays
+        }
+    }
+
+    func testSnapshotRoundTripAndExactVerification() throws {
+        let original = try snapshot()
+        let decoded = try JSONDecoder().decode(RecoverySnapshot.self, from: JSONEncoder().encode(original))
+        XCTAssertEqual(original, decoded)
+        XCTAssertNoThrow(try original.verify(decoded))
+    }
+
+    func testIdentityChangesFailClosed() throws {
+        let original = try snapshot()
+        for (key, value): (String, Any) in [
+            ("uuid", "00000000-0000-0000-0000-000000000002"), ("id", 8),
+            ("vendor", 99), ("model", 99), ("serial", 99), ("builtin", true),
+            ("connector", "different"), ("rotation", 90), ("colorSpace", "different")
+        ] {
+            XCTAssertThrowsError(try original.validateRestoration(to: changedDisplay(key, value)), key)
+        }
+    }
+
+    func testHostChangesFailClosed() throws {
+        let original = try snapshot()
+        for key in ["bootSession", "osBuild"] {
+            XCTAssertThrowsError(try original.validateRestoration(to: snapshot { $0[key] = "different" }))
+        }
+        XCTAssertThrowsError(try original.validateRestoration(to: snapshot { $0["userID"] = getuid() + 1 }))
+    }
+
+    func testMissingExtraAndDuplicateDisplaysFailClosed() throws {
+        let original = try snapshot()
+        XCTAssertThrowsError(try original.validateRestoration(to: snapshot { $0["displays"] = [] }))
+        XCTAssertThrowsError(try original.validateRestoration(to: snapshot {
+            let displays = $0["displays"] as! [[String: Any]]
+            $0["displays"] = displays + displays
+        }))
+        XCTAssertThrowsError(try original.validateRestoration(to: snapshot {
+            var displays = $0["displays"] as! [[String: Any]]
+            var extra = displays[0]
+            extra["uuid"] = "00000000-0000-0000-0000-000000000002"
+            extra["id"] = 8
+            displays.append(extra); $0["displays"] = displays
+        }))
+    }
+
+    func testLayoutChangesAreRestorableButNotVerified() throws {
+        let original = try snapshot()
+        for (key, value): (String, Any) in [("x", -1920), ("y", 1080), ("main", false), ("active", false)] {
+            let current = try changedDisplay(key, value)
+            XCTAssertNoThrow(try original.validateRestoration(to: current))
+            XCTAssertThrowsError(try original.verify(current))
+        }
+    }
+
+    func testJournalPermissionsLockAndUnresolvedProtection() throws {
+        let store = store()
+        try store.lock()
+        let journal = RecoveryJournal(snapshot: try snapshot())
+        try store.create(journal)
+        XCTAssertEqual(try store.load().id, journal.id)
+        let attributes = try FileManager.default.attributesOfItem(atPath: store.url.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        XCTAssertThrowsError(try self.store().lock())
+        XCTAssertThrowsError(try store.create(RecoveryJournal(snapshot: snapshot())))
+        XCTAssertEqual(try store.load().id, journal.id)
+        store.unlock()
+        let next = self.store()
+        XCTAssertNoThrow(try next.lock())
+        XCTAssertThrowsError(try store.save(journal))
+    }
+
+    func testResolvedJournalIsArchived() throws {
+        let store = store(); try store.lock()
+        var journal = RecoveryJournal(snapshot: try snapshot())
+        journal.state = .verified
+        try store.create(journal)
+        let next = RecoveryJournal(snapshot: try snapshot())
+        try store.create(next)
+        XCTAssertEqual(try store.load().id, next.id)
+        let archive = directory.appendingPathComponent("recovery-\(journal.id.uuidString).json")
+        XCTAssertEqual(try JSONDecoder().decode(RecoveryJournal.self, from: Data(contentsOf: archive)).id, journal.id)
+    }
+
+    func testCorruptAndFutureJournalsAreNotOverwritten() throws {
+        let store = store(); try store.lock()
+        try Data("broken".utf8).write(to: store.url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: store.url.path)
+        XCTAssertThrowsError(try store.load())
+        XCTAssertThrowsError(try store.create(RecoveryJournal(snapshot: snapshot())))
+        XCTAssertEqual(try Data(contentsOf: store.url), Data("broken".utf8))
+        let journal = RecoveryJournal(snapshot: try snapshot())
+        var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(journal)) as! [String: Any]
+        object["version"] = 999
+        try JSONSerialization.data(withJSONObject: object).write(to: store.url)
+        XCTAssertThrowsError(try store.load())
+    }
+
+    func testUnsafeDirectoryAndSymlinkJournalAreRejected() throws {
+        let store = store()
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+        XCTAssertThrowsError(try store.lock())
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        try store.lock()
+        let destination = directory.appendingPathComponent("other.json")
+        try Data("untouched".utf8).write(to: destination)
+        try FileManager.default.createSymbolicLink(at: store.url, withDestinationURL: destination)
+        XCTAssertThrowsError(try store.load())
+        XCTAssertThrowsError(try store.create(RecoveryJournal(snapshot: snapshot())))
+        XCTAssertEqual(try String(contentsOf: destination), "untouched")
+    }
+
+    func testBadMirrorAndDeadlineAreRejected() throws {
+        let bad = try changedDisplay("mirrorUUID", "00000000-0000-0000-0000-000000000001")
+        XCTAssertThrowsError(try RecoveryJournal(snapshot: bad).validate())
+        for timeout in [0.0, 61.0, -1.0] {
+            XCTAssertThrowsError(try RecoveryJournal(snapshot: snapshot(), timeout: timeout).validate())
+        }
+    }
+
+    func testVerifyOnlyNeverCallsWriterEvenOnMismatch() throws {
+        let store = store(); try store.lock()
+        var journal = RecoveryJournal(snapshot: try snapshot(), verifyOnly: true)
+        try store.create(journal)
+        let changed = try changedDisplay("x", 100)
+        let engine = RecoveryEngine(capture: { changed }, apply: { _ in XCTFail("verify must not write") })
+        XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: true, trigger: "test"))
+        XCTAssertEqual(try store.load().state, .needsAttention)
+        XCTAssertEqual(try store.load().snapshot, journal.snapshot)
+    }
+
+    func testRestorePersistsIntentThenVerifiesAndIsIdempotent() throws {
+        let store = store(); try store.lock()
+        let original = try snapshot()
+        var journal = RecoveryJournal(snapshot: original)
+        try store.create(journal)
+        var current = try changedDisplay("x", 100)
+        var writes = 0
+        let engine = RecoveryEngine(capture: { current }, apply: { target in
+            XCTAssertEqual(try store.load().state, .restoring)
+            XCTAssertEqual(target, original)
+            writes += 1; current = target
+        })
+        try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test")
+        XCTAssertEqual(writes, 1)
+        XCTAssertEqual(try store.load().state, .restored)
+        try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test-again")
+        XCTAssertEqual(writes, 1)
+    }
+
+    func testWriterSuccessWithoutRestorationIsFailure() throws {
+        let store = store(); try store.lock()
+        var journal = RecoveryJournal(snapshot: try snapshot())
+        try store.create(journal)
+        let changed = try changedDisplay("x", 100)
+        let engine = RecoveryEngine(capture: { changed }, apply: { _ in })
+        XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "deadline"))
+        XCTAssertEqual(try store.load().state, .needsAttention)
+        XCTAssertNotNil(try store.load().failure)
+        XCTAssertEqual(try store.load().trigger, "deadline")
+    }
+
+    func testWriteFailureRetainsOriginalAndCanBeRetried() throws {
+        let store = store(); try store.lock()
+        let original = try snapshot()
+        var journal = RecoveryJournal(snapshot: original)
+        try store.create(journal)
+        var current = try changedDisplay("x", 100)
+        var engine = RecoveryEngine(capture: { current }, apply: { _ in throw RecoveryError.unsafe("injected failure") })
+        XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test"))
+        XCTAssertEqual(try store.load().snapshot, original)
+        XCTAssertEqual(try store.load().state, .needsAttention)
+        current = original
+        engine.apply = { _ in XCTFail("already restored") }
+        try engine.finish(&journal, store: store, verifyOnly: false, trigger: "retry")
+        XCTAssertEqual(try store.load().state, .restored)
+        XCTAssertNil(try store.load().failure)
+    }
+
+    func testIdentityFailurePreventsWriter() throws {
+        let store = store(); try store.lock()
+        var journal = RecoveryJournal(snapshot: try snapshot())
+        try store.create(journal)
+        let missing = try snapshot { $0["displays"] = [] }
+        let engine = RecoveryEngine(capture: { missing }, apply: { _ in XCTFail("unsafe write") })
+        XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test"))
+        XCTAssertEqual(try store.load().state, .needsAttention)
+    }
+
+    func testPersistenceFailurePreventsWriter() throws {
+        let store = store() // Deliberately no lock: journal save must fail.
+        var journal = RecoveryJournal(snapshot: try snapshot())
+        let changed = try changedDisplay("x", 100)
+        let engine = RecoveryEngine(capture: { changed }, apply: { _ in XCTFail("write without durable intent") })
+        XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test"))
+    }
+
+    func testRecoveryCLIValidation() throws {
+        for action in ["capture", "status", "verify", "restore", "rehearse"] {
+            XCTAssertEqual(try CLIParser.parse(["recovery", action]),
+                           .recovery(action: RecoveryAction(rawValue: action)!, timeout: nil, journalPath: nil))
+        }
+        XCTAssertEqual(try CLIParser.parse(["recovery", "rehearse", "--timeout", "1m", "--journal", "/private/test/current.json"]),
+                       .recovery(action: .rehearse, timeout: 60, journalPath: "/private/test/current.json"))
+        for args in [
+            ["recovery"], ["recovery", "disable"], ["recovery", "arm"],
+            ["recovery", "restore", "--timeout", "5s"],
+            ["recovery", "rehearse", "--timeout", "0.5s"],
+            ["recovery", "rehearse", "--timeout", "61s"],
+            ["recovery", "rehearse", "--timeout", "2s", "--timeout", "3s"],
+            ["recovery", "capture", "--journal"],
+            ["recovery", "capture", "--journal", "a", "--journal", "b"],
+            ["_recovery-helper", "--journal", "a", "--id", "not-a-uuid"]
+        ] { XCTAssertThrowsError(try CLIParser.parse(args), args.joined(separator: " ")) }
+        XCTAssertTrue(CLIHelp.text(for: "recovery").contains("no-write"))
+    }
+}

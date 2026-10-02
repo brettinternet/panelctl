@@ -64,6 +64,8 @@ public struct BlackoutOptions: Equatable {
 public enum PanelCommand: Equatable {
     case list(json: Bool)
     case probe(json: Bool)
+    case recovery(action: RecoveryAction, timeout: TimeInterval?, journalPath: String?)
+    case recoveryHelper(journalPath: String, id: UUID)
     case blackout(BlackoutOptions)
     case ddcLuminance(selector: String, setValue: UInt16?, json: Bool)
     case sleepDisplays(keepSystemAwake: Bool, timeout: TimeInterval?)
@@ -96,6 +98,8 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case persistentDimming
     case invalidLuminance
     case missingAppCommand
+    case missingRecoveryAction
+    case invalidRecoveryTimeout
     case snoozeDurationTooLong
     case invalidBlackoutMode(String)
     case invalidOverlayOpacity(String)
@@ -134,6 +138,8 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
             return "--no-overlay or overlay opacity below 100 requires --mode working"
         case .invalidLuminance: return "luminance must be an integer from 0 through 65535"
         case .missingAppCommand: return "missing app command (use 'panelctl help app' for usage)"
+        case .missingRecoveryAction: return "missing recovery action (use 'panelctl help recovery' for usage)"
+        case .invalidRecoveryTimeout: return "recovery rehearsal timeout must be from 1 through 60 seconds"
         case .snoozeDurationTooLong: return "snooze duration must not exceed 30 days"
         }
     }
@@ -141,7 +147,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
 
 public enum CLIParser {
     private static let maximumSnoozeDuration: TimeInterval = 30 * 24 * 60 * 60
-    private static let commands = ["list", "probe", "blackout", "ddc-luminance", "sleep-displays", "wake-displays", "app"]
+    private static let commands = ["list", "probe", "recovery", "blackout", "ddc-luminance", "sleep-displays", "wake-displays", "app"]
 
     public static func parse(_ args: [String]) throws -> PanelCommand {
         guard let command = args.first else { throw CLIParseError.missingCommand }
@@ -170,6 +176,14 @@ public enum CLIParser {
             return try parseJSONFlagCommand(rest, builder: { .list(json: $0) })
         case "probe":
             return try parseJSONFlagCommand(rest, builder: { .probe(json: $0) })
+        case "recovery":
+            return try parseRecovery(rest)
+        case "_recovery-helper":
+            guard rest.count == 4, rest[0] == "--journal", !rest[1].isEmpty,
+                  rest[2] == "--id", let id = UUID(uuidString: rest[3]) else {
+                throw CLIParseError.unknownCommand("invalid internal recovery-helper invocation")
+            }
+            return .recoveryHelper(journalPath: rest[1], id: id)
         case "blackout":
             return try parseBlackout(rest)
         case "ddc-luminance":
@@ -184,6 +198,33 @@ public enum CLIParser {
         default:
             throw CLIParseError.unknownCommand(command)
         }
+    }
+
+    private static func parseRecovery(_ args: [String]) throws -> PanelCommand {
+        guard let raw = args.first else { throw CLIParseError.missingRecoveryAction }
+        guard let action = RecoveryAction(rawValue: raw) else { throw CLIParseError.unknownCommand(raw) }
+        var timeout: TimeInterval?
+        var journal: String?
+        var i = 1
+        while i < args.count {
+            switch args[i] {
+            case "--timeout":
+                guard action == .rehearse else { throw CLIParseError.unknownOption(args[i]) }
+                guard timeout == nil else { throw CLIParseError.duplicateOption(args[i]) }
+                timeout = try duration(option: "--timeout", args: args, index: &i)
+                guard (1...60).contains(timeout!) else { throw CLIParseError.invalidRecoveryTimeout }
+            case "--journal":
+                guard journal == nil else { throw CLIParseError.duplicateOption(args[i]) }
+                i += 1
+                guard i < args.count, !args[i].hasPrefix("--"), !args[i].isEmpty else {
+                    throw CLIParseError.missingValue("--journal")
+                }
+                journal = args[i]
+            default: throw CLIParseError.unknownOption(args[i])
+            }
+            i += 1
+        }
+        return .recovery(action: action, timeout: timeout, journalPath: journal)
     }
 
     private static func parseJSONFlagCommand(

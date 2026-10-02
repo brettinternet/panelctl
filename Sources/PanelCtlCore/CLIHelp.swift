@@ -11,6 +11,7 @@ public enum CLIHelp {
             Commands:
               list             List connected displays
               probe            Probe display capabilities
+              recovery         Capture, verify, or restore display configuration
               blackout         Black out selected displays
               ddc-luminance    Read or set luminance
               sleep-displays   Sleep every display
@@ -28,6 +29,27 @@ public enum CLIHelp {
             return "Usage: panelctl list [--json]\nList connected displays."
         case "probe":
             return "Usage: panelctl probe [--json]\nProbe display capabilities."
+        case "recovery":
+            return """
+            Usage: panelctl recovery <capture|status|verify|restore|rehearse> [--journal <path>]
+            Usage: panelctl recovery rehearse [--timeout <1s...60s>] [--journal <path>]
+
+            capture journals the current display identities, modes, rotation, origins,
+            mirroring, main display, and color-space name. status prints the journal;
+            verify compares without display writes. restore explicitly restores public
+            modes, origins, and mirroring for the same online displays, then verifies.
+            Missing/ambiguous displays or changed rotation/color space require manual
+            intervention. Private reconnection and HDR/profile restoration are NOT implemented.
+
+            rehearse starts an independent, no-write verification helper (default 5s).
+            It checks on deadline or parent exit; it does not arm a real display experiment.
+            Failed or unresolved journals are retained and block subsequent captures.
+            Resolved journals are archived on the next capture. Output includes JSON.
+            The default journal is ~/Library/Application Support/PanelCtl/Recovery/current.json.
+            A custom journal's parent directory must be private (mode 0700) and owned by you.
+            No recovery tool can guarantee recovery from driver/WindowServer failure,
+            logout, reboot, or termination of the helper. See docs/display-recovery.md.
+            """
         case "blackout":
             return """
             Usage: panelctl blackout (--display <selector> | --index <n> ... | --all) [options]
