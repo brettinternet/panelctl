@@ -9,9 +9,10 @@
   protected. Synthetic byte-mutation and malformed-profile tests passed.
 - Offline replay of both retained real profiles passed, reproducing their old
   full hashes and matching their new date-independent fingerprints.
-- Full suite: 177 tests, 2 opt-in tests skipped, 0 failures (123 core, 54 app).
-  The offline replay was separately run successfully; the live trial was not
-  enabled in the full suite. Release build passed. LSP remained unknown.
+- Final full suite with retained-byte replay enabled: 177 tests, 1 gated live
+  test skipped, 0 failures (123 core, 54 app). Live activation variables were
+  explicitly unset. Release build passed. Logs: `/tmp/panelctl-color-final-tests.log`
+  and `/tmp/panelctl-color-final-release.log`. LSP remained unknown.
 - Release no-write subprocess checks passed with artifacts at
   `/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-recovery-integration-FCE0C4E6-661E-4439-8D60-ECF4C61E84E9`.
 - Fresh read-only reviewer `17d552b3-f4e7-459d-9022-adae13177986` found no
@@ -22,8 +23,16 @@
   topology/profile-content verification passed; user confirmed normal visible
   output. This qualifies only the tested origin-restoration path. See
   [the complete live evidence](recovery-origin-trial.md).
-- Parent-kill trial at the same baseline has separate explicit approval,
-  pending execution. No private enable/disable calls have been made.
+- Separately approved parent-kill trial also passed recovery verification:
+  owned XCTest parent killed itself only after the helper verified the move;
+  independent helper persisted `restored`/`parent-exit`; separate read-only
+  verification passed; user confirmed normal visible output. Intentional test
+  process death produced expected runner exit 1, not an ordinary XCTest pass.
+- Both follow-up trials restored their approved current baseline `(3440,-4)`.
+  Neither restored the first failed trial's `(3440,-20)`; that journal remains
+  unresolved and unmodified. No private enable/disable calls have been made.
+  Mode/mirror restoration, offline identity, and private reconnection remain
+  unqualified. No helper remains running.
 
 ## Previous checkpoint: recovery-enable
 

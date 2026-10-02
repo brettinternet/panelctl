@@ -113,4 +113,37 @@ Evidence:
   `/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-color-inspection-FF57BFD6-35D0-4037-A16F-507B7971C5E2/`
 
 No helper remained running. The user subsequently approved a single parent-kill
-trial at the same baseline, pending execution.
+trial at the same baseline.
+
+## Follow-up parent-kill trial: passed
+
+On 2026-10-02 at 11:29 local time, after that separate approval and a fresh
+baseline, the helper again moved only the Dell from `(3440,-4)` to `(3440,12)`
+and verified the result. The owned XCTest parent then sent SIGKILL to itself.
+The helper survived and restored `(3440,-4)` on **`parent-exit`**, not the
+10-second deadline. The surrounding test runner exited 1, expected because the
+test process was intentionally killed; this exit code is not counted as an
+ordinary XCTest pass. The recovery evidence is the independently persisted
+`restored`/`parent-exit` journal plus a separate successful read-only
+`recovery verify` and final capture.
+
+All captured context/topology/mode/identity/rotation fields matched the fresh
+baseline. As expected, only the two raw ICC hashes differed, with matching
+date-independent hashes. The user confirmed all four displays visibly normal.
+No helper remained running. Application-window placement was not verified.
+
+Evidence:
+
+- `/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-origin-parent-kill.ZG0aPliOxW/`
+  contains `restored.json` (byte-for-byte copy of the helper result before manual
+  verification), `current.json` (subsequent read-only verification result), and
+  `final-observed.json`.
+- Parent/test transcript: `/tmp/panelctl-origin-parent-kill.log`.
+- Final raw ICC files:
+  `/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-color-inspection-9033940D-DF07-49FA-ADEA-18164DCEFE12/`.
+
+The two follow-up trials made four explicit session-scoped origin writes total:
+one move and one restoration each. No display was disabled or privately enabled.
+The approved current baseline remains `(3440,-4)`; the first failed trial's
+original `(3440,-20)` is still not restored. Its old journal is retained without
+fingerprint backfilling. No further live operations are authorized by these tests.

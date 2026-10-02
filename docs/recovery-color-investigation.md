@@ -92,5 +92,9 @@ PANELCTL_ICC_EVIDENCE_DIR=/path/to/retained/color-inspection \\
 ```
 
 The new fingerprint has passed synthetic tests and this historical byte replay.
-It still needs a specifically approved live restoration trial; this investigation
-alone does not qualify the real writer or private reconnection.
+Subsequently, separately approved timed and parent-kill origin-only trials both
+restored the current baseline and passed visible-output confirmation; see
+[the trial evidence](recovery-origin-trial.md). Raw ICC files were exported before
+and after the timed trial, confirming timestamp-only regeneration again. This
+qualifies only the tested origin-restoration path, not mode/mirror restoration,
+physical color accuracy, or private reconnection.

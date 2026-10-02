@@ -14,8 +14,11 @@ public-configuration restoration, a timed helper, and no-write crash rehearsals.
 Private reconnection and safe disable qualification remain future work.
 [True-only re-enable groundwork](recovery-reenable.md) now exists behind an
 injection-only seam; no offline identity provider is qualified. The first
-[approved origin trial](recovery-origin-trial.md) stopped on unexpected ICC
-hash changes before restoration. No further live writes are authorized.
+[approved origin trial](recovery-origin-trial.md) stopped on ICC hash changes.
+Read-only evidence proved timestamp-only profile regeneration; after a narrow
+fix, separately approved timed and parent-kill origin-restoration trials passed.
+These results do not qualify mode/mirror restoration, private reconnection, or
+disabling. No further live writes are authorized.
 
 ## Read-only host evidence
 
