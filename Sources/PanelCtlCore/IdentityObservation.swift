@@ -103,6 +103,7 @@ public enum IdentityObservation {
 
 final class IdentityLifetimeCollector {
     let recording: IdentityObservationRecording
+    let registry: IdentityRegistryAPI
     let cg = IdentityCGEvents()
     var port: IONotificationPortRef?
     var source: CFRunLoopSource?
@@ -116,7 +117,9 @@ final class IdentityLifetimeCollector {
     }
     var stopped = false
 
-    init(recording: IdentityObservationRecording) { self.recording = recording }
+    init(recording: IdentityObservationRecording, registry: IdentityRegistryAPI = IdentityRegistryAPI()) {
+        self.recording = recording; self.registry = registry
+    }
     deinit { stop() }
 
     static let matching: IOServiceMatchingCallback = { ref, iterator in
@@ -128,7 +131,7 @@ final class IdentityLifetimeCollector {
         let owner = Unmanaged<IdentityLifetimeCollector>.fromOpaque(ref).takeUnretainedValue()
         let stamp = IdentityObservationRecording.stamp()
         do {
-            let row = try IdentityObservationInventory.service(service)
+            let row = try owner.registry.service(service)
             owner.recordInterest(row, message: message, receipt: stamp)
         } catch { owner.recording.fail("interest collection failure: \(error)") }
         // messageArgument is intentionally not dereferenced: message-specific
@@ -160,17 +163,24 @@ final class IdentityLifetimeCollector {
         cgReference = reference
         for name in IdentityObservationInventory.classes {
             for kind in [kIOPublishNotification, kIOTerminatedNotification] {
-                guard let match = IOServiceMatching(name) else { throw RecoveryError.unsafe("matching dictionary unavailable") }
-                var iterator: io_iterator_t = 0
-                let status = IOServiceAddMatchingNotification(port, kind, match, Self.matching,
-                    Unmanaged.passUnretained(self).toOpaque(), &iterator)
-                recording.append("registration", ["class": name, "notification": kind, "status": status])
-                if iterator != 0 { iterators[iterator] = (name, kind) }
-                guard status == KERN_SUCCESS, iterator != 0 else { throw RecoveryError.unsafe("IOKit notification registration failure") }
-                drain(iterator, initial: true)
-                if let failure = recording.failure { throw RecoveryError.unsafe(failure) }
+                try registerMatching(name: name, kind: kind)
             }
         }
+    }
+
+    func registerMatching(name: String, kind: String) throws {
+        guard !stopped, recording.failure == nil else { throw RecoveryError.unsafe("collector stopped/failed") }
+        var iterator: io_iterator_t = 0
+        let status = registry.matching(port, name, kind, Unmanaged.passUnretained(self).toOpaque(), &iterator)
+        recording.append("registration", ["class": name, "notification": kind, "status": status])
+        if iterator != 0 { iterators[iterator] = (name, kind) }
+        guard status == KERN_SUCCESS, iterator != 0 else {
+            recording.fail("IOKit notification registration failure")
+            throw RecoveryError.unsafe("IOKit notification registration failure")
+        }
+        if let failure = recording.failure { throw RecoveryError.unsafe(failure) }
+        drain(iterator, initial: true)
+        if let failure = recording.failure { throw RecoveryError.unsafe(failure) }
     }
 
     func drain(_ iterator: io_iterator_t, initial: Bool) {
@@ -179,33 +189,33 @@ final class IdentityLifetimeCollector {
             recording.fail("unknown iterator or incomplete prior recording"); return
         }
         for index in 0...32 {
-            let entry = IOIteratorNext(iterator)
+            let entry = registry.next(iterator)
             if entry == 0 {
-                let valid = IOIteratorIsValid(iterator) != 0
+                let valid = registry.valid(iterator)
                 recording.append("iterator-drained", ["class": name, "notification": kind, "initial": initial, "valid": valid], receipt: receipt)
                 if !valid { recording.fail("invalid iterator; no reset/restart permitted") }
                 else if initial { initialDrains += 1 }
                 return
             }
-            defer { IOObjectRelease(entry) }
+            defer { registry.release(entry) }
             guard index < 32 else { recording.fail("iterator inventory overflow; notification not armed"); return }
             do {
-                let row = try IdentityObservationInventory.service(entry)
+                let row = try registry.service(entry)
                 recording.append(initial ? "initial-service" : "service-event",
                     ["class": name, "notification": kind, "service": row], receipt: receipt)
+                if let failure = recording.failure { throw RecoveryError.unsafe(failure) }
                 try checkService(row)
-                if kind == kIOPublishNotification && !services.contains(where: { IOObjectIsEqualTo($0.0, entry) != 0 }) {
-                    guard services.count < 96, let port else { throw RecoveryError.unsafe("retained service inventory overflow") }
+                if kind == kIOPublishNotification && !services.contains(where: { registry.equal($0.0, entry) }) {
+                    guard services.count < 96 else { throw RecoveryError.unsafe("retained service inventory overflow") }
                     var notification: io_object_t = 0
-                    let status = IOServiceAddInterestNotification(port, entry, kIOGeneralInterest, Self.interest,
-                        Unmanaged.passUnretained(self).toOpaque(), &notification)
+                    let status = registry.interest(port, entry, Unmanaged.passUnretained(self).toOpaque(), &notification)
                     recording.append("interest-registration", ["status": status, "registryEntryID": row["registryEntryID"]!])
                     guard status == KERN_SUCCESS, notification != 0 else {
-                        if notification != 0 { IOObjectRelease(notification) }
+                        if notification != 0 { registry.release(notification) }
                         throw RecoveryError.unsafe("general-interest registration failure")
                     }
-                    let retained = IOObjectRetain(entry)
-                    guard retained == KERN_SUCCESS else { IOObjectRelease(notification); throw RecoveryError.unsafe("service retain failure") }
+                    let retained = registry.retain(entry)
+                    guard retained == KERN_SUCCESS else { registry.release(notification); throw RecoveryError.unsafe("service retain failure") }
                     services.append((entry, notification))
                 }
                 if !initial { inventoryNeeded = true }
@@ -240,7 +250,7 @@ final class IdentityLifetimeCollector {
 
     func inventory() throws -> [[String: Any]] {
         try services.map {
-            let row = try IdentityObservationInventory.service($0.0)
+            let row = try registry.service($0.0)
             try checkService(row)
             return row
         }.sorted {
@@ -273,9 +283,9 @@ final class IdentityLifetimeCollector {
             cgReference = nil
         }
         if let source { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .defaultMode) }
-        for (service, notification) in services { IOObjectRelease(notification); IOObjectRelease(service) }
+        for (service, notification) in services { registry.release(notification); registry.release(service) }
         services.removeAll()
-        for iterator in iterators.keys { IOObjectRelease(iterator) }; iterators.removeAll()
+        for iterator in iterators.keys { registry.release(iterator) }; iterators.removeAll()
         if let port { IONotificationPortDestroy(port) }
         port = nil; source = nil
     }

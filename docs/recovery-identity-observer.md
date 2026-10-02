@@ -99,6 +99,22 @@ and `observe-recovery-identity` passed. LSP returned unknown, not clean.
 Test log: `/tmp/panelctl-observer-001846a-tests.log`. Synthetic test evidence is
 retained in OS temporary `panelctl-observer-tests-*` directories.
 
+## Offline failure-test follow-up
+
+`IdentityRegistryFailureTests` adds ten tests of the actual collector paths using
+injected read-only IOKit closures and fake handles, including cleanup. No real
+notification, display or device API runs in these tests. Covered: initial drain
+ordering; invalid/null iterators; exact 32-entry and overflow boundaries;
+partial matching registration failure; interest registration and retain failures;
+property errors; output overflow; 96-service retention bound; subsequent versus
+initial events; borrowed callback-handle ownership; and idempotent cleanup.
+
+This extends the existing recovery closure-injection convention, not a new
+identity provider or writer. Registration errors now immediately mark recording
+failure, and recording overflow stops a drain before additional interest
+registrations. The previous passive control remains evidence for `001846a`
+only; the follow-up does not run another observation or qualify hotplug delivery.
+
 ## Single passive control — completed 2026-10-02
 
 Ran the release executable at `001846a` once after preflight and review. No
