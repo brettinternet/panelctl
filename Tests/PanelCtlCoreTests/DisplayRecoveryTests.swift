@@ -273,6 +273,69 @@ final class DisplayRecoveryTests: XCTestCase {
         XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test"))
     }
 
+    private func profileSnapshot(_ profile: Data, includeDateIndependent: Bool = true) throws -> RecoverySnapshot {
+        try snapshot { data in
+            var displays = data["displays"] as! [[String: Any]]
+            displays[0]["colorProfileDigest"] = RecoveryColorProfile.digest(profile)
+            if includeDateIndependent {
+                displays[0]["colorProfileDateIndependentDigest"] = RecoveryColorProfile.dateIndependentDigest(profile)
+            }
+            data["displays"] = displays
+        }
+    }
+
+    func testICCTimestampOnlyRegenerationVerifiesWithoutWriter() throws {
+        let original = try profileSnapshot(RecoveryColorProfileTests.profile())
+        let current = try profileSnapshot(RecoveryColorProfileTests.profile(second: 2))
+        XCTAssertNotEqual(original, current) // Preserve distinct raw evidence.
+        XCTAssertNoThrow(try original.verify(current))
+        let store = store(); try store.lock()
+        var journal = RecoveryJournal(snapshot: original); try store.create(journal)
+        let engine = RecoveryEngine(capture: { current }, apply: { _ in XCTFail("date-only change needs no write") })
+        try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test")
+        XCTAssertEqual(try store.load().state, .restored)
+        XCTAssertEqual(try store.load().snapshot, original)
+    }
+
+    func testICCContentChangeAndLegacySnapshotsStillBlockWrites() throws {
+        let bytes = RecoveryColorProfileTests.profile()
+        let original = try profileSnapshot(bytes)
+        var altered = bytes; altered[175] ^= 1
+        let changed = try profileSnapshot(altered)
+        XCTAssertThrowsError(try original.verify(changed))
+        let legacy = try profileSnapshot(bytes, includeDateIndependent: false)
+        let dated = try profileSnapshot(RecoveryColorProfileTests.profile(second: 2))
+        XCTAssertThrowsError(try legacy.verify(dated))
+        XCTAssertThrowsError(try dated.verify(legacy))
+        XCTAssertNoThrow(try legacy.verify(original)) // Identical raw bytes remain sufficient.
+        let store = store(); try store.lock()
+        var journal = RecoveryJournal(snapshot: original); try store.create(journal)
+        let engine = RecoveryEngine(capture: { changed }, apply: { _ in XCTFail("changed color transform") })
+        XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test"))
+        XCTAssertEqual(try store.load().state, .needsAttention)
+        XCTAssertEqual(try store.load().snapshot, original)
+    }
+
+    func testICCDateEvidenceDoesNotHideTopologyOrOtherColorChanges() throws {
+        let original = try profileSnapshot(RecoveryColorProfileTests.profile())
+        let current = try profileSnapshot(RecoveryColorProfileTests.profile(second: 2))
+        var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as! [String: Any]
+        let unchanged = object["displays"] as! [[String: Any]]
+        for (key, value): (String, Any) in [("x", 16), ("active", false), ("main", false),
+                                          ("rotation", 90), ("colorSpace", "changed")] {
+            var displays = unchanged; displays[0][key] = value; object["displays"] = displays
+            let modified = try JSONDecoder().decode(RecoverySnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+            XCTAssertThrowsError(try original.verify(modified), key)
+        }
+        var invalid = unchanged; invalid[0].removeValue(forKey: "colorProfileDigest"); object["displays"] = invalid
+        let missing = try JSONDecoder().decode(RecoverySnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertThrowsError(try original.verify(missing))
+        XCTAssertThrowsError(try RecoveryJournal(snapshot: missing).validate())
+        invalid = unchanged; invalid[0]["colorProfileDateIndependentDigest"] = "invalid"; object["displays"] = invalid
+        let corrupt = try JSONDecoder().decode(RecoverySnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertThrowsError(try RecoveryJournal(snapshot: corrupt).validate())
+    }
+
     func testOriginTrialOnlyChangesSelectedOrigin() throws {
         let original = try snapshot { data in
             var displays = data["displays"] as! [[String: Any]]
@@ -302,19 +365,26 @@ final class DisplayRecoveryTests: XCTestCase {
               let journalPath = env["PANELCTL_TRIAL_JOURNAL"] else {
             throw XCTSkip("requires specific live-trial approval and artifact paths")
         }
+        guard let baselineY = Int32(env["PANELCTL_TRIAL_BASELINE_Y"] ?? "-20"),
+              [-20, -4].contains(baselineY) else {
+            throw RecoveryError.unsafe("trial baseline must be an explicitly approved origin")
+        }
         let baseline = try RecoverySnapshot.capture()
+        guard baseline.displays.allSatisfy({ $0.colorProfileDigest != nil && $0.colorProfileDateIndependentDigest != nil }) else {
+            throw RecoveryError.unsafe("trial requires complete eligible ICC fingerprint evidence")
+        }
         let uuid = "09084682-3c42-4455-aab8-126a7431125b"
         let target = try XCTUnwrap(baseline.displays.first { $0.uuid == uuid })
         XCTAssertEqual(target.vendor, 4268); XCTAssertEqual(target.model, 16857)
         XCTAssertEqual(target.serial, 1094800204)
-        guard target.x == 3440, target.y == -20, target.vendor == 4268,
+        guard target.x == 3440, target.y == baselineY, target.vendor == 4268,
               target.model == 16857, target.serial == 1094800204 else {
             throw RecoveryError.unsafe("approved DELL S2721DGF baseline changed")
         }
         let store = RecoveryStore(url: URL(fileURLWithPath: journalPath))
         let session = try RecoveryWatchdog.start(store: store, executable: URL(fileURLWithPath: binary),
                                                 timeout: 10, verifyOnly: false,
-                                                originTrial: RecoveryOriginTrial(uuid: uuid, x: 3440, y: -4))
+                                                originTrial: RecoveryOriginTrial(uuid: uuid, x: 3440, y: baselineY + 16))
         try session.requestOriginTrial()
         if trialMode == "parent-kill" {
             let until = Date().addingTimeInterval(3)

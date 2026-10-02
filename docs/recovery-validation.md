@@ -1,6 +1,27 @@
 # Recovery validation checkpoint
 
-## Current checkpoint: recovery-enable
+## ICC follow-up checkpoint
+
+- Read-only reconstruction proved the failed trial's two ICC hash changes are
+  creation-time-only; see [evidence and exact comparison limits](recovery-color-investigation.md).
+- New snapshots retain both raw hashes and eligible date-independent hashes.
+  Legacy journals remain strict and unchanged. All other profile bytes stay
+  protected. Synthetic byte-mutation and malformed-profile tests passed.
+- Offline replay of both retained real profiles passed, reproducing their old
+  full hashes and matching their new date-independent fingerprints.
+- Full suite: 177 tests, 2 opt-in tests skipped, 0 failures (123 core, 54 app).
+  The offline replay was separately run successfully; the live trial was not
+  enabled in the full suite. Release build passed. LSP remained unknown.
+- Release no-write subprocess checks passed with artifacts at
+  `/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-recovery-integration-FCE0C4E6-661E-4439-8D60-ECF4C61E84E9`.
+- Fresh read-only reviewer `17d552b3-f4e7-459d-9022-adae13177986` found no
+  validated defects in the scoped ICC delta. Report: `/tmp/panelctl-icc-review.md`.
+  Static review is not live qualification or emitted-color verification.
+- A new origin-only timed trial at current baseline `(3440,-4)` has explicit
+  approval, pending execution after fresh preflight. No follow-up display write
+  had occurred at this checkpoint.
+
+## Previous checkpoint: recovery-enable
 
 - Full `swift test`: 169 tests discovered/executed by XCTest, 1 gated live test
   skipped, 0 failures (115 core, 54 app).

@@ -48,7 +48,8 @@ configuration is a no-op. It never writes a permanent display configuration.
 
 Restoration refuses missing/additional/ambiguous displays, changed numeric IDs,
 changed hardware identity or connector, changed rotation or captured color-space/
-ICC profile identity, another boot/OS build/user, an unavailable exact mode, or concurrent
+ICC profile content (except proven creation-time-only regeneration in new
+snapshots), another boot/OS build/user, an unavailable exact mode, or concurrent
 configuration changes detected before commit. It does not search arbitrary IDs,
 change power, reset firmware, restart WindowServer, delete preferences, or reboot.
 Failures retain the baseline in `needsAttention` with a diagnostic. After manual
@@ -82,7 +83,8 @@ call is authorized by a successful guard startup.
 Captured: OS build, boot-session UUID, user ID, display UUID and CG ID,
 vendor/model/serial, built-in/main/active flags, exact mode attributes and ID,
 refresh rate, origin, rotation, mirror-source UUID, optional color-space name and
-SHA-256 of the readable ICC data, and optional `IODisplayLocation` from CoreDisplay metadata. The latter works on
+SHA-256 of the readable ICC data, an optional date-independent ICC fingerprint,
+and optional `IODisplayLocation` from CoreDisplay metadata. The latter works on
 the investigated host's `IOMobileFramebufferShim` path without assuming an
 `AppleCLCD2` service exists.
 
@@ -90,6 +92,11 @@ Not captured/restored: HDR enablement, VRR policy beyond the mode's reported
 refresh rate, full color profiles/calibration, DDC brightness/power/input state,
 application window placement, Spaces, or OLED maintenance state. A missing
 color-space/profile identity or connector is unknown, not proof of equality or safety.
+Raw ICC hashes are always retained. New snapshots may match an otherwise
+byte-identical eligible ICC profile with a changed creation timestamp; all other
+bytes stay protected. Unsupported profiles and older snapshots without the new
+fingerprint keep strict raw-hash comparison. See the
+[read-only ICC investigation and exact limits](recovery-color-investigation.md).
 Rotation is captured/checked but not written. The current restore implementation
 requires all original displays online; retained IDs are evidence, not permission
 to operate on offline or recycled IDs.

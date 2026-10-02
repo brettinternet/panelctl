@@ -29,8 +29,11 @@ Safety review before the trial:
 The live XCTest is skipped unless `PANELCTL_APPROVED_ORIGIN_TRIAL` is explicitly
 `timed` or `parent-kill`, with `PANELCTL_TRIAL_BINARY` pointing to the freshly built
 panelctl and `PANELCTL_TRIAL_JOURNAL` to a new private evidence directory. There
-is no new CLI trial/disable command or startup behavior. Do not set these
-variables without specific approval. The timeout is 10 seconds from capture.
+is no new CLI trial/disable command or startup behavior. The optional
+`PANELCTL_TRIAL_BASELINE_Y` selects only an approved baseline of `-20` (default)
+or `-4`; the temporary position is exactly 16 points lower. Every display must
+have eligible ICC fingerprint evidence. Do not set these variables without
+specific approval. The timeout is 10 seconds from capture.
 The crash variant kills only the test parent itself after the helper records
 and verifies the move; it must follow a successful timed trial and separate
 approval. The external operator then checks the retained journal and runs
@@ -49,8 +52,11 @@ write** moved the Dell to `(3440,-4)`. Intermediate verification immediately
 failed: ICC-profile digests changed for main Dell AW3423DW and AW3425DW. All
 captured topology/mode/identity fields otherwise matched the expected origin
 move. No mode, rotation, mirror, color, power, or private setters were requested.
-Whether these hashes reflect a real color change or regenerated profile data is
-unexplained; checks were **not** weakened.
+At the time, the hash changes were unexplained and checks were **not** weakened.
+Subsequent [read-only ICC investigation](recovery-color-investigation.md) proved
+that changing only the profiles' creation timestamps reproduces both original
+full hashes. New snapshots now distinguish that timestamp-only regeneration;
+old journals remain strict and unchanged.
 
 The helper stopped in `needsAttention`; no restoration write or parent-kill
 trial followed. This is a **failed qualification**, not a successful timed
@@ -74,5 +80,6 @@ Evidence retained:
 
 Read-only subprocess rehearsal passed before the live trial with artifacts at
 `/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-recovery-integration-78BA7240-0E15-445E-90FD-BCA08E822387`.
-No test helper remained running after the trial. Another live trial requires
-explaining the mismatch, fresh baseline/preflight, and new explicit approval.
+No test helper remained running after the trial. The ICC mismatch is now
+explained, but another live trial still requires fresh baseline/preflight and
+new explicit approval. A historical-byte replay is not a live restoration test.

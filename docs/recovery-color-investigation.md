@@ -64,9 +64,33 @@ At the read-only observation, the Dell remains at `(3440,-4)`, not its original
 `(3440,-20)`. The user previously confirmed all four displays visibly working.
 No additional display writes have occurred during this investigation.
 
-A narrowly scoped timestamp-independent fingerprint for **new** snapshots can
-avoid this false positive, while retaining the raw hash for evidence and still
-checking every other byte. Unsupported/malformed profiles and legacy snapshots
-must retain strict full-hash comparison. A fix needs synthetic regression tests
-and a new specifically approved live trial; this investigation alone does not
-qualify restoration or private reconnection.
+New snapshots now retain an optional `colorProfileDateIndependentDigest` beside
+the original `colorProfileDigest`. It hashes the complete ICC file with **only**
+bytes 24–35 zeroed. Full-hash equality still passes; otherwise both snapshots
+must have matching date-independent evidence. Legacy snapshots without it remain
+strict. Neither stored raw hashes nor old journals are rewritten.
+
+Normalization is deliberately narrow: 132 bytes to 1 MiB, matching declared
+length, v2/v4 display class, `acsp` signature, valid Gregorian creation time,
+zero profile-ID field, nonempty in-bounds unique tag table, and aligned tag data
+outside the header/table. Shared tag payloads are allowed. Every byte other than
+the creation-time field remains hashed, including padding, flags, rendering
+intent, unknown/vendor tags, and tag order. Nonzero profile IDs are not ignored
+or recomputed. Unsupported/malformed profiles retain full-hash-only comparison.
+This is not general ICC semantic normalization.
+
+Regression tests cover every single non-date byte in a synthetic profile,
+invalid dates/bounds/tables, legacy snapshots, missing/malformed evidence,
+unchanged topology requirements, blocked color-transform changes, and no writes
+for timestamp-only differences. The optional **offline-only**
+`RecoveryColorProfileTests/testRetainedProfileEvidence` replays the two exported
+profiles and verifies reconstructed original full hashes plus the new match:
+
+```sh
+PANELCTL_ICC_EVIDENCE_DIR=/path/to/retained/color-inspection \\
+  swift test --filter RecoveryColorProfileTests/testRetainedProfileEvidence
+```
+
+The new fingerprint has passed synthetic tests and this historical byte replay.
+It still needs a specifically approved live restoration trial; this investigation
+alone does not qualify the real writer or private reconnection.
