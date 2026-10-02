@@ -27,7 +27,8 @@ Other display utilities do not honor this lock and are not stopped.
   occurrence times. Delivery/receipt order is not guaranteed causal order.
 - Before-ready, event-triggered and after inventories include public/private
   enumerations, selected registry properties, paths/entry IDs, boot/build/user,
-  console session ID and observed WindowServer PID **plus start time**. Callback
+  console session UUID plus audit ID and observed WindowServer PID **plus
+  microsecond start time** (public `KERN_PROC_ALL`). Callback
   IDs are recorded but never looked up. Only freshly enumerated IDs are queried.
 - Retained service handles are reread at inventory boundaries, including proxies
   not directly reached through CG metadata. Same-object comparisons only avoid
@@ -41,7 +42,9 @@ Other display utilities do not honor this lock and are not stopped.
   registration failure, missing/changed context, inventory mismatch or I/O error
   stops the run as incomplete. No reset, rescan, restart or retry is attempted.
 - `started.json` explicitly marks a fresh incomplete run. Only `summary.json`
-  can mark bounded recording completion; absent summary, partial JSONL, process
+  can mark bounded recording completion; it is published without replacement
+  only after `summary.pending.json` is written, synchronized and closed. The
+  pending file alone is never completion. Absent summary, partial JSONL, process
   death, or a failed terminal write must be interpreted as incomplete. A new
   invocation always creates a different collector UUID/directory; it cannot
   continue the old recording. Directory mode is 0700, file mode 0600.
@@ -51,7 +54,9 @@ start after readiness; setup/final collection add time. Native API calls cannot
 be interrupted safely, and OS scheduling, sleep, process death or a hung driver
 can defeat a timing target. A detected wall-clock/scheduling gap is incomplete.
 Normal/error cleanup removes callbacks and releases IOKit handles and locks;
-process exit also releases the advisory lock. No watchdog launches or restores.
+if CG callback removal fails, its closed bounded context is intentionally retained
+until process exit to prevent use-after-free. Process exit also releases the
+advisory lock. No watchdog launches or restores.
 
 ## Interpretation limits
 
@@ -71,10 +76,23 @@ qualify physically attached but logically offline identity.
 
 ## Validation checkpoint
 
-Initial implementation: compiler passed; seven focused offline tests passed
-(recording/permissions/no overwrite, receipt times, readiness/failure handling,
-record and queue bounds, property bounds). The NaN fixture initially exposed an
-Objective-C JSON exception; validating JSON before serialization fixed it.
-LSP returned unknown; it is not validation evidence. Independent review, full
-suite and the single passive control are pending. No observation or display
-state change has yet been run with this implementation.
+Compiler and 13 focused offline tests pass: private/no-overwrite recording,
+receipt times, readiness/failure handling, record/queue/property bounds, required
+console context, failed/successful callback removal, terminal sync/close failures,
+service-read errors and pre-readiness queue overflow. A NaN fixture initially
+exposed an Objective-C JSON exception; validating JSON before serialization
+fixed it. Fresh independent review identified the latter four failure paths;
+fixes and direct regression tests are under follow-up review.
+
+Preflight found no `kCGSSessionIDKey` and `proc_pidinfo` denied WindowServer with
+EPERM. The observer now requires the actual console session UUID plus audit ID
+and reads public `KERN_PROC_ALL` PID/start time, independently checked against
+`ps`. Missing either remains blocking; no PID-only fallback. Dell identity,
+origin `(3440,-4)`, OS/build/boot and five/four/zero service counts still match.
+The existing operation lock was free; no recovery helper was running. Unrelated
+blackout process remains untouched.
+
+The full suite and release builds passed before these review fixes. Updated
+full validation and the single passive control remain pending. LSP returned
+unknown, not clean. No lifetime observation or display-state change has yet
+been run with this implementation.

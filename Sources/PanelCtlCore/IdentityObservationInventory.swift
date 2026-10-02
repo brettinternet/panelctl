@@ -22,30 +22,44 @@ enum IdentityObservationInventory {
             try require(sysctlbyname(name, &value, &size, nil, 0) == 0, "missing context: \(name)")
             return String(cString: value)
         }
-        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
-              session[kCGSessionOnConsoleKey as String] as? Bool == true,
-              (session[kCGSessionUserIDKey as String] as? NSNumber)?.uint32Value == getuid(),
-              let sessionID = session["kCGSSessionIDKey"] as? NSNumber else {
-            throw RecoveryError.unsafe("missing console/session context")
-        }
-        var pids = [Int32](repeating: 0, count: 4096)
-        let count = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<Int32>.size))
-        try require(count > 0 && count < pids.count, "missing/bounded process context")
+        let console = try consoleContext(CGSessionCopyCurrentDictionary() as? [String: Any])
+        // proc_pidinfo denies WindowServer on this host. Public KERN_PROC_ALL
+        // exposes the same PID + microsecond process-start context without sudo.
+        var processes = [kinfo_proc](repeating: kinfo_proc(), count: 4096)
+        let capacity = processes.count * MemoryLayout<kinfo_proc>.stride
+        var size = capacity
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
+        let status = sysctl(&mib, 4, &processes, &size, nil, 0)
+        try require(status == 0 && size > 0 && size < capacity && size % MemoryLayout<kinfo_proc>.stride == 0,
+                    "missing/bounded process context")
         var servers: [[String: Any]] = []
-        for pid in pids.prefix(Int(count)) where pid > 0 {
-            var info = proc_bsdinfo()
-            if proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout.size(ofValue: info))) != MemoryLayout.size(ofValue: info) { continue }
-            let name = withUnsafeBytes(of: info.pbi_comm) { bytes in
+        for process in processes.prefix(size / MemoryLayout<kinfo_proc>.stride) {
+            let info = process.kp_proc
+            let name = withUnsafeBytes(of: info.p_comm) { bytes in
                 String(decoding: bytes.prefix(while: { $0 != 0 }), as: UTF8.self)
             }
             if name == "WindowServer" {
-                try require(info.pbi_start_tvsec > 0, "missing WindowServer lifetime")
-                servers.append(["pid": pid, "startSeconds": info.pbi_start_tvsec, "startMicroseconds": info.pbi_start_tvusec])
+                let start = info.p_un.__p_starttime
+                try require(info.p_pid > 0 && start.tv_sec > 0 && (0..<1_000_000).contains(start.tv_usec), "missing WindowServer lifetime")
+                servers.append(["pid": info.p_pid, "startSeconds": start.tv_sec, "startMicroseconds": start.tv_usec])
             }
         }
         try require(servers.count == 1, "missing/ambiguous WindowServer lifetime context")
         return ["bootSession": try system("kern.bootsessionuuid"), "osBuild": try system("kern.osversion"),
-                "userID": getuid(), "consoleSessionID": sessionID, "onConsole": true, "windowServer": servers[0]]
+                "userID": getuid(), "console": console, "windowServer": servers[0]]
+    }
+
+    static func consoleContext(_ session: [String: Any]?) throws -> [String: Any] {
+        guard let session,
+              session[kCGSessionOnConsoleKey as String] as? Bool == true,
+              (session[kCGSessionUserIDKey as String] as? NSNumber)?.uint32Value == getuid(),
+              let auditID = session["kCGSSessionAuditIDKey"] as? NSNumber, auditID.int64Value > 0,
+              let uuid = session["CGSSessionUniqueSessionUUID"] as? String, UUID(uuidString: uuid) != nil else {
+            throw RecoveryError.unsafe("missing console/session context")
+        }
+        // These dictionary fields are observed context, not an identity contract.
+        // Require both; no PID-only/session-ID fallback when either disappears.
+        return ["onConsole": true, "auditID": auditID, "sessionUUID": uuid]
     }
 
     static func value(_ input: Any, depth: Int = 0) throws -> Any {
@@ -98,7 +112,7 @@ enum IdentityObservationInventory {
         return row
     }
 
-    static func displays() throws -> [String: Any] {
+    static func displays(validateService: ([String: Any]) throws -> Void) throws -> [String: Any] {
         guard let handle = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY | RTLD_LOCAL) else {
             throw RecoveryError.unsafe("read-only enumeration unavailable")
         }
@@ -130,9 +144,12 @@ enum IdentityObservationInventory {
                let path = info["IODisplayLocation"] as? String {
                 row["connector"] = try value(path)
                 let entry = IORegistryEntryFromPath(kIOMainPortDefault, path)
-                if entry != 0 { defer { IOObjectRelease(entry) }; row["service"] = try service(entry) }
-                else { row["serviceMissing"] = true }
-            } else { row["metadataMissing"] = true }
+                guard entry != 0 else { throw RecoveryError.unsafe("enumerated CG service missing") }
+                defer { IOObjectRelease(entry) }
+                let serviceRow = try service(entry)
+                try validateService(serviceRow)
+                row["service"] = serviceRow
+            } else { throw RecoveryError.unsafe("enumerated CG metadata missing") }
             return row
         }
         return ["publicStatus": onlineStatus.rawValue, "privateStatus": status.rawValue,

@@ -14,6 +14,10 @@ final class IdentityObservationRecording {
     private var finished = false
     let recordLimit: Int
     let byteLimit: Int
+    // Persistence fault seam; tests never touch display APIs.
+    var finishArtifact: (FileHandle) throws -> Void = { file in
+        try file.synchronize(); try file.close()
+    }
 
     init(root: URL, recordLimit: Int = 512, byteLimit: Int = 4 * 1_048_576) throws {
         self.root = root; self.recordLimit = recordLimit; self.byteLimit = byteLimit
@@ -67,7 +71,7 @@ final class IdentityObservationRecording {
                       O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw RecoveryError.unsafe("cannot create new evidence artifact \(name)") }
         let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        try file.write(contentsOf: data); try file.synchronize(); try file.close()
+        try file.write(contentsOf: data); try finishArtifact(file)
     }
 
     func saveJSON(_ value: [String: Any], name: String) throws {
@@ -85,7 +89,13 @@ final class IdentityObservationRecording {
         try saveJSON(["runID": runID, "complete": failure == nil, "ready": ready,
                       "failure": failure as Any? ?? NSNull(), "records": records, "eventBytes": bytes,
                       "ended": Self.stamp(), "collectorRestart": false,
-                      "note": "Complete means bounded recording completed, not complete event delivery or physical identity qualification."], name: "summary.json")
+                      "note": "Complete means bounded recording completed, not complete event delivery or physical identity qualification."], name: "summary.pending.json")
+        // Publish only fully written, synchronized, closed bytes. link is atomic
+        // and refuses an existing name; keep the pending file as crash evidence.
+        guard link(root.appendingPathComponent("summary.pending.json").path,
+                   root.appendingPathComponent("summary.json").path) == 0 else {
+            throw RecoveryError.unsafe("cannot publish terminal summary")
+        }
     }
 }
 
@@ -107,6 +117,14 @@ final class IdentityCGEvents {
         guard pending.count < limit else { overflow = true; return }
         pending.append(event)
     }
+    func whenEmpty(_ action: () throws -> Void) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard !closed, !overflow, pending.isEmpty else {
+            throw RecoveryError.unsafe("CG receipt queue not empty/healthy at readiness")
+        }
+        try action()
+    }
+
     func drain(close: Bool = false) -> ([Event], Bool) {
         lock.lock(); defer { lock.unlock() }
         if close { closed = true }

@@ -104,6 +104,100 @@ final class IdentityObservationTests: XCTestCase {
         XCTAssertTrue(concurrent.drain().1)
     }
 
+    func testConsoleContextRequiresObservedUUIDAuditAndCurrentConsoleUser() throws {
+        let session: [String: Any] = ["kCGSSessionOnConsoleKey": true, "kCGSSessionUserIDKey": getuid(),
+            "kCGSSessionAuditIDKey": 100131, "CGSSessionUniqueSessionUUID": "A5F4FE9F-44B1-4394-B78F-71BD67ADDEC2"]
+        XCTAssertNoThrow(try IdentityObservationInventory.consoleContext(session))
+        XCTAssertThrowsError(try IdentityObservationInventory.consoleContext(nil))
+        for key in session.keys {
+            var missing = session; missing.removeValue(forKey: key)
+            XCTAssertThrowsError(try IdentityObservationInventory.consoleContext(missing), key)
+        }
+        for (key, value): (String, Any) in [("kCGSSessionOnConsoleKey", false), ("kCGSSessionUserIDKey", getuid() + 1),
+                                            ("kCGSSessionAuditIDKey", 0), ("CGSSessionUniqueSessionUUID", "invalid")] {
+            var bad = session; bad[key] = value
+            XCTAssertThrowsError(try IdentityObservationInventory.consoleContext(bad), key)
+        }
+    }
+
+    func testFailedCGRemovalKeepsClosedCallbackContextAlive() throws {
+        let record = try recorder()
+        weak var context: IdentityCGEvents?
+        var reference: UnsafeMutableRawPointer!
+        do {
+            let collector = IdentityLifetimeCollector(recording: record)
+            context = collector.cg
+            reference = Unmanaged.passRetained(collector.cg).toOpaque()
+            collector.cgReference = reference
+            collector.removeCG = { _ in .failure }
+            collector.stop()
+        }
+        XCTAssertNotNil(context)
+        XCTAssertNotNil(record.failure)
+        IdentityLifetimeCollector.reconfiguration(123, [], reference)
+        XCTAssertTrue(context!.drain().0.isEmpty)
+        // Simulated registration is now gone; release its intentionally retained
+        // reference. Production never releases after failed removal.
+        Unmanaged<IdentityCGEvents>.fromOpaque(reference).release()
+        XCTAssertNil(context)
+    }
+
+    func testSuccessfulCGRemovalReleasesContextAndCleanupIsIdempotent() throws {
+        let record = try recorder()
+        weak var context: IdentityCGEvents?
+        var removals = 0
+        do {
+            let collector = IdentityLifetimeCollector(recording: record)
+            context = collector.cg
+            collector.cgReference = Unmanaged.passRetained(collector.cg).toOpaque()
+            collector.removeCG = { _ in removals += 1; return .success }
+            collector.stop(); collector.stop()
+        }
+        XCTAssertEqual(removals, 1); XCTAssertNil(context)
+    }
+
+    func testSummaryPublicationWaitsForSuccessfulSynchronizationAndClose() throws {
+        for failAfterSync in [false, true] {
+            let record = try recorder()
+            try record.arm(initialIteratorsDrained: true)
+            record.finishArtifact = { file in
+                if failAfterSync { try file.synchronize() }
+                throw RecoveryError.unsafe("injected sync/close failure")
+            }
+            XCTAssertThrowsError(try record.finish(deadlineReached: true))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: record.root.appendingPathComponent("summary.json").path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: record.root.appendingPathComponent("started.json").path))
+        }
+    }
+
+    func testServiceReadFailureIsStickyEvenAfterSuccessfulInventory() throws {
+        let good: [String: Any] = ["entryIDStatus": Int32(0), "pathStatus": Int32(0),
+                                  "busyStatus": Int32(0), "identityReadable": true]
+        for key in ["entryIDStatus", "pathStatus", "busyStatus"] {
+            let record = try recorder()
+            let collector = IdentityLifetimeCollector(recording: record)
+            var bad = good; bad[key] = Int32(1)
+            collector.recordInterest(bad, message: 123, receipt: IdentityObservationRecording.stamp())
+            XCTAssertNoThrow(try collector.checkService(good))
+            XCTAssertNotNil(record.failure)
+            XCTAssertThrowsError(try record.arm(initialIteratorsDrained: true))
+            try record.finish(deadlineReached: true)
+            XCTAssertEqual(try json(record, "summary.json")["complete"] as? Bool, false)
+        }
+    }
+
+    func testSetupCGEventsAndOverflowPreventReadinessAcknowledgment() throws {
+        for count in [1, 257] {
+            let record = try recorder()
+            let collector = IdentityLifetimeCollector(recording: record)
+            collector.initialDrains = 6
+            for _ in 0..<count { collector.cg.receive(id: 42, flags: 0) }
+            XCTAssertThrowsError(try collector.arm { XCTFail("must not acknowledge readiness") })
+            XCTAssertFalse(record.ready)
+            XCTAssertFalse(try String(contentsOf: record.root.appendingPathComponent("events.jsonl")).contains("recording-ready"))
+        }
+    }
+
     func testRegistryPropertyBoundsAndBinaryFingerprint() throws {
         XCTAssertThrowsError(try IdentityObservationInventory.value(String(repeating: "x", count: 4097)))
         XCTAssertThrowsError(try IdentityObservationInventory.value(Array(repeating: 1, count: 65)))

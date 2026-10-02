@@ -41,14 +41,15 @@ public enum IdentityObservation {
             observer = collector
             defer { collector.stop() }
             try collector.start()
-            let initial = try IdentityObservationInventory.displays()
+            let initial = try IdentityObservationInventory.displays(validateService: collector.checkService)
             let initialServices = try collector.inventory()
             recording.append("inventory", ["phase": "before-ready", "context": context, "enumeration": initial, "retainedServices": initialServices])
             try baseline.verify(.capture())
             try IdentityObservationInventory.require(NSDictionary(dictionary: context).isEqual(to: IdentityObservationInventory.context()), "context changed before readiness")
-            try recording.arm(initialIteratorsDrained: collector.initialDrains == 6)
-            print("RECORDING READY — passive 60 seconds; NOT recovery readiness. Do not disconnect anything.")
-            fflush(stdout)
+            try collector.arm {
+                print("RECORDING READY — passive 60 seconds; NOT recovery readiness. Do not disconnect anything.")
+                fflush(stdout)
+            }
             let began = Date()
             let deadline = DispatchTime.now().uptimeNanoseconds + 60_000_000_000
             var eventInventories = 0
@@ -64,7 +65,7 @@ public enum IdentityObservation {
                     eventInventories += 1
                     guard eventInventories <= 8 else { throw RecoveryError.unsafe("event inventory overflow") }
                     let freshContext = try IdentityObservationInventory.context()
-                    let inventory = try IdentityObservationInventory.displays()
+                    let inventory = try IdentityObservationInventory.displays(validateService: collector.checkService)
                     let services = try collector.inventory()
                     recording.append("inventory", ["phase": "event", "context": freshContext, "enumeration": inventory, "retainedServices": services])
                     try IdentityObservationInventory.require(NSArray(array: initialServices).isEqual(to: services), "passive retained-service mismatch")
@@ -77,7 +78,7 @@ public enum IdentityObservation {
             // Last reads still have notifications registered. Stop and drain the
             // fixed CG receipt queue before writing a terminal summary.
             let finalContext = try IdentityObservationInventory.context()
-            let finalInventory = try IdentityObservationInventory.displays()
+            let finalInventory = try IdentityObservationInventory.displays(validateService: collector.checkService)
             let finalServices = try collector.inventory()
             recording.append("inventory", ["phase": "after", "context": finalContext, "enumeration": finalInventory, "retainedServices": finalServices])
             try IdentityObservationInventory.require(NSArray(array: initialServices).isEqual(to: finalServices), "final retained-service mismatch")
@@ -100,7 +101,7 @@ public enum IdentityObservation {
     }
 }
 
-private final class IdentityLifetimeCollector {
+final class IdentityLifetimeCollector {
     let recording: IdentityObservationRecording
     let cg = IdentityCGEvents()
     var port: IONotificationPortRef?
@@ -109,7 +110,10 @@ private final class IdentityLifetimeCollector {
     var services: [(io_service_t, io_object_t)] = []
     var initialDrains = 0
     var inventoryNeeded = false
-    var cgRegistered = false
+    var cgReference: UnsafeMutableRawPointer?
+    var removeCG: (UnsafeMutableRawPointer) -> CGError = {
+        CGDisplayRemoveReconfigurationCallback(IdentityLifetimeCollector.reconfiguration, $0)
+    }
     var stopped = false
 
     init(recording: IdentityObservationRecording) { self.recording = recording }
@@ -124,9 +128,8 @@ private final class IdentityLifetimeCollector {
         let owner = Unmanaged<IdentityLifetimeCollector>.fromOpaque(ref).takeUnretainedValue()
         let stamp = IdentityObservationRecording.stamp()
         do {
-            owner.recording.append("general-interest", ["messageType": message,
-                "service": try IdentityObservationInventory.service(service)], receipt: stamp)
-            owner.inventoryNeeded = true
+            let row = try IdentityObservationInventory.service(service)
+            owner.recordInterest(row, message: message, receipt: stamp)
         } catch { owner.recording.fail("interest collection failure: \(error)") }
         // messageArgument is intentionally not dereferenced: message-specific
         // payloads have no generic public size/lifetime contract.
@@ -147,10 +150,14 @@ private final class IdentityLifetimeCollector {
         }
         self.source = source
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .defaultMode)
-        let cgStatus = CGDisplayRegisterReconfigurationCallback(Self.reconfiguration, Unmanaged.passUnretained(cg).toOpaque())
+        let reference = Unmanaged.passRetained(cg).toOpaque()
+        let cgStatus = CGDisplayRegisterReconfigurationCallback(Self.reconfiguration, reference)
         recording.append("registration", ["api": "CGDisplayRegisterReconfigurationCallback", "status": cgStatus.rawValue])
-        guard cgStatus == .success else { throw RecoveryError.unsafe("CG callback registration failure") }
-        cgRegistered = true
+        guard cgStatus == .success else {
+            Unmanaged<IdentityCGEvents>.fromOpaque(reference).release()
+            throw RecoveryError.unsafe("CG callback registration failure")
+        }
+        cgReference = reference
         for name in IdentityObservationInventory.classes {
             for kind in [kIOPublishNotification, kIOTerminatedNotification] {
                 guard let match = IOServiceMatching(name) else { throw RecoveryError.unsafe("matching dictionary unavailable") }
@@ -186,7 +193,7 @@ private final class IdentityLifetimeCollector {
                 let row = try IdentityObservationInventory.service(entry)
                 recording.append(initial ? "initial-service" : "service-event",
                     ["class": name, "notification": kind, "service": row], receipt: receipt)
-                if row["identityReadable"] as? Bool != true { throw RecoveryError.unsafe("unreadable service identity") }
+                try checkService(row)
                 if kind == kIOPublishNotification && !services.contains(where: { IOObjectIsEqualTo($0.0, entry) != 0 }) {
                     guard services.count < 96, let port else { throw RecoveryError.unsafe("retained service inventory overflow") }
                     var notification: io_object_t = 0
@@ -206,8 +213,37 @@ private final class IdentityLifetimeCollector {
         }
     }
 
+    func recordInterest(_ row: [String: Any], message: UInt32, receipt: [String: Any]) {
+        recording.append("general-interest", ["messageType": message, "service": row], receipt: receipt)
+        do { try checkService(row) } catch { recording.fail(String(describing: error)) }
+        inventoryNeeded = true
+    }
+
+    func checkService(_ row: [String: Any]) throws {
+        guard row["entryIDStatus"] as? Int32 == 0, row["pathStatus"] as? Int32 == 0,
+              row["busyStatus"] as? Int32 == 0, row["identityReadable"] as? Bool == true else {
+            recording.append("service-read-failure", row)
+            recording.fail("required service read failed")
+            throw RecoveryError.unsafe("required service read failed")
+        }
+    }
+
+    func arm(acknowledge: () -> Void) throws {
+        if consumeCG() { recording.fail("CG events during setup; stable readiness not established") }
+        do {
+            try cg.whenEmpty {
+                try recording.arm(initialIteratorsDrained: initialDrains == 6)
+                acknowledge()
+            }
+        } catch { recording.fail(String(describing: error)); throw error }
+    }
+
     func inventory() throws -> [[String: Any]] {
-        try services.map { try IdentityObservationInventory.service($0.0) }.sorted {
+        try services.map {
+            let row = try IdentityObservationInventory.service($0.0)
+            try checkService(row)
+            return row
+        }.sorted {
             ($0["registryEntryID"] as! UInt64) < ($1["registryEntryID"] as! UInt64)
         }
     }
@@ -224,13 +260,18 @@ private final class IdentityLifetimeCollector {
 
     func stop() {
         guard !stopped else { return }; stopped = true
-        if cgRegistered {
-            let status = CGDisplayRemoveReconfigurationCallback(Self.reconfiguration, Unmanaged.passUnretained(cg).toOpaque())
-            recording.append("unregistration", ["api": "CGDisplayRemoveReconfigurationCallback", "status": status.rawValue])
-            if status != .success { recording.fail("CG callback removal failure") }
-            cgRegistered = false
-        }
         if consumeCG(close: true) { recording.fail("CG events at cleanup; incomplete final context") }
+        if let reference = cgReference {
+            let status = removeCG(reference)
+            recording.append("unregistration", ["api": "CGDisplayRemoveReconfigurationCallback", "status": status.rawValue])
+            if status == .success { Unmanaged<IdentityCGEvents>.fromOpaque(reference).release() }
+            else {
+                // Failed removal may leave CG calling this address. Intentionally
+                // retain the closed, bounded context until process exit, no retry.
+                recording.fail("CG callback removal failure; closed context retained until process exit")
+            }
+            cgReference = nil
+        }
         if let source { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .defaultMode) }
         for (service, notification) in services { IOObjectRelease(notification); IOObjectRelease(service) }
         services.removeAll()
