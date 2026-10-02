@@ -83,3 +83,34 @@ Read-only subprocess rehearsal passed before the live trial with artifacts at
 No test helper remained running after the trial. The ICC mismatch is now
 explained, but another live trial still requires fresh baseline/preflight and
 new explicit approval. A historical-byte replay is not a live restoration test.
+
+## Follow-up timed trial: passed
+
+After separate explicit approval and the ICC fix (`2dcacce`), on 2026-10-02 at
+11:05 local time the helper moved only the Dell origin from `(3440,-4)` to
+`(3440,12)`, verified the intermediate state, and restored `(3440,-4)` at the
+10-second deadline. Journal state: `restored`; trigger: `deadline`. The live
+XCTest passed in 10.52 seconds. Independent post-trial capture matched all
+baseline topology, identity, mode, rotation, and color-content fields. The two
+regenerated ICC files changed only their creation times to 11:05:35; full raw
+hashes and raw files were retained. The user confirmed all four displays visibly
+normal. Window placement was not verified or promised.
+
+This qualifies this origin-only public restoration path on the tested host,
+not mode/mirror restoration, private reconnection, or driver failure recovery.
+It deliberately uses the approved **current** baseline of `y=-4`; the original
+first-trial arrangement of `y=-20` has not been restored or adopted as a result.
+The first journal remains retained and unresolved.
+
+Evidence:
+
+- Journal and final snapshot:
+  `/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-origin-timed-icc.PAyt1ldO4d/`
+- Test transcript: `/tmp/panelctl-origin-timed-icc.log`
+- Before raw ICC files:
+  `/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-color-inspection-8616878C-0FDE-4909-B583-A47D04A2C890/`
+- After raw ICC files:
+  `/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-color-inspection-FF57BFD6-35D0-4037-A16F-507B7971C5E2/`
+
+No helper remained running. The user subsequently approved a single parent-kill
+trial at the same baseline, pending execution.

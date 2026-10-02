@@ -17,9 +17,13 @@
 - Fresh read-only reviewer `17d552b3-f4e7-459d-9022-adae13177986` found no
   validated defects in the scoped ICC delta. Report: `/tmp/panelctl-icc-review.md`.
   Static review is not live qualification or emitted-color verification.
-- A new origin-only timed trial at current baseline `(3440,-4)` has explicit
-  approval, pending execution after fresh preflight. No follow-up display write
-  had occurred at this checkpoint.
+- Specifically approved origin-only timed trial passed: `(3440,-4)` →
+  `(3440,12)` → `(3440,-4)`, `restored` at `deadline`, 10.52 seconds. Final
+  topology/profile-content verification passed; user confirmed normal visible
+  output. This qualifies only the tested origin-restoration path. See
+  [the complete live evidence](recovery-origin-trial.md).
+- Parent-kill trial at the same baseline has separate explicit approval,
+  pending execution. No private enable/disable calls have been made.
 
 ## Previous checkpoint: recovery-enable
 
