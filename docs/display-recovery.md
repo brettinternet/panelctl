@@ -108,8 +108,12 @@ to operate on offline or recycled IDs.
   startup. Sleep can delay execution; there is no wall-clock recovery guarantee.
 - `rehearse` journals have `verifyOnly: true`; the helper never calls the writer
   for them. `guard` journals use the public restoration writer. No shell-command
-  hook or private control backend exists. The internal `_recovery-helper` entry
-  point is not a standalone recovery command. The recorded helper PID is for
+  hook or production private recovery path exists. An injection-only, true-only
+  [re-enable backend](recovery-reenable.md) remains gated on unqualified offline
+  identity and is not connected to CLI/guard. The internal `_recovery-helper` entry
+  point is not a standalone recovery command. An internal origin-only qualification
+  payload exists for explicitly approved tests, not as a CLI command. See
+  [the trial and its failed qualification](recovery-origin-trial.md). The recorded helper PID is for
   diagnostics only; recovery never signals a PID loaded from a journal.
 - The helper cannot survive its own SIGKILL, logout, reboot, or a hung/crashed
   WindowServer/driver. Readiness is an acknowledgment, not a lifetime guarantee.
@@ -144,7 +148,10 @@ executed checks and unqualified behavior.
 permissions, corruption, identity rejection, write-ahead ordering, failed writes,
 verification failure, idempotence, and strict CLI parsing using fake displays.
 The full `swift test` suite also exercises the existing app/CLI behavior.
-The restoration pipeline is tested with a fake writer, not a live topology change.
+The restoration pipeline is tested with a fake writer. An approved live origin
+trial made one origin write but stopped on unexpected ICC-profile hash changes
+before restoration; the real restoration writer remains unqualified. See
+[the retained trial evidence](recovery-origin-trial.md).
 For opt-in **no-write** subprocess checks, build the CLI and pass its path:
 
 ```sh

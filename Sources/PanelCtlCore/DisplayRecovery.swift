@@ -224,9 +224,26 @@ enum RecoveryConfiguration {
 struct RecoveryEngine {
     var capture: () throws -> RecoverySnapshot = { try .capture() }
     var apply: (RecoverySnapshot) throws -> Void = { try RecoveryConfiguration.restore($0) }
+    // Only tests inject this until offline identity is independently qualified.
+    var reenable: RecoveryReenable?
 
     func finish(_ journal: inout RecoveryJournal, store: RecoveryStore, verifyOnly: Bool, trigger: String) throws {
         do {
+            let initial = try capture()
+            let missing = journal.snapshot.displays.contains { original in
+                !initial.displays.contains { $0.uuid == original.uuid }
+            }
+            if missing, !verifyOnly, let reenable {
+                guard journal.reenableAttempted != true else {
+                    throw RecoveryError.unsafe("private re-enable was already attempted; retain evidence and recover manually")
+                }
+                _ = try reenable.target(snapshot: journal.snapshot, current: initial)
+                journal.state = .restoring; journal.trigger = trigger
+                journal.reenableAttempted = true
+                // Durable one-shot intent: a crash must never replay enable.
+                try store.save(journal)
+                try reenable.restoreMissing(snapshot: journal.snapshot, capture: capture)
+            }
             try journal.snapshot.validateRestoration(to: capture())
             journal.trigger = trigger
             if !verifyOnly {

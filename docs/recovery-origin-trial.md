@@ -44,5 +44,35 @@ successful trial before considering the next.
 
 ## Results
 
-Pending first approved timed trial. Read-only subprocess rehearsal passed with
-artifacts at `/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-recovery-integration-78BA7240-0E15-445E-90FD-BCA08E822387`.
+On 2026-10-02, after explicit interactive approval, **one session-scoped origin
+write** moved the Dell to `(3440,-4)`. Intermediate verification immediately
+failed: ICC-profile digests changed for main Dell AW3423DW and AW3425DW. All
+captured topology/mode/identity fields otherwise matched the expected origin
+move. No mode, rotation, mirror, color, power, or private setters were requested.
+Whether these hashes reflect a real color change or regenerated profile data is
+unexplained; checks were **not** weakened.
+
+The helper stopped in `needsAttention`; no restoration write or parent-kill
+trial followed. This is a **failed qualification**, not a successful timed
+restore. The user confirmed all displays visibly working and authorized safe
+work only, leaving manual arrangement correction to them. Exact baseline
+restoration and application-window placement are not claimed.
+
+Evidence retained:
+
+- Original journal and read-only post-trial snapshot:
+  `/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-origin-timed.znW5fTJGAI/`
+  (`current.json`, `observed.json`, `final-observed.json`). Final read-only
+  verification still refused the original snapshot; the last capture retained
+  the same post-trial origin and ICC hashes.
+- Test transcript: `/tmp/panelctl-origin-timed.log`.
+- Original → observed ICC digests:
+  - AW3423DW: `f1e8d8fa436fc90eccc6d94852e3de30f6e0f231009ebbe8e13fa5877dfa0fdd`
+    → `8868d1405f18ca2d6b9ed406632b938277ceef5a4adfae49faee8877d887ec48`.
+  - AW3425DW: `520d9467b35d628e21a5d56b4a11f19df67f75c3987c98f4ac51fa011fc7a17a`
+    → `fa2e25f3df4effdbb9293fc38b688344086f3aa6a75a9debbd4ddf3c0f8c6c7d`.
+
+Read-only subprocess rehearsal passed before the live trial with artifacts at
+`/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-recovery-integration-78BA7240-0E15-445E-90FD-BCA08E822387`.
+No test helper remained running after the trial. Another live trial requires
+explaining the mismatch, fresh baseline/preflight, and new explicit approval.

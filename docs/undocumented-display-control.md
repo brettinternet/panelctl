@@ -12,6 +12,10 @@ link-control, power, or DDC commands were executed during this investigation.
 [Recovery tooling](display-recovery.md) now implements snapshot/journal handling,
 public-configuration restoration, a timed helper, and no-write crash rehearsals.
 Private reconnection and safe disable qualification remain future work.
+[True-only re-enable groundwork](recovery-reenable.md) now exists behind an
+injection-only seam; no offline identity provider is qualified. The first
+[approved origin trial](recovery-origin-trial.md) stopped on unexpected ICC
+hash changes before restoration. No further live writes are authorized.
 
 ## Read-only host evidence
 

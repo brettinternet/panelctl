@@ -19,6 +19,7 @@ struct RecoveryJournal: Codable {
     // Diagnostics only; never used to signal or identify a process for recovery.
     var watchdogPID: Int32?
     var originTrial: RecoveryOriginTrial?
+    var reenableAttempted: Bool?
 
     init(snapshot: RecoverySnapshot, verifyOnly: Bool = false, timeout: TimeInterval? = nil) {
         let now = Date()
