@@ -26,6 +26,13 @@ compensation paths.
 sleep/wake, private-API probes, and verified DDC luminance reads/writes. It does
 not invoke private topology APIs or send DDC power commands.
 
+## Further exploration
+
+[Recovery-first undocumented display control](undocumented-display-control.md)
+compares soft disconnect, link control, and power APIs against the requirement
+for easy restoration. It includes read-only evidence from the newer host and
+qualification gates; no private state-changing calls have been tested there.
+
 ## API findings
 
 ### Public CoreGraphics
