@@ -1,5 +1,14 @@
 # Recovery validation checkpoint
 
+## Static geometry follow-up — no rerun
+
+[Static investigation](blackout-geometry-investigation.md) narrows the retained
+failure to an exact 90% center-preserving compositor/model bounds discrepancy.
+The conversion preserves size, and the relevant source/test are unchanged from
+main. Root cause is not proven; no conversion fix or origin correction is
+justified. The full-suite failure remains open. No tests, windows, observer runs,
+or display operations were performed for this follow-up.
+
 ## Driver-facing source and observer boundary follow-up
 
 - [Targeted DCP/framebuffer research](recovery-connector-binding.md#driver-facing-source-follow-up-2026-10-03-utc)
