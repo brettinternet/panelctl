@@ -123,7 +123,10 @@ flakiness would be premature.
   and compositor assertion before this branch. Identical source rules out a
   direct edit here, not an environmental effect or interaction elsewhere.
 
-## Stop and integration consequence
+## Historical stop and integration consequence — superseded by follow-through
+
+The following was the static-only checkpoint. Current passing validation and
+the remaining historical uncertainty are recorded at the top of this document.
 
 No production fix, weakened equality, inflated window, longer arbitrary sleep,
 or generic regression test is justified by static evidence alone. The full

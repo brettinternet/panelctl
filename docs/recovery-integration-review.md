@@ -11,7 +11,12 @@ The new diagnostics retain the original exact first-sample assertion.
 
 This removes the *currently failing suite* integration hold, not the historical
 geometry uncertainty. Independent follow-up review of the test change and
-[scoped binary evidence](recovery-identity-binary.md) is in progress. Source
+[scoped binary evidence](recovery-identity-binary.md) **passed with no validated
+findings** (run `c8b27dfd-5d4a-4e68-a8a7-d695e19551b6`, source at `29f2bcd`,
+documentation through `fbb5c5a`). It independently read the retained test logs
+and decisive assembly. Compiler command flags and release builds were
+parent-attested; the reviewer executed nothing. Subsequent `d599846` records
+successful x86_64 cross-builds and changes documentation only. Source
 readiness and green tests qualify only the gated groundwork. The user's actual
 monitor-shutoff/reliable-restoration goal remains blocked on the identity
 contracts; it is not delivered by this branch.
