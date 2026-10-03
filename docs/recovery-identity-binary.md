@@ -1,5 +1,12 @@
 # Offline identity — scoped local binary trace
 
+## Firmware and consumer follow-through
+
+The [next bounded static trace](recovery-firmware-consumers.md) confirms that a
+local DCP firmware image and framebuffer-ID consumers are accessible. It reaches
+firmware reconstruction/dispatch and CA-object-to-offline-CG lifetime boundaries,
+not a qualified restoration identity. Private re-enable remains blocked.
+
 ## Outcome
 
 **Actual selected-monitor shutoff and reliable restoration remain blocked, not
