@@ -1,5 +1,14 @@
 # Recovery validation checkpoint
 
+## Static integration review
+
+[Parent and independent review](recovery-integration-review.md) found no validated
+source-level blocker in the gated groundwork. Production private re-enable
+remains blocked. The origin-trial handler is compiled into the helper despite
+its test-only creator; no authorization bypass was demonstrated. The unresolved
+full-suite geometry failure prevents an unconditional validation recommendation.
+No tests/builds or live operations were run, and no merge or push occurred.
+
 ## Static geometry follow-up — no rerun
 
 [Static investigation](blackout-geometry-investigation.md) narrows the retained
