@@ -154,6 +154,74 @@ final class IdentityRegistryFailureTests: XCTestCase {
         }
     }
 
+    func testInterestRegistrationRecordOverflowReleasesNotificationBeforeRetain() throws {
+        let fake = FakeRegistry(); fake.entries = [10, 11]
+        // Registration and initial-service fit; interest-registration does not.
+        let collector = try collector(fake, recordLimit: 2)
+        XCTAssertThrowsError(try collector.registerMatching(name: "fake", kind: kIOPublishNotification))
+        XCTAssertTrue(collector.recording.failure!.contains("overflow"))
+        XCTAssertEqual(fake.interests, 1); XCTAssertEqual(fake.retains, 0)
+        XCTAssertEqual(fake.nextCalls, 1)
+        XCTAssertTrue(collector.services.isEmpty)
+        XCTAssertEqual(fake.released, [2000, 10])
+        assertCannotArm(collector)
+        collector.stop(); collector.stop()
+        XCTAssertEqual(fake.released, [2000, 10, 1000])
+    }
+
+    func testSixActualInitialDrainsArmAndLaterTerminationDoesNotRegisterInterest() throws {
+        let fake = FakeRegistry()
+        let collector = try collector(fake)
+        for name in IdentityObservationInventory.classes {
+            for kind in [kIOPublishNotification, kIOTerminatedNotification] {
+                try collector.registerMatching(name: name, kind: kind)
+                fake.iterator += 1
+            }
+        }
+        XCTAssertEqual(collector.initialDrains, 6)
+        var acknowledgments = 0
+        try collector.arm { acknowledgments += 1 }
+        XCTAssertEqual(acknowledgments, 1)
+        XCTAssertTrue(collector.recording.ready)
+        fake.entries = [10]
+        IdentityLifetimeCollector.matching(Unmanaged.passUnretained(collector).toOpaque(), 1001)
+        XCTAssertTrue(collector.inventoryNeeded)
+        XCTAssertEqual(collector.initialDrains, 6)
+        XCTAssertEqual(fake.interests, 0); XCTAssertEqual(fake.retains, 0)
+        XCTAssertEqual(fake.released, [10])
+        collector.stop(); collector.stop()
+        XCTAssertEqual(Set(fake.released), Set([10] + Array(UInt32(1000)...1005)))
+        XCTAssertEqual(fake.released.count, 7)
+        try collector.recording.finish(deadlineReached: true)
+        let summary = try JSONSerialization.jsonObject(with: Data(contentsOf:
+            collector.recording.root.appendingPathComponent("summary.json"))) as! [String: Any]
+        XCTAssertEqual(summary["complete"] as? Bool, true)
+        // Only the collector mechanics are exercised, not a live passive run.
+    }
+
+    func testPostReadinessInterestFailureSurvivesCleanupAndTerminalSummary() throws {
+        let fake = FakeRegistry()
+        let collector = try collector(fake)
+        for index in 0..<6 {
+            fake.iterator = UInt32(1000 + index)
+            try collector.registerMatching(name: "fake", kind: kIOPublishNotification)
+        }
+        try collector.arm {}
+        fake.readFails = true
+        IdentityLifetimeCollector.interest(Unmanaged.passUnretained(collector).toOpaque(), 10, 123, nil)
+        let failure = try XCTUnwrap(collector.recording.failure)
+        collector.stop()
+        try collector.recording.finish(deadlineReached: true)
+        let summary = try JSONSerialization.jsonObject(with: Data(contentsOf:
+            collector.recording.root.appendingPathComponent("summary.json"))) as! [String: Any]
+        XCTAssertEqual(summary["ready"] as? Bool, true)
+        XCTAssertEqual(summary["complete"] as? Bool, false)
+        XCTAssertEqual(summary["failure"] as? String, failure)
+        XCTAssertEqual(fake.reads, 1)
+        XCTAssertFalse(fake.released.contains(10)) // Callback service was borrowed.
+        XCTAssertEqual(fake.released.count, 6)
+    }
+
     func testRetainedInventoryBoundStopsBeforeInterestRegistration() throws {
         let fake = FakeRegistry(); fake.entries = [97]
         let collector = try collector(fake)

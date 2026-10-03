@@ -170,6 +170,45 @@ final class IdentityObservationTests: XCTestCase {
         }
     }
 
+    func testTerminalSummaryCollisionPreservesExistingEvidenceAndCannotRetry() throws {
+        for symlink in [false, true] {
+            let record = try recorder()
+            let existing = Data("existing evidence".utf8)
+            try record.save(existing, name: symlink ? "preserved.json" : "summary.json")
+            let summary = record.root.appendingPathComponent("summary.json")
+            if symlink {
+                try FileManager.default.createSymbolicLink(atPath: summary.path, withDestinationPath: "preserved.json")
+            }
+            try record.arm(initialIteratorsDrained: true)
+            XCTAssertThrowsError(try record.finish(deadlineReached: true))
+            XCTAssertEqual(try Data(contentsOf: summary), existing)
+            let pending = try Data(contentsOf: record.root.appendingPathComponent("summary.pending.json"))
+            XCTAssertThrowsError(try record.finish(deadlineReached: true))
+            XCTAssertEqual(try Data(contentsOf: summary), existing)
+            XCTAssertEqual(try Data(contentsOf: record.root.appendingPathComponent("summary.pending.json")), pending)
+            if symlink {
+                XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: summary.path), "preserved.json")
+            }
+        }
+    }
+
+    func testPendingCGReceiptAtCleanupMakesArmedRecordingIncomplete() throws {
+        let record = try recorder()
+        let collector = IdentityLifetimeCollector(recording: record)
+        collector.initialDrains = 6
+        try collector.arm {}
+        collector.cg.receive(id: UInt32.max, flags: 123)
+        collector.stop(); collector.stop()
+        try record.finish(deadlineReached: true)
+        XCTAssertEqual(try json(record, "summary.json")["ready"] as? Bool, true)
+        XCTAssertEqual(try json(record, "summary.json")["complete"] as? Bool, false)
+        XCTAssertTrue(record.failure!.contains("CG events at cleanup"))
+        XCTAssertTrue(collector.cg.drain().0.isEmpty)
+        let lines = try String(contentsOf: record.root.appendingPathComponent("events.jsonl")).split(separator: "\n")
+        let rows = try lines.map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
+        XCTAssertEqual(rows.filter { $0["kind"] as? String == "cg-reconfiguration" }.count, 1)
+    }
+
     func testServiceReadFailureIsStickyEvenAfterSuccessfulInventory() throws {
         let good: [String: Any] = ["entryIDStatus": Int32(0), "pathStatus": Int32(0),
                                   "busyStatus": Int32(0), "identityReadable": true]

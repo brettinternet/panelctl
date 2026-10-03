@@ -214,6 +214,10 @@ final class IdentityLifetimeCollector {
                         if notification != 0 { registry.release(notification) }
                         throw RecoveryError.unsafe("general-interest registration failure")
                     }
+                    if let failure = recording.failure {
+                        registry.release(notification)
+                        throw RecoveryError.unsafe(failure)
+                    }
                     let retained = registry.retain(entry)
                     guard retained == KERN_SUCCESS else { registry.release(notification); throw RecoveryError.unsafe("service retain failure") }
                     services.append((entry, notification))

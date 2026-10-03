@@ -115,6 +115,21 @@ failure, and recording overflow stops a drain before additional interest
 registrations. The previous passive control remains evidence for `001846a`
 only; the follow-up does not run another observation or qualify hotplug delivery.
 
+### Additional offline boundary tests
+
+Five more tests cover overflow while recording a successful interest registration,
+six actual injected initial drains followed by a termination callback, a borrowed
+interest callback's read failure after readiness through terminal summary, queued
+CG events at cleanup, and summary-name file/symlink collisions without overwrite
+or retry. All 28 observer tests pass. The overflow regression first failed five
+assertions: the collector retained a service and advanced the iterator after
+recording failed. It now releases the new notification and stops before retaining
+or reading another entry. This is diagnostic cleanup only, not identity policy.
+
+No new live control ran. LSP reported clean for both changed test files and unknown
+for the collector; compiler/tests provide the executable check. The earlier
+full-suite live-window failure remains unresolved and was not rerun.
+
 ## Single passive control — completed 2026-10-02
 
 Ran the release executable at `001846a` once after preflight and review. No
