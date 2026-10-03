@@ -1,6 +1,23 @@
 # Recovery validation checkpoint
 
-## Authorized execution follow-through
+## Mission Control fix validation
+
+At `1105790`, the `.stationary` production change addresses the reproduced
+Mission Control coverage loss, not a proven cause of the historical 90% shrink.
+The property regression failed before the change and passes afterward. Full
+suite: 205 tests, 203 passed and two intentional skips, zero failures. The
+connected-screen geometry test passed. Warnings-as-errors build-tests, arm64 and
+x86_64 release builds of all three products, and release-version checks passed.
+Independent review found no validated findings (see integration record).
+
+Logs under `/tmp/panelctl-geometry-stationary-`: `red.log`, `full.log`,
+`warnings.log`, `arm64.log`, `x86.log`. LSP was clean for the test, unknown for
+Blackout.swift. Exactly the two additionally approved Mission Control cycles
+were used; their temporary probe source is outside the test target. No display
+configuration/origin/mode/power/connection change or private invocation occurred.
+Monitor shutoff/restoration remains blocked, not completed.
+
+## Earlier authorized execution follow-through
 
 - The unchanged connected-screen geometry test passed standalone, in the full
   suite, with all nine geometry tests, and in ten bounded standalone repetitions.

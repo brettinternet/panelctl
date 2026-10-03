@@ -1,6 +1,30 @@
 # Recovery branch integration review
 
-## Execution follow-through (after the original review)
+## Mission Control fix and final integration check
+
+`1105790` fixes a separately reproduced blackout coverage defect: non-normal-level
+windows default to transient and disappear during Mission Control. Explicit
+`.stationary` preserves their sampled on-screen status and exact bounds, for
+both existing windows and windows newly ordered during the overview. The original
+90% size discrepancy remains unreproduced, not retrospectively diagnosed.
+
+Independent reviewer `9faea718-b61e-4eda-99c6-4fc02e0e904d` found **no validated
+findings** in this delta, including both blocking and working modes. It read the
+probe source/log, SDK contract, red regression and passing suite evidence;
+it performed no execution or UI interaction. The approved two-cycle probe is
+outside the test target, so normal test runs cannot open Mission Control.
+
+After the fix: **205 tests, 203 passed, two explicit skips, zero failures**;
+warnings-as-errors build-tests; all three release products for arm64 and x86_64;
+and release-version policy checks pass. Architecture builds and compiler flags
+are parent-attested. LSP: test file clean; source file unknown.
+
+Integration is supported as a blackout coverage correction plus gated recovery
+groundwork. Actual selected-monitor shutoff/restoration is still a **feasibility
+blocker**, not delivered functionality. Private re-enable stays blocked. No push
+or merge occurred; the clean worktree is retained for the integration decision.
+
+## Earlier execution follow-through (after the original review)
 
 At `29f2bcd`, current full-suite validation is green: 205 tests, 203 passed and
 two intentional skips. Warnings-as-errors, all three release-product builds,

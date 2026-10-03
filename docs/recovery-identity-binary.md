@@ -114,6 +114,16 @@ identifiers; **equivalence or a conversion to CGDirectDisplayID is not establish
 The kernel handler and AP function provide corroborating implementation evidence;
 this bounded trace does not claim a complete runtime dispatch-table attestation.
 
+A bounded consumer-side follow-through finds
+`CA::WindowServer::IOMFBDisplay::get_framebuffer_id` in QuartzCore at
+`0x18b3a1904`: it initializes a 32-bit output to zero, loads its framebuffer
+object at `+0x6480`, calls `IOMobileFramebufferGetID` at `0x18b3a1930`, and
+returns that output. Retained targeted assembly: `quartzcore-getid.asm` in the
+same evidence directory/cache. This identifies a real WindowServer-side
+consumer, **not** an offline-CG conversion or lifetime contract. No private
+function was invoked. A WIP tool's empty cross-reference result was not treated
+as proof of no callers; the symbol-resolved call was found in QuartzCore instead.
+
 `GetServiceObject` (`0x18ff069f0`) simply returns the stored service object at
 `+0x10`. Neither it nor a fresh wrapper creates physical-sink identity provenance.
 
