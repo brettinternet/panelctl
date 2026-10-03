@@ -1,6 +1,29 @@
 # Recovery validation checkpoint
 
-## Static integration review
+## Authorized execution follow-through
+
+- The unchanged connected-screen geometry test passed standalone, in the full
+  suite, with all nine geometry tests, and in ten bounded standalone repetitions.
+  The historical 90% failure was not reproduced; no production fix is claimed.
+- `29f2bcd` retains the strict first-sample assertion, adds failure-only paired
+  bounds/timing context and guarantees temporary-window cleanup on thrown errors.
+  A temporary synthetic first-sample mismatch exercised the diagnostics and
+  failed as expected; it was removed before final validation.
+- Full suite after the edit: **205 tests, 203 passed, two intentional skips,
+  zero failures**. Origin-trial and retained ICC-replay variables unset.
+  Warnings-as-errors build-tests passed. Release panelctl, PanelCtlApp and
+  observe-recovery-identity builds passed; release-version checks passed.
+  LSP unknown, not clean. Logs: `/tmp/panelctl-recovery-final-tests.log`,
+  `/tmp/panelctl-recovery-final-warnings.log`.
+- [Static binary inspection](recovery-identity-binary.md) establishes additional
+  transport/cache facts, not a qualified recovery identity. Actual selected
+  monitor shutoff/restoration remains blocked and is **not completed**.
+- No origin/configuration/mode/power/connection change, private interface call,
+  device client, or observer run occurred. Only the permitted test windows were
+  shown. No push or merge. Independent follow-up review is tracked in the
+  [integration record](recovery-integration-review.md).
+
+## Original static integration review
 
 [Parent and independent review](recovery-integration-review.md) found no validated
 source-level blocker in the gated groundwork. Production private re-enable

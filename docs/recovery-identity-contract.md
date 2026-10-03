@@ -1,5 +1,14 @@
 # Private re-enable identity contract — bounded source investigation
 
+## Subsequent authorized binary trace
+
+The [local binary follow-through](recovery-identity-binary.md) now establishes a
+user-client/DCP IPC EDID transport and cached framebuffer-ID behavior. It still
+does not establish the fresh sink / unique offline-CG association / invalidation
+contracts. Actual selected-monitor shutoff and reliable restoration remain a
+feasibility blocker, not completed functionality. The original source-only scope
+and conclusions below are historical evidence.
+
 ## Scope and acceptance gate
 
 Follow-up to [connector binding](recovery-connector-binding.md). Work is limited

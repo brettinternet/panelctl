@@ -2,10 +2,13 @@
 
 ## Recommendation
 
-Investigate macOS-side soft disconnect through `CGSConfigureDisplayEnabled`
-first. Do not enable it as a normal feature yet. It avoids deliberately sending
-monitor firmware a DDC power command, but neither harmlessness nor reliable
-reconnection follows from that distinction. Recovery is the unresolved gate.
+Actual selected-monitor shutoff and reliable restoration is the goal; blackout
+windows are not completion. The first candidate, macOS-side soft disconnect via
+`CGSConfigureDisplayEnabled`, is now **blocked on feasibility**, not qualified
+for a live shutoff trial. The [scoped binary trace](recovery-identity-binary.md)
+found EDID IPC transport and cached framebuffer IDs, but no qualified fresh
+offline sink binding/invalidation. Avoiding DDC power commands does not itself
+establish harmlessness or reliable reconnection.
 
 This is an exploration, not a qualified implementation. No display-disable,
 link-control, power, or DDC commands were executed during this investigation.

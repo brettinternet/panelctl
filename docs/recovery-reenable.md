@@ -5,8 +5,10 @@
 **Parked after the [bounded source-contract investigation](recovery-identity-contract.md).**
 Neither targeted interface established the required fresh sink identity,
 independent unique offline-CG association, and invalidation. Physical unplug is
-not the next qualification step. No observer rerun or binary inspection is
-included; the geometry failure remains separate.
+not the next qualification step. The subsequently authorized
+[static binary trace](recovery-identity-binary.md) established EDID IPC transport
+and cached framebuffer IDs, but not the missing contracts. No private call was
+invoked. Geometry remains separate supporting work, not monitor shutoff.
 
 There is **no production offline identity provider**, no enable/disable command,
 no automatic private recovery, and no startup behavior. The default

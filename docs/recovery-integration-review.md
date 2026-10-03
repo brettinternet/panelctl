@@ -1,6 +1,22 @@
 # Recovery branch integration review
 
-## Recommendation
+## Execution follow-through (after the original review)
+
+At `29f2bcd`, current full-suite validation is green: 205 tests, 203 passed and
+two intentional skips. Warnings-as-errors, all three release-product builds,
+and release-version policy checks pass. The unchanged geometry test passed ten
+bounded repetitions before the failure-diagnostic/cleanup-only edit. Its original
+failure has not been reproduced or explained; it must not be called fixed.
+The new diagnostics retain the original exact first-sample assertion.
+
+This removes the *currently failing suite* integration hold, not the historical
+geometry uncertainty. Independent follow-up review of the test change and
+[scoped binary evidence](recovery-identity-binary.md) is in progress. Source
+readiness and green tests qualify only the gated groundwork. The user's actual
+monitor-shutoff/reliable-restoration goal remains blocked on the identity
+contracts; it is not delivered by this branch.
+
+## Original static recommendation
 
 **Source review supports the gated groundwork; do not describe the branch as
 fully validated or private re-enable as available.** No concrete merge-blocking
