@@ -12,7 +12,9 @@
 - Full suite after the edit: **205 tests, 203 passed, two intentional skips,
   zero failures**. Origin-trial and retained ICC-replay variables unset.
   Warnings-as-errors build-tests passed. Release panelctl, PanelCtlApp and
-  observe-recovery-identity builds passed; release-version checks passed.
+  observe-recovery-identity builds passed on arm64 and cross-compiled x86_64
+  (macOS 13 deployment target); release-version checks passed. x86_64 binaries
+  were compiled only, not run. Cross-build log: `/tmp/panelctl-recovery-x86-build.log`.
   LSP unknown, not clean. Logs: `/tmp/panelctl-recovery-final-tests.log`,
   `/tmp/panelctl-recovery-final-warnings.log`.
 - [Static binary inspection](recovery-identity-binary.md) establishes additional
