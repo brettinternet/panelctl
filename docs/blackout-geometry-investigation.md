@@ -1,6 +1,44 @@
-# Blackout geometry failure — static investigation
+# Blackout geometry investigation
 
-## Authorized runtime follow-through
+## Mission Control coverage defect — reproduced and fixed
+
+A subsequent explicitly approved two-cycle Mission Control experiment compared
+unchanged production windows with the same windows plus `.stationary`. No
+configuration, origin, mode, power, connection, or private-interface operation
+was performed. The probe used public AppKit/CoreGraphics window APIs and opened
+Mission Control through `/usr/bin/open -a "Mission Control"`, then toggled it out.
+
+- Existing behavior: all three non-main windows lost `kCGWindowIsOnscreen` during
+  Mission Control, despite retaining exact model and compositor bounds. Newly
+  ordered windows during the overview likewise lacked that on-screen flag.
+  All regained it after exiting the overview.
+- With `.stationary`: existing windows retained the on-screen flag and exact
+  bounds throughout the sampled interval; newly ordered windows had both too.
+- AppKit's installed `NSWindow.h` documents non-normal-level windows as defaulting
+  to **transient**, hidden by Exposé. **Stationary** windows remain visible and
+  stationary. `.animationBehavior = .none` is a separate ordering-animation
+  control and does not override this collection behavior.
+
+`configureWindow` now explicitly includes `.stationary`. No frame conversion,
+window size, assertion tolerance or wait duration changed. The existing blocking
+window property test now requires the complete collection behavior; it failed
+before the fix (257 vs 273) and passes after it. The probe source was moved out
+of the test target: normal test runs must never invoke Mission Control.
+
+**This fixes a reproduced coverage defect, not a proven cause of the historical
+90% shrink.** Neither Mission Control variant reproduced that shrink. Earlier
+bounded batch-ordering and immediate/1ms/10ms sampling probes also did not show
+scaling; immediate sampling found not-yet-registered windows before a run-loop
+turn. Those temporary test edits were removed rather than relaxing acceptance.
+
+Evidence: `/tmp/panelctl-geometry-mission-control-probe.swift` and
+`/tmp/panelctl-geometry-mission-control-probe.log`; regression red log
+`/tmp/panelctl-geometry-stationary-red.log`; passing full-suite and compiler logs
+`/tmp/panelctl-geometry-stationary-full.log` and
+`/tmp/panelctl-geometry-stationary-warnings.log`. Temporary windows were closed.
+This remains supporting blackout work, not actual monitor shutoff/restoration.
+
+## Earlier authorized runtime follow-through
 
 After explicit permission to run the temporary-window test (but not to change
 display configuration), the **unchanged** test passed: once alone, in the full
