@@ -1,5 +1,22 @@
 # Recovery validation checkpoint
 
+## Driver-facing source and observer boundary follow-up
+
+- [Targeted DCP/framebuffer research](recovery-connector-binding.md#driver-facing-source-follow-up-2026-10-03-utc)
+  distinguishes IOAV EDID retrieval from proof of fresh acquisition; Wine joins
+  via online CG metadata. Clamless reports framebuffer IDs can differ from CG
+  IDs. Neither supplies a qualified offline Dell binding; neither was run.
+- Five new offline tests, 28 observer tests total. A regression failed before
+  the four-line fix: output failure during interest-registration recording no
+  longer retains the service or reads the next iterator entry.
+- Focused suite: 67 tests, 65 passed, two intentional skips, no failures. Live
+  approval and optional ICC replay variables unset. Both release products build.
+  LSP clean for the changed tests, unknown for the collector.
+- No observer run, device transaction or display mutation. The existing full-suite
+  geometry failure below remains unresolved; the live-window test was not rerun.
+- Private source copies and logs are linked in the research record. Existing
+  checkout retained; no push, PR, merge, new worktree or journal backfill.
+
 ## Connector-binding and offline failure-test follow-up
 
 - [Source research and evidence](recovery-connector-binding.md): no qualified

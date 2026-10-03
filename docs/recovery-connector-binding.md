@@ -123,6 +123,95 @@ before further interest registration. See [observer details](recovery-identity-o
   `/tmp/panelctl-connector-followup-focused-tests.log`, and
   `/tmp/panelctl-connector-followup-full-tests.log` (0600).
 
+## Driver-facing source follow-up (2026-10-03 UTC)
+
+Question: do the DCP EDID API or framebuffer ID/mapping interfaces expose a new
+acquisition source with an independent, fresh join to an enumerated offline CG
+ID? This follow-up read source and SDK files only. No downloaded source was
+compiled or run; no IOAV service, framebuffer connection or notification was
+opened. These interfaces are not additions to the observer.
+
+### DCP EDID is a candidate producer, not a qualified credential
+
+Wine, pinned at `455e3509b98a6919fd4ad1def4803e08c41c03b2`,
+[`dlls/winemac.drv/cocoa_display.m`](https://github.com/wine-mirror/wine/blob/455e3509b98a6919fd4ad1def4803e08c41c03b2/dlls/winemac.drv/cocoa_display.m):
+
+- Lines 561–626 enumerate `DCPAVServiceProxy`, construct an IOAV service and call
+  `IOAVServiceCopyEDID`. The helper returns the first EDID matching the supplied
+  vendor/model/serial tuple. It returns bytes, not a connector/CG-ID association
+  or acquisition-generation record, and does not reject duplicate matching sinks.
+- Lines 897–951 obtain **online** CG IDs, associate them with NSScreen, read the
+  CG vendor/model/serial fields, then pass those fields to the DCP helper. Thus
+  the join is metadata equality, not an independent driver-to-offline-CG-ID map.
+- Lines 629–672 and 947–951 fall back to registry EDID and then synthesized EDID.
+  Those are reasonable presentation fallbacks, not recovery identity evidence.
+  None is adopted here.
+
+[Alin Panaitiu's EDID article](https://notes.alinpanaitiu.com/Decoding-monitor-EDID-on-macOS),
+retrieved in full, describes the same proxy/IOAV path as DDC acquisition. Its
+Apple Silicon example has no CG-ID join or acquisition/invalidation token. That
+description is not a contract for the implementation behind `CopyEDID`, especially
+while logically offline on this M5 host. The article also includes state-changing
+examples; **none were executed**.
+
+This is a different API path from `IODisplayCreateInfoDictionary`. We have not
+established whether it shares cached data, freshly acquires hardware data, or
+changes behavior with link/offline state. Do not label it proven fresh **or**
+proven cached. Even proof of fresh EDID would leave the independent CG-ID join
+and invalidation requirements unresolved. Runtime IOAV/DDC experiments remain
+outside authorization.
+
+### Framebuffer IDs have no established CG namespace contract
+
+The installed SDK's private `IOMobileFramebuffer.framework` contains a linker
+stub, not interface headers. Its `IOMobileFramebuffer.tbd` exports
+`IOMobileFramebufferGetID`, `GetServiceObject`, `CopyProperty`, `CreateDisplayList`,
+`EnableHotPlugDetectNotifications`, and `AppleDisplayManagerMappingGet`. Symbol
+names alone supply neither callable signatures nor freshness, generation,
+notification completeness, or CG-ID namespace guarantees. No symbol was invoked.
+Targeted searches for `AppleDisplayManagerMappingGet` returned no source contract;
+this is search scope, not proof that no implementation exists.
+
+A [third-party reverse-engineered header](https://gist.github.com/anthonya1999/e0bffcac15b6b208126d/19fc70a202a5c8e0d8f463378bfb31030dc21085),
+revision `19fc70a202a5c8e0d8f463378bfb31030dc21085`, calls `GetID` a framebuffer
+identifier (lines 233–240) and typedefs its output as `CFTypeID` (line 26). It is
+not a current macOS driver contract or a declaration of `CGDirectDisplayID`.
+
+More directly, Clamless at `d0ff29add46e03d26bf5d760685ec842856cb15e`,
+[`src/helper/clamless-display.c:875–923`](https://github.com/TCXM/clamless/blob/d0ff29add46e03d26bf5d760685ec842856cb15e/src/helper/clamless-display.c#L875-L923),
+explicitly warns that `GetID` historically matched CG IDs but can instead return
+a framebuffer service ID, giving service ID 2 versus CG ID 1 as an example.
+This is the author's report, **not reproduced on this host**. Its built-in-display
+fallback prefers a cached CG-ID hint and otherwise opens a framebuffer and uses
+`GetID`. Cached hints, unenumerated IDs and retries are incompatible with our
+policy. It provides no external Dell sink-acquisition or replacement-generation
+proof. We read the source; did not build, install, or run this helper.
+
+### Scope, checks and retained evidence
+
+No driver-specific fresh acquisition/invalidation contract was established for
+the current macOS M5 framebuffer/DCP stack. Specifically missing: hardware read
+completion/provenance tied to the current physical sink, an independently
+specified join to a CG ID actually enumerated while logically offline, and a
+shared generation/lifetime rule that rejects replacement and ID reuse across
+that join. An EDID byte buffer, integer named ID, or hotplug symbol is not that
+contract. No production identity policy or old journal changed.
+
+Five additional offline observer tests exposed and fixed one diagnostic failure
+path: interest-registration record overflow no longer retains the service or
+advances the iterator. See [observer tests](recovery-identity-observer.md#additional-offline-boundary-tests).
+All 28 observer tests pass. Focused suite: 67 tests, 65 passed, two intentional
+skips, zero failures. Both release products build. LSP reported clean for the
+changed tests and unknown for the collector. No new live control; the previous
+full-suite window-geometry failure remains unresolved and was not rerun.
+
+Private source copies, SDK stub, and focused/build logs are retained at
+`/var/folders/jp/1mwx72h172955139pth4h8800000gn/T/panelctl-identity-source-followup.DTsAIskT4p/`
+(0700 directory, 0600 files). GitHub content was fetched with `gh api` at the
+revisions above. The initial Wine `display.c` lookup contained no EDID path;
+the relevant implementation is `cocoa_display.m`. Search summaries were used
+only to locate sources, not as implementation evidence.
+
 ## What would change the decision
 
 A useful next input is a documented or independently verified driver interface
