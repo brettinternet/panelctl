@@ -2,6 +2,11 @@
 
 ## Decision
 
+**Source-contract investigation complete; private re-enable parked.** See the
+[three-part interface verdict](recovery-identity-contract.md). No candidate
+establishes all required contracts; no physical-unplug or observer follow-up is
+proposed. Historical observations below are not current qualification.
+
 **Private re-enable remains blocked.** A live IORegistry object is not proof of
 live monitor identity. No production provider, journal migration, or display
 write is justified by the current evidence. DELL S2721DGF has not been observed
@@ -186,16 +191,16 @@ WindowServer's cached mapping; (4) whether sink replacement/replug/ID reuse
 invalidates the binding even when the shim persists; (5) whether relevant events
 are complete and ordered around the CG transition and a prospective enable.
 
-An online-only observation cannot answer these transition questions. Observing
-a separately approved disconnect transition would be necessary for further host
-qualification, but **would not by itself be sufficient** to prove freshness or
-all invalidation cases. A physical unplug also need not model a private soft
-disconnect. This continuation stops at that boundary; it does not request or
-execute a trial. Any future experiment needs a separate exact scope, physical
+An online-only observation cannot answer these transition questions. Physical
+unplug cannot establish physically-attached, logically-offline identity and is
+not the next qualification step. The targeted source-contract investigation
+has now reached its stop boundary; private re-enable is parked, with no trial
+requested or executed. Any future experiment needs a separate exact scope, physical
 fallback plan, fresh baseline, and explicit approval. Origin correction also
 remains separately gated; `(3440,-20)` has not been restored.
 
-The [investigation plan](recovery-identity-investigation-plan.md) separates the
-now-completed passive control from a still-unapproved physical negative control.
+The [historical investigation plan](recovery-identity-investigation-plan.md)
+retains the completed passive control and the parked, unapproved physical
+negative-control proposal.
 It is not physical-disconnect approval, and cannot qualify a physically attached
 but logically offline Dell or any private enable call.

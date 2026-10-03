@@ -2,6 +2,11 @@
 
 ## Result
 
+The [bounded interface-contract follow-up](recovery-identity-contract.md) closes
+this investigation at the published-source boundary and records all three
+requirements per candidate. **Private re-enable is parked**, not awaiting another
+online capture or physical unplug.
+
 **No qualifying independent, fresh offline binding was found in the inspected
 contracts and implementations.** This is a bounded negative finding, not proof
 that no private driver mechanism could exist. Production private re-enable
@@ -220,8 +225,8 @@ CG-ID association, with explicit invalidation semantics. A new name for the same
 CoreDisplay/registry data, another online snapshot, or an unqualified EDID hash
 would not advance that requirement. No such interface was established here.
 
-A separately approved physical unplug could disprove a metadata-presence claim,
-but cannot establish the required physically-attached/logically-offline binding.
-No unplug, software disconnect or reconnection experiment follows from this
-research. Keep unknown ID 4, strict identity checks, old journals and the blocked
+Physical unplug is not the next qualification step: it can disprove a
+metadata-presence claim but cannot establish the required physically-attached,
+logically-offline binding. No unplug, software disconnect or reconnection
+experiment follows from this research. Keep unknown ID 4, strict identity checks, old journals and the blocked
 production backend unchanged.

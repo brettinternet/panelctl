@@ -2,6 +2,12 @@
 
 ## Boundary
 
+**Parked after the [bounded source-contract investigation](recovery-identity-contract.md).**
+Neither targeted interface established the required fresh sink identity,
+independent unique offline-CG association, and invalidation. Physical unplug is
+not the next qualification step. No observer rerun or binary inspection is
+included; the geometry failure remains separate.
+
 There is **no production offline identity provider**, no enable/disable command,
 no automatic private recovery, and no startup behavior. The default
 `RecoveryEngine` still refuses missing displays. `RecoveryReenable` can only be

@@ -1,4 +1,12 @@
-# Offline identity investigation plan — not approved for execution
+# Offline identity investigation plan — parked historical proposal
+
+**Superseded as the next step by the [source-contract decision](recovery-identity-contract.md).**
+The targeted interfaces did not establish fresh sink identity, an independent
+unique offline-CG association, or invalidation. Private re-enable is parked.
+Stage B below is retained only as an unexecuted historical negative-control
+proposal, not a pending qualification step or approval request. Physical unplug
+cannot prove physically-attached, logically-offline identity. No observer rerun
+or physical/display-changing experiment follows from this document.
 
 ## Goal and limit
 
