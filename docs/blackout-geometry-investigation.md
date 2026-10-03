@@ -1,6 +1,37 @@
 # Blackout geometry failure — static investigation
 
-## Result and scope
+## Authorized runtime follow-through
+
+After explicit permission to run the temporary-window test (but not to change
+display configuration), the **unchanged** test passed: once alone, in the full
+suite, with all nine geometry tests, and in ten bounded standalone repetitions.
+No original 90% mismatch was reproduced. That is current passing evidence, not
+proof of a fixed cause or completion of actual monitor shutoff/restoration.
+
+The test now closes its window with `defer`, including on a thrown read failure.
+On a real mismatch it records elapsed time, post-order model and compositor
+bounds, screen ID, backing scale and active-Space membership at the original
+sample and two later samples (50 ms and 200 ms waits). **The first 10 ms sample
+still determines failure**; later agreement cannot pass the test. Successful
+runs keep the original sampling timing. No production conversion, window sizing,
+or display-origin behavior changed.
+
+The diagnostic branch was exercised by temporarily substituting a calculated
+90%-size rectangle for the first measured rectangle. The test failed for all
+three non-main screens despite subsequent real samples matching. This is a
+**synthetic diagnostic injection**, not reproduction of the original OS failure.
+The injection was removed immediately; the full suite then passed 205 tests
+(203 passed, two intentional skips). All nine geometry tests also passed after
+the diagnostic edit. LSP was unknown; compiler warnings-as-errors passed.
+
+Logs: `/tmp/panelctl-geometry-repetitions.log`,
+`/tmp/panelctl-geometry-diagnostic-injection.log`, and
+`/tmp/panelctl-recovery-final-tests.log`. Live origin-trial and optional ICC-replay
+environment variables were unset. No device-client/private-interface invocation,
+observer rerun, configuration/origin/mode/power change or connection change ran.
+Root cause remains unresolved; no speculative production fix is claimed.
+
+## Original static result and scope
 
 The retained failure is an exact **90% center-preserving size discrepancy** in
 WindowServer-reported bounds after ordering the windows. The source conversion

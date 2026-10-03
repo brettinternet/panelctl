@@ -17,6 +17,7 @@ final class BlackoutGeometryTests: XCTestCase {
                 mode: .blocking,
                 overlayOpacityPercent: 100
             )
+            defer { window.close() }
             let screenNumberKey = NSDeviceDescriptionKey("NSScreenNumber")
             let targetID = try XCTUnwrap(
                 (screen.deviceDescription[screenNumberKey] as? NSNumber)?.uint32Value
@@ -39,26 +40,39 @@ final class BlackoutGeometryTests: XCTestCase {
                 targetScreenID: targetID
             ))
 
+            func compositorBounds() throws -> CGRect {
+                let rows = try XCTUnwrap(CGWindowListCopyWindowInfo(
+                    [.optionIncludingWindow], CGWindowID(window.windowNumber)
+                ) as? [[String: Any]])
+                let row = try XCTUnwrap(rows.first {
+                    ($0[kCGWindowNumber as String] as? NSNumber)?.intValue == window.windowNumber
+                })
+                let raw = try XCTUnwrap(row[kCGWindowBounds as String] as? NSDictionary)
+                var bounds = CGRect.zero
+                let valid = CGRectMakeWithDictionaryRepresentation(raw, &bounds)
+                return try XCTUnwrap(valid ? bounds : nil, "invalid compositor bounds")
+            }
+
+            let orderedAt = ProcessInfo.processInfo.systemUptime
             window.orderFrontRegardless()
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
-            let windowInfo = try XCTUnwrap(
-                CGWindowListCopyWindowInfo(
-                    [.optionIncludingWindow],
-                    CGWindowID(window.windowNumber)
-                ) as? [[String: Any]]
-            ).first {
-                ($0[kCGWindowNumber as String] as? NSNumber)?.intValue == window.windowNumber
+            let firstBounds = try compositorBounds()
+            var samples: [String] = []
+            if firstBounds != expectedQuartzBounds {
+                // Preserve the original 10ms assertion. Later samples diagnose
+                // transient vs persistent mismatch; they cannot turn it into a pass.
+                func record(_ bounds: CGRect) {
+                    let id = (window.screen?.deviceDescription[screenNumberKey] as? NSNumber)?.uint32Value
+                    samples.append("t=\(ProcessInfo.processInfo.systemUptime - orderedAt) model=\(window.frame) compositor=\(bounds) screen=\(String(describing: id)) backingScale=\(window.backingScaleFactor) activeSpace=\(window.isOnActiveSpace)")
+                }
+                record(firstBounds)
+                for delay in [0.05, 0.20] {
+                    RunLoop.current.run(until: Date(timeIntervalSinceNow: delay))
+                    record(try compositorBounds())
+                }
             }
-            let rawBounds = try XCTUnwrap(windowInfo?[kCGWindowBounds as String])
-            var compositorBounds = CGRect.zero
-            XCTAssertTrue(
-                CGRectMakeWithDictionaryRepresentation(
-                    rawBounds as! CFDictionary,
-                    &compositorBounds
-                )
-            )
-            XCTAssertEqual(compositorBounds, expectedQuartzBounds)
-            window.close()
+            XCTAssertEqual(firstBounds, expectedQuartzBounds,
+                           "target=\(targetID) expectedAppKit=\(expectedFrame); \(samples.joined(separator: "; "))")
         }
     }
 
