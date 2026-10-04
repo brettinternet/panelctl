@@ -4,16 +4,19 @@ title: Qualify one supervised display-disable and recovery cycle
 status: To Do
 assignee: []
 created_date: '2026-10-04 05:03'
+updated_date: '2026-10-04 14:49'
 labels:
   - display-disable
   - human-gated
   - hardware
 dependencies:
   - TASK-8
+  - TASK-11
 references:
   - docs/display-disable-implementation-plan.md
   - docs/display-disable-tool-survey.md
   - docs/recovery-validation.md
+  - docs/display-disable-trial.md
 documentation:
   - docs/display-disable-implementation-plan.md
   - docs/display-disable-tool-survey.md
@@ -43,3 +46,18 @@ Direction: docs/display-disable-implementation-plan.md is canonical. This task i
 <!-- DOD:BEGIN -->
 - [ ] #1 Record changed files, validation commands/results, residual risks and handoff evidence; preserve existing checked criteria and never claim unperformed hardware qualification.
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Completed: inspected production provider defaults and reran refusal-before-writer test.
+2. Completed: prepared docs/display-disable-trial.md with pending consent/evidence fields and exact technical blockers.
+3. Completed: user chose to scope an offline prerequisite; created TASK-11. Release claim and commit preparation.
+4. Blocked: resume the supervised cycle only after real provider qualification and fresh scoped consent; no acceptance claimed for unperformed hardware work.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Preparation only: docs/display-disable-trial.md records blocked verdict and full trial evidence template. Fresh swift test --disable-sandbox --filter RecoveryCLITests/testProductionProviderRefusesBeforeConstructingAnyWriter passed (1 test, 0 failures); production inventory refuses before writer construction even with awake injected. Inspected RecoveryPrivateSession and RecoveryReenable: no qualified production identity binding, physical/driver environment or initial awake evidence. One documentation review checked template against all five criteria and existing safety contract; no code changes or hardware calls. User explicitly selected Scope an offline prerequisite; TASK-11 now tracks bounded offline provider qualification and is an additional dependency. Consent for hardware was not requested as sufficient or granted. All TASK-9 criteria remain unchecked; no journal/helper/worktree created, no existing evidence discarded. Next: TASK-11, then qualified actual target and fresh exact-target/timeout/survivor/presence/fallback consent. TASK-10 still waits on actual trial input observations. Claim released; To Do denotes blocked, not live-ready.
+<!-- SECTION:NOTES:END -->
