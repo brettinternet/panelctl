@@ -64,6 +64,8 @@ public struct BlackoutOptions: Equatable {
 public enum PanelCommand: Equatable {
     case list(json: Bool)
     case probe(json: Bool)
+    case mirror(selector: String, source: String, journalPath: String?)
+    case unmirror(journalPath: String?)
     case recovery(action: RecoveryAction, timeout: TimeInterval?, journalPath: String?)
     case recoveryHelper(journalPath: String, id: UUID)
     case recoveryDisable(selector: String, timeout: TimeInterval, journalPath: String?)
@@ -104,6 +106,8 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case missingRecoveryAction
     case invalidRecoveryTimeout
     case disableRequirements
+    case mirrorRequirements
+    case unmirrorRequirements
     case snoozeDurationTooLong
     case invalidBlackoutMode(String)
     case invalidOverlayOpacity(String)
@@ -147,6 +151,8 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
         case .missingRecoveryAction: return "missing recovery action (use 'panelctl help recovery' for usage)"
         case .invalidRecoveryTimeout: return "recovery watchdog timeout must be from 1 through 60 seconds"
         case .disableRequirements: return "disable requires exactly one --display or --index, --consent-disable, and --timeout (1–60 seconds)"
+        case .mirrorRequirements: return "mirror requires --display, --source and --consent-mirror"
+        case .unmirrorRequirements: return "unmirror requires --consent-unmirror (restores the journaled topology)"
         case .snoozeDurationTooLong: return "snooze duration must not exceed 30 days"
         }
     }
@@ -154,7 +160,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
 
 public enum CLIParser {
     private static let maximumSnoozeDuration: TimeInterval = 30 * 24 * 60 * 60
-    private static let commands = ["list", "probe", "recovery", "blackout", "ddc-luminance", "ddc-input", "sleep-displays", "wake-displays", "app"]
+    private static let commands = ["list", "probe", "recovery", "mirror", "unmirror", "blackout", "ddc-luminance", "ddc-input", "sleep-displays", "wake-displays", "app"]
 
     public static func parse(_ args: [String]) throws -> PanelCommand {
         guard let command = args.first else { throw CLIParseError.missingCommand }
@@ -185,6 +191,8 @@ public enum CLIParser {
             return try parseJSONFlagCommand(rest, builder: { .probe(json: $0) })
         case "recovery":
             return try parseRecovery(rest)
+        case "mirror", "unmirror":
+            return try parseMirror(rest, restore: command == "unmirror")
         case "_recovery-helper":
             guard rest.count == 4, rest[0] == "--journal", !rest[1].isEmpty,
                   rest[2] == "--id", let id = UUID(uuidString: rest[3]) else {
@@ -207,6 +215,39 @@ public enum CLIParser {
         default:
             throw CLIParseError.unknownCommand(command)
         }
+    }
+
+    private static func parseMirror(_ args: [String], restore: Bool) throws -> PanelCommand {
+        var values: [String: String] = [:]
+        var consent = false
+        let consentFlag = restore ? "--consent-unmirror" : "--consent-mirror"
+        let valueFlags = restore ? ["--journal"] : ["--display", "--source", "--journal"]
+        var i = 0
+        while i < args.count {
+            let option = args[i]
+            if option == consentFlag {
+                guard !consent else { throw CLIParseError.duplicateOption(option) }
+                consent = true
+            } else if valueFlags.contains(option) {
+                guard values[option] == nil else { throw CLIParseError.duplicateOption(option) }
+                i += 1
+                guard i < args.count, !args[i].isEmpty, !args[i].hasPrefix("--") else {
+                    throw CLIParseError.missingValue(option)
+                }
+                values[option] = args[i]
+            } else {
+                throw CLIParseError.unknownOption(option)
+            }
+            i += 1
+        }
+        if restore {
+            guard consent else { throw CLIParseError.unmirrorRequirements }
+            return .unmirror(journalPath: values["--journal"])
+        }
+        guard consent, let target = values["--display"], let source = values["--source"] else {
+            throw CLIParseError.mirrorRequirements
+        }
+        return .mirror(selector: target, source: source, journalPath: values["--journal"])
     }
 
     private static func parseRecovery(_ args: [String]) throws -> PanelCommand {

@@ -31,9 +31,16 @@ public enum DisplayRecovery {
         }
         if action != .capture {
             let saved = try store.load()
-            let session = RecoveryPrivateSession(snapshot: saved.snapshot)
-            session.observeNotifications()
-            let engine = saved.disabledByUsID == nil ? RecoveryEngine() : session.engine
+            let engine: RecoveryEngine
+            if saved.mirrorTargetID != nil {
+                engine = .publicMirror
+            } else if saved.disabledByUsID == nil {
+                engine = RecoveryEngine()
+            } else {
+                let session = RecoveryPrivateSession(snapshot: saved.snapshot)
+                session.observeNotifications()
+                engine = session.engine
+            }
             try printJournal(engine.recover(store: store, verifyOnly: action == .verify,
                                             trigger: "manual-\(action.rawValue)", expectedID: saved.id))
             return

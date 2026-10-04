@@ -66,7 +66,7 @@ struct RecoverySnapshot: Codable, Equatable {
     let userID: UInt32
     let displays: [RecoveryDisplay]
 
-    static func capture() throws -> Self {
+    static func capture(includePrivateMetadata: Bool = true) throws -> Self {
         guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
               session[kCGSessionOnConsoleKey as String] as? Bool == true,
               (session[kCGSessionUserIDKey as String] as? NSNumber)?.uint32Value == getuid() else {
@@ -88,7 +88,7 @@ struct RecoverySnapshot: Codable, Equatable {
         guard Set(identities.values).count == ids.count else {
             throw RecoveryError.unsafe("display UUIDs are ambiguous")
         }
-        let metadata = try? CoreDisplayMetadata()
+        let metadata = includePrivateMetadata ? try? CoreDisplayMetadata() : nil
         let displays = try ids.map { id -> RecoveryDisplay in
             guard let mode = CGDisplayCopyDisplayMode(id) else {
                 throw RecoveryError.unsafe("display \(id) has no readable mode")
@@ -188,9 +188,10 @@ private func checked(_ error: CGError, _ operation: String) throws {
 /// Only public, session-scoped topology restoration. No power, private enable,
 /// rotation, gamma, HDR, color-profile, or firmware writes.
 enum RecoveryConfiguration {
-    static func restore(_ snapshot: RecoverySnapshot, revalidate: () throws -> Void = {}) throws {
+    static func restore(_ snapshot: RecoverySnapshot, revalidate: () throws -> Void = {},
+                        capture: () throws -> RecoverySnapshot = { try .capture() }) throws {
         try revalidate()
-        let before = try RecoverySnapshot.capture()
+        let before = try capture()
         try snapshot.validateRestoration(to: before)
         // Resolve every mode before starting the transaction. No approximate
         // resolution/refresh-rate fallback, even if macOS offers one.
@@ -226,7 +227,7 @@ enum RecoveryConfiguration {
         }
         // Never write permanent WindowServer preferences. Success still needs
         // post-commit verification; asynchronous changes may require a retry.
-        try before.verify(.capture())
+        try before.verify(capture())
         try revalidate()
         let result = CGCompleteDisplayConfiguration(config, .forSession)
         completed = true
@@ -250,6 +251,14 @@ enum RecoveryConfiguration {
 /// Closure injection follows BlackoutDimming's test seam; tests never touch
 /// real display configuration.
 struct RecoveryEngine {
+    // Public mirror journals deliberately omit CoreDisplay metadata; use the
+    // same public-only identity observations for both capture and restoration.
+    static var publicMirror: Self {
+        Self(capture: { try .capture(includePrivateMetadata: false) }, apply: {
+            try RecoveryConfiguration.restore($0, capture: { try .capture(includePrivateMetadata: false) })
+        })
+    }
+
     var capture: () throws -> RecoverySnapshot = { try .capture() }
     var apply: (RecoverySnapshot) throws -> Void = { try RecoveryConfiguration.restore($0) }
     // Only tests inject this until offline identity is independently qualified.

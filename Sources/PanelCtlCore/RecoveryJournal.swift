@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 enum RecoveryState: String, Codable {
-    case captured, armed, disabling, disabled, restoring, verified, restored, needsAttention
+    case captured, armed, disabling, disabled, mirrored, restoring, verified, restored, needsAttention
     var resolved: Bool { self == .verified || self == .restored }
 }
 
@@ -33,6 +33,9 @@ struct RecoveryJournal: Codable {
     var disableCompleted: Bool?
     var privateRecoveryClosed: Bool?
     var privateLease: Bool?
+    // Public mirror intent only; original topology remains in snapshot.
+    var mirrorTargetID: UInt32?
+    var mirrorSourceID: UInt32?
 
     init(snapshot: RecoverySnapshot, verifyOnly: Bool = false, timeout: TimeInterval? = nil,
          disabledByUsID: UInt32? = nil, disableStaged: Bool? = nil, disableCommitStarted: Bool? = nil) {
@@ -56,6 +59,15 @@ struct RecoveryJournal: Codable {
               displays.filter(\.main).count == 1,
               createdAt.timeIntervalSince1970.isFinite else {
             throw RecoveryError.unsafe("invalid snapshot identity or display set")
+        }
+        if mirrorTargetID != nil || mirrorSourceID != nil || state == .mirrored {
+            guard let target = displays.first(where: { $0.id == mirrorTargetID }),
+                  let source = displays.first(where: { $0.id == mirrorSourceID }),
+                  target.id != source.id, !target.main, !target.builtin, target.active, source.active,
+                  displays.allSatisfy({ $0.mirrorUUID == nil }),
+                  disabledByUsID == nil, privateLease != true, !verifyOnly, deadline == nil else {
+                throw RecoveryError.unsafe("invalid public mirror journal")
+            }
         }
         if let deadline {
             guard (1...60).contains(deadline.timeIntervalSince(createdAt)) else {

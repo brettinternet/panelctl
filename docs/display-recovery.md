@@ -15,6 +15,11 @@ is tracked in `backlog/`. TASK-2 records adoption and deferred branch work. The
 requirements below remain safety gates, not a mandate for open-ended identity
 research or authority to call private setters.
 
+Public [mirror/unmirror](display-mirroring.md) commands reuse this journal and
+restoration engine. Mirror journals use public-only observations (no private
+CoreDisplay metadata); `recovery verify` and `restore` select that same capture
+path. A mirrored journal stays unresolved until the original topology is verified.
+
 ## Commands
 
 Run from the logged-in console user's GUI session:

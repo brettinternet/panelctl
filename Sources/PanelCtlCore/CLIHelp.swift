@@ -12,6 +12,8 @@ public enum CLIHelp {
               list             List connected displays
               probe            Probe display capabilities
               recovery         Experimental disable and journal-driven recovery
+              mirror           Journal and mirror an external target onto a source
+              unmirror         Restore and verify the journaled topology
               blackout         Black out selected displays
               ddc-luminance    Read or set luminance
               ddc-input        Read or switch the monitor input
@@ -68,6 +70,27 @@ public enum CLIHelp {
             A custom journal's parent directory must be private (mode 0700) and owned by you.
             No recovery tool can guarantee recovery from driver/WindowServer failure,
             logout, reboot, or termination of the helper. See docs/display-recovery.md.
+            """
+        case "mirror", "unmirror":
+            return """
+            Usage: panelctl mirror --display <selector> --source <selector> --consent-mirror [--journal <path>]
+            Usage: panelctl unmirror --consent-unmirror [--journal <path>]
+
+            Experimental public, session-scoped mirroring; not hardware-qualified.
+            Both selectors are explicit UUIDs, decimal/hex IDs or index:<n> from list.
+            Refuses main/built-in targets, inactive/asleep displays, existing mirrors,
+            ambiguous identities and unresolved journals. Captures topology before writes.
+            Mirroring removes a separate desktop, NOT the signal; modes/HDR/refresh,
+            windows and Spaces may change. No gamma, DDC or private display setters.
+            unmirror restores captured modes, origins, mirroring and main display,
+            then verifies; it does not restore window/Spaces placement or HDR settings.
+            Failures keep the journal. Explicit fallback: panelctl recovery restore
+            [--journal <path>]; changed identity/rotation/color requires manual action.
+            No automatic restore on exit, watchdog, or promise of crash recovery.
+            Each real mirror/unmirror requires fresh scoped human approval. Consent
+            flags acknowledge writes; tests and prior trials do not supply approval.
+            Uses the recovery default journal unless --journal is supplied. See
+            docs/display-mirroring.md for restrictions and the pending trial protocol.
             """
         case "blackout":
             return """

@@ -10,6 +10,10 @@ struct PanelCtlMain {
             switch command {
             case .list(let json): try DisplayInventory.printRecords(DisplayInventory.records(), json: json)
             case .probe(let json): try Probe.printReport(Probe.report(), json: json)
+            case .mirror(let selector, let source, let journalPath):
+                try DisplayMirroring.mirror(selector: selector, source: source, journalPath: journalPath)
+            case .unmirror(let journalPath):
+                try DisplayMirroring.unmirror(journalPath: journalPath)
             case .recovery(let action, let timeout, let journalPath):
                 guard let executable = Bundle.main.executableURL else {
                     throw RecoveryError.unsafe("cannot locate watchdog executable")

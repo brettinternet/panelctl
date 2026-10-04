@@ -19,6 +19,16 @@ panelctl ddc-luminance --display index:2
 panelctl ddc-luminance --display index:2 --set 75
 ```
 
+## Experimental public mirroring
+
+`panelctl mirror --display <target> --source <source> --consent-mirror` hides a
+non-main external target's separate desktop by mirroring it, not by dropping its
+signal. `panelctl unmirror --consent-unmirror` restores and verifies the journaled
+topology. Both accept `--journal <path>`; neither changes gamma or monitor input.
+Each live operation needs fresh scoped approval. Modes/HDR/refresh and windows or
+Spaces may change; no hardware tuple is qualified yet. See
+[public mirroring](display-mirroring.md) for restrictions, fallback and trial gates.
+
 ## Experimental topology disable and recovery
 
 These commands are implemented but **production disable currently refuses**:
