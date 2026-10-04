@@ -4,7 +4,7 @@ title: Define coherent display hide and handoff flows across the app
 status: Done
 assignee: []
 created_date: '2026-10-04 17:13'
-updated_date: '2026-10-04 18:19'
+updated_date: '2026-10-04 18:22'
 labels:
   - display-hide
   - app
@@ -49,6 +49,8 @@ The app organizes Automation, Displays and Startup around OLED protection. Addin
 2026-10-04: Drafted docs/display-hide-ux.md against SettingsView/AppDelegate/AppModel/ProtectionService and MirrorController/HandoffController plus recorded hardware evidence. One general offline review checked all six criteria: use-case and lifecycle matrices, menu/Displays mockups, first/repeat confirmations, all seven observed states, absent-target/relaunch/hidden-icon recovery, truthful limitations, single/multi-display/no-DDC/partial-failure walkthroughs and keyboard/VoiceOver contract. Backend checks confirmed shared journal and locks, capture-before-input, restore-before-return-input, absent-target refusal and non-persisted input recovery. User explicitly selected Approve contract in the structured approval prompt: Hide/Show, per-operation confirmation, protection-only Restore and runtime protection suspension during hide/recovery. Design approval only; no hardware consent. Documentation link/fence checks and git diff --check passed. No source changes, native UI execution or hardware writes; native fixture verification belongs to TASK-17/18. Existing backlog re-slice was independently committed as aeece54 and was preserved. No remaining TASK-16 blocker; TASK-17 is next.
 
 Delivery: b40a702 on main commits the approved contract and completed task. Claim released; no worktree created, no push. Documentation checks passed and working tree was clean after delivery. Next resumable item is TASK-17.
+
+2026-10-04 amendment (user-approved after post-delivery review): docs/display-hide-ux.md now requires the Hide confirmation to name the loss of blackout on the OLED mirror source, records that blackout already refuses all mirror-set displays (CGDisplayIsInMirrorSet), and defers overlay blackout on a mirror source to TASK-21. Per-operation confirmation is kept and revisited only after wider qualification. Approved decisions are otherwise unchanged; no source or hardware changes.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

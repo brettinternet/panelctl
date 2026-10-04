@@ -113,7 +113,10 @@ No global topology reset, implicit Show-all or private recovery is added.
 2. Hide… opens a confirmation on a usable screen. Show target/source names and
    identities, actual journal path, intended input change or “No input change”,
    mode/HDR limitations, and physical/manual fallback. State that protection
-   will pause while hidden/recovery is unresolved (see coexistence below).
+   will pause while hidden/recovery is unresolved (see coexistence below), and
+   name the consequence plainly: “While hidden, PanelCtl cannot black out
+   <source> or any other display. An OLED source stays lit until you Show or
+   macOS display sleep turns it off.”
 3. Require acknowledgement “I have another usable display and can use the
    monitor buttons or macOS Displays settings if needed.” Default button is
    Cancel; explicit **Hide desktop** authorizes only this operation.
@@ -124,7 +127,9 @@ No global topology reset, implicit Show-all or private recovery is added.
    Default Cancel; **Show desktop** is explicit consent for this return only.
 
 Repeat use has the same scoped confirmation; no “Don’t ask again”. Experimental
-opt-in persists, consent does not. Changed identity/configuration invalidates
+opt-in persists, consent does not. Revisit this repeat-use friction, including
+the Show acknowledgement, only after more supervised cycles widen qualification;
+any lighter model needs its own user-approved contract change. Changed identity/configuration invalidates
 any open confirmation. Show/recovery never requires experimental opt-in to
 remain enabled or protection to be enabled. Headless app actions in TASK-19
 must return confirmation-required unless an explicit request-scoped consent
@@ -166,6 +171,12 @@ as unsupported recovery with CLI guidance, never routed to mirror Show.
 
 The deliberately conservative first slice pauses app-managed protection while
 its shared mirror journal is unresolved, including an app-discovered CLI hide.
+Blackout already refuses every display in a mirror set
+(`CGDisplayIsInMirrorSet`), including the mirror source, so the source could not
+be protected anyway. The cost is real: in the recorded setup the source is the
+OLED AW3423DW, which stays unprotected for the whole hide or handoff while the
+Mac may sit idle. Overlay-only blackout of a mirror-set source is a separate
+gated follow-up (TASK-21), not part of TASK-17.
 This is runtime suspension, not a saved preference change or a snooze. It keeps
 the survivor usable and avoids overlay/brightness/input/topology races. External
 CLI watchers and other display apps are not controlled: instruct users to stop
@@ -264,3 +275,8 @@ TASK-16 records the offline review and user decision. The user selected
 per-operation confirmation, protection-only Restore and runtime protection
 suspension during hide/recovery. Approval accepts this interaction design only,
 not a live operation or new hardware qualification.
+
+Amendment, 2026-10-04 (user-approved): the Hide confirmation must name the loss
+of blackout on the OLED source while hidden; the coexistence section records the
+existing mirror-set refusal and TASK-21 follow-up; per-operation confirmation is
+kept and revisited only after wider qualification. Decisions are unchanged.
