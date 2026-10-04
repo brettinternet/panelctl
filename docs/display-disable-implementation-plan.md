@@ -85,7 +85,9 @@ before implementation; it is embedded as gates in the build itself.
    locally (the `xcrun dyld_info`/`ipsw` tooling already used for the identity
    traces) and confirm the argument/return shape. Implement the resolver
    dynamically: CoreGraphics first, SkyLight fallback, fail closed with an
-   explicit "unavailable on this OS" state.
+   explicit "unavailable on this OS" state. TASK-1's
+   [local ABI evidence](display-enable-abi.md) establishes the canonical C binding
+   on build `26A434`; it is not a guarantee for other builds or live-call approval.
 2. **Identity refusal contract.** The recovery-identity research concluded
    that no candidate identity source proves fresh-sink identity for offline
    displays. Per the survey, shipped tools do not solve that problem; they
