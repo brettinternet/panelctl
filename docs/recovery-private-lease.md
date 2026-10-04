@@ -2,8 +2,9 @@
 
 This is offline recovery infrastructure, not hardware qualification or permission
 to write a display. Production still installs **no private disable or re-enable
-backend**. Identity remains synthetic-only; TASK-6 supplies physical/lifecycle
-preflight and TASK-7 connects the guarded CLI. No new daemon or public command is
+backend**. Identity remains synthetic-only; TASK-6 supplies the offline
+[physical/lifecycle policy](recovery-eligibility.md) and TASK-7 connects it to
+the helper and guarded CLI. No new daemon or public command is
 introduced here.
 
 ## One writer, one lease

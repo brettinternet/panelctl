@@ -1,8 +1,9 @@
 import Foundation
 
 /// Executed only by the existing helper while it owns both recovery locks.
-/// Production has no installed instance. TASK-6 supplies physical/lifecycle
-/// preflight; tests supply synthetic identity and fake transactions.
+/// Production has no installed instance. RecoveryEligibilitySelection supplies
+/// the physical/lifecycle preflight seam; TASK-7 owns runtime wiring. Tests use
+/// synthetic identity and fake transactions.
 struct RecoveryDisable {
     var transaction: RecoveryEnableTransaction
     var inventory: () throws -> RecoveryEnableInventory
