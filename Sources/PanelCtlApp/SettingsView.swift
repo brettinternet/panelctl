@@ -117,15 +117,27 @@ struct SettingsView: View {
         }
     }
 
-    @ViewBuilder
     private func destinationLabel(_ destination: SettingsDestination) -> some View {
+        let title: String
+        let systemImage: String
         switch destination {
         case .automation:
-            Label("Automation", systemImage: "clock")
+            title = "Automation"
+            systemImage = "clock"
         case .displays:
-            Label("Displays", systemImage: "display.2")
+            title = "Displays"
+            systemImage = "display.2"
         case .startup:
-            Label("Startup", systemImage: "power")
+            title = "Startup"
+            systemImage = "power"
+        }
+
+        return HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.system(size: 16))
+                .frame(width: 26, height: 22)
+                .accessibilityHidden(true)
+            Text(title)
         }
     }
 

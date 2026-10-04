@@ -21,3 +21,5 @@ dist/
 release/
 *.zip
 *.sha256
+
+debug/

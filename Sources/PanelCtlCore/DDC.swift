@@ -238,7 +238,7 @@ public enum DDCLuminance {
     }
 }
 
-private final class CoreDisplayMetadata {
+final class CoreDisplayMetadata {
     typealias InfoFn = @convention(c) (CGDirectDisplayID) -> Unmanaged<CFDictionary>?
     let handle: UnsafeMutableRawPointer
     let infoFn: InfoFn

@@ -1,0 +1,70 @@
+import Foundation
+
+/// Executed only by the existing helper while it owns both recovery locks.
+/// RecoveryPrivateSession supplies physical/lifecycle preflight; unqualified
+/// production observations refuse before a transaction is constructed. Tests use
+/// synthetic identity and fake transactions.
+struct RecoveryDisable {
+    var transaction: RecoveryEnableTransaction
+    var inventory: () throws -> RecoveryEnableInventory
+    var preflight: (RecoverySnapshot, UInt32) throws -> Void = { _, _ in
+        throw RecoveryError.unsafe("physical-display/lifecycle preflight unavailable")
+    }
+
+    func perform(_ journal: inout RecoveryJournal, store: RecoveryStore, targetID: UInt32,
+                 capture: () throws -> RecoverySnapshot, lease: () throws -> Void) throws {
+        guard journal.version == 2, !journal.verifyOnly, journal.state == .armed,
+              journal.disableAttempted != true, journal.disableStaged != true,
+              journal.disableCommitStarted != true, journal.disabledByUsID == nil,
+              journal.reenableAttempted != true, journal.privateRecoveryClosed != true,
+              let deadline = journal.deadline,
+              let target = journal.snapshot.displays.first(where: { $0.id == targetID }),
+              !target.main, !target.builtin, target.active,
+              journal.snapshot.displays.count > 1,
+              journal.snapshot.displays.allSatisfy({ $0.mirrorUUID == nil }) else {
+            throw RecoveryError.unsafe("disable requires a fresh armed journal and one non-main external target")
+        }
+        let baseline = journal.snapshot
+        func validate() throws {
+            try lease()
+            guard deadline > Date() else { throw RecoveryError.unsafe("disable lease expired") }
+            let current = try capture()
+            try baseline.verify(current)
+            let evidence = try inventory()
+            try RecoveryIdentityPolicy.evaluate(snapshot: baseline, evidence: evidence).requireEligible()
+            guard evidence.onlineIDs == Set(current.displays.map(\.id)) else {
+                throw RecoveryError.unsafe("disable online inventory changed")
+            }
+            try preflight(current, targetID)
+        }
+        try validate()
+        journal.disabledByUsID = targetID
+        journal.disableAttempted = true
+        journal.state = .disabling
+        // Selected intent alone cannot authorize recovery after a later,
+        // unrelated disappearance if we die before staging the setter.
+        try store.save(journal)
+        try transaction.configure(id: targetID, enabled: false, didStage: {
+            journal.disableStaged = true
+            // Completion cannot run unless successful staging is durable.
+            // A failed save cancels the still-uncompleted transaction.
+            try store.save(journal)
+        }, willCommit: {
+            // A failed final validation cancels staging without granting future
+            // enable authority. Persist only once completion can be attempted.
+            journal.disableCommitStarted = true
+            do { try store.save(journal) }
+            catch {
+                // Completion will not run. Revoke the in-memory permission too:
+                // the helper finishes with this journal, not a fresh disk load.
+                journal.disableCommitStarted = nil
+                journal.privateRecoveryClosed = true
+                try? store.save(journal)
+                throw error
+            }
+        }, revalidate: validate)
+        journal.disableCompleted = true
+        journal.state = .disabled
+        try store.save(journal)
+    }
+}

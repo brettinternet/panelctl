@@ -11,6 +11,7 @@ public enum CLIHelp {
             Commands:
               list             List connected displays
               probe            Probe display capabilities
+              recovery         Experimental disable and journal-driven recovery
               blackout         Black out selected displays
               ddc-luminance    Read or set luminance
               sleep-displays   Sleep every display
@@ -28,6 +29,45 @@ public enum CLIHelp {
             return "Usage: panelctl list [--json]\nList connected displays."
         case "probe":
             return "Usage: panelctl probe [--json]\nProbe display capabilities."
+        case "recovery":
+            return """
+            Usage: panelctl recovery <capture|status|verify|restore|enable|panic|rehearse|guard> [--journal <path>]
+            Usage: panelctl recovery disable (--display <selector> | --index <n>) --consent-disable --timeout <1s...60s> [--journal <path>]
+            Usage: panelctl recovery <rehearse|guard> [--timeout <1s...60s>] [--journal <path>]
+
+            capture journals the current display identities, modes, rotation, origins,
+            mirroring, main display, and available color-space/ICC profile identity. status prints the journal;
+            verify compares without display writes. restore explicitly restores public
+            modes, origins, and mirroring for the same online displays, then verifies.
+            Missing/ambiguous displays or changed rotation/color space require manual
+            intervention. HDR/profile restoration is NOT implemented.
+
+            Experimental disable requests one non-main external display for a bounded
+            helper-owned lease. Consent is mandatory; there is no indefinite mode.
+            Selectors use the same UUID, decimal/hex ID or index:<n> as blackout.
+            A qualified physical survivor, identity, awake state and API are required.
+            Production physical-sink identity is currently unqualified: disable refuses
+            without a display write. Consent does not bypass this gate.
+            enable and panic recover only the staged disabled-by-us journal target,
+            even when offline; neither uses online selection or guesses another ID.
+            Both preserve identity refusals and one-shot recovery evidence. panic never
+            runs a global reset. CGRestorePermanentDisplayConfiguration, logout,
+            reboot and replug are unverified fallbacks, not automatic recovery.
+            Before a new disable, stranded intent is recovered (or refused); a new
+            explicit selection is then required. Status is journal-only/no-write.
+            Signal removal, monitor standby and input switching are different outcomes;
+            none is hardware-qualified. Blackout remains the overlay alternative.
+
+            rehearse starts an independent, no-write verification helper (default 5s).
+            guard instead arms public-configuration restoration on deadline or parent
+            exit. Neither can reconnect a missing display or qualify a private experiment.
+            Failed or unresolved journals are retained and block subsequent captures.
+            Resolved journals are archived on the next capture. Output includes JSON.
+            The default journal is ~/Library/Application Support/PanelCtl/Recovery/current.json.
+            A custom journal's parent directory must be private (mode 0700) and owned by you.
+            No recovery tool can guarantee recovery from driver/WindowServer failure,
+            logout, reboot, or termination of the helper. See docs/display-recovery.md.
+            """
         case "blackout":
             return """
             Usage: panelctl blackout (--display <selector> | --index <n> ... | --all) [options]
