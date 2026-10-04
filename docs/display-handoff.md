@@ -45,7 +45,9 @@ these commands. Private signal-drop work remains parked, not a hidden fallback.
   → optional DDC input selection. An unavailable or failing DDC step cannot
   prevent unhiding; a failed unhide prevents the subsequent input write.
 - Existing operation/journal locks cover the entire sequence. DDC uses the
-  journal target UUID and checks the opened ID/UUID, never a reinterpreted index.
+  journal target UUID and checks the opened ID/UUID and captured display identity,
+  never a reinterpreted index. A changed DDC target is a hard refusal, not an
+  unavailable-DDC skip; reconnect/refresh the exact identity rather than guessing.
   Other display applications do not honor these advisory locks.
 - DDC selects at most once, with bounded readback and no retry. `unverified`
   means the write was attempted but readback was unavailable, not that the input
@@ -80,7 +82,9 @@ ordered success, omitted input, unavailable DDC, zero input, changed DDC target,
 unverified selection, initial pre-read failure, lost readback after one pre-read,
 DDC failure on either command, hide/unhide failure,
 journal creation failure and a back selector different from the saved target.
-No hardware changes or DDC hardware queries are needed for these tests.
+No hardware changes or DDC hardware queries are needed for these tests. The app
+uses the same guarded order with structured desktop/input results; its Settings
+input fields and confirmations are covered by synthetic native/fake tests.
 
 ## Supervised round trip protocol
 

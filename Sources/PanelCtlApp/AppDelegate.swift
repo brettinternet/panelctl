@@ -129,8 +129,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             switch alert.runModal() {
             case .alertSecondButtonReturn:
-                if canShow, let status = model.handoffStatus {
-                    confirmShow(status, quitAfterShow: true)
+                if canShow {
+                    do {
+                        confirmShow(try model.makeShowRequest(), quitAfterShow: true)
+                    } catch {
+                        showSettings(focusRecovery: true)
+                    }
                 } else {
                     showSettings(focusRecovery: true)
                 }
@@ -513,17 +517,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.confirmHide(request, acknowledged: true)
     }
 
-    private func confirmShow(_ status: DisplayHandoffStatus, quitAfterShow shouldQuit: Bool = false) {
-        let target = status.target
+    private func confirmShow(_ request: DisplayShowRequest, quitAfterShow shouldQuit: Bool = false) {
+        let target = request.status.target
         let targetName = target?.name ?? "journaled display"
-        let message = DisplayOperationConfirmation.showMessage(status)
+        let message = DisplayOperationConfirmation.showMessage(request)
         guard DisplayOperationConfirmation.confirm(
             title: "Show \(targetName) desktop?",
             message: message,
             actionTitle: "Show desktop"
         ) else { return }
         quitAfterShow = shouldQuit
-        model.confirmShow(status, acknowledged: true)
+        model.confirmShow(request, acknowledged: true)
         if model.hideOperation == .idle {
             quitAfterShow = false
         }

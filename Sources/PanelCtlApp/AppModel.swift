@@ -40,6 +40,7 @@ final class AppModel: ObservableObject {
     }
     @Published private(set) var handoffStatus: DisplayHandoffStatus?
     @Published private(set) var handoffInspectionFailure: String?
+    @Published private(set) var ddcInputAvailability: [String: DisplayDDCInputAvailability] = [:]
     @Published private(set) var hideOperation: DisplayHideOperation = .idle
     @Published private(set) var protectionQuiescencePending = false
     @Published private(set) var protectionQuiescenceFailure: String?
@@ -81,8 +82,9 @@ final class AppModel: ObservableObject {
     private let sleepDisplays: () throws -> Void
     private let isDisplayMirrored: (UInt32) -> Bool
     private let inspectHandoff: () -> DisplayHandoffStatus
-    private let hideDisplay: (DisplayHideIdentity, DisplayHideIdentity) throws -> Void
-    private let showDisplay: (String) throws -> Void
+    private let hideDisplay: (DisplayHideIdentity, DisplayHideIdentity, UInt8?) throws -> DisplayInputOutcome
+    private let showDisplay: (String, UInt8?) throws -> DisplayInputOutcome
+    private let checkDDCInput: (DisplayHideIdentity) throws -> DDCInputReading
     private let quiesceProtection: ProtectionQuiesce?
     private let service: ProtectionService
     private var snoozeTimer: Timer?
@@ -108,8 +110,15 @@ final class AppModel: ObservableObject {
         sleepDisplays: @escaping () throws -> Void = DisplaySleepController.sleep,
         isDisplayMirrored: @escaping (UInt32) -> Bool = { CGDisplayIsInMirrorSet($0) != 0 },
         inspectHandoff: @escaping () -> DisplayHandoffStatus = DisplayHandoff.inspect,
-        hideDisplay: @escaping (DisplayHideIdentity, DisplayHideIdentity) throws -> Void = { try DisplayHideController().hide(target: $0, source: $1) },
-        showDisplay: @escaping (String) throws -> Void = { try DisplayHideController().show(expectedJournalID: $0) },
+        hideDisplay: @escaping (DisplayHideIdentity, DisplayHideIdentity, UInt8?) throws -> DisplayInputOutcome = {
+            try DisplayHideController().hide(target: $0, source: $1, awayInput: $2)
+        },
+        showDisplay: @escaping (String, UInt8?) throws -> DisplayInputOutcome = {
+            try DisplayHideController().show(expectedJournalID: $0, returnInput: $1)
+        },
+        checkDDCInput: @escaping (DisplayHideIdentity) throws -> DDCInputReading = {
+            try DisplayHideController().checkInputAvailability(target: $0)
+        },
         quiesceProtection: ProtectionQuiesce? = nil
     ) {
         self.defaults = defaults
@@ -121,6 +130,7 @@ final class AppModel: ObservableObject {
         self.inspectHandoff = inspectHandoff
         self.hideDisplay = hideDisplay
         self.showDisplay = showDisplay
+        self.checkDDCInput = checkDDCInput
         self.quiesceProtection = quiesceProtection
         self.showMenuBarIcon = defaults.object(forKey: Self.showMenuBarIconKey) as? Bool ?? true
         let loadedHidePreferences = defaults.data(forKey: Self.hidePreferencesKey)
@@ -381,6 +391,53 @@ final class AppModel: ObservableObject {
         hidePreferences = updated
     }
 
+    @discardableResult
+    func setHideAwayInput(_ rawValue: String, for targetUUID: String) -> String? {
+        setHideInput(rawValue, for: targetUUID, onHide: true)
+    }
+
+    @discardableResult
+    func setHideReturnInput(_ rawValue: String, for targetUUID: String) -> String? {
+        setHideInput(rawValue, for: targetUUID, onHide: false)
+    }
+
+    func checkDDCInputAvailability(for targetUUID: String) {
+        let key = targetUUID.lowercased()
+        guard let configuration = hidePreferences[targetUUID],
+              let matchingDisplay = matchingDisplay(configuration.target) else {
+            ddcInputAvailability[key] = .unavailable(
+                "Saved display identity is unavailable or changed. Reconnect the exact display and Refresh; PanelCtl will not check another display."
+            )
+            onStatusChange?()
+            return
+        }
+        do {
+            let reading = try checkDDCInput(coreIdentity(configuration.target))
+            guard reading.displayID == configuration.target.id,
+                  reading.uuid.caseInsensitiveCompare(configuration.target.uuid) == .orderedSame,
+                  matches(configuration.target, matchingDisplay) else {
+                throw DisplayHideError.identityChanged(
+                    "DDC availability check returned a different display identity. Refresh and reconnect the exact display."
+                )
+            }
+            ddcInputAvailability[key] = .readable(current: reading.current)
+        } catch {
+            ddcInputAvailability[key] = .unavailable(error.localizedDescription)
+        }
+        onStatusChange?()
+    }
+
+    func ddcInputAvailabilityMessage(for configuration: DisplayHideConfiguration) -> String {
+        switch ddcInputAvailability[configuration.target.uuid.lowercased()] {
+        case .readable(let current):
+            return "DDC input readable at \(inputCodeLabel(current)); readability does not prove switching support. Use the monitor's input buttons if a switch is unavailable or fails."
+        case .unavailable(let reason):
+            return "DDC input unavailable: \(reason) Use the monitor's input buttons; Hide and Show remain available."
+        case nil:
+            return "DDC input availability is unknown. You can check explicitly or use the monitor's input buttons; Hide and Show do not require DDC."
+        }
+    }
+
     func removeHideConfiguration(targetUUID: String) {
         guard !hideConfigurationFrozen else { return }
         var updated = hidePreferences
@@ -414,7 +471,16 @@ final class AppModel: ObservableObject {
         guard let source = configuration.source else {
             throw DisplayHideError.unavailable("Choose an explicit mirror source first.")
         }
-        return DisplayHideRequest(target: configuration.target, source: source)
+        let away = validatedSavedInput(configuration.awayInput, label: "Other computer")
+        let returning = validatedSavedInput(configuration.returnInput, label: "Mac")
+        return DisplayHideRequest(
+            target: configuration.target,
+            source: source,
+            awayInput: away.value,
+            returnInput: returning.value,
+            awayInputWarning: away.warning,
+            returnInputWarning: returning.warning
+        )
     }
 
     func requestHide(targetUUID: String) {
@@ -463,7 +529,7 @@ final class AppModel: ObservableObject {
         stopManagedProtection(completion: finish)
     }
 
-    func makeShowRequest() throws -> DisplayHandoffStatus {
+    func makeShowRequest() throws -> DisplayShowRequest {
         guard !hideOperation.isBusy else { throw DisplayHideError.actionInProgress }
         guard !displayLifecycleTransitioning else { throw DisplayHideError.sleeping }
         guard !protectionQuiescencePending else {
@@ -482,7 +548,8 @@ final class AppModel: ObservableObject {
                 handoffStatus.reason ?? "The captured layout is not currently eligible for Show. Refresh after correcting the refusal."
             )
         }
-        return handoffStatus
+        let input = configuredReturnInput(for: handoffStatus)
+        return DisplayShowRequest(status: handoffStatus, returnInput: input.value, returnInputWarning: input.warning)
     }
 
     func requestShow() {
@@ -496,7 +563,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func confirmShow(_ request: DisplayHandoffStatus, acknowledged: Bool) {
+    func confirmShow(_ request: DisplayShowRequest, acknowledged: Bool) {
         guard acknowledged else {
             presentDisplayError("Show canceled", error: DisplayHideError.acknowledgementRequired)
             return
@@ -507,17 +574,19 @@ final class AppModel: ObservableObject {
         }
         do {
             let current = try makeShowRequest()
-            guard current.journalID == request.journalID,
-                  current.target?.uuid == request.target?.uuid,
-                  current.source?.uuid == request.source?.uuid else {
-                throw DisplayHideError.recoveryBlocksAction("The recovery journal changed while confirmation was open. Refresh and review its captured target/source before Show.")
+            guard current.status.journalID == request.status.journalID,
+                  current.status.target?.uuid == request.status.target?.uuid,
+                  current.status.source?.uuid == request.status.source?.uuid,
+                  current.returnInput == request.returnInput,
+                  current.returnInputWarning == request.returnInputWarning else {
+                throw DisplayHideError.recoveryBlocksAction("The recovery journal or saved Mac input configuration changed while confirmation was open. Refresh and review the captured target/source and input setting before Show.")
             }
         } catch {
             presentDisplayError("Show not started", error: error)
             return
         }
 
-        hideOperation = .showing(request.target?.uuid ?? "")
+        hideOperation = .showing(request.status.target?.uuid ?? "")
         onStatusChange?()
         let finish: (Bool, String?) -> Void = { [weak self] succeeded, message in
             Task { @MainActor in
@@ -531,8 +600,16 @@ final class AppModel: ObservableObject {
         stopManagedProtection(completion: finish)
     }
 
+    func confirmShow(_ status: DisplayHandoffStatus, acknowledged: Bool) {
+        let input = configuredReturnInput(for: status)
+        confirmShow(
+            DisplayShowRequest(status: status, returnInput: input.value, returnInputWarning: input.warning),
+            acknowledged: acknowledged
+        )
+    }
+
     var onRequestHide: ((DisplayHideRequest) -> Void)?
-    var onRequestShow: ((DisplayHandoffStatus) -> Void)?
+    var onRequestShow: ((DisplayShowRequest) -> Void)?
     var onShowCompletion: ((Bool) -> Void)?
 
     func requestDisplayRecoveryFocus() {
@@ -976,6 +1053,70 @@ final class AppModel: ObservableObject {
             display.model == identity.model && display.serial == identity.serial
     }
 
+    private func setHideInput(_ rawValue: String, for targetUUID: String, onHide: Bool) -> String? {
+        guard !hideConfigurationFrozen,
+              let target = displays.first(where: { $0.uuid?.caseInsensitiveCompare(targetUUID) == .orderedSame }),
+              let uuid = target.uuid else { return nil }
+        var updated = hidePreferences
+        var configuration = updated[uuid] ?? DisplayHideConfiguration(target: DisplayIdentitySnapshot(target))
+        guard matches(configuration.target, target) else { return nil }
+        let value = rawValue.isEmpty ? nil : DDCInput.parseValue(rawValue)
+        let validation = rawValue.isEmpty || value != nil
+            ? nil
+            : "Invalid DDC input code. Enter dp1, dp2, hdmi1, hdmi2, a decimal value from 1–255, or a 0x-prefixed hexadecimal value. This input was not saved; clear the field to use monitor buttons."
+        if onHide {
+            configuration.awayInput = value
+        } else {
+            configuration.returnInput = value
+        }
+        updated[uuid] = configuration
+        hidePreferences = updated
+        return validation
+    }
+
+    private func validatedSavedInput(_ value: UInt8?, label: String) -> (value: UInt8?, warning: String?) {
+        guard let value else { return (nil, nil) }
+        guard DDCInput.parseValue(String(value)) != nil else {
+            return (nil, "Saved \(label) input code 0x\(String(format: "%02X", value)) is invalid and will not be sent. Correct it in Settings → Displays or clear it to use monitor buttons.")
+        }
+        return (value, nil)
+    }
+
+    private func configuredReturnInput(for status: DisplayHandoffStatus) -> (value: UInt8?, warning: String?) {
+        guard let target = status.target,
+              let configuration = hidePreferences[target.uuid] else { return (nil, nil) }
+        guard configuration.target.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame,
+              configuration.target.id == target.id,
+              configuration.target.vendor == target.vendor,
+              configuration.target.model == target.model,
+              configuration.target.serial == target.serial else {
+            return (nil, "Saved Mac input belongs to a different display identity and was not sent. Review Settings → Displays; use the monitor buttons if needed.")
+        }
+        return validatedSavedInput(configuration.returnInput, label: "Mac")
+    }
+
+    private func inputCodeLabel(_ value: UInt8) -> String {
+        let code = String(format: "0x%02X", value)
+        if let named = DDCInput.namedValues.first(where: { $0.value == value }) {
+            return "\(named.name) (\(code))"
+        }
+        return code
+    }
+
+    private func hideRequest(target: DisplayIdentitySnapshot, source: DisplayIdentitySnapshot,
+                             configuration: DisplayHideConfiguration) -> DisplayHideRequest {
+        let away = validatedSavedInput(configuration.awayInput, label: "Other computer")
+        let returning = validatedSavedInput(configuration.returnInput, label: "Mac")
+        return DisplayHideRequest(
+            target: target,
+            source: source,
+            awayInput: away.value,
+            returnInput: returning.value,
+            awayInputWarning: away.warning,
+            returnInputWarning: returning.warning
+        )
+    }
+
     private func finishHideAfterProtectionQuiescence(
         _ request: DisplayHideRequest,
         cleanupSucceeded: Bool,
@@ -996,16 +1137,20 @@ final class AppModel: ObservableObject {
             return
         }
         protectionQuiescenceFailure = nil
+        var returnedInputOutcome: DisplayInputOutcome?
         do {
             displays = displayProvider()
             refreshHandoffStatus()
             guard let configuration = hidePreferences[request.target.uuid],
                   hideReadinessMessage(for: configuration, allowingCurrentOperation: true) == nil,
                   let source = configuration.source,
-                  request == DisplayHideRequest(target: configuration.target, source: source) else {
-                throw DisplayHideError.identityChanged("The target, source, inventory, or saved configuration changed before Hide began. Review Displays and confirm again.")
+                  request == hideRequest(target: configuration.target, source: source, configuration: configuration) else {
+                throw DisplayHideError.identityChanged("The target, source, input codes, inventory, or saved configuration changed before Hide began. Review Displays and confirm again.")
             }
-            try hideDisplay(coreIdentity(request.target), coreIdentity(request.source))
+            let inputOutcome = try hideDisplay(
+                coreIdentity(request.target), coreIdentity(request.source), request.awayInput
+            )
+            returnedInputOutcome = inputOutcome
             refreshHandoffStatus()
             guard handoffStatus?.state == .hidden else {
                 throw DisplayHideError.recoveryBlocksAction(
@@ -1016,20 +1161,30 @@ final class AppModel: ObservableObject {
             reconcileProtection()
             notice = AppNotice(
                 title: "Desktop hidden",
-                message: "\(request.target.name ?? request.target.uuid) is hidden by mirroring \(request.source.name ?? request.source.uuid). The Mac signal remains on; modes/HDR may change. While recovery is unresolved, PanelCtl protection stays paused.",
+                message: "Desktop: \(request.target.name ?? request.target.uuid) is hidden by mirroring \(request.source.name ?? request.source.uuid). The Mac signal remains on; modes/HDR may change. While recovery is unresolved, PanelCtl protection stays paused.\n\(inputSummary(inputOutcome, purpose: "Other computer", warning: request.awayInputWarning))",
                 opensLoginItemSettings: false
             )
         } catch {
             refreshHandoffStatus()
             hideOperation = .idle
             rearmProtectionAfterDisplayRecovery()
-            presentDisplayError("Could not hide the desktop", error: error)
+            let outcome = returnedInputOutcome ?? (error as? DisplayHandoffOperationFailure)?.inputOutcome ??
+                DisplayInputOutcome(
+                    state: request.awayInput == nil ? .notRequested : .notAttempted,
+                    requestedInput: request.awayInput,
+                    detail: "Input operation details are unavailable because the guarded Hide operation did not complete."
+                )
+            let desktopResult = returnedInputOutcome == nil
+                ? "Desktop: Hide did not complete."
+                : "Desktop: Hide backend returned, but current desktop/recovery status could not be confirmed. Refresh Displays and review recovery before another action."
+            let message = "\(desktopResult)\n\(error.localizedDescription)\n\(inputSummary(outcome, purpose: "Other computer", warning: request.awayInputWarning))"
+            presentDisplayError("Could not hide the desktop", message: message)
         }
         onStatusChange?()
     }
 
     private func finishShowAfterProtectionQuiescence(
-        _ request: DisplayHandoffStatus,
+        _ request: DisplayShowRequest,
         cleanupSucceeded: Bool,
         cleanupFailure: String?
     ) {
@@ -1043,17 +1198,20 @@ final class AppModel: ObservableObject {
             hideOperation = .idle
             reconcileProtection()
             onShowCompletion?(false)
-            presentDisplayError("Show paused", error: DisplayHideError.sleeping)
+            presentDisplayError(
+                "Show paused",
+                message: "Desktop: Show was paused during a display transition.\nMonitor input: Not attempted. Wait for displays to wake, then Refresh and confirm again."
+            )
             onStatusChange?()
             return
         }
         refreshHandoffStatus()
         guard handoffStatus?.hasUnresolvedJournal == true,
               handoffStatus?.canShow == true,
-              handoffStatus?.journalID == request.journalID,
-              handoffStatus?.target?.uuid == request.target?.uuid,
-              handoffStatus?.source?.uuid == request.source?.uuid,
-              let expectedJournalID = request.journalID else {
+              handoffStatus?.journalID == request.status.journalID,
+              handoffStatus?.target?.uuid == request.status.target?.uuid,
+              handoffStatus?.source?.uuid == request.status.source?.uuid,
+              let expectedJournalID = request.status.journalID else {
             hideOperation = .idle
             reconcileProtection()
             onShowCompletion?(false)
@@ -1064,8 +1222,10 @@ final class AppModel: ObservableObject {
             onStatusChange?()
             return
         }
+        var returnedInputOutcome: DisplayInputOutcome?
         do {
-            try showDisplay(expectedJournalID)
+            let inputOutcome = try showDisplay(expectedJournalID, request.returnInput)
+            returnedInputOutcome = inputOutcome
             refreshHandoffStatus()
             guard handoffStatus?.hasUnresolvedJournal != true,
                   handoffInspectionFailure == nil else {
@@ -1075,11 +1235,12 @@ final class AppModel: ObservableObject {
             }
             hideOperation = .idle
             rearmProtectionAfterDisplayRecovery()
+            let protectionStatus = protectionQuiescenceFailure.map {
+                "Protection cleanup still needs attention: \($0) PanelCtl protection remains paused."
+            } ?? ""
             notice = AppNotice(
                 title: "Desktop restored",
-                message: protectionQuiescenceFailure.map {
-                    "The journaled public layout and modes were restored and verified, but protection cleanup still needs attention: \($0) PanelCtl protection remains paused. HDR, color profiles, rotation, windows, and Spaces are not restored. Select the Mac input manually if needed."
-                } ?? "The journaled public display layout and modes were restored and verified. HDR, color profiles, rotation, windows, and Spaces are not restored. Select the Mac input manually if needed.",
+                message: "Desktop: The journaled public display layout and modes were restored and verified. HDR, color profiles, rotation, windows, and Spaces are not restored. \(protectionStatus)\n\(inputSummary(inputOutcome, purpose: "Mac", warning: request.returnInputWarning))",
                 opensLoginItemSettings: false
             )
             onShowCompletion?(true)
@@ -1088,17 +1249,55 @@ final class AppModel: ObservableObject {
             hideOperation = .idle
             reconcileProtection()
             onShowCompletion?(false)
-            presentDisplayError("Could not show the journaled desktop", error: error)
+            let outcome = returnedInputOutcome ?? (error as? DisplayHandoffOperationFailure)?.inputOutcome ??
+                DisplayInputOutcome(
+                    state: request.returnInput == nil ? .notRequested : .notAttempted,
+                    requestedInput: request.returnInput,
+                    detail: "Input operation details are unavailable because guarded Show did not complete."
+                )
+            let desktopResult = returnedInputOutcome == nil
+                ? "Desktop: Show did not complete."
+                : "Desktop: Show backend returned, but current desktop/recovery status could not be confirmed. Refresh Displays and review recovery before assuming the result."
+            presentDisplayError(
+                "Could not show the journaled desktop",
+                message: "\(desktopResult)\n\(error.localizedDescription)\n\(inputSummary(outcome, purpose: "Mac", warning: request.returnInputWarning))"
+            )
         }
         onStatusChange?()
     }
 
+    private func inputSummary(_ outcome: DisplayInputOutcome, purpose: String, warning: String?) -> String {
+        let prefix = "Monitor input (\(purpose)): "
+        if let warning, outcome.state == .notRequested {
+            return prefix + "Not requested. \(warning) Use the monitor's input buttons if needed."
+        }
+        let requested = outcome.requestedInput.map { inputCodeLabel($0) }
+        let recovery = outcome.recoveryCommand.map { " To return to the previous input, run: \($0)." } ?? ""
+        switch outcome.state {
+        case .notRequested:
+            return prefix + "No DDC input change was requested. Use the monitor's input buttons to switch manually if needed."
+        case .notAttempted:
+            return prefix + "Not attempted. \(outcome.detail ?? "The desktop operation did not reach the input step.") Use the monitor's input buttons if needed."
+        case .skipped:
+            return prefix + "Skipped. \(outcome.detail ?? "DDC was unavailable.") Use the monitor's input buttons if needed."
+        case .verified:
+            return prefix + "\(requested ?? "Requested input") selected and verified by readback.\(recovery)"
+        case .alreadySelected:
+            return prefix + "Already on \(requested ?? "the requested input"); no DDC write was sent.\(recovery)"
+        case .unverified:
+            let detail = outcome.detail ?? "readback was unavailable"
+            return prefix + "Selection of \(requested ?? "the requested input") is unverified (\(detail)); PanelCtl does not claim it changed. Check the monitor.\(recovery) Use the monitor's input buttons if needed."
+        case .failed:
+            return prefix + "Failed. \(outcome.detail ?? "DDC input selection failed.")\(recovery) Use the monitor's input buttons if needed."
+        }
+    }
+
     private func presentDisplayError(_ title: String, error: Error) {
-        notice = AppNotice(
-            title: title,
-            message: error.localizedDescription,
-            opensLoginItemSettings: false
-        )
+        presentDisplayError(title, message: error.localizedDescription)
+    }
+
+    private func presentDisplayError(_ title: String, message: String) {
+        notice = AppNotice(title: title, message: message, opensLoginItemSettings: false)
     }
 
     private func snooze(until: Date) {

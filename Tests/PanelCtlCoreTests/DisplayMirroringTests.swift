@@ -36,6 +36,10 @@ final class DisplayMirroringTests: XCTestCase {
         return try JSONDecoder().decode(RecoverySnapshot.self, from: JSONSerialization.data(withJSONObject: value))
     }
 
+    private func snapshotUUID(_ index: Int) -> String {
+        String(format: "00000000-0000-0000-0000-%012d", index)
+    }
+
     private func records(_ snapshot: RecoverySnapshot) -> [DisplayRecord] {
         snapshot.displays.enumerated().map { index, display in
             DisplayRecord(index: index + 1, id: display.id, uuid: display.uuid, name: "fake",
@@ -289,7 +293,10 @@ final class DisplayMirroringTests: XCTestCase {
                 if scenario == "hide-failure" { throw RecoveryError.unsafe("hide failed") }
                 return OpaquePointer(bitPattern: 1)!
             }, stage: { _, _, _ in }, complete: { _, _ in current = mirrored }, cancel: { _ in })
-            sut.report = { messages.append($0) }
+            sut.report = { message in
+                messages.append(message)
+                if message.hasPrefix("To reverse input selection:") { events.append("recovery-command") }
+            }
             sut.open = { uuid in
                 events.append("open")
                 XCTAssertEqual(uuid, original.displays[1].uuid)
@@ -326,24 +333,30 @@ final class DisplayMirroringTests: XCTestCase {
                                                        attributes: [.posixPermissions: 0o700])
             }
             let away = { try sut.away(selector: "8", source: "7", input: scenario == "no-input" ? nil : 17, store: store) }
-            if ["away-ddc-failure", "hide-failure", "journal-failure"].contains(scenario) {
+            if ["away-ddc-failure", "hide-failure", "journal-failure", "wrong-ddc-target"].contains(scenario) {
                 XCTAssertThrowsError(try away()) { error in
-                    if scenario != "journal-failure" {
-                        XCTAssertTrue(String(describing: error).contains("panelctl ddc-input --display"))
-                        XCTAssertTrue(String(describing: error).contains("panelctl recovery restore --journal"))
+                    let message = String(describing: error)
+                    if scenario == "wrong-ddc-target" {
+                        XCTAssertTrue(message.contains("DDC target identity changed"))
+                        XCTAssertFalse(message.contains("panelctl ddc-input --display"))
+                        XCTAssertTrue(message.contains("panelctl recovery restore --journal"))
+                    } else if scenario != "journal-failure" {
+                        XCTAssertTrue(message.contains("panelctl ddc-input --display"))
+                        XCTAssertTrue(message.contains("panelctl recovery restore --journal"))
                     }
                 }
-                XCTAssertFalse(events.contains("hide") && scenario == "away-ddc-failure")
+                XCTAssertFalse(events.contains("hide") && ["away-ddc-failure", "wrong-ddc-target"].contains(scenario))
                 if scenario == "journal-failure" { XCTAssertTrue(events.isEmpty) }
                 continue
             }
             try away()
             XCTAssertEqual(try store.load().state, .mirrored)
-            let skipped = ["no-input", "no-ddc", "zero-input", "wrong-ddc-target", "pre-read-failure"].contains(scenario)
+            let skipped = ["no-input", "no-ddc", "zero-input", "pre-read-failure"].contains(scenario)
             if skipped {
                 XCTAssertFalse(events.contains("away-input"))
                 XCTAssertTrue(messages.contains { $0.contains("use the monitor's input button") })
             } else {
+                XCTAssertLessThan(try XCTUnwrap(events.firstIndex(of: "recovery-command")), try XCTUnwrap(events.firstIndex(of: "away-input")))
                 XCTAssertLessThan(try XCTUnwrap(events.firstIndex(of: "away-input")), try XCTUnwrap(events.firstIndex(of: "hide")))
             }
             if scenario == "readback-failure" {
@@ -374,6 +387,143 @@ final class DisplayMirroringTests: XCTestCase {
             if scenario == "no-input" { XCTAssertEqual(events, ["unhide"]) }
             if scenario == "unverified" { XCTAssertTrue(messages.contains { $0.contains("Input switch is unverified") }) }
         }
+    }
+
+    func testGuardedAppHandoffReportsStructuredInputWithoutDroppingIdentityGuards() throws {
+        func fixture(_ name: String) throws -> (DisplayHideController, RecoveryStore, EventLog, (Bool) -> Void) {
+            let operationStore = RecoveryStore(url: directory.appendingPathComponent("\(name)-operation"))
+            let operationEvents = EventLog()
+            let store = RecoveryStore(url: directory.appendingPathComponent("\(name).json"))
+            let original = try snapshot()
+            let mirrored = try snapshot { $0[1]["mirrorUUID"] = self.sourceUUID; $0[1]["active"] = false }
+            var current = original
+            var returning = false
+            var sut = HandoffController(mirror: controller(original), report: { _ in })
+            sut.mirror.records = { self.records(current) }
+            sut.mirror.operationLock = { operationStore }
+            sut.mirror.engine.capture = { current }
+            sut.mirror.engine.apply = { saved in
+                operationEvents.values.append("restore")
+                current = saved
+            }
+            sut.mirror.transaction = MirrorTransaction(
+                begin: {
+                    operationEvents.values.append("hide")
+                    XCTAssertTrue(FileManager.default.fileExists(atPath: store.url.path))
+                    return OpaquePointer(bitPattern: 1)!
+                },
+                stage: { _, _, _ in },
+                complete: { _, _ in current = mirrored },
+                cancel: { _ in XCTFail("successful fake mirror must consume the transaction") }
+            )
+            sut.open = { uuid in
+                operationEvents.values.append("open")
+                XCTAssertEqual(uuid, self.snapshotUUID(2))
+                XCTAssertTrue(FileManager.default.fileExists(atPath: store.url.path), "the recovery journal must precede DDC")
+                if name == "no-ddc" { throw RecoveryError.unsafe("fake DDC unavailable") }
+                let displayID: UInt32 = name == "stale-target" ? 99 : self.targetID
+                return (DDC.DisplayTarget(id: displayID, uuid: uuid), DDCChannel(
+                    getVCP: { code in
+                        XCTAssertEqual(code, 0x60)
+                        operationEvents.values.append("read")
+                        return (15, 0)
+                    },
+                    setVCP: { code, _ in
+                        XCTAssertEqual(code, 0x60)
+                        operationEvents.values.append("input-write-\(returning ? "show" : "hide")")
+                    }
+                ))
+            }
+            sut.select = { value, channel, id, uuid, originalInput in
+                if name == "away-write-failure" && !returning || name == "show-write-failure" && returning {
+                    throw RecoveryError.unsafe("fake DDC write failure")
+                }
+                try channel.setVCP(DDCInput.inputVCP, UInt16(value))
+                let outcome: DDCInputSelection.Outcome = name == "unverified" && !returning ? .unverified : .verified
+                return DDCInputSelection(displayID: id, uuid: uuid, original: originalInput,
+                                         requested: value, observed: outcome == .verified ? value : nil,
+                                         outcome: outcome, detail: outcome == .unverified ? "fake readback unavailable" : nil)
+            }
+            let backend = DisplayHideController(
+                store: store,
+                mirror: sut.mirror,
+                operationLock: { operationStore },
+                handoff: sut
+            )
+            return (backend, store, operationEvents, { returning = $0 })
+        }
+
+        for scenario in ["verified", "no-ddc", "unverified", "no-input"] {
+            let (backend, scenarioStore, events, setReturning) = try fixture(scenario)
+            let outcome = try backend.hide(
+                target: DisplayHideIdentity(uuid: snapshotUUID(2), displayID: targetID, name: "Target", vendor: 1, model: 2, serial: 2),
+                source: DisplayHideIdentity(uuid: sourceUUID, displayID: sourceID, name: "Source", vendor: 1, model: 1, serial: 1),
+                awayInput: scenario == "no-input" ? nil : 17
+            )
+            XCTAssertEqual(try scenarioStore.load().state, .mirrored)
+            switch scenario {
+            case "verified":
+                XCTAssertEqual(outcome.state, .verified)
+                XCTAssertLessThan(try XCTUnwrap(events.values.firstIndex(of: "open")), try XCTUnwrap(events.values.firstIndex(of: "hide")))
+            case "no-ddc":
+                XCTAssertEqual(outcome.state, .skipped)
+                XCTAssertTrue(outcome.detail?.contains("monitor's input button") == true)
+                XCTAssertTrue(events.values.contains("hide"))
+            case "unverified":
+                XCTAssertEqual(outcome.state, .unverified)
+                XCTAssertEqual(outcome.observedInput, nil)
+                XCTAssertTrue(events.values.contains("hide"))
+            default:
+                XCTAssertEqual(outcome.state, .notRequested)
+                XCTAssertFalse(events.values.contains("open"))
+            }
+            setReturning(false)
+        }
+
+        for scenario in ["away-write-failure", "stale-target"] {
+            let (backend, scenarioStore, events, _) = try fixture(scenario)
+            XCTAssertThrowsError(try backend.hide(
+                target: DisplayHideIdentity(uuid: snapshotUUID(2), displayID: targetID, name: "Target", vendor: 1, model: 2, serial: 2),
+                source: DisplayHideIdentity(uuid: sourceUUID, displayID: sourceID, name: "Source", vendor: 1, model: 1, serial: 1),
+                awayInput: 17
+            )) { error in
+                let failure = error as? DisplayHandoffOperationFailure
+                XCTAssertNotNil(failure)
+                XCTAssertEqual(failure?.inputOutcome.state, .failed)
+                XCTAssertTrue(failure?.message.contains("panelctl recovery restore --journal") == true)
+                if scenario == "away-write-failure" {
+                    XCTAssertTrue(failure?.inputOutcome.recoveryCommand?.contains("panelctl ddc-input --display") == true)
+                } else {
+                    XCTAssertTrue(failure?.inputOutcome.detail?.contains("identity changed since capture") == true)
+                    XCTAssertNil(failure?.inputOutcome.recoveryCommand)
+                }
+            }
+            XCTAssertEqual(try scenarioStore.load().state, .needsAttention)
+            XCTAssertFalse(events.values.contains("hide"), "unsafe or failed DDC selection must stop before topology mutation")
+            if scenario == "stale-target" { XCTAssertFalse(events.values.contains("read")) }
+        }
+
+        let (backend, scenarioStore, events, setReturning) = try fixture("show-write-failure")
+        let hiddenOutcome = try backend.hide(
+            target: DisplayHideIdentity(uuid: snapshotUUID(2), displayID: targetID, name: "Target", vendor: 1, model: 2, serial: 2),
+            source: DisplayHideIdentity(uuid: sourceUUID, displayID: sourceID, name: "Source", vendor: 1, model: 1, serial: 1)
+        )
+        XCTAssertEqual(hiddenOutcome.state, .notRequested)
+        let journalID = try scenarioStore.load().id.uuidString
+        setReturning(true)
+        let returnOutcome = try backend.show(expectedJournalID: journalID, returnInput: 15)
+        XCTAssertEqual(returnOutcome.state, .failed)
+        XCTAssertTrue(returnOutcome.recoveryCommand?.contains("panelctl ddc-input --display") == true)
+        XCTAssertEqual(try scenarioStore.load().state, .restored, "DDC failure after verified Show cannot retain or replay topology recovery")
+        XCTAssertLessThan(try XCTUnwrap(events.values.firstIndex(of: "restore")), try XCTUnwrap(events.values.lastIndex(of: "open")))
+
+        let opensBeforeDuplicateShow = events.values.filter { $0 == "open" }.count
+        let duplicateOutcome = try backend.show(expectedJournalID: journalID, returnInput: 15)
+        XCTAssertEqual(duplicateOutcome.state, .notAttempted)
+        XCTAssertTrue(duplicateOutcome.detail?.contains("journal was already resolved") == true)
+        XCTAssertEqual(events.values.filter { $0 == "open" }.count, opensBeforeDuplicateShow,
+                       "resolved-journal app Show must not reopen DDC after an earlier input failure")
+        XCTAssertEqual(try scenarioStore.load().state, .restored)
     }
 
     func testBackRefusesDifferentTargetBeforeRestoreOrDDC() throws {
@@ -429,4 +579,8 @@ final class DisplayMirroringTests: XCTestCase {
             XCTAssertTrue(CLIHelp.text(for: command).contains("not hardware-qualified"))
         }
     }
+}
+
+private final class EventLog {
+    var values: [String] = []
 }

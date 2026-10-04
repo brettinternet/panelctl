@@ -138,6 +138,7 @@ struct MirrorController {
     }
 
     func unmirror(store: RecoveryStore, selector: String? = nil, expectedID: UUID? = nil,
+                  noOpWhenAlreadyResolved: Bool = false,
                   afterRestore: (RecoveryDisplay) throws -> Void = { _ in }) throws -> RecoveryJournal {
         do {
             let operation = operationLock()
@@ -154,6 +155,7 @@ struct MirrorController {
             }
             let target = journal.snapshot.displays.first { $0.id == journal.mirrorTargetID }!
             let source = journal.snapshot.displays.first { $0.id == journal.mirrorSourceID }!
+            let wasResolved = journal.state.resolved
             let available = try records()
             guard Set(available.map(\.id)).count == available.count,
                   Set(available.compactMap { $0.uuid?.lowercased() }).count == available.count else {
@@ -176,6 +178,7 @@ struct MirrorController {
             }), sourceRecord.online, sourceRecord.active, !sourceRecord.asleep else {
                 throw RecoveryError.unsafe("journaled mirror source is asleep, inactive, or unavailable; wake or reconnect the exact display, then inspect recovery status before Show")
             }
+            if wasResolved && noOpWhenAlreadyResolved { return journal }
             // Public-only engine: no private re-enable, helper or gamma path.
             try engine.finish(&journal, store: store, verifyOnly: false, trigger: "unmirror")
             try afterRestore(target)

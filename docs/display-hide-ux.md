@@ -60,17 +60,21 @@ OLED protection: Selected                  [independent existing selection]
 Hide a desktop · Experimental
 [ ] Enable experimental hide for this display
 Mirror source: [Choose a display…]          [no default selection]
-Input switching: Off                       [TASK-18 only]
+Other computer input (on Hide): [Off — use monitor buttons]
+Mac input (on Show):          [Off — use monitor buttons]
 [Hide…]                                    [enabled only after validation]
 ```
 
 TASK-18 expands input configuration to independently optional **Other computer
 input (on Hide)** and **Mac input (on Show)**, using existing `ddc-input` names
-and numeric codes. “Off — use monitor buttons” is the default. Saving/loading
-performs neither topology nor DDC writes, nor automatic DDC capability queries.
-An explicit **Check DDC availability** action may query; unknown/unavailable/
-failed states explain manual switching. Availability is not proof of write
-support. Invalid codes block saving that input, not a hide-only configuration.
+and numeric codes: `dp1`=0x0F, `dp2`=0x10, `hdmi1`=0x11, `hdmi2`=0x12,
+or any decimal/`0x` value from 1 through 255. “Off — use monitor buttons” is
+the default. These controls appear after opting in for that display. Invalid
+text is not persisted and leaves the input off, so hide-only remains available.
+Saving/loading performs neither topology writes nor DDC queries/writes. The
+explicit **Check DDC availability** action performs only the existing input
+read; unknown/unavailable/failed states explain manual switching, and a readable
+input is not proof of write support.
 
 Show full stable identity in accessible details; names alone are not unique.
 Missing displays retain their last name and identity with “Unavailable”, never
@@ -121,7 +125,10 @@ No global topology reset, implicit Show-all or private recovery is added.
    monitor buttons or macOS Displays settings if needed.” Default button is
    Cancel; explicit **Hide desktop** authorizes only this operation.
 4. Revalidate under the existing operation/journal locks. Capture durably before
-   any input/topology write. Publish desktop and input outcomes separately.
+   any input/topology write. Hide selects the optional other-computer input
+   before topology mirroring; Show restores/verifies topology before optional
+   Mac input selection. Publish desktop and input outcomes separately. DDC
+   target identity changes are refused without guessing or retrying.
 5. Show… confirms the **journaled** target and captured layout, optional Mac
    input and the fact that restoring layout may affect other captured screens.
    Default Cancel; **Show desktop** is explicit consent for this return only.
@@ -215,7 +222,8 @@ Always show two results when input switching was requested: **Desktop** and
   and offer explicit recovery. An unverified write can precede successful hide;
   say “Input change unverified — check monitor”, not “Switched”.
 - Unavailable DDC/pre-read: explain skipped input and monitor-button fallback;
-  hide may still succeed. No retry or inferred input code.
+  hide may still succeed. No retry or inferred input code. App operation notices
+  keep **Desktop** and **Monitor input** outcomes distinct.
 - Input changed, then hide failed: report the partial outcome, preserve the exact
   input recovery command returned by the backend in visible operation details,
   and offer journal-specific topology recovery. Never claim automatic rollback.

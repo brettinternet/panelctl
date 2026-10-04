@@ -56,9 +56,50 @@ private struct DropdownPicker<Value: Hashable>: NSViewRepresentable {
     }
 }
 
+private final class InputCodeFieldTarget: NSObject, NSTextFieldDelegate {
+    var onChange: (String) -> Void = { _ in }
+
+    func controlTextDidChange(_ notification: Notification) {
+        guard let field = notification.object as? NSTextField else { return }
+        onChange(field.stringValue)
+    }
+}
+
+private struct InputCodeField: NSViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    let accessibilityLabel: String
+
+    func makeCoordinator() -> InputCodeFieldTarget {
+        InputCodeFieldTarget()
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
+        field.placeholderString = placeholder
+        field.isBordered = true
+        field.isBezeled = true
+        field.bezelStyle = .roundedBezel
+        field.setAccessibilityLabel(accessibilityLabel)
+        field.delegate = context.coordinator
+        context.coordinator.onChange = { text = $0 }
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        field.setAccessibilityLabel(accessibilityLabel)
+        if field.stringValue != text {
+            field.stringValue = text
+        }
+        context.coordinator.onChange = { text = $0 }
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @State private var selection: SettingsDestination?
+    @State private var inputDrafts: [String: String] = [:]
+    @State private var inputValidationErrors: [String: String] = [:]
 
     init(model: AppModel) {
         self.model = model
@@ -541,7 +582,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Hide a desktop · Experimental")
                 .font(.system(size: 12, weight: .semibold))
-            Text("Experimental · mirror hide removes a separate desktop by mirroring another display. The Mac signal stays on and the monitor may show the mirrored picture. Resolution, refresh rate, and HDR may change. Show restores the saved public layout and modes, not HDR, color profiles, rotation, windows, or Spaces. Hide does not switch inputs; use the monitor buttons when needed. Saving settings makes no topology, DDC, or brightness changes.")
+            Text("Experimental · mirror hide removes a separate desktop by mirroring another display. The Mac signal stays on and the monitor may show the mirrored picture. Resolution, refresh rate, and HDR may change. Show restores the saved public layout and modes, not HDR, color profiles, rotation, windows, or Spaces. Optional input switching uses DDC only when configured; otherwise use the monitor buttons. Saving settings makes no topology or DDC requests; Check DDC availability is an explicit read-only input check and does not prove switching support.")
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -621,6 +662,45 @@ struct SettingsView: View {
                     .disabled(frozen || !identityIsCurrent)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                if configuration.enabled {
+                    settingRow("Other computer input (on Hide)") {
+                        InputCodeField(
+                            text: inputBinding(configuration, onHide: true),
+                            placeholder: "Off — use monitor buttons",
+                            accessibilityLabel: "Other computer input on Hide for \(target.name ?? target.uuid)"
+                        )
+                        .disabled(frozen || !identityIsCurrent)
+                    }
+                    settingRow("Mac input (on Show)") {
+                        InputCodeField(
+                            text: inputBinding(configuration, onHide: false),
+                            placeholder: "Off — use monitor buttons",
+                            accessibilityLabel: "Mac input on Show for \(target.name ?? target.uuid)"
+                        )
+                        .disabled(frozen || !identityIsCurrent)
+                    }
+                    Text("Use dp1 = 0x0F, dp2 = 0x10, hdmi1 = 0x11, hdmi2 = 0x12, any decimal/0x code from 1–255, or leave Off. DDC is optional; monitor buttons always remain available.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ForEach([true, false], id: \.self) { onHide in
+                        if let error = inputValidationErrors[inputDraftKey(configuration, onHide: onHide)] {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Button("Check DDC availability") {
+                        model.checkDDCInputAvailability(for: target.uuid)
+                    }
+                    .disabled(frozen || !identityIsCurrent)
+                    .accessibilityLabel("Check DDC availability for \(target.name ?? target.uuid)")
+                    Text(model.ddcInputAvailabilityMessage(for: configuration))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if case .hiding(let uuid) = model.hideOperation,
                    uuid.caseInsensitiveCompare(target.uuid) == .orderedSame {
                     Text("Hiding…")
@@ -657,6 +737,34 @@ struct SettingsView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func inputDraftKey(_ configuration: DisplayHideConfiguration, onHide: Bool) -> String {
+        "\(configuration.target.uuid.lowercased()):\(onHide ? "away" : "return")"
+    }
+
+    private func inputBinding(_ configuration: DisplayHideConfiguration, onHide: Bool) -> Binding<String> {
+        let key = inputDraftKey(configuration, onHide: onHide)
+        let savedValue = onHide ? configuration.awayInput : configuration.returnInput
+        return Binding(
+            get: {
+                if let draft = inputDrafts[key] { return draft }
+                guard let savedValue else { return "" }
+                return DDCInput.namedValues.first(where: { $0.value == savedValue })?.name ?? String(savedValue)
+            },
+            set: { value in
+                inputDrafts[key] = value
+                let error = onHide
+                    ? model.setHideAwayInput(value, for: configuration.target.uuid)
+                    : model.setHideReturnInput(value, for: configuration.target.uuid)
+                if let error {
+                    inputValidationErrors[key] = error
+                } else {
+                    inputDrafts.removeValue(forKey: key)
+                    inputValidationErrors.removeValue(forKey: key)
+                }
+            }
+        )
     }
 
     private var startupSection: some View {

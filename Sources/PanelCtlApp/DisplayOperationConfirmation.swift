@@ -20,7 +20,11 @@ enum DisplayOperationConfirmation {
         Explicit mirror source: \(sourceName)
         \(request.source.identityDetail)
 
-        This hides the separate desktop by mirroring the source. The Mac signal remains on. Resolution, refresh rate, and HDR may change. Show restores the captured public layout and modes, not HDR, color profiles, rotation, windows, or Spaces. No input change will be made; use the monitor's buttons if needed.
+        Other computer input on Hide: \(inputDescription(request.awayInput, warning: request.awayInputWarning, purpose: "Other computer"))
+        Mac input on Show: \(inputDescription(request.returnInput, warning: request.returnInputWarning, purpose: "Mac"))
+        DDC may be unavailable or may not verify a switch. Manual monitor-button switching remains available; an unverified result will not be reported as changed.
+
+        This hides the separate desktop by mirroring the source. The Mac signal remains on. Resolution, refresh rate, and HDR may change. Show restores the captured public layout and modes, not HDR, color profiles, rotation, windows, or Spaces.
 
         Recovery journal: \(journalPath)
 
@@ -30,7 +34,12 @@ enum DisplayOperationConfirmation {
         """
     }
 
-    static func showMessage(_ status: DisplayHandoffStatus) -> String {
+    static func showMessage(_ request: DisplayShowRequest) -> String {
+        showMessage(request.status, returnInput: request.returnInput, returnInputWarning: request.returnInputWarning)
+    }
+
+    static func showMessage(_ status: DisplayHandoffStatus, returnInput: UInt8? = nil,
+                           returnInputWarning: String? = nil) -> String {
         let target = status.target
         let source = status.source
         let targetName = target?.name ?? "journaled display"
@@ -44,12 +53,21 @@ enum DisplayOperationConfirmation {
         Captured mirror source: \(sourceName)
         \(source?.identityDetail ?? "Source identity unavailable")
 
-        Show restores the captured public display layout and modes, not HDR, color profiles, rotation, windows, or Spaces. Restoring the layout may affect other captured displays. PanelCtl will not select a monitor input; use the monitor's input button if needed.
+        Mac input on Show: \(inputDescription(returnInput, warning: returnInputWarning, purpose: "Mac"))
+        Show restores the captured public display layout and modes, not HDR, color profiles, rotation, windows, or Spaces. Restoring the layout may affect other captured displays. If DDC is unavailable, fails, or is unverified, use the monitor's input buttons; input failure never blocks restoring the desktop.
 
         Recovery journal: \(status.journalPath)
 
         PanelCtl protection remains paused until the shared journal is verified resolved. After a successful Show, enabled protection starts with a fresh idle countdown.
         """
+    }
+
+    private static func inputDescription(_ value: UInt8?, warning: String?, purpose: String) -> String {
+        if let warning { return "\(purpose) input not requested — \(warning)" }
+        guard let value else { return "No \(purpose.lowercased()) input change requested; use monitor buttons if needed." }
+        let code = String(format: "0x%02X", value)
+        let name = DDCInput.namedValues.first(where: { $0.value == value })?.name
+        return "\(name.map { "\($0) (\(code))" } ?? code)"
     }
 
     struct PreparedConfirmation {

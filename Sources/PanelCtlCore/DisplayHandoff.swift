@@ -24,6 +24,49 @@ public struct DisplayHandoffIdentity: Equatable {
     }
 }
 
+public struct DisplayInputOutcome: Equatable {
+    public enum State: String, Equatable {
+        case notRequested
+        case notAttempted
+        case skipped
+        case verified
+        case alreadySelected
+        case unverified
+        case failed
+    }
+
+    public let state: State
+    public let requestedInput: UInt8?
+    public let observedInput: UInt8?
+    public let detail: String?
+    public let recoveryCommand: String?
+
+    public init(state: State, requestedInput: UInt8? = nil, observedInput: UInt8? = nil,
+                detail: String? = nil, recoveryCommand: String? = nil) {
+        self.state = state
+        self.requestedInput = requestedInput
+        self.observedInput = observedInput
+        self.detail = detail
+        self.recoveryCommand = recoveryCommand
+    }
+
+    public static let notRequested = Self(state: .notRequested)
+}
+
+public struct DisplayHandoffOperationFailure: Error, LocalizedError {
+    public let action: String
+    public let inputOutcome: DisplayInputOutcome
+    public let message: String
+
+    public var errorDescription: String? { message }
+
+    init(action: String, inputOutcome: DisplayInputOutcome, message: String) {
+        self.action = action
+        self.inputOutcome = inputOutcome
+        self.message = message
+    }
+}
+
 public struct DisplayHandoffStatus: Equatable {
     public enum State: Equatable {
         case none
@@ -161,6 +204,64 @@ struct HandoffController {
     }
     var report: (String) -> Void = { print($0) }
 
+    func guardedAway(target: DisplayHideIdentity, source: DisplayHideIdentity, input: UInt8?,
+                     store: RecoveryStore) throws -> DisplayInputOutcome {
+        var inputOutcome = input.map {
+            DisplayInputOutcome(state: .notAttempted, requestedInput: $0,
+                                detail: "Input selection was not attempted because Hide did not reach the captured handoff step.")
+        } ?? .notRequested
+        do {
+            _ = try mirror.mirror(
+                selector: target.uuid,
+                source: source.uuid,
+                store: store,
+                expectedTarget: target,
+                expectedSource: source
+            ) { capturedTarget in
+                guard input != nil else { return }
+                let outcome = selectInput(input, target: capturedTarget)
+                inputOutcome = outcome
+                if outcome.state == .failed {
+                    throw RecoveryError.unsafe(outcome.detail ?? "DDC input selection failed")
+                }
+            }
+            return inputOutcome
+        } catch {
+            throw DisplayHandoffOperationFailure(action: "hide", inputOutcome: inputOutcome,
+                                                 message: error.localizedDescription)
+        }
+    }
+
+    func guardedBack(expectedJournalID: UUID, input: UInt8?, store: RecoveryStore) throws -> DisplayInputOutcome {
+        var inputOutcome = input.map {
+            DisplayInputOutcome(state: .notAttempted, requestedInput: $0,
+                                detail: "Input selection was not attempted because the captured desktop was not restored.")
+        } ?? .notRequested
+        do {
+            var afterRestoreRan = false
+            _ = try mirror.unmirror(
+                store: store,
+                expectedID: expectedJournalID,
+                noOpWhenAlreadyResolved: true
+            ) { target in
+                afterRestoreRan = true
+                guard input != nil else { return }
+                inputOutcome = selectInput(input, target: target)
+            }
+            if let input, !afterRestoreRan {
+                inputOutcome = DisplayInputOutcome(
+                    state: .notAttempted,
+                    requestedInput: input,
+                    detail: "Input selection was not attempted because the journal was already resolved; duplicate Show did not send DDC."
+                )
+            }
+            return inputOutcome
+        } catch {
+            throw DisplayHandoffOperationFailure(action: "show", inputOutcome: inputOutcome,
+                                                 message: error.localizedDescription)
+        }
+    }
+
     func away(selector: String, source: String, input: UInt8?, store: RecoveryStore) throws {
         var inputRecovery: String?
         do {
@@ -184,38 +285,120 @@ struct HandoffController {
         }
     }
 
-    private func switchInput(_ input: UInt8?, target: RecoveryDisplay,
-                             recovery: (String) -> Void) throws {
-        guard let input else {
-            report("DDC skipped (no --input configured); use the monitor's input button.")
-            return
+    func selectInput(_ input: UInt8?, target: RecoveryDisplay,
+                     willSelect: (String) -> Void = { _ in }) -> DisplayInputOutcome {
+        guard let input else { return .notRequested }
+        guard input > 0 else {
+            return DisplayInputOutcome(state: .failed, requestedInput: input,
+                                       detail: "Input code 0 is invalid; choose dp1, dp2, hdmi1, hdmi2, or a value from 1 through 255.")
         }
+        do {
+            let records = try mirror.records()
+            guard matchesCapturedIdentity(target, records: records) else {
+                return staleInputTarget(target, requested: input, actual: "current display inventory")
+            }
+        } catch {
+            return DisplayInputOutcome(state: .failed, requestedInput: input,
+                                       detail: "Could not verify the captured DDC target identity: \(error.localizedDescription)")
+        }
+
         let session: (display: DDC.DisplayTarget, channel: DDCChannel)
-        let original: UInt8
         do {
             session = try open(target.uuid)
-            guard session.display.id == target.id,
-                  session.display.uuid.lowercased() == target.uuid.lowercased() else {
-                throw RecoveryError.unsafe("DDC target changed since journal capture")
-            }
-            original = try DDCInput.current(session.channel)
-            guard original != 0 else { throw RecoveryError.unsafe("DDC returned unknown input 0") }
         } catch {
-            report("DDC skipped (\(error)); use the monitor's input button.")
-            return
+            do {
+                guard try matchesCapturedIdentity(target, records: mirror.records()) else {
+                    return staleInputTarget(target, requested: input, actual: "current display inventory")
+                }
+            } catch {
+                return DisplayInputOutcome(state: .failed, requestedInput: input,
+                                           detail: "Could not verify the captured DDC target identity after opening failed: \(error.localizedDescription)")
+            }
+            return DisplayInputOutcome(state: .skipped, requestedInput: input,
+                                       detail: "DDC is unavailable: \(error.localizedDescription). Use the monitor's input button.")
         }
-        let command = "panelctl ddc-input --display \(shellQuote(target.uuid)) --set \(original), or use the monitor's input button"
-        recovery(command)
-        // Print before attempting a write, including when readback becomes unavailable.
-        report("To reverse input selection: \(command)")
+        guard session.display.id == target.id,
+              session.display.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame else {
+            return staleInputTarget(target, requested: input, actual: "opened DDC display ID \(session.display.id), UUID \(session.display.uuid)")
+        }
+        do {
+            guard try matchesCapturedIdentity(target, records: mirror.records()) else {
+                return staleInputTarget(target, requested: input, actual: "current display inventory after opening DDC")
+            }
+        } catch {
+            return DisplayInputOutcome(state: .failed, requestedInput: input,
+                                       detail: "Could not revalidate the captured DDC target identity: \(error.localizedDescription)")
+        }
+
+        let original: UInt8
+        do {
+            original = try DDCInput.current(session.channel)
+        } catch {
+            return DisplayInputOutcome(state: .skipped, requestedInput: input,
+                                       detail: "DDC input could not be read: \(error.localizedDescription). Use the monitor's input button.")
+        }
+        guard original != 0 else {
+            return DisplayInputOutcome(state: .skipped, requestedInput: input,
+                                       detail: "DDC returned unknown input 0. Use the monitor's input button.")
+        }
+        let command = "panelctl ddc-input --display \(shellQuote(target.uuid)) --set \(String(format: "0x%02X", original))"
+        willSelect(command)
         do {
             let result = try select(input, session.channel, target.id, target.uuid, original)
-            report("DDC input outcome=\(result.outcome.rawValue)\(result.detail.map { ": \($0)" } ?? "")")
-            if result.outcome == .unverified {
-                report("Input switch is unverified; check visually and use the monitor's input button if needed.")
+            switch result.outcome {
+            case .alreadySelected:
+                return DisplayInputOutcome(state: .alreadySelected, requestedInput: input,
+                                           observedInput: result.observed, recoveryCommand: command)
+            case .verified:
+                return DisplayInputOutcome(state: .verified, requestedInput: input,
+                                           observedInput: result.observed, recoveryCommand: command)
+            case .unverified:
+                return DisplayInputOutcome(state: .unverified, requestedInput: input,
+                                           observedInput: result.observed, detail: result.detail,
+                                           recoveryCommand: command)
             }
         } catch {
-            throw RecoveryError.unsafe("DDC selection failed: \(error). Input recovery: \(command)")
+            return DisplayInputOutcome(state: .failed, requestedInput: input,
+                                       detail: "DDC selection failed: \(error.localizedDescription)",
+                                       recoveryCommand: command)
+        }
+    }
+
+    private func matchesCapturedIdentity(_ target: RecoveryDisplay, records: [DisplayRecord]) -> Bool {
+        let matches = records.filter { $0.uuid?.caseInsensitiveCompare(target.uuid) == .orderedSame }
+        guard matches.count == 1, let record = matches.first else { return false }
+        return record.id == target.id && record.vendor == target.vendor &&
+            record.model == target.model && record.serial == target.serial
+    }
+
+    private func staleInputTarget(_ target: RecoveryDisplay, requested: UInt8, actual: String) -> DisplayInputOutcome {
+        DisplayInputOutcome(
+            state: .failed,
+            requestedInput: requested,
+            detail: "DDC target identity changed since capture (expected Display ID \(target.id), UUID \(target.uuid), vendor/model/serial \(target.vendor)/\(target.model)/\(target.serial); found \(actual). Refresh Displays and use the exact captured monitor; no input was selected."
+        )
+    }
+
+    private func switchInput(_ input: UInt8?, target: RecoveryDisplay,
+                             recovery: (String) -> Void) throws {
+        let outcome = selectInput(input, target: target, willSelect: { command in
+            recovery(command + ", or use the monitor's input button")
+            report("To reverse input selection: \(command), or use the monitor's input button.")
+        })
+        switch outcome.state {
+        case .notRequested:
+            report("DDC skipped (no --input configured); use the monitor's input button.")
+        case .notAttempted:
+            report("DDC input was not attempted: \(outcome.detail ?? "unknown reason").")
+        case .skipped:
+            report("DDC skipped (\(outcome.detail ?? "unavailable")); use the monitor's input button.")
+        case .verified, .alreadySelected, .unverified:
+            report("DDC input outcome=\(outcome.state.rawValue)\(outcome.detail.map { ": \($0)" } ?? "")")
+            if outcome.state == .unverified {
+                report("Input switch is unverified; check visually and use the monitor's input button if needed.")
+            }
+        case .failed:
+            throw RecoveryError.unsafe("\(outcome.detail ?? "DDC selection failed")\(outcome.recoveryCommand.map { ". Input recovery: \($0), or use the monitor's input button" } ?? "")")
         }
     }
 

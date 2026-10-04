@@ -175,7 +175,7 @@ final class DisplayHideAppTests: XCTestCase {
             displays: displays,
             idleSecondsProvider: { 3600 },
             useManagedProtectionService: true,
-            hideDisplay: { _, _ in
+            hideDisplay: { _, _, _ in
                 hideAttempts += 1
                 throw NSError(domain: "FakeMirrorWriter", code: 1, userInfo: [NSLocalizedDescriptionKey: "preflight refusal; no capture"])
             }
@@ -250,6 +250,326 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(reloaded.preferences, protectionBefore)
     }
 
+    func testInputConfigurationUsesValidatedCodesAndOnlyChecksDDCOnExplicitRequest() throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var checkCalls = 0
+        let target = displays[1]
+        let model = makeModel(
+            defaults: defaults,
+            displays: displays,
+            checkDDCInput: { identity in
+                checkCalls += 1
+                return DDCInputReading(displayID: identity.displayID, uuid: identity.uuid, current: 15)
+            }
+        )
+        model.setHideEnabled(true, for: target)
+        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
+        XCTAssertTrue(model.setHideAwayInput("0", for: Self.targetUUID)?.contains("Invalid DDC input code") == true)
+        XCTAssertNil(try XCTUnwrap(model.hidePreferences[Self.targetUUID]).awayInput)
+        XCTAssertNil(model.setHideAwayInput("hdmi1", for: Self.targetUUID))
+        XCTAssertNil(model.setHideReturnInput("dp1", for: Self.targetUUID))
+        XCTAssertEqual(checkCalls, 0, "saving input preferences must not open or read DDC")
+
+        let reloaded = makeModel(
+            defaults: defaults,
+            displays: displays,
+            checkDDCInput: { identity in
+                checkCalls += 1
+                return DDCInputReading(displayID: identity.displayID, uuid: identity.uuid, current: 15)
+            }
+        )
+        let saved = try XCTUnwrap(reloaded.hidePreferences[Self.targetUUID])
+        XCTAssertEqual(saved.awayInput, 17)
+        XCTAssertEqual(saved.returnInput, 15)
+        XCTAssertEqual(checkCalls, 0, "loading input preferences must not open or read DDC")
+        XCTAssertTrue(reloaded.ddcInputAvailabilityMessage(for: saved).contains("availability is unknown"))
+
+        reloaded.checkDDCInputAvailability(for: Self.targetUUID)
+        XCTAssertEqual(checkCalls, 1, "only the explicit capability check may read DDC")
+        XCTAssertTrue(reloaded.ddcInputAvailabilityMessage(for: saved).contains("does not prove switching support"))
+
+        let unavailable = makeModel(
+            defaults: defaults,
+            displays: displays,
+            checkDDCInput: { _ in throw NSError(domain: "FakeDDC", code: 1, userInfo: [NSLocalizedDescriptionKey: "fake DDC unavailable"]) }
+        )
+        unavailable.checkDDCInputAvailability(for: Self.targetUUID)
+        let unavailableMessage = unavailable.ddcInputAvailabilityMessage(for: saved)
+        XCTAssertTrue(unavailableMessage.contains("fake DDC unavailable"))
+        XCTAssertTrue(unavailableMessage.contains("monitor's input buttons"))
+        XCTAssertTrue(unavailableMessage.contains("Hide and Show remain available"))
+    }
+
+    func testHideAndShowReportDesktopAndInputResultsSeparately() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let hidden = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "input-journal", canShow: true)
+        let box = StatusBox(handoffStatus(.none, target: nil, source: nil))
+        var awayInputs: [UInt8?] = []
+        var returnInputs: [UInt8?] = []
+        let model = makeModel(
+            defaults: defaults,
+            displays: displays,
+            status: { box.value },
+            hideDisplay: { _, _, input in
+                awayInputs.append(input)
+                box.value = hidden
+                return DisplayInputOutcome(
+                    state: .verified, requestedInput: input, observedInput: input,
+                    recoveryCommand: "panelctl ddc-input --display '\(Self.targetUUID)' --set 0x0F"
+                )
+            },
+            showDisplay: { journalID, input in
+                XCTAssertEqual(journalID, "input-journal")
+                returnInputs.append(input)
+                box.value = self.handoffStatus(.none, target: nil, source: nil)
+                return DisplayInputOutcome(
+                    state: .failed, requestedInput: input,
+                    detail: "fake DDC write failure after desktop restore",
+                    recoveryCommand: "panelctl ddc-input --display '\(Self.targetUUID)' --set 0x11"
+                )
+            }
+        )
+        model.setHideEnabled(true, for: displays[1])
+        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
+        XCTAssertNil(model.setHideAwayInput("hdmi1", for: Self.targetUUID))
+        XCTAssertNil(model.setHideReturnInput("dp1", for: Self.targetUUID))
+
+        var hideRequest: DisplayHideRequest?
+        model.onRequestHide = { hideRequest = $0 }
+        model.requestHide(targetUUID: Self.targetUUID)
+        let confirmation = try XCTUnwrap(hideRequest)
+        XCTAssertEqual(confirmation.awayInput, 17)
+        XCTAssertEqual(confirmation.returnInput, 15)
+        let hideText = DisplayOperationConfirmation.hideMessage(confirmation, journalPath: "/tmp/synthetic/current.json")
+        XCTAssertTrue(hideText.contains("Other computer input on Hide: hdmi1 (0x11)"))
+        XCTAssertTrue(hideText.contains("Mac input on Show: dp1 (0x0F)"))
+        model.confirmHide(confirmation, acknowledged: true)
+        try await waitUntil { !model.hideOperation.isBusy }
+        XCTAssertEqual(awayInputs, [17])
+        XCTAssertTrue(model.notice?.message.contains("Desktop: Target is hidden") == true)
+        XCTAssertTrue(model.notice?.message.contains("Monitor input (Other computer): hdmi1 (0x11) selected and verified") == true)
+        XCTAssertTrue(model.notice?.message.contains("panelctl ddc-input --display") == true)
+
+        var showRequest: DisplayShowRequest?
+        model.onRequestShow = { showRequest = $0 }
+        model.requestShow()
+        let showConfirmation = try XCTUnwrap(showRequest)
+        XCTAssertEqual(showConfirmation.returnInput, 15)
+        XCTAssertTrue(DisplayOperationConfirmation.showMessage(showConfirmation).contains("Mac input on Show: dp1 (0x0F)"))
+        model.confirmShow(showConfirmation, acknowledged: true)
+        try await waitUntil { !model.hideOperation.isBusy && model.handoffStatus?.state == DisplayHandoffStatus.State.none }
+        XCTAssertEqual(returnInputs, [15])
+        XCTAssertTrue(model.notice?.message.contains("Desktop: The journaled public display layout and modes were restored and verified") == true)
+        XCTAssertTrue(model.notice?.message.contains("Monitor input (Mac): Failed") == true)
+        XCTAssertTrue(model.notice?.message.contains("fake DDC write failure after desktop restore") == true)
+        XCTAssertTrue(model.notice?.message.contains("panelctl ddc-input --display") == true)
+    }
+
+    func testHideInspectionFailurePreservesReturnedInputOutcome() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let hiddenStatus = handoffStatus(
+            .recovery, target: displays[1], source: displays[0], journalID: "hide-inspection-journal",
+            reason: "post-Hide observation failed", inspectionFailure: "fake post-Hide inspection failure"
+        )
+        let box = StatusBox(handoffStatus(.none, target: nil, source: nil))
+        let command = "panelctl ddc-input --display '\(Self.targetUUID)' --set 0x0F"
+        let model = makeModel(
+            defaults: defaults,
+            displays: displays,
+            status: { box.value },
+            hideDisplay: { _, _, input in
+                box.value = hiddenStatus
+                return DisplayInputOutcome(
+                    state: .verified, requestedInput: input, observedInput: input,
+                    recoveryCommand: command
+                )
+            }
+        )
+        model.setHideEnabled(true, for: displays[1])
+        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
+        XCTAssertNil(model.setHideAwayInput("hdmi1", for: Self.targetUUID))
+        var request: DisplayHideRequest?
+        model.onRequestHide = { request = $0 }
+        model.requestHide(targetUUID: Self.targetUUID)
+        model.confirmHide(try XCTUnwrap(request), acknowledged: true)
+        try await waitUntil { !model.hideOperation.isBusy }
+
+        let message = try XCTUnwrap(model.notice?.message)
+        XCTAssertTrue(message.contains("Desktop: Hide backend returned, but current desktop/recovery status could not be confirmed"))
+        XCTAssertFalse(message.contains("Desktop: Hide did not complete."))
+        XCTAssertTrue(message.contains("Monitor input (Other computer): hdmi1 (0x11) selected and verified"))
+        XCTAssertTrue(message.contains(command), "the returned input recovery command survives inspection failure")
+    }
+
+    func testShowInspectionFailurePreservesReturnedInputOutcome() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var preferences = DisplayHidePreferences()
+        preferences[Self.targetUUID] = DisplayHideConfiguration(
+            target: DisplayIdentitySnapshot(displays[1]),
+            enabled: true,
+            source: DisplayIdentitySnapshot(displays[0]),
+            returnInput: 15
+        )
+        defaults.set(try JSONEncoder().encode(preferences), forKey: "displayHidePreferences")
+        let hiddenStatus = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "show-inspection-journal", canShow: true)
+        let failedStatus = handoffStatus(
+            .recovery, target: displays[1], source: displays[0], journalID: "show-inspection-journal",
+            reason: "post-Show observation failed", inspectionFailure: "fake post-Show inspection failure"
+        )
+        let box = StatusBox(hiddenStatus)
+        let command = "panelctl ddc-input --display '\(Self.targetUUID)' --set 0x11"
+        var shownInput: UInt8?
+        let model = makeModel(
+            defaults: defaults,
+            displays: displays,
+            status: { box.value },
+            showDisplay: { journalID, input in
+                XCTAssertEqual(journalID, "show-inspection-journal")
+                shownInput = input
+                box.value = failedStatus
+                return DisplayInputOutcome(
+                    state: .verified, requestedInput: input, observedInput: input,
+                    recoveryCommand: command
+                )
+            }
+        )
+        try await waitUntil { !model.protectionQuiescencePending }
+        let request = try model.makeShowRequest()
+        XCTAssertEqual(request.returnInput, 15)
+        model.confirmShow(request, acknowledged: true)
+        try await waitUntil { !model.hideOperation.isBusy }
+
+        let message = try XCTUnwrap(model.notice?.message)
+        XCTAssertEqual(shownInput, 15)
+        XCTAssertTrue(message.contains("Desktop: Show backend returned, but current desktop/recovery status could not be confirmed"))
+        XCTAssertFalse(message.contains("Desktop: Show did not complete."))
+        XCTAssertTrue(message.contains("Monitor input (Mac): dp1 (0x0F) selected and verified"))
+        XCTAssertTrue(message.contains(command), "the returned input recovery command survives inspection failure")
+    }
+
+    func testSkippedAndUnverifiedHideOutcomesRemainSeparateFromDesktopSuccess() async throws {
+        for (index, state, detail) in [
+            (1, DisplayInputOutcome.State.skipped, "fake DDC unavailable; use monitor buttons"),
+            (2, DisplayInputOutcome.State.unverified, "readback unavailable")
+        ] {
+            let defaults = try makeDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+            let hidden = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "outcome-\(index)", canShow: true)
+            let box = StatusBox(handoffStatus(.none, target: nil, source: nil))
+            let model = makeModel(
+                defaults: defaults,
+                displays: displays,
+                status: { box.value },
+                hideDisplay: { _, _, input in
+                    box.value = hidden
+                    return DisplayInputOutcome(
+                        state: state, requestedInput: input, detail: detail,
+                        recoveryCommand: state == .unverified ? "panelctl ddc-input --display '\(Self.targetUUID)' --set 0x0F" : nil
+                    )
+                }
+            )
+            model.setHideEnabled(true, for: displays[1])
+            model.setHideSource(Self.mainUUID, for: Self.targetUUID)
+            XCTAssertNil(model.setHideAwayInput("hdmi1", for: Self.targetUUID))
+            var request: DisplayHideRequest?
+            model.onRequestHide = { request = $0 }
+            model.requestHide(targetUUID: Self.targetUUID)
+            model.confirmHide(try XCTUnwrap(request), acknowledged: true)
+            try await waitUntil { !model.hideOperation.isBusy }
+
+            XCTAssertTrue(model.notice?.message.contains("Desktop: Target is hidden") == true)
+            let expectedState = state == .skipped ? "Skipped." : "is unverified"
+            XCTAssertTrue(model.notice?.message.contains(expectedState) == true)
+            XCTAssertTrue(model.notice?.message.contains(detail) == true)
+            if state == .unverified {
+                XCTAssertTrue(model.notice?.message.contains("panelctl ddc-input --display") == true)
+                XCTAssertTrue(model.notice?.message.contains("does not claim it changed") == true)
+            } else {
+                XCTAssertTrue(model.notice?.message.contains("monitor's input buttons") == true)
+            }
+        }
+    }
+
+    func testAwayInputFailureReportsDesktopFailureAndRecoverySeparately() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let recovery = handoffStatus(.recovery, target: displays[1], source: displays[0], journalID: "retained-input-journal", canShow: false, reason: "journal retained after DDC failure")
+        let box = StatusBox(handoffStatus(.none, target: nil, source: nil))
+        var hideCalls = 0
+        let command = "panelctl ddc-input --display '\(Self.targetUUID)' --set 0x0F"
+        let model = makeModel(
+            defaults: defaults,
+            displays: displays,
+            status: { box.value },
+            hideDisplay: { _, _, input in
+                hideCalls += 1
+                box.value = recovery
+                throw DisplayHandoffOperationFailure(
+                    action: "hide",
+                    inputOutcome: DisplayInputOutcome(state: .failed, requestedInput: input, detail: "fake write failed", recoveryCommand: command),
+                    message: "Hide stopped before topology change. Input recovery: \(command). Journal kept; panelctl recovery restore --journal '/tmp/current.json'."
+                )
+            }
+        )
+        model.setHideEnabled(true, for: displays[1])
+        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
+        XCTAssertNil(model.setHideAwayInput("hdmi1", for: Self.targetUUID))
+        var request: DisplayHideRequest?
+        model.onRequestHide = { request = $0 }
+        model.requestHide(targetUUID: Self.targetUUID)
+        model.confirmHide(try XCTUnwrap(request), acknowledged: true)
+        try await waitUntil { !model.hideOperation.isBusy }
+
+        XCTAssertEqual(hideCalls, 1)
+        XCTAssertEqual(model.handoffStatus?.state, .recovery)
+        XCTAssertTrue(model.notice?.message.contains("Desktop: Hide did not complete") == true)
+        XCTAssertTrue(model.notice?.message.contains("Monitor input (Other computer): Failed") == true)
+        XCTAssertTrue(model.notice?.message.contains(command) == true)
+        XCTAssertTrue(model.notice?.message.contains("panelctl recovery restore --journal") == true)
+    }
+
+    func testStaleSavedReturnInputIsActionableButNeverBlocksShow() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var preferences = DisplayHidePreferences()
+        let staleTarget = DisplayIdentitySnapshot(
+            uuid: Self.targetUUID, id: 202, name: "Target", vendor: 2, model: 20, serial: 999
+        )
+        preferences[Self.targetUUID] = DisplayHideConfiguration(target: staleTarget, enabled: true, returnInput: 15)
+        defaults.set(try JSONEncoder().encode(preferences), forKey: "displayHidePreferences")
+        let hidden = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "stale-input-journal", canShow: true)
+        let box = StatusBox(hidden)
+        var showCalled = false
+        var showInput: UInt8?
+        let model = makeModel(
+            defaults: defaults,
+            displays: displays,
+            status: { box.value },
+            showDisplay: { _, input in
+                showCalled = true
+                showInput = input
+                box.value = self.handoffStatus(.none, target: nil, source: nil)
+                return .notRequested
+            }
+        )
+        try await waitUntil { !model.protectionQuiescencePending }
+        let request = try model.makeShowRequest()
+        XCTAssertNil(request.returnInput)
+        XCTAssertTrue(request.returnInputWarning?.contains("different display identity") == true)
+        XCTAssertTrue(DisplayOperationConfirmation.showMessage(request).contains("Saved Mac input belongs to a different display identity"))
+
+        model.confirmShow(request, acknowledged: true)
+        try await waitUntil { !model.hideOperation.isBusy && model.handoffStatus?.state == DisplayHandoffStatus.State.none }
+        XCTAssertTrue(showCalled)
+        XCTAssertNil(showInput, "Show proceeds without issuing stale saved DDC input")
+        XCTAssertTrue(model.notice?.message.contains("Desktop: The journaled public display layout and modes were restored") == true)
+        XCTAssertTrue(model.notice?.message.contains("different display identity") == true)
+    }
+
     func testMissingAndChangedTargetsRemainBoundToTheirSavedIdentity() throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
@@ -310,7 +630,7 @@ final class DisplayHideAppTests: XCTestCase {
                 quiesceProtection: { completion in
                     service.disableForDisplayHide(completion: completion)
                 },
-                hideDisplay: { _, _ in hideCalls += 1 }
+                hideDisplay: { _, _, _ in hideCalls += 1; return .notRequested }
             )
             model.setHideEnabled(true, for: displays[1])
             model.setHideSource(Self.mainUUID, for: Self.targetUUID)
@@ -339,7 +659,7 @@ final class DisplayHideAppTests: XCTestCase {
                 quiesceCalls += 1
                 completion = callback
             },
-            hideDisplay: { _, _ in hideCalls += 1 }
+            hideDisplay: { _, _, _ in hideCalls += 1; return .notRequested }
         )
         model.setHideEnabled(true, for: displays[1])
         model.setHideSource(Self.mainUUID, for: Self.targetUUID)
@@ -417,12 +737,12 @@ final class DisplayHideAppTests: XCTestCase {
             defaults: defaults,
             displays: displays,
             quiesceProtection: { quiesceCompletion = $0 },
-            hideDisplay: { target, source in
+            hideDisplay: { target, source, _ in
                 backendDisplays[1] = Self.display(
                     index: 2, id: 202, uuid: Self.targetUUID,
                     name: "Target", main: false, serial: 999
                 )
-                try backend.hide(target: target, source: source)
+                return try backend.hide(target: target, source: source)
             }
         )
         model.setHideEnabled(true, for: displays[1])
@@ -450,7 +770,7 @@ final class DisplayHideAppTests: XCTestCase {
             defaults: defaults,
             displays: displays,
             status: { box.value },
-            hideDisplay: { _, _ in
+            hideDisplay: { _, _, _ in
                 hideCalls += 1
                 throw NSError(domain: "FakeMirrorWriter", code: 1, userInfo: [NSLocalizedDescriptionKey: "fake preflight refusal; no capture"])
             }
@@ -481,7 +801,7 @@ final class DisplayHideAppTests: XCTestCase {
             displays: displays,
             status: { box.value },
             quiesceProtection: { $0(true, nil) },
-            hideDisplay: { _, _ in
+            hideDisplay: { _, _, _ in
                 hideCalls += 1
                 box.value = recovery
                 throw NSError(domain: "FakeMirrorWriter", code: 1, userInfo: [NSLocalizedDescriptionKey: "fake writer interrupted; journal retained"])
@@ -516,17 +836,18 @@ final class DisplayHideAppTests: XCTestCase {
             displays: displays,
             status: { box.value },
             quiesceProtection: { $0(true, nil) },
-            showDisplay: { journalID in
+            showDisplay: { journalID, _ in
                 shownJournalIDs.append(journalID)
                 if showFails {
                     throw NSError(domain: "FakeRecoveryWriter", code: 1, userInfo: [NSLocalizedDescriptionKey: "fake restore mismatch; journal retained"])
                 }
                 box.value = self.handoffStatus(.none, target: nil, source: nil)
+                return .notRequested
             }
         )
         try await waitUntil { !model.protectionQuiescencePending }
 
-        var request: DisplayHandoffStatus?
+        var request: DisplayShowRequest?
         model.onRequestShow = { request = $0 }
         model.requestShow()
         let confirmation = try XCTUnwrap(request)
@@ -587,6 +908,62 @@ final class DisplayHideAppTests: XCTestCase {
         model.setDisplayLifecycleTransitioning(false)
         try await waitUntil { !model.protectionQuiescencePending }
         XCTAssertNoThrow(try model.makeShowRequest())
+    }
+
+    func testNativeSettingsInputControlsAreConditionalAccessibleAndOfflineByDefault() throws {
+        let defaults = try makeDefaults()
+        defer {
+            defaults.removePersistentDomain(forName: suiteName(defaults))
+            NSApp.windows.filter { $0.title == "PanelCtl Settings" }.forEach { $0.close() }
+        }
+        var ddcChecks = 0
+        let model = makeModel(
+            defaults: defaults,
+            displays: displays,
+            checkDDCInput: { identity in
+                ddcChecks += 1
+                return DDCInputReading(displayID: identity.displayID, uuid: identity.uuid, current: 15)
+            }
+        )
+        let controller = SettingsWindowController(model: model)
+        controller.present()
+        model.requestDisplayRecoveryFocus()
+        let window = try XCTUnwrap(controller.window)
+        window.setContentSize(NSSize(width: 680, height: 1800))
+        window.contentView?.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+        var controls = nativeControls(in: try XCTUnwrap(window.contentView))
+        XCTAssertFalse(controls.contains { $0.accessibilityLabel() == "Other computer input on Hide for Target" })
+        XCTAssertFalse(controls.contains { $0.accessibilityLabel() == "Mac input on Show for Target" })
+        XCTAssertEqual(ddcChecks, 0)
+
+        model.setHideEnabled(true, for: displays[1])
+        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
+        XCTAssertNil(model.setHideAwayInput("hdmi1", for: Self.targetUUID))
+        XCTAssertNil(model.setHideReturnInput("dp1", for: Self.targetUUID))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let inputScrollView = try XCTUnwrap(nativeViews(in: try XCTUnwrap(window.contentView)).compactMap { $0 as? NSScrollView }.last)
+        let inputDocumentHeight = inputScrollView.documentView?.frame.height ?? 0
+        inputScrollView.contentView.scroll(to: NSPoint(x: 0, y: inputDocumentHeight))
+        inputScrollView.reflectScrolledClipView(inputScrollView.contentView)
+        window.contentView?.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        controls = nativeControls(in: try XCTUnwrap(window.contentView))
+        let nativeSummary = nativeViews(in: try XCTUnwrap(window.contentView)).map {
+            "\(type(of: $0)): \($0.accessibilityLabel() ?? "") \(($0 as? NSTextField)?.stringValue ?? "") \($0.frame)"
+        }
+        let awayField = try XCTUnwrap(controls.compactMap { $0 as? NSTextField }.first {
+            $0.accessibilityLabel() == "Other computer input on Hide for Target"
+        }, "Native controls: \(nativeSummary)")
+        let returnField = try XCTUnwrap(controls.compactMap { $0 as? NSTextField }.first {
+            $0.accessibilityLabel() == "Mac input on Show for Target"
+        })
+        XCTAssertEqual(awayField.stringValue, "hdmi1")
+        XCTAssertEqual(returnField.stringValue, "dp1")
+        let saved = try XCTUnwrap(model.hidePreferences[Self.targetUUID])
+        XCTAssertTrue(model.ddcInputAvailabilityMessage(for: saved).contains("You can check explicitly"))
+        XCTAssertEqual(ddcChecks, 0, "rendering and saving native Settings controls performs no DDC query")
     }
 
     func testNativeSettingsFixtureRetainsMissingRecoveryIdentityAndFreezesEditing() throws {
@@ -665,7 +1042,7 @@ final class DisplayHideAppTests: XCTestCase {
         let hidden = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "keyboard-menu-journal", canShow: true)
         let model = makeModel(defaults: defaults, displays: displays, status: { hidden })
         var requestedJournalID: String?
-        model.onRequestShow = { requestedJournalID = $0.journalID }
+        model.onRequestShow = { requestedJournalID = $0.status.journalID }
         dispatchNativeEvents()
         let originalFrontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let delegate = AppDelegate()
@@ -800,13 +1177,13 @@ final class DisplayHideAppTests: XCTestCase {
                 defaults: defaults,
                 displays: displays,
                 status: { box.value },
-                showDisplay: { _ in
+                showDisplay: { _, _ in
                     showCalls += 1
                     if succeeds {
                         box.value = self.handoffStatus(.none, target: nil, source: nil)
-                    } else {
-                        throw NSError(domain: "FakeRecovery", code: 1, userInfo: [NSLocalizedDescriptionKey: "offline verification failure"])
+                        return .notRequested
                     }
+                    throw NSError(domain: "FakeRecovery", code: 1, userInfo: [NSLocalizedDescriptionKey: "offline verification failure"])
                 }
             )
             let controller = SettingsWindowController(model: model)
@@ -1051,8 +1428,11 @@ final class DisplayHideAppTests: XCTestCase {
         status: @escaping () -> DisplayHandoffStatus? = { nil },
         quiesceProtection: @escaping ProtectionQuiesce = { $0(true, nil) },
         useManagedProtectionService: Bool = false,
-        hideDisplay: @escaping (DisplayHideIdentity, DisplayHideIdentity) throws -> Void = { _, _ in },
-        showDisplay: @escaping (String) throws -> Void = { _ in }
+        hideDisplay: @escaping (DisplayHideIdentity, DisplayHideIdentity, UInt8?) throws -> DisplayInputOutcome = { _, _, _ in .notRequested },
+        showDisplay: @escaping (String, UInt8?) throws -> DisplayInputOutcome = { _, _ in .notRequested },
+        checkDDCInput: @escaping (DisplayHideIdentity) throws -> DDCInputReading = { _ in
+            DDCInputReading(displayID: 0, uuid: "", current: 1)
+        }
     ) -> AppModel {
         let fallback = handoffStatus(.none, target: nil, source: nil)
         return AppModel(
@@ -1063,6 +1443,7 @@ final class DisplayHideAppTests: XCTestCase {
             inspectHandoff: { status() ?? fallback },
             hideDisplay: hideDisplay,
             showDisplay: showDisplay,
+            checkDDCInput: checkDDCInput,
             quiesceProtection: useManagedProtectionService ? nil : quiesceProtection
         )
     }
@@ -1074,7 +1455,8 @@ final class DisplayHideAppTests: XCTestCase {
         journalID: String? = nil,
         canShow: Bool = false,
         reason: String? = nil,
-        observationState: DisplayHideObservedState? = nil
+        observationState: DisplayHideObservedState? = nil,
+        inspectionFailure: String? = nil
     ) -> DisplayHandoffStatus {
         let targetIdentity = target.map(displayIdentity)
         let sourceIdentity = source.map(displayIdentity)
@@ -1107,7 +1489,8 @@ final class DisplayHideAppTests: XCTestCase {
             reason: reason,
             canShow: canShow,
             recoveryCommand: state == .none ? nil : "panelctl recovery restore --journal '/tmp/panelctl-display-hide-fixture/current.json'",
-            observations: observations
+            observations: observations,
+            inspectionFailure: inspectionFailure
         )
     }
 

@@ -1,6 +1,11 @@
 import Foundation
 import PanelCtlCore
 
+enum DisplayDDCInputAvailability: Equatable {
+    case readable(current: UInt8)
+    case unavailable(String)
+}
+
 struct DisplayIdentitySnapshot: Codable, Equatable {
     let uuid: String
     let id: UInt32
@@ -38,11 +43,16 @@ struct DisplayHideConfiguration: Codable, Equatable {
     var target: DisplayIdentitySnapshot
     var enabled: Bool
     var source: DisplayIdentitySnapshot?
+    var awayInput: UInt8?
+    var returnInput: UInt8?
 
-    init(target: DisplayIdentitySnapshot, enabled: Bool = false, source: DisplayIdentitySnapshot? = nil) {
+    init(target: DisplayIdentitySnapshot, enabled: Bool = false, source: DisplayIdentitySnapshot? = nil,
+         awayInput: UInt8? = nil, returnInput: UInt8? = nil) {
         self.target = target
         self.enabled = enabled
         self.source = source
+        self.awayInput = awayInput
+        self.returnInput = returnInput
     }
 }
 
@@ -85,8 +95,31 @@ struct DisplayHidePreferences: Codable, Equatable {
 struct DisplayHideRequest: Equatable, Identifiable {
     let target: DisplayIdentitySnapshot
     let source: DisplayIdentitySnapshot
+    let awayInput: UInt8?
+    let returnInput: UInt8?
+    let awayInputWarning: String?
+    let returnInputWarning: String?
+
+    init(target: DisplayIdentitySnapshot, source: DisplayIdentitySnapshot,
+         awayInput: UInt8? = nil, returnInput: UInt8? = nil,
+         awayInputWarning: String? = nil, returnInputWarning: String? = nil) {
+        self.target = target
+        self.source = source
+        self.awayInput = awayInput
+        self.returnInput = returnInput
+        self.awayInputWarning = awayInputWarning
+        self.returnInputWarning = returnInputWarning
+    }
 
     var id: String { target.uuid.lowercased() }
+}
+
+struct DisplayShowRequest: Equatable, Identifiable {
+    let status: DisplayHandoffStatus
+    let returnInput: UInt8?
+    let returnInputWarning: String?
+
+    var id: String { status.journalID ?? "unknown-journal" }
 }
 
 enum DisplayHideOperation: Equatable {

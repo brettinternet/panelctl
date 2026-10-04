@@ -77,19 +77,24 @@ public struct DisplayHideStatus: Equatable {
 public struct DisplayHideController {
     private let store: RecoveryStore
     private let mirror: MirrorController
+    private let handoff: HandoffController
     private let operationLock: () -> RecoveryStore
 
     public init() {
         let store = RecoveryStore()
+        let mirror = MirrorController()
         self.store = store
-        mirror = MirrorController()
+        self.mirror = mirror
+        handoff = HandoffController(mirror: mirror, report: { _ in })
         operationLock = { RecoveryStore.operationLock() }
     }
 
     init(store: RecoveryStore, mirror: MirrorController,
-         operationLock: @escaping () -> RecoveryStore) {
+         operationLock: @escaping () -> RecoveryStore,
+         handoff: HandoffController? = nil) {
         self.store = store
         self.mirror = mirror
+        self.handoff = handoff ?? HandoffController(mirror: mirror, report: { _ in })
         self.operationLock = operationLock
     }
 
@@ -123,26 +128,54 @@ public struct DisplayHideController {
         return statusForMirrorJournal(journal, records: records, current: current)
     }
 
-    public func hide(target: DisplayHideIdentity, source: DisplayHideIdentity) throws {
+    @discardableResult
+    public func hide(target: DisplayHideIdentity, source: DisplayHideIdentity,
+                     awayInput: UInt8? = nil) throws -> DisplayInputOutcome {
         guard UUID(uuidString: target.uuid) != nil,
               UUID(uuidString: source.uuid) != nil,
               target.uuid.caseInsensitiveCompare(source.uuid) != .orderedSame else {
             throw RecoveryError.unsafe("Hide requires distinct, explicit display UUIDs")
         }
-        _ = try mirror.mirror(
-            selector: target.uuid,
-            source: source.uuid,
-            store: store,
-            expectedTarget: target,
-            expectedSource: source
-        )
+        return try handoff.guardedAway(target: target, source: source, input: awayInput, store: store)
     }
 
-    public func show(expectedJournalID: String) throws {
+    @discardableResult
+    public func show(expectedJournalID: String, returnInput: UInt8? = nil) throws -> DisplayInputOutcome {
         guard let expectedID = UUID(uuidString: expectedJournalID) else {
-            throw RecoveryError.unsafe("invalid journal identity; refresh recovery status and confirm again")
+            let outcome = returnInput.map {
+                DisplayInputOutcome(state: .notAttempted, requestedInput: $0,
+                                    detail: "Input selection was not attempted because the journal identity is invalid.")
+            } ?? .notRequested
+            throw DisplayHandoffOperationFailure(
+                action: "show", inputOutcome: outcome,
+                message: "invalid journal identity; refresh recovery status and confirm again"
+            )
         }
-        _ = try mirror.unmirror(store: store, expectedID: expectedID)
+        return try handoff.guardedBack(expectedJournalID: expectedID, input: returnInput, store: store)
+    }
+
+    public func checkInputAvailability(target: DisplayHideIdentity) throws -> DDCInputReading {
+        let operation = operationLock()
+        try operation.lock()
+        defer { operation.unlock() }
+        let records = try mirror.records()
+        guard Self.matches(target, records: records) else {
+            throw RecoveryError.unsafe("DDC availability check refused because the saved target identity changed. Refresh Displays and reconnect the exact display.")
+        }
+        let reading = try DDCInput.read(selector: target.uuid)
+        guard reading.displayID == target.displayID,
+              reading.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame,
+              Self.matches(target, records: try mirror.records()) else {
+            throw RecoveryError.unsafe("DDC availability check resolved a different display identity. Refresh Displays; no input was changed.")
+        }
+        return reading
+    }
+
+    private static func matches(_ expected: DisplayHideIdentity, records: [DisplayRecord]) -> Bool {
+        let matches = records.filter { $0.uuid?.caseInsensitiveCompare(expected.uuid) == .orderedSame }
+        guard matches.count == 1, let record = matches.first else { return false }
+        return record.id == expected.displayID && record.vendor == expected.vendor &&
+            record.model == expected.model && record.serial == expected.serial
     }
 
     private func statusWithoutJournal(records: [DisplayRecord], current: RecoverySnapshot) -> DisplayHideStatus {
