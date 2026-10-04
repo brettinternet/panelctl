@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 public enum RecoveryAction: String, Equatable {
-    case capture, status, verify, restore, rehearse, `guard`
+    case capture, status, verify, restore, rehearse, `guard`, enable, panic
 }
 
 public enum DisplayRecovery {
@@ -10,6 +10,10 @@ public enum DisplayRecovery {
         let store = RecoveryStore(url: journalPath.map { URL(fileURLWithPath: $0) } ?? RecoveryStore.defaultURL)
         if action == .status {
             try printJournal(store.load())
+            return
+        }
+        if action == .enable || action == .panic {
+            try printJournal(RecoveryCLI().recoverOwned(store: store, trigger: "manual-\(action.rawValue)"))
             return
         }
         if action == .rehearse || action == .guard {
@@ -26,8 +30,12 @@ public enum DisplayRecovery {
             return
         }
         if action != .capture {
-            try printJournal(RecoveryEngine().recover(store: store, verifyOnly: action == .verify,
-                                                       trigger: "manual-\(action.rawValue)"))
+            let saved = try store.load()
+            let session = RecoveryPrivateSession(snapshot: saved.snapshot)
+            session.observeNotifications()
+            let engine = saved.disabledByUsID == nil ? RecoveryEngine() : session.engine
+            try printJournal(engine.recover(store: store, verifyOnly: action == .verify,
+                                            trigger: "manual-\(action.rawValue)", expectedID: saved.id))
             return
         }
         let operationLock = RecoveryStore.operationLock()
@@ -44,6 +52,11 @@ public enum DisplayRecovery {
             try store.create(journal)
             try printJournal(journal)
         }
+    }
+
+    public static func disable(selector: String, timeout: TimeInterval, journalPath: String?, executable: URL) throws {
+        let store = RecoveryStore(url: journalPath.map { URL(fileURLWithPath: $0) } ?? RecoveryStore.defaultURL)
+        try printJournal(RecoveryCLI().disable(selector: selector, timeout: timeout, store: store, executable: executable))
     }
 
     public static func runHelper(journalPath: String, id: UUID) throws {
@@ -76,7 +89,7 @@ public enum DisplayRecovery {
 
 /// The helper is the sole writer for the whole bounded lease. The parent may
 /// request a disable, never execute one itself based on a stale READY. There is
-/// no arbitrary command hook and no production private backend installed.
+/// no arbitrary command hook. Private sessions refuse unqualified providers.
 final class RecoveryWatchdog {
     let id: UUID
     private let process: Process
@@ -109,7 +122,8 @@ final class RecoveryWatchdog {
         wait()
     }
 
-    static func start(store: RecoveryStore, executable: URL, timeout: TimeInterval, verifyOnly: Bool) throws -> RecoveryWatchdog {
+    static func start(store: RecoveryStore, executable: URL, timeout: TimeInterval, verifyOnly: Bool,
+                      expectedSnapshot: RecoverySnapshot? = nil, privateLease: Bool = false) throws -> RecoveryWatchdog {
         guard timeout.isFinite, (1...60).contains(timeout) else {
             throw RecoveryError.unsafe("watchdog timeout must be 1–60 seconds")
         }
@@ -117,11 +131,13 @@ final class RecoveryWatchdog {
         try operationLock.lock()
         defer { operationLock.unlock() }
         try store.lock()
-        let journal: RecoveryJournal
+        var journal: RecoveryJournal
         do {
             let snapshot = try RecoverySnapshot.capture()
+            try expectedSnapshot?.verify(snapshot)
             try snapshot.verify(.capture())
             journal = RecoveryJournal(snapshot: snapshot, verifyOnly: verifyOnly, timeout: timeout)
+            journal.privateLease = privateLease ? true : nil
             try store.create(journal)
         } catch {
             store.unlock()
@@ -174,6 +190,7 @@ final class RecoveryWatchdog {
     static func runHelper(store: RecoveryStore, id: UUID,
                           engine: RecoveryEngine = RecoveryEngine(),
                           disable: RecoveryDisable? = nil,
+                          session injectedSession: RecoveryPrivateSession? = nil,
                           resolveModes: (RecoverySnapshot) throws -> Void = { _ = try RecoveryConfiguration.resolveModes($0) }) throws {
         var inputInfo = stat()
         guard fstat(STDIN_FILENO, &inputInfo) == 0, inputInfo.st_mode & S_IFMT == S_IFIFO else {
@@ -197,6 +214,9 @@ final class RecoveryWatchdog {
               let deadline = journal.deadline else {
             throw RecoveryError.unsafe("watchdog journal identity/state mismatch")
         }
+        let session = injectedSession ?? (journal.privateLease == true ? RecoveryPrivateSession(snapshot: journal.snapshot) : nil)
+        session?.observeNotifications()
+        let engine = session?.engine ?? engine
         try journal.snapshot.verify(engine.capture())
         try resolveModes(journal.snapshot)
         let remaining = deadline.timeIntervalSinceNow
@@ -210,6 +230,7 @@ final class RecoveryWatchdog {
         var readySent = false
         let monotonicDeadline = ProcessInfo.processInfo.systemUptime + remaining
         var result: Error?
+        var pendingFinish: String?
         func validateLease() throws {
             guard readySent, ProcessInfo.processInfo.systemUptime < monotonicDeadline else {
                 throw RecoveryError.unsafe("helper not ready or lease expired")
@@ -221,17 +242,58 @@ final class RecoveryWatchdog {
                 throw RecoveryError.unsafe("parent lease closed or another request pending")
             }
         }
-        func finish(_ trigger: String) {
+        func finish(_ trigger: String, verifyOnly: Bool = false) {
             guard !finished else { return }
+            if session?.gate == .deferred {
+                pendingFinish = pendingFinish ?? trigger
+                input.cancel() // EOF stays readable; do not spin while deferring.
+                return
+            }
             finished = true
             do {
-                try engine.finish(&journal, store: store, verifyOnly: journal.verifyOnly, trigger: trigger)
-            } catch { result = error }
+                var reconcileOnly = verifyOnly
+                if let session {
+                    try session.gate.requireReady()
+                    // EOF, signals and the deadline can beat the observation
+                    // timer. Accept a system re-enable on every finish path,
+                    // not only when the periodic sampler happens to see it.
+                    if journal.disableStaged == true,
+                       case .reconcileSystemReenable = try session.check() {
+                        reconcileOnly = true
+                    }
+                }
+                if reconcileOnly {
+                    // Retire authority before verification: layout mismatch or
+                    // a later disappearance must never revive our old intent.
+                    journal.privateRecoveryClosed = true
+                    try store.save(journal)
+                }
+                try engine.finish(&journal, store: store, verifyOnly: journal.verifyOnly || reconcileOnly, trigger: trigger)
+            } catch {
+                result = error
+                journal.state = .needsAttention; journal.trigger = trigger
+                journal.failure = String(describing: error)
+                try? store.save(journal)
+            }
             timer.cancel(); input.cancel()
             signals.forEach { $0.cancel() }
         }
-        timer.schedule(deadline: .now() + remaining)
-        timer.setEventHandler { finish("deadline") }
+        if session != nil {
+            timer.schedule(deadline: .now() + 0.1, repeating: .milliseconds(100))
+        } else { timer.schedule(deadline: .now() + remaining) }
+        timer.setEventHandler {
+            if let pendingFinish { finish(pendingFinish); return }
+            if ProcessInfo.processInfo.systemUptime >= monotonicDeadline { finish("deadline"); return }
+            guard let session, journal.disableStaged == true else { return }
+            do {
+                switch try session.check() {
+                case .none, .deferWrites: break
+                case .needsAttention: finish("lifecycle-attention")
+                case .requestGuardedRecovery(let reason): finish("eligibility: \(reason)")
+                case .reconcileSystemReenable: finish("system-reenable", verifyOnly: true)
+                }
+            } catch { finish("observation-error: \(error)") }
+        }
         input.setEventHandler {
             var buffer = [UInt8](repeating: 0, count: 64)
             let count = Darwin.read(STDIN_FILENO, &buffer, buffer.count)
@@ -241,12 +303,16 @@ final class RecoveryWatchdog {
                 let parts = command.split(separator: " ")
                 do {
                     guard parts.count == 3, parts[0] == "DISABLE", parts[1] == id.uuidString,
-                          command.hasSuffix("\n"), let target = UInt32(parts[2].dropLast()),
-                          let disable else {
-                        throw RecoveryError.unsafe("invalid or unavailable private disable request")
+                          command.hasSuffix("\n"), let target = UInt32(parts[2].dropLast()) else {
+                        throw RecoveryError.unsafe("invalid private disable request")
+                    }
+                    guard pendingFinish == nil else { throw RecoveryError.unsafe("recovery already requested") }
+                    guard let disable = try session?.prepareDisable(targetID: target) ?? disable else {
+                        throw RecoveryError.unsafe("private disable unavailable")
                     }
                     try disable.perform(&journal, store: store, targetID: target,
                                         capture: engine.capture, lease: validateLease)
+                    session?.didDisable(target)
                 } catch {
                     // An uncertain commit still goes through journal-driven
                     // recovery. The write-ahead target survives a failed ack.

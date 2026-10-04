@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 
 /// No timers, writers or automatic disable actions. The helper supplies a
-/// monotonic clock and fresh observations; TASK-7 owns notification delivery.
+/// monotonic clock and fresh observations; RecoveryPrivateSession delivers events.
 struct RecoveryLifecycle {
     enum Suspension: Hashable { case system, screens, session }
     enum Event { case suspend(Suspension), resume(Suspension), topologyChanged }

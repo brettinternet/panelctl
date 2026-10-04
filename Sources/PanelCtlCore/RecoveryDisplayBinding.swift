@@ -7,7 +7,7 @@ import MachO
 typealias ConfigureDisplayEnabled = @convention(c)
     (CGDisplayConfigRef, CGDirectDisplayID, Bool) -> CGError
 
-/// Explicitly resolved, internal capability; not installed in RecoveryEngine.
+/// Explicitly resolved, internal capability; never an identity/consent grant.
 /// Holding this object keeps the selected library alive through staging.
 final class RecoveryDisplayBinding {
     static let coreGraphics = "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
@@ -87,8 +87,8 @@ final class RecoveryDisplayBinding {
         throw RecoveryError.unsafe("private display backend unavailable: " + failures.joined(separator: "; "))
     }
 
-    /// Construction does not begin a transaction. Defaults remain disconnected
-    /// from all CLI/app paths until journal, eligibility and consent gates exist.
+    /// Construction does not begin a transaction. Private CLI sessions reach
+    /// this only after preflight; current production providers cannot qualify.
     func transaction() -> RecoveryEnableTransaction {
         RecoveryEnableTransaction(begin: {
             var config: CGDisplayConfigRef?

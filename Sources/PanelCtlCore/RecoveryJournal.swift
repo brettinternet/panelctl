@@ -27,7 +27,9 @@ struct RecoveryJournal: Codable {
     // Successful staging is durable before completion can consume the
     // transaction. Pre-staging intent alone never authorizes private recovery.
     var disableStaged: Bool?
+    var disableCompleted: Bool?
     var privateRecoveryClosed: Bool?
+    var privateLease: Bool?
 
     init(snapshot: RecoverySnapshot, verifyOnly: Bool = false, timeout: TimeInterval? = nil,
          disabledByUsID: UInt32? = nil, disableStaged: Bool? = nil) {
@@ -114,6 +116,14 @@ final class RecoveryStore {
 
     func unlock() {
         if let fd = lockFD { _ = flock(fd, LOCK_UN); close(fd); lockFD = nil }
+    }
+
+    func exists() throws -> Bool {
+        try prepareDirectory()
+        var info = stat()
+        if lstat(url.path, &info) == 0 { return true }
+        guard errno == ENOENT else { throw RecoveryError.unsafe("cannot inspect existing journal") }
+        return false
     }
 
     func load() throws -> RecoveryJournal {

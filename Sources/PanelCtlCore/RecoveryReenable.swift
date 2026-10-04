@@ -30,9 +30,9 @@ struct RecoveryEnableInventory {
     var binding: Binding = .unqualified
 }
 
-/// Internal, injection-only recovery seam. The default engine has no backend;
-/// both the identity provider and transport refuse by default. The branch's
-/// verified binding remains disconnected; no user flag bypasses these boundaries.
+/// Shared guarded recovery seam. The public-only engine has no backend;
+/// private sessions supply providers and a gated transaction. Defaults refuse,
+/// and no user flag bypasses qualification.
 struct RecoveryReenable {
     var inventory: () throws -> RecoveryEnableInventory = {
         throw RecoveryError.unsafe("offline hardware-to-CG-ID binding is unqualified; private re-enable unavailable")
@@ -78,9 +78,9 @@ struct RecoveryReenable {
     }
 }
 
-/// Internal transaction primitive shared by re-enable and the future disable
-/// orchestrator. No production caller installs it. Closure injection matches
-/// RecoveryEngine's seam; tests use fake writers.
+/// Internal transaction primitive shared by re-enable and disable.
+/// Production observations cannot currently qualify its use. Closure injection
+/// matches RecoveryEngine's seam; tests use fake writers.
 struct RecoveryEnableTransaction {
     var begin: () throws -> CGDisplayConfigRef
     var setEnabled: (CGDisplayConfigRef, UInt32, Bool) throws -> Void

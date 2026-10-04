@@ -1,8 +1,8 @@
 import Foundation
 
 /// Executed only by the existing helper while it owns both recovery locks.
-/// Production has no installed instance. RecoveryEligibilitySelection supplies
-/// the physical/lifecycle preflight seam; TASK-7 owns runtime wiring. Tests use
+/// RecoveryPrivateSession supplies physical/lifecycle preflight; unqualified
+/// production observations refuse before a transaction is constructed. Tests use
 /// synthetic identity and fake transactions.
 struct RecoveryDisable {
     var transaction: RecoveryEnableTransaction
@@ -49,6 +49,7 @@ struct RecoveryDisable {
             // A failed save cancels the still-uncompleted transaction.
             try store.save(journal)
         }, revalidate: validate)
+        journal.disableCompleted = true
         journal.state = .disabled
         try store.save(journal)
     }

@@ -81,6 +81,21 @@ request a disable. Runtime wiring must:
    a failed/expired recovery stays unresolved. TASK-6 does not change the helper's
    existing public recovery behavior; these integration steps are TASK-7 work.
 
+## TASK-7 runtime integration
+
+`RecoveryPrivateSession` now connects this policy to the existing helper: serialized
+workspace/application notifications, fresh selection checks, periodic lease
+observations, bounded sleep deferral, guarded survivor-loss recovery and verify-only
+system-reenable reconciliation. Recovery writers also consult the lifecycle gate.
+The CLI exposes consent/timeout/selector parsing and journal-only enable/panic;
+see [display recovery](display-recovery.md).
+
+Production initially-awake state remains unknown and physical/sink providers
+remain unqualified. No notification, cached identity, user flag or stored journal
+field can upgrade them. Only synthetic tests inject qualified evidence and fake
+transactions. Real provider qualification (including fresh transition/driver
+observations during synchronous writes) remains a gate, not implied by this wiring.
+
 ## Offline verification
 
 `swift test --disable-sandbox --filter RecoveryEligibilityTests` covers positive

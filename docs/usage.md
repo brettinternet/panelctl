@@ -19,6 +19,37 @@ panelctl ddc-luminance --display index:2
 panelctl ddc-luminance --display index:2 --set 75
 ```
 
+## Experimental topology disable and recovery
+
+These commands are implemented but **production disable currently refuses**:
+there is no qualified fresh physical-sink/driver/awake-state provider. Consent
+cannot override missing evidence. Offline tests do not authorize hardware trials.
+After separate qualification and scoped approval, the intended bounded syntax is:
+
+```sh
+panelctl recovery disable --display DISPLAY_UUID --consent-disable --timeout 15s
+panelctl recovery status
+panelctl recovery enable
+panelctl recovery panic
+```
+
+Only one non-main external physical display may be selected; another verified
+usable physical screen must remain. Timeout is explicitly required, 1–60 seconds.
+The CLI stays attached to the independent recovery helper until the lease ends.
+There is no indefinite disconnect or automatic disable on startup/login/wake.
+Enable/panic use retained journal identity, **not** an online display selector.
+`status` is journal-only JSON, including offline targets, state and refusal reason.
+All accept `--journal <path>`; keep that same path for recovery. Parse errors exit
+2; unsafe/unavailable operations or failed recovery exit 1; completed operations
+exit 0. A refused disable is not a successful signal-removal experiment.
+
+Blackout paints an overlay and keeps the display connected. Topology disable
+would remove the Mac's display signal/layout entry; monitor standby and automatic
+switching to another computer's input are separate, unqualified outcomes. Enable
+would restore the Mac's signal, not necessarily the monitor's selected input.
+Neither approach guarantees OLED maintenance, restored window placement or Spaces.
+See [display recovery](display-recovery.md) for guards and the manual failure ladder.
+
 ## Menu-bar app
 
 Move `PanelCtl.app` to `/Applications`, open it, select displays, and enable
@@ -103,8 +134,9 @@ display electronics or guarantee a panel compensation cycle. A transparent
 working overlay reduces visible output but does not guarantee unlit OLED pixels
 or panel longevity. Use all-display sleep for long unattended periods.
 
-macOS has no public per-display sleep or disconnect setter. PanelCtl avoids
-private topology calls because they can make a display difficult to recover.
+macOS has no public per-display sleep or disconnect setter. Ordinary PanelCtl
+protection avoids private topology calls; the experimental recovery CLI fails
+closed until its identity and physical/lifecycle providers are qualified.
 See the [feasibility research](feasibility.md) for the API and hardware evidence.
 
 DDC depends on the monitor and connection. `ddc-luminance --set` persists and

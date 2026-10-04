@@ -11,7 +11,7 @@ public enum CLIHelp {
             Commands:
               list             List connected displays
               probe            Probe display capabilities
-              recovery         Capture, verify, or restore display configuration
+              recovery         Experimental disable and journal-driven recovery
               blackout         Black out selected displays
               ddc-luminance    Read or set luminance
               sleep-displays   Sleep every display
@@ -31,7 +31,8 @@ public enum CLIHelp {
             return "Usage: panelctl probe [--json]\nProbe display capabilities."
         case "recovery":
             return """
-            Usage: panelctl recovery <capture|status|verify|restore|rehearse|guard> [--journal <path>]
+            Usage: panelctl recovery <capture|status|verify|restore|enable|panic|rehearse|guard> [--journal <path>]
+            Usage: panelctl recovery disable (--display <selector> | --index <n>) --consent-disable --timeout <1s...60s> [--journal <path>]
             Usage: panelctl recovery <rehearse|guard> [--timeout <1s...60s>] [--journal <path>]
 
             capture journals the current display identities, modes, rotation, origins,
@@ -39,7 +40,23 @@ public enum CLIHelp {
             verify compares without display writes. restore explicitly restores public
             modes, origins, and mirroring for the same online displays, then verifies.
             Missing/ambiguous displays or changed rotation/color space require manual
-            intervention. Private reconnection and HDR/profile restoration are NOT implemented.
+            intervention. HDR/profile restoration is NOT implemented.
+
+            Experimental disable requests one non-main external display for a bounded
+            helper-owned lease. Consent is mandatory; there is no indefinite mode.
+            Selectors use the same UUID, decimal/hex ID or index:<n> as blackout.
+            A qualified physical survivor, identity, awake state and API are required.
+            Production physical-sink identity is currently unqualified: disable refuses
+            without a display write. Consent does not bypass this gate.
+            enable and panic recover only the staged disabled-by-us journal target,
+            even when offline; neither uses online selection or guesses another ID.
+            Both preserve identity refusals and one-shot recovery evidence. panic never
+            runs a global reset. CGRestorePermanentDisplayConfiguration, logout,
+            reboot and replug are unverified fallbacks, not automatic recovery.
+            Before a new disable, stranded intent is recovered (or refused); a new
+            explicit selection is then required. Status is journal-only/no-write.
+            Signal removal, monitor standby and input switching are different outcomes;
+            none is hardware-qualified. Blackout remains the overlay alternative.
 
             rehearse starts an independent, no-write verification helper (default 5s).
             guard instead arms public-configuration restoration on deadline or parent

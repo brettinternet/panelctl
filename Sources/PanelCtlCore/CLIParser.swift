@@ -66,6 +66,7 @@ public enum PanelCommand: Equatable {
     case probe(json: Bool)
     case recovery(action: RecoveryAction, timeout: TimeInterval?, journalPath: String?)
     case recoveryHelper(journalPath: String, id: UUID)
+    case recoveryDisable(selector: String, timeout: TimeInterval, journalPath: String?)
     case blackout(BlackoutOptions)
     case ddcLuminance(selector: String, setValue: UInt16?, json: Bool)
     case sleepDisplays(keepSystemAwake: Bool, timeout: TimeInterval?)
@@ -100,6 +101,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case missingAppCommand
     case missingRecoveryAction
     case invalidRecoveryTimeout
+    case disableRequirements
     case snoozeDurationTooLong
     case invalidBlackoutMode(String)
     case invalidOverlayOpacity(String)
@@ -140,6 +142,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
         case .missingAppCommand: return "missing app command (use 'panelctl help app' for usage)"
         case .missingRecoveryAction: return "missing recovery action (use 'panelctl help recovery' for usage)"
         case .invalidRecoveryTimeout: return "recovery watchdog timeout must be from 1 through 60 seconds"
+        case .disableRequirements: return "disable requires exactly one --display or --index, --consent-disable, and --timeout (1–60 seconds)"
         case .snoozeDurationTooLong: return "snooze duration must not exceed 30 days"
         }
     }
@@ -202,6 +205,7 @@ public enum CLIParser {
 
     private static func parseRecovery(_ args: [String]) throws -> PanelCommand {
         guard let raw = args.first else { throw CLIParseError.missingRecoveryAction }
+        if raw == "disable" { return try parseDisable(Array(args.dropFirst())) }
         guard let action = RecoveryAction(rawValue: raw) else { throw CLIParseError.unknownCommand(raw) }
         var timeout: TimeInterval?
         var journal: String?
@@ -225,6 +229,47 @@ public enum CLIParser {
             i += 1
         }
         return .recovery(action: action, timeout: timeout, journalPath: journal)
+    }
+
+    private static func parseDisable(_ args: [String]) throws -> PanelCommand {
+        var selector: String?
+        var timeout: TimeInterval?
+        var journal: String?
+        var consent = false
+        var i = 0
+        while i < args.count {
+            let option = args[i]
+            switch option {
+            case "--display", "--index":
+                guard selector == nil else { throw CLIParseError.disableRequirements }
+                i += 1
+                guard i < args.count, !args[i].hasPrefix("-"), !args[i].isEmpty else {
+                    throw CLIParseError.missingValue(option)
+                }
+                if option == "--index" {
+                    guard let index = Int(args[i]), index > 0 else { throw CLIParseError.invalidIndex }
+                    selector = "index:\(index)"
+                } else { selector = args[i] }
+            case "--consent-disable":
+                guard !consent else { throw CLIParseError.duplicateOption(option) }
+                consent = true
+            case "--timeout":
+                guard timeout == nil else { throw CLIParseError.duplicateOption(option) }
+                timeout = try duration(option: option, args: args, index: &i)
+                guard let timeout, (1...60).contains(timeout) else { throw CLIParseError.invalidRecoveryTimeout }
+            case "--journal":
+                guard journal == nil else { throw CLIParseError.duplicateOption(option) }
+                i += 1
+                guard i < args.count, !args[i].hasPrefix("-"), !args[i].isEmpty else {
+                    throw CLIParseError.missingValue(option)
+                }
+                journal = args[i]
+            default: throw CLIParseError.unknownOption(option)
+            }
+            i += 1
+        }
+        guard consent, let selector, let timeout else { throw CLIParseError.disableRequirements }
+        return .recoveryDisable(selector: selector, timeout: timeout, journalPath: journal)
     }
 
     private static func parseJSONFlagCommand(

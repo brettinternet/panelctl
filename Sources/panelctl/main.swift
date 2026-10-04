@@ -15,6 +15,11 @@ struct PanelCtlMain {
                     throw RecoveryError.unsafe("cannot locate watchdog executable")
                 }
                 try DisplayRecovery.run(action: action, timeout: timeout, journalPath: journalPath, executable: executable)
+            case .recoveryDisable(let selector, let timeout, let journalPath):
+                guard let executable = Bundle.main.executableURL else {
+                    throw RecoveryError.unsafe("cannot locate watchdog executable")
+                }
+                try DisplayRecovery.disable(selector: selector, timeout: timeout, journalPath: journalPath, executable: executable)
             case .recoveryHelper(let journalPath, let id):
                 try DisplayRecovery.runHelper(journalPath: journalPath, id: id)
             case .blackout(let options):

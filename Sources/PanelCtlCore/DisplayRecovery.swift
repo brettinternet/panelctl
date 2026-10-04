@@ -132,7 +132,7 @@ struct RecoverySnapshot: Codable, Equatable {
         guard !displays.isEmpty, Set(displays.map(\.uuid)).count == displays.count,
               Set(current.displays.map(\.uuid)).count == current.displays.count,
               Set(displays.map(\.uuid)) == Set(current.displays.map(\.uuid)) else {
-            throw RecoveryError.unsafe("display set changed; reconnect missing displays first; private re-enable is not implemented")
+            throw RecoveryError.unsafe("display set changed; reconnect missing displays first; private re-enable requires qualified retained identity")
         }
         for original in displays {
             let now = current.displays.first { $0.uuid == original.uuid }!
@@ -188,13 +188,15 @@ private func checked(_ error: CGError, _ operation: String) throws {
 /// Only public, session-scoped topology restoration. No power, private enable,
 /// rotation, gamma, HDR, color-profile, or firmware writes.
 enum RecoveryConfiguration {
-    static func restore(_ snapshot: RecoverySnapshot) throws {
+    static func restore(_ snapshot: RecoverySnapshot, revalidate: () throws -> Void = {}) throws {
+        try revalidate()
         let before = try RecoverySnapshot.capture()
         try snapshot.validateRestoration(to: before)
         // Resolve every mode before starting the transaction. No approximate
         // resolution/refresh-rate fallback, even if macOS offers one.
         let modes = try resolveModes(snapshot)
         var config: CGDisplayConfigRef?
+        try revalidate()
         try checked(CGBeginDisplayConfiguration(&config), "begin configuration")
         guard let config else { throw RecoveryError.unsafe("missing configuration transaction") }
         var completed = false
@@ -225,6 +227,7 @@ enum RecoveryConfiguration {
         // Never write permanent WindowServer preferences. Success still needs
         // post-commit verification; asynchronous changes may require a retry.
         try before.verify(.capture())
+        try revalidate()
         let result = CGCompleteDisplayConfiguration(config, .forSession)
         completed = true
         try checked(result, "commit configuration")
@@ -251,6 +254,7 @@ struct RecoveryEngine {
     var apply: (RecoverySnapshot) throws -> Void = { try RecoveryConfiguration.restore($0) }
     // Only tests inject this until offline identity is independently qualified.
     var reenable: RecoveryReenable?
+    var writeGate: () throws -> Void = {}
 
     // At most six observations over one second per convergence phase. Never
     // retry a writer. Inject the delay for deterministic offline tests.
@@ -269,13 +273,22 @@ struct RecoveryEngine {
     /// Manual, startup and shutdown entry point. Helpers already own both
     /// locks and call finish directly. Custom paths never bypass the user lock.
     @discardableResult
-    func recover(store: RecoveryStore, verifyOnly: Bool = false, trigger: String) throws -> RecoveryJournal {
+    func recover(store: RecoveryStore, verifyOnly: Bool = false, trigger: String,
+                 ownedOnly: Bool = false, expectedID: UUID? = nil) throws -> RecoveryJournal {
         let operation = RecoveryStore.operationLock()
         try operation.lock()
         defer { operation.unlock() }
         try store.lock()
         defer { store.unlock() }
         var journal = try store.load()
+        if let expectedID, journal.id != expectedID {
+            throw RecoveryError.unsafe("journal changed before recovery lock; inspect status and retry")
+        }
+        if ownedOnly {
+            guard journal.disabledByUsID != nil, journal.disableStaged == true else {
+                throw RecoveryError.unsafe("no staged disabled-by-us target in this journal")
+            }
+        }
         try finish(&journal, store: store, verifyOnly: verifyOnly, trigger: trigger)
         return journal
     }
@@ -291,6 +304,7 @@ struct RecoveryEngine {
                 !initial.displays.contains { $0.uuid == original.uuid }
             }
             if missing, !verifyOnly, let reenable {
+                try writeGate()
                 guard journal.reenableAttempted != true, journal.privateRecoveryClosed != true else {
                     throw RecoveryError.unsafe("private re-enable was already attempted; retain evidence and recover manually")
                 }
@@ -315,6 +329,7 @@ struct RecoveryEngine {
                 let current = try capture()
                 try journal.snapshot.validateRestoration(to: current)
                 if (try? journal.snapshot.verify(current)) == nil {
+                    try writeGate()
                     try apply(journal.snapshot)
                 }
             }
