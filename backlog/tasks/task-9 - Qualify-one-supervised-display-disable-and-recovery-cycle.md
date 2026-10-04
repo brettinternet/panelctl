@@ -4,7 +4,7 @@ title: Qualify one supervised display-disable and recovery cycle
 status: To Do
 assignee: []
 created_date: '2026-10-04 05:03'
-updated_date: '2026-10-04 15:50'
+updated_date: '2026-10-04 16:37'
 labels:
   - display-disable
   - human-gated
@@ -20,7 +20,7 @@ references:
 documentation:
   - docs/display-disable-implementation-plan.md
   - docs/display-disable-tool-survey.md
-priority: medium
+priority: low
 type: task
 ordinal: 9
 ---
@@ -66,4 +66,6 @@ Delivery: 160df2e on main commits trial preparation and the user-approved TASK-1
 TASK-11 bounded assessment and independent review confirm the technical gate remains closed: no qualified fresh acquisition/retained-CG mapping/replacement invalidation, physical target/survivor and driver classification, initial awake/lid state, or synchronous recovery-boundary environment refresh. See docs/display-provider-qualification.md. No hardware qualification or write permission. User requested a scoped investigation proposal; the document proposes one static DCP BUND/operation-7 reconstruction and producer/invalidation trace, execution approval pending. Next: obtain approval of that exact bounded scope or defer; even success requires separate mapping/preflight qualification and fresh trial consent.
 
 2026-10-04 user decision: identity bar reverts to the canonical plan's bounded capture-evidence matching contract. Technical gate now waits on TASK-12 (plan-contract providers + no-write rehearsal), not TASK-11 AC2 or firmware research. Live trial still needs fresh scoped consent.
+
+Parked 2026-10-04 by user decision: DDC input select works (TASK-10), and public mirroring (TASK-13) is the first route to hide the display. Resume only if mirroring fails or its side effects are unacceptable, or if the signal must drop so monitors without DDC can switch inputs automatically. Away/back command: TASK-15.
 <!-- SECTION:NOTES:END -->

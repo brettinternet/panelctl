@@ -4,7 +4,7 @@ title: Implement plan-contract production identity and preflight providers
 status: To Do
 assignee: []
 created_date: '2026-10-04 15:50'
-updated_date: '2026-10-04 15:50'
+updated_date: '2026-10-04 16:37'
 labels:
   - display-disable
   - offline
@@ -19,7 +19,7 @@ references:
   - Sources/PanelCtlCore/RecoveryIdentityPolicy.swift
 documentation:
   - docs/display-disable-implementation-plan.md
-priority: high
+priority: low
 type: task
 ordinal: 2010
 ---
@@ -38,3 +38,9 @@ TASK-11 found production providers always refuse because the identity policy (fr
 - [ ] #4 Fake-writer tests cover match/mismatch/missing/duplicate identity, survivor loss, driver presence/unknown, asleep/lid/unknown state and boundary invalidation; focused recovery tests and warnings-as-errors builds pass with no display writes.
 - [ ] #5 A no-write rehearsal on this Mac records the provider verdict and evidence for the actually connected target and survivor (either outcome, with exact reason); an independent safety review checks the providers against the plan contract with findings resolved or recorded as blockers. TASK-9's technical-gate status is updated; no live trial is authorized.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Parked 2026-10-04 by user decision: DDC input select works (TASK-10), and public mirroring (TASK-13) is the first route to hide the display. Resume only if mirroring fails or its side effects are unacceptable, or if the signal must drop so monitors without DDC can switch inputs automatically. Away/back command: TASK-15.
+<!-- SECTION:NOTES:END -->
