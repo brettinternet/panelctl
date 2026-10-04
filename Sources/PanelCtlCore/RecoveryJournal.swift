@@ -18,6 +18,7 @@ struct RecoveryJournal: Codable {
     var failure: String?
     // Diagnostics only; never used to signal or identify a process for recovery.
     var watchdogPID: Int32?
+    var reenableAttempted: Bool?
 
     init(snapshot: RecoverySnapshot, verifyOnly: Bool = false, timeout: TimeInterval? = nil) {
         let now = Date()
@@ -44,6 +45,14 @@ struct RecoveryJournal: Codable {
             }
         }
         for display in displays {
+            if let digest = display.colorProfileDateIndependentDigest {
+                func isSHA256(_ value: String) -> Bool {
+                    value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+                }
+                guard let raw = display.colorProfileDigest, isSHA256(raw), isSHA256(digest) else {
+                    throw RecoveryError.unsafe("invalid ICC fingerprint evidence")
+                }
+            }
             guard UUID(uuidString: display.uuid) != nil, display.id != 0,
                   display.mode.width > 0, display.mode.height > 0,
                   display.mode.pixelWidth > 0, display.mode.pixelHeight > 0,

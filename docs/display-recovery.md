@@ -4,11 +4,12 @@ This tooling prepares for future private display-control experiments. **It does
 not disable displays, reconnect privately disconnected displays, or qualify a
 private API as safe.** Rehearsal is deliberately verification-only.
 
-This describes the current main-branch implementation, not the unmerged
-`recovery-enable` work or a completed disable feature. Future direction and the
+This describes the current main-branch implementation, including the selectively
+adopted [recovery foundation](recovery-reconciliation.md), not a completed disable
+feature. Future direction and the
 bounded identity/refusal contract are in the
 [canonical implementation plan](display-disable-implementation-plan.md); execution
-is tracked in `backlog/`. TASK-2 reconciles the branch before extensions. The
+is tracked in `backlog/`. TASK-2 records adoption and deferred branch work. The
 requirements below remain safety gates, not a mandate for open-ended identity
 research or authority to call private setters.
 
@@ -59,6 +60,10 @@ changed hardware identity or connector, changed rotation or captured color-space
 ICC profile identity, another boot/OS build/user, an unavailable exact mode, or concurrent
 configuration changes detected before commit. It does not search arbitrary IDs,
 change power, reset firmware, restart WindowServer, delete preferences, or reboot.
+Eligible ICC profiles may differ only in creation-time bytes when both snapshots
+carry matching date-independent hashes; all other bytes remain protected. Legacy
+journals without that evidence stay raw-hash strict. This is not general color
+transform equivalence.
 Failures retain the baseline in `needsAttention` with a diagnostic. After manual
 recovery, `verify` can resolve it without a write. There is no force/discard flag.
 
@@ -90,7 +95,8 @@ call is authorized by a successful guard startup.
 Captured: OS build, boot-session UUID, user ID, display UUID and CG ID,
 vendor/model/serial, built-in/main/active flags, exact mode attributes and ID,
 refresh rate, origin, rotation, mirror-source UUID, optional color-space name and
-SHA-256 of the readable ICC data, and optional `IODisplayLocation` from CoreDisplay metadata. The latter works on
+SHA-256 of the readable ICC data, an optional bounded date-independent ICC hash,
+and optional `IODisplayLocation` from CoreDisplay metadata. The latter works on
 the investigated host's `IOMobileFramebufferShim` path without assuming an
 `AppleCLCD2` service exists.
 
@@ -116,7 +122,8 @@ to operate on offline or recycled IDs.
   startup. Sleep can delay execution; there is no wall-clock recovery guarantee.
 - `rehearse` journals have `verifyOnly: true`; the helper never calls the writer
   for them. `guard` journals use the public restoration writer. No shell-command
-  hook or private control backend exists. The internal `_recovery-helper` entry
+  hook or production private control backend is installed. The internal injectable
+  recovery seam and default transport both refuse without test injection. The internal `_recovery-helper` entry
   point is not a standalone recovery command. The recorded helper PID is for
   diagnostics only; recovery never signals a PID loaded from a journal.
 - The helper cannot survive its own SIGKILL, logout, reboot, or a hung/crashed
@@ -146,7 +153,8 @@ See [the research and risk assessment](undocumented-display-control.md).
 ## Validation
 
 See the [implementation validation checkpoint](recovery-validation.md) for
-executed checks and unqualified behavior.
+historical checks and the [reconciliation record](recovery-reconciliation.md)
+for fresh TASK-2 checks and unqualified behavior.
 
 `swift test --filter DisplayRecoveryTests` exercises journal locking, archives,
 permissions, corruption, identity rejection, write-ahead ordering, failed writes,

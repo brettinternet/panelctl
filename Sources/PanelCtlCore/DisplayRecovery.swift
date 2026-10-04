@@ -1,7 +1,6 @@
 import Foundation
 import AppKit
 import CoreGraphics
-import CryptoKit
 import Darwin
 
 public enum RecoveryError: Error, CustomStringConvertible {
@@ -40,14 +39,24 @@ struct RecoveryDisplay: Codable, Equatable {
     let builtin: Bool
     let main: Bool
     let active: Bool
-    let x: Int32
-    let y: Int32
+    var x: Int32
+    var y: Int32
     let rotation: Double
     let mirrorUUID: String?
     let mode: RecoveryMode
     let colorSpace: String?
     let colorProfileDigest: String?
+    // Optional for legacy journals and profiles ineligible for normalization.
+    let colorProfileDateIndependentDigest: String?
     let connector: String?
+
+    func hasSameColorProfile(as other: Self) -> Bool {
+        if colorProfileDigest == other.colorProfileDigest { return true }
+        guard colorProfileDigest != nil, other.colorProfileDigest != nil,
+              let digest = colorProfileDateIndependentDigest,
+              let otherDigest = other.colorProfileDateIndependentDigest else { return false }
+        return digest == otherDigest
+    }
 }
 
 struct RecoverySnapshot: Codable, Equatable {
@@ -93,9 +102,7 @@ struct RecoverySnapshot: Codable, Equatable {
             }
             let info = metadata?.info(id)?.takeRetainedValue() as? [String: Any]
             let colorSpace = CGDisplayCopyColorSpace(id)
-            let profileDigest = (colorSpace.copyICCData() as Data?).map {
-                SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined()
-            }
+            let profile = colorSpace.copyICCData() as Data?
             return RecoveryDisplay(
                 uuid: identities[id]!, id: id, vendor: CGDisplayVendorNumber(id),
                 model: CGDisplayModelNumber(id), serial: CGDisplaySerialNumber(id),
@@ -103,7 +110,9 @@ struct RecoverySnapshot: Codable, Equatable {
                 active: CGDisplayIsActive(id) != 0, x: x, y: y,
                 rotation: CGDisplayRotation(id), mirrorUUID: identities[mirrored],
                 mode: RecoveryMode(mode), colorSpace: colorSpace.name as String?,
-                colorProfileDigest: profileDigest, connector: info?["IODisplayLocation"] as? String
+                colorProfileDigest: profile.map(RecoveryColorProfile.digest),
+                colorProfileDateIndependentDigest: profile.flatMap(RecoveryColorProfile.dateIndependentDigest),
+                connector: info?["IODisplayLocation"] as? String
             )
         }
         return Self(bootSession: try systemString("kern.bootsessionuuid"),
@@ -129,17 +138,30 @@ struct RecoverySnapshot: Codable, Equatable {
                   original.builtin == now.builtin, original.connector == now.connector else {
                 throw RecoveryError.unsafe("identity or connector changed for \(original.uuid); refusing to guess")
             }
-            guard original.rotation == now.rotation, original.colorSpace == now.colorSpace,
-                  original.colorProfileDigest == now.colorProfileDigest else {
-                throw RecoveryError.unsafe("rotation or color space changed for \(original.uuid); restore it manually first")
+            guard original.rotation == now.rotation else {
+                throw RecoveryError.unsafe("rotation changed for \(original.uuid); restore it manually first")
+            }
+            guard original.colorSpace == now.colorSpace else {
+                throw RecoveryError.unsafe("color space changed for \(original.uuid); restore it manually first")
+            }
+            guard original.hasSameColorProfile(as: now) else {
+                throw RecoveryError.unsafe("ICC profile changed for \(original.uuid); no proven creation-time-only match; manual recovery required")
             }
         }
     }
 
     func verify(_ current: Self) throws {
         try validateRestoration(to: current)
-        guard displays.sorted(by: { $0.uuid < $1.uuid }) == current.displays.sorted(by: { $0.uuid < $1.uuid }) else {
-            throw RecoveryError.unsafe("display configuration differs from snapshot")
+        // Identity, rotation, color space and profile content are checked above.
+        // Raw ICC hashes may differ only when both snapshots prove a date-only
+        // regeneration. They remain stored, unchanged, as diagnostic evidence.
+        for original in displays {
+            let now = current.displays.first { $0.uuid == original.uuid }!
+            guard original.main == now.main, original.active == now.active,
+                  original.x == now.x, original.y == now.y,
+                  original.mirrorUUID == now.mirrorUUID, original.mode == now.mode else {
+                throw RecoveryError.unsafe("display configuration differs from snapshot")
+            }
         }
     }
 }
@@ -224,9 +246,26 @@ enum RecoveryConfiguration {
 struct RecoveryEngine {
     var capture: () throws -> RecoverySnapshot = { try .capture() }
     var apply: (RecoverySnapshot) throws -> Void = { try RecoveryConfiguration.restore($0) }
+    // Only tests inject this until offline identity is independently qualified.
+    var reenable: RecoveryReenable?
 
     func finish(_ journal: inout RecoveryJournal, store: RecoveryStore, verifyOnly: Bool, trigger: String) throws {
         do {
+            let initial = try capture()
+            let missing = journal.snapshot.displays.contains { original in
+                !initial.displays.contains { $0.uuid == original.uuid }
+            }
+            if missing, !verifyOnly, let reenable {
+                guard journal.reenableAttempted != true else {
+                    throw RecoveryError.unsafe("private re-enable was already attempted; retain evidence and recover manually")
+                }
+                _ = try reenable.target(snapshot: journal.snapshot, current: initial)
+                journal.state = .restoring; journal.trigger = trigger
+                journal.reenableAttempted = true
+                // Durable one-shot intent: a crash must never replay enable.
+                try store.save(journal)
+                try reenable.restoreMissing(snapshot: journal.snapshot, capture: capture)
+            }
             try journal.snapshot.validateRestoration(to: capture())
             journal.trigger = trigger
             if !verifyOnly {

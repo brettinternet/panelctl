@@ -273,6 +273,69 @@ final class DisplayRecoveryTests: XCTestCase {
         XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test"))
     }
 
+    private func profileSnapshot(_ profile: Data, includeDateIndependent: Bool = true) throws -> RecoverySnapshot {
+        try snapshot { data in
+            var displays = data["displays"] as! [[String: Any]]
+            displays[0]["colorProfileDigest"] = RecoveryColorProfile.digest(profile)
+            if includeDateIndependent {
+                displays[0]["colorProfileDateIndependentDigest"] = RecoveryColorProfile.dateIndependentDigest(profile)
+            }
+            data["displays"] = displays
+        }
+    }
+
+    func testICCTimestampOnlyRegenerationVerifiesWithoutWriter() throws {
+        let original = try profileSnapshot(RecoveryColorProfileTests.profile())
+        let current = try profileSnapshot(RecoveryColorProfileTests.profile(second: 2))
+        XCTAssertNotEqual(original, current) // Preserve distinct raw evidence.
+        XCTAssertNoThrow(try original.verify(current))
+        let store = store(); try store.lock()
+        var journal = RecoveryJournal(snapshot: original); try store.create(journal)
+        let engine = RecoveryEngine(capture: { current }, apply: { _ in XCTFail("date-only change needs no write") })
+        try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test")
+        XCTAssertEqual(try store.load().state, .restored)
+        XCTAssertEqual(try store.load().snapshot, original)
+    }
+
+    func testICCContentChangeAndLegacySnapshotsStillBlockWrites() throws {
+        let bytes = RecoveryColorProfileTests.profile()
+        let original = try profileSnapshot(bytes)
+        var altered = bytes; altered[175] ^= 1
+        let changed = try profileSnapshot(altered)
+        XCTAssertThrowsError(try original.verify(changed))
+        let legacy = try profileSnapshot(bytes, includeDateIndependent: false)
+        let dated = try profileSnapshot(RecoveryColorProfileTests.profile(second: 2))
+        XCTAssertThrowsError(try legacy.verify(dated))
+        XCTAssertThrowsError(try dated.verify(legacy))
+        XCTAssertNoThrow(try legacy.verify(original)) // Identical raw bytes remain sufficient.
+        let store = store(); try store.lock()
+        var journal = RecoveryJournal(snapshot: original); try store.create(journal)
+        let engine = RecoveryEngine(capture: { changed }, apply: { _ in XCTFail("changed color transform") })
+        XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test"))
+        XCTAssertEqual(try store.load().state, .needsAttention)
+        XCTAssertEqual(try store.load().snapshot, original)
+    }
+
+    func testICCDateEvidenceDoesNotHideTopologyOrOtherColorChanges() throws {
+        let original = try profileSnapshot(RecoveryColorProfileTests.profile())
+        let current = try profileSnapshot(RecoveryColorProfileTests.profile(second: 2))
+        var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as! [String: Any]
+        let unchanged = object["displays"] as! [[String: Any]]
+        for (key, value): (String, Any) in [("x", 16), ("active", false), ("main", false),
+                                          ("rotation", 90), ("colorSpace", "changed")] {
+            var displays = unchanged; displays[0][key] = value; object["displays"] = displays
+            let modified = try JSONDecoder().decode(RecoverySnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+            XCTAssertThrowsError(try original.verify(modified), key)
+        }
+        var invalid = unchanged; invalid[0].removeValue(forKey: "colorProfileDigest"); object["displays"] = invalid
+        let missing = try JSONDecoder().decode(RecoverySnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertThrowsError(try original.verify(missing))
+        XCTAssertThrowsError(try RecoveryJournal(snapshot: missing).validate())
+        invalid = unchanged; invalid[0]["colorProfileDateIndependentDigest"] = "invalid"; object["displays"] = invalid
+        let corrupt = try JSONDecoder().decode(RecoverySnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertThrowsError(try RecoveryJournal(snapshot: corrupt).validate())
+    }
+
     func testRecoveryCLIValidation() throws {
         for action in ["capture", "status", "verify", "restore", "rehearse", "guard"] {
             XCTAssertEqual(try CLIParser.parse(["recovery", action]),
