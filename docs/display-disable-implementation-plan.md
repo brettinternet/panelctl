@@ -11,7 +11,7 @@ gaps, the implementation contract, and the live-trial protocol. Inputs:
 
 ## Recommendation
 
-Build the feature now — a guarded, app-only-scope soft disconnect using
+Build the feature now — a guarded, session-scope soft disconnect using
 `CGSConfigureDisplayEnabled` inside a `CGBegin/CompleteDisplayConfiguration`
 transaction — with re-enable strictly by retained display ID. Two bounded gaps
 are closed offline before the feature is complete. One set of questions
@@ -25,15 +25,20 @@ before implementation; it is embedded as gates in the build itself.
 
 ## Established — no longer open
 
-- **Mechanism.** Three surveyed tools converge on the same private call and
-  transaction shape; two independent public implementations agree on the ABI
-  `(configRef, displayID, bool) -> CGError`. No surveyed tool uses link-stop,
-  DDC power, or power-mode APIs for disable.
-- **Scope.** App-only (`kCGConfigureForAppOnly = 0`), never permanent. The
-  disable is login-session state: it survives process death but reverts at
-  logout/reboot, and the public `CGRestorePermanentDisplayConfiguration()` is
-  a full-revert panic lever that needs no display IDs. Permanent scope converts
-  a bad session into a bad boot state and is rejected.
+- **Mechanism.** All four surveyed tools disable with the same private setter,
+  `CGSConfigureDisplayEnabled` (SkyLight exports `SLSConfigureDisplayEnabled`;
+  CoreGraphics re-exports the `CGS` name on this host), inside the public
+  begin/complete transaction. Binding style determines the failure mode when
+  Apple changes the symbol: static imports break app launch, while `dlsym`
+  resolution merely disables the feature. No tool uses link-stop for disable;
+  DDC power-off exists only as a separate, caveated action.
+- **Scope.** Session (`kCGConfigureForSession = 1`, matching the existing
+  recovery groundwork) or app-only; never permanent. No scope undoes the
+  private flag when the process dies. `CGRestorePermanentDisplayConfiguration()`
+  and logout/reboot are the *expected* global restores but are **unverified for
+  the private flag** — the survey records them as trial questions, so the
+  design must not depend on them. Permanent scope converts a bad session into
+  a bad boot state and is rejected.
 - **Core re-enable contract.** Re-enable by the retained `CGDirectDisplayID`
   does not require the display to be enumerable. This is the ecosystem's
   proven contract, not the deeper offline-identity contract.
@@ -72,10 +77,15 @@ identity contract, permanent-scope anything, and DDC power (excluded).
     excludes virtual/headless displays (an online headless virtual display
     does not count);
   - auto-revert if eligibility collapses;
-  - re-enable all disabled-by-us displays on quit and at startup
-    (stranded-disable recovery), driven by the journal;
+  - re-enable all disabled-by-us displays on quit, `SIGTERM`/`SIGINT`, and at
+    startup (stranded-disable recovery), driven by the journal; the
+    independent helper covers crash and `SIGKILL`;
   - defer disable/re-enable during sleep/wake transitions;
-  - defer to the armed auto-revert helper as the independent watchdog.
+  - defer to the armed auto-revert helper as the independent watchdog;
+  - refuse while DisplayLink/virtual-display drivers run; Apple Silicon only
+    (surveyed Intel behavior is caveat-laden, and one tool ships arm64 only);
+  - accept system-initiated re-enables (e.g. after wake) rather than fighting
+    them; re-disconnection stays an explicit user action.
 - Panic restore command: re-enable everything journaled, then
   `CGRestorePermanentDisplayConfiguration()` (plus
   `CGDisplayRestoreColorSyncSettings()` if gamma is ever in play).
@@ -91,11 +101,20 @@ with a short deadline, user present.
 
 1. Disable by consent. Observe: call success; monitor loses signal and
    auto-switches to the other computer's input (the feature's actual goal).
+   The S2721DGF's framebuffer reports `SupportsSuspend = No` and
+   `SupportsActiveOff = No`, so also observe what signal loss actually does
+   (standby vs. no-signal message vs. input auto-select) and whether HPD
+   stays high while the display is disabled.
 2. Re-enable by retained ID while the display is offline. Observe: driver
    acceptance on this host/OS; DP signal returns; monitor returns to the DP
    input or stays parked on HDMI (determines whether a DDC `0x60` input-select
    follow-up is needed).
-3. Failure ladder, honest and in order: journal re-enable → panic restore →
+3. Restore-lever verification: after a second disable, test
+   `CGRestorePermanentDisplayConfiguration()` alone, then (separately, next
+   logout) whether reboot clears a session-scope disable. Until both pass,
+   treat the panic lever and logout/reboot as *unproven* in the failure
+   ladder.
+4. Failure ladder, honest and in order: journal re-enable → panic restore →
    logout/reboot → physical replug or different port. The survey shows
    same-port replug may stay disabled; the journal must key on more than the
    port, and UI copy must not promise replug as a fix.
@@ -115,6 +134,9 @@ with a short deadline, user present.
 
 - Does this host's driver accept re-enable while the display is offline, and
   does the retained ID survive the disable on macOS 27 / M5 Max?
+- Does the private flag survive logout or reboot under session scope, and does
+  `CGRestorePermanentDisplayConfiguration()` alone re-enable a privately
+  disabled display?
 - Does the target monitor auto-switch inputs on signal loss, and back on
   signal restore, or does it stay parked on its last input?
 - Is any DDC `0x60` follow-up needed, and does the display's DDC channel
