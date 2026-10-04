@@ -24,7 +24,7 @@ private final class SettingsWindow: NSWindow {
 }
 
 @MainActor
-final class SettingsWindowController: NSWindowController {
+final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     init(model: AppModel) {
         let hostingView = NSHostingView(rootView: SettingsView(model: model))
         let window = SettingsWindow(
@@ -49,6 +49,7 @@ final class SettingsWindowController: NSWindowController {
         window.setFrameAutosaveName("PanelCtlSettingsWindow")
         window.center()
         super.init(window: window)
+        window.delegate = self
         applySizeConstraints(to: window)
     }
 
@@ -79,6 +80,17 @@ final class SettingsWindowController: NSWindowController {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    func windowDidEndSheet(_ notification: Notification) {
+        // SwiftUI's notice can leave the app with no key window after dismissal.
+        // Restore keyboard access without stealing it from another app/window.
+        DispatchQueue.main.async { [weak self] in
+            guard let window = self?.window, window.isVisible,
+                  window.attachedSheet == nil, NSApp.isActive,
+                  NSApp.keyWindow == nil else { return }
+            window.makeKey()
+        }
     }
 
     func present() {

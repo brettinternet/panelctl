@@ -59,6 +59,21 @@ enum DisplayOperationConfirmation {
         let acknowledgement: NSButton
         private let acknowledgementTarget: AcknowledgementTarget
 
+        func runModal() -> NSApplication.ModalResponse {
+            // Cancel is the default (Return) button, so give Escape an explicit
+            // scoped route too. NSAlert otherwise assigns it to the second button.
+            let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard event.keyCode == 53, event.window === alert.window,
+                      event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else {
+                    return event
+                }
+                cancelButton.performClick(nil)
+                return nil
+            }
+            defer { if let monitor { NSEvent.removeMonitor(monitor) } }
+            return alert.runModal()
+        }
+
         fileprivate init(alert: NSAlert, cancelButton: NSButton, actionButton: NSButton,
                          acknowledgement: NSButton, acknowledgementTarget: AcknowledgementTarget) {
             self.alert = alert
@@ -106,6 +121,9 @@ enum DisplayOperationConfirmation {
         alert.accessoryView = accessory
 
         let actionButton = alert.buttons[1]
+        // NSAlert may assign Escape to its second button. That is the write
+        // action here, so only Cancel may own the cancellation shortcut.
+        actionButton.keyEquivalent = ""
         actionButton.isEnabled = false
         let target = AcknowledgementTarget(actionButton: actionButton)
         acknowledgement.target = target
@@ -128,7 +146,7 @@ enum DisplayOperationConfirmation {
         actionTitle: String
     ) -> Bool {
         let confirmation = prepareConfirmation(title: title, message: message, actionTitle: actionTitle)
-        return confirmation.alert.runModal() == .alertSecondButtonReturn && confirmation.acknowledgement.state == .on
+        return confirmation.runModal() == .alertSecondButtonReturn && confirmation.acknowledgement.state == .on
     }
 }
 

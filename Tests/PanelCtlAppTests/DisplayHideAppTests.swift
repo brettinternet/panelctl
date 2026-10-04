@@ -21,6 +21,15 @@ final class DisplayHideAppTests: XCTestCase {
         ]
     }
 
+    private func dispatchNativeEvents() {
+        // XCTest services the run loop but is not an NSApplication event loop.
+        // Dispatch pending app-local lifecycle events before asserting focus.
+        for _ in 0..<100 {
+            guard let event = NSApp.nextEvent(matching: .any, until: Date(), inMode: .default, dequeue: true) else { break }
+            NSApp.sendEvent(event)
+        }
+    }
+
     private func activateForegroundNativeKeyboardFixture(
         requiresCGEventPostPermission: Bool = true
     ) throws -> (activationPolicy: NSApplication.ActivationPolicy, previouslyFrontmost: NSRunningApplication?) {
@@ -38,15 +47,50 @@ final class DisplayHideAppTests: XCTestCase {
         guard application.setActivationPolicy(.regular) else {
             throw XCTSkip("The opted-in XCTest host could not change to a regular app activation policy.")
         }
-        NSRunningApplication.current.activate(options: [.activateAllWindows])
-        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+        // A package test runner has no application window to activate. Establish
+        // a real fixture window before requesting foreground keyboard ownership.
+        let activationWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 120),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        activationWindow.title = "PanelCtl offline keyboard fixture"
+        activationWindow.isReleasedWhenClosed = false
+        activationWindow.center()
+        activationWindow.makeKeyAndOrderFront(nil)
+        application.activate(ignoringOtherApps: true)
+        defer { activationWindow.close() }
         let currentPID = ProcessInfo.processInfo.processIdentifier
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == currentPID else {
+        let activationDeadline = Date().addingTimeInterval(2)
+        while (!application.isActive || NSWorkspace.shared.frontmostApplication?.processIdentifier != currentPID),
+              Date() < activationDeadline {
+            dispatchNativeEvents()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        dispatchNativeEvents()
+        guard application.isActive, NSWorkspace.shared.frontmostApplication?.processIdentifier == currentPID else {
             application.setActivationPolicy(originalActivationPolicy)
             previouslyFrontmost?.activate(options: [.activateAllWindows])
             throw XCTSkip("The opted-in XCTest host did not become frontmost; no keyboard event was posted.")
         }
         return (originalActivationPolicy, previouslyFrontmost)
+    }
+
+    private func restoreForegroundNativeKeyboardFixture(
+        _ state: (activationPolicy: NSApplication.ActivationPolicy, previouslyFrontmost: NSRunningApplication?)
+    ) {
+        NSApp.setActivationPolicy(state.activationPolicy)
+        state.previouslyFrontmost?.activate(options: [.activateAllWindows])
+        // Drain asynchronous deactivation before the next native menu starts
+        // tracking; otherwise that stale event immediately cancels its popup.
+        let deadline = Date().addingTimeInterval(2)
+        while let previous = state.previouslyFrontmost,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier != previous.processIdentifier,
+              Date() < deadline {
+            dispatchNativeEvents()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        dispatchNativeEvents()
     }
 
     func testVerifiedRecoveryReleaseRearmsHelperBeforeStaleIdleCanTrigger() async throws {
@@ -622,6 +666,7 @@ final class DisplayHideAppTests: XCTestCase {
         let model = makeModel(defaults: defaults, displays: displays, status: { hidden })
         var requestedJournalID: String?
         model.onRequestShow = { requestedJournalID = $0.journalID }
+        dispatchNativeEvents()
         let originalFrontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let delegate = AppDelegate()
         delegate.model = model
@@ -701,10 +746,7 @@ final class DisplayHideAppTests: XCTestCase {
 
     func testNativeEscapeEventCancelsConfirmationWithoutAction() throws {
         let applicationState = try activateForegroundNativeKeyboardFixture()
-        defer {
-            NSApp.setActivationPolicy(applicationState.activationPolicy)
-            applicationState.previouslyFrontmost?.activate(options: [.activateAllWindows])
-        }
+        defer { restoreForegroundNativeKeyboardFixture(applicationState) }
         let confirmation = DisplayOperationConfirmation.prepareConfirmation(
             title: "Show Target?",
             message: "Synthetic confirmation fixture; no backend is connected.",
@@ -724,12 +766,14 @@ final class DisplayHideAppTests: XCTestCase {
                 return
             }
             injectionWindowNumber = modalWindow.windowNumber
+            keyDown.flags = []
+            keyUp.flags = []
             keyDown.postToPid(currentPID)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { keyUp.postToPid(currentPID) }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: timeout)
         let start = ProcessInfo.processInfo.systemUptime
-        let response = confirmation.alert.runModal()
+        let response = confirmation.runModal()
         let elapsed = ProcessInfo.processInfo.systemUptime - start
         timeout.cancel()
 
@@ -742,10 +786,7 @@ final class DisplayHideAppTests: XCTestCase {
 
     func testNativeShowCompletionAndFailureFocusTheirSettingsNotice() async throws {
         let applicationState = try activateForegroundNativeKeyboardFixture(requiresCGEventPostPermission: false)
-        defer {
-            NSApp.setActivationPolicy(applicationState.activationPolicy)
-            applicationState.previouslyFrontmost?.activate(options: [.activateAllWindows])
-        }
+        defer { restoreForegroundNativeKeyboardFixture(applicationState) }
         for succeeds in [true, false] {
             let defaults = try makeDefaults()
             defer {
@@ -790,6 +831,10 @@ final class DisplayHideAppTests: XCTestCase {
             XCTAssertTrue(succeeds
                 ? model.handoffStatus?.state == DisplayHandoffStatus.State.none
                 : model.handoffStatus?.state == DisplayHandoffStatus.State.hidden)
+            try await waitUntil {
+                self.dispatchNativeEvents()
+                return window.attachedSheet?.isKeyWindow == true
+            }
             let noticeSheet = try XCTUnwrap(window.attachedSheet, "completion and failure notices must present a native Settings sheet")
             XCTAssertTrue(noticeSheet.isKeyWindow, "focus must move into the completion/error notice")
             XCTAssertNotNil(noticeSheet.firstResponder)
@@ -822,7 +867,12 @@ final class DisplayHideAppTests: XCTestCase {
             }
             NSApp.sendEvent(returnDown)
             NSApp.sendEvent(returnUp)
-            try await waitUntil { window.attachedSheet == nil }
+            // Sheet detachment precedes the end of AppKit's dismissal animation
+            // and restoration of key-window status.
+            try await waitUntil {
+                self.dispatchNativeEvents()
+                return window.attachedSheet == nil && window.isKeyWindow
+            }
             XCTAssertTrue(window.isKeyWindow)
             XCTAssertTrue(window.firstResponder === sourcePicker, "dismissal restores focus to the setting that had focus before the notice")
         }
