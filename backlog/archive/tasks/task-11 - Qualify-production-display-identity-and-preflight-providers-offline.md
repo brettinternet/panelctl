@@ -4,7 +4,7 @@ title: Qualify production display identity and preflight providers offline
 status: To Do
 assignee: []
 created_date: '2026-10-04 14:49'
-updated_date: '2026-10-04 15:50'
+updated_date: '2026-10-04 16:14'
 labels:
   - display-disable
   - offline
@@ -56,4 +56,12 @@ Resumed on main with user-authorized takeover. Fresh verification: 81 core recov
 Delivery: 95010c3 on main commits refusal regressions, bounded qualification evidence, independent review outcome, TASK-9 gate update and the requested investigation proposal. No push. AC2 remains blocked; proposal execution still needs explicit approval.
 
 2026-10-04 user decision: firmware/operation-7 static investigation proposal not approved as the TASK-9 path; retained only as possible later identical-display hardening. The fresh-sink/unique-absent-mapping bar exceeded the canonical plan (section 2 defers the full offline identity contract). AC2 provider integration moves to TASK-12 under the plan's capture-evidence matching contract; TASK-9 now depends on TASK-12. This task's assessment deliverables stand; AC2 stays unchecked here.
+
+Taken over 2026-10-04 by @pi after the prior agent was paused (user-authorized). No worktree or in-flight code; delivered work is on main (95010c3, a1f38af, ff9da2b). Archived rather than Done: AC1/3/4/5 delivered, AC2 not met here and superseded by TASK-12 under the plan's capture-evidence matching contract.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Delivered the bounded provider evidence matrix, refusal regressions, independent safety review and blocked verdict (docs/display-provider-qualification.md). Validation: 81 core recovery tests plus app recovery test, warnings-as-errors builds, git diff --check. AC2 (production provider integration) was not met under this task's stricter bar; user reverted to the canonical plan's contract and moved that work to TASK-12. Firmware investigation proposal declined. Archived as superseded, not completed.
+<!-- SECTION:FINAL_SUMMARY:END -->
