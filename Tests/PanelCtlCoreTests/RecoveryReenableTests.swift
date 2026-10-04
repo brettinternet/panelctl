@@ -19,6 +19,7 @@ final class RecoveryReenableTests: XCTestCase {
                  "vendor": 4268, "model": 16857, "serial": index, "builtin": false,
                  "main": index == 1, "active": true, "x": (index - 1) * 1920, "y": 0,
                  "rotation": 0, "connector": "connector-\(index)", "colorSpace": "test",
+                 "identityEvidence": ["source": "syntheticFixture", "capturedAt": 0],
                  "mode": ["id": 1, "width": 1920, "height": 1080, "pixelWidth": 1920,
                           "pixelHeight": 1080, "refreshRate": 60, "flags": 0]]
             }]
@@ -32,7 +33,7 @@ final class RecoveryReenableTests: XCTestCase {
     private func evidence(_ original: RecoverySnapshot, online: Set<UInt32> = [1]) -> RecoveryEnableInventory {
         RecoveryEnableInventory(bootSession: original.bootSession, osBuild: original.osBuild,
                                 userID: original.userID, identities: original.displays.map(RecoveryEnableIdentity.init),
-                                onlineIDs: online)
+                                onlineIDs: online, binding: .syntheticPhysicalFixture)
     }
     private func store() throws -> RecoveryStore {
         let store = RecoveryStore(url: directory.appendingPathComponent("current.json"))
@@ -43,7 +44,7 @@ final class RecoveryReenableTests: XCTestCase {
         let original = try fixture(), absent = missing(original)
         XCTAssertThrowsError(try RecoveryReenable().target(snapshot: original, current: absent))
         let store = try store()
-        var journal = RecoveryJournal(snapshot: original); try store.create(journal)
+        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2); try store.create(journal)
         let engine = RecoveryEngine(capture: { absent }, apply: { _ in XCTFail("public write") })
         XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test"))
         XCTAssertEqual(try store.load().state, .needsAttention)
@@ -59,14 +60,19 @@ final class RecoveryReenableTests: XCTestCase {
     }
 
     func testLegacyV1JournalDecodesWithoutPrivateOrNormalizedEvidence() throws {
-        let original = try fixture(), store = try store()
+        let original = try fixture { data in
+            var displays = data["displays"] as! [[String: Any]]
+            for index in displays.indices { displays[index].removeValue(forKey: "identityEvidence") }
+            data["displays"] = displays
+        }, store = try store()
         let journal = RecoveryJournal(snapshot: original)
         let bytes = try JSONEncoder().encode(journal)
-        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        object["version"] = 1
         XCTAssertNil(object["reenableAttempted"])
         let displays = try XCTUnwrap((object["snapshot"] as? [String: Any])?["displays"] as? [[String: Any]])
         XCTAssertTrue(displays.allSatisfy { $0["colorProfileDateIndependentDigest"] == nil })
-        let legacy = try JSONDecoder().decode(RecoveryJournal.self, from: bytes)
+        let legacy = try JSONDecoder().decode(RecoveryJournal.self, from: JSONSerialization.data(withJSONObject: object))
         try store.create(legacy)
         XCTAssertEqual(try store.load().version, 1)
         XCTAssertNil(try store.load().reenableAttempted)
@@ -119,7 +125,7 @@ final class RecoveryReenableTests: XCTestCase {
     func testOneShotEnablePersistsIntentThenPublicRestoreAndVerification() throws {
         let original = try fixture(), store = try store()
         var current = missing(original), writes = 0
-        var journal = RecoveryJournal(snapshot: original); try store.create(journal)
+        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2); try store.create(journal)
         let backend = RecoveryReenable(inventory: { self.evidence(original) }, enable: { id, validate in
             XCTAssertEqual(id, 2)
             XCTAssertEqual(try store.load().state, .restoring)
@@ -142,7 +148,7 @@ final class RecoveryReenableTests: XCTestCase {
             let store = RecoveryStore(url: directory.appendingPathComponent(UUID().uuidString + ".json"))
             try store.lock()
             let original = try fixture(), absent = missing(original)
-            var journal = RecoveryJournal(snapshot: original); try store.create(journal)
+            var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2); try store.create(journal)
             var writes = 0
             let backend = RecoveryReenable(inventory: { self.evidence(original) }, enable: { _, validate in
                 try validate(); writes += 1
@@ -160,7 +166,7 @@ final class RecoveryReenableTests: XCTestCase {
 
     func testCrashAfterDurableIntentCannotReplayAndVerifyOnlyCannotEnable() throws {
         let original = try fixture(), absent = missing(original), store = try store()
-        var journal = RecoveryJournal(snapshot: original)
+        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2)
         journal.state = .restoring; journal.reenableAttempted = true
         try store.create(journal) // Simulates process death after intent, before/after commit.
         journal = try store.load()
@@ -174,12 +180,12 @@ final class RecoveryReenableTests: XCTestCase {
     func testJournalFailurePreventsEnableAndCompletionFailureRetainsIntent() throws {
         let original = try fixture(), absent = missing(original)
         let unlocked = RecoveryStore(url: directory.appendingPathComponent("unlocked.json"))
-        var journal = RecoveryJournal(snapshot: original)
+        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2)
         let blocked = RecoveryReenable(inventory: { self.evidence(original) }, enable: { _, _ in XCTFail("write without intent") })
         XCTAssertThrowsError(try RecoveryEngine(capture: { absent }, reenable: blocked)
             .finish(&journal, store: unlocked, verifyOnly: false, trigger: "test"))
 
-        let store = try store(); journal = RecoveryJournal(snapshot: original); try store.create(journal)
+        let store = try store(); journal = RecoveryJournal(snapshot: original, disabledByUsID: 2); try store.create(journal)
         var current = absent
         let backend = RecoveryReenable(inventory: { self.evidence(original) }, enable: { _, validate in
             try validate(); current = original; store.unlock() // Inject final persistence failure.
@@ -193,7 +199,7 @@ final class RecoveryReenableTests: XCTestCase {
 
     func testIdentityRacePreventsSetter() throws {
         let original = try fixture(), absent = missing(original), store = try store()
-        var journal = RecoveryJournal(snapshot: original); try store.create(journal)
+        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2); try store.create(journal)
         var reads = 0
         let backend = RecoveryReenable(inventory: {
             reads += 1
@@ -202,6 +208,92 @@ final class RecoveryReenableTests: XCTestCase {
         }, enable: { _, _ in XCTFail("stale identity") })
         XCTAssertThrowsError(try RecoveryEngine(capture: { absent }, reenable: backend)
             .finish(&journal, store: store, verifyOnly: false, trigger: "test"))
+    }
+
+    func testPolicyOutcomesAndRefusalsNeverWriteOrReplay() throws {
+        let original = try fixture()
+        var cases: [(RecoverySnapshot, RecoveryEnableInventory, RecoveryIdentityOutcome)] = []
+        cases.append((original, evidence(original), .eligible))
+        var cached = evidence(original); cached.binding = .unqualified
+        cases.append((original, cached, .unsupported)) // includes ghost/virtual/unqualified providers
+        var stale = evidence(original); stale.binding = .stale
+        cases.append((original, stale, .stale))
+        for (key, value, outcome): (String, Any, RecoveryIdentityOutcome) in [
+            ("serial", 0, .missingEvidence), ("serial", 1, .ambiguous),
+            ("connector", "", .missingEvidence), ("identityEvidence", NSNull(), .missingEvidence)
+        ] {
+            let snapshot = try fixture { data in
+                var displays = data["displays"] as! [[String: Any]]
+                displays[1][key] = value; data["displays"] = displays
+            }
+            cases.append((snapshot, evidence(snapshot), outcome))
+        }
+        for (key, value): (String, Any) in [("id", 3), ("serial", 99), ("connector", "other-port")] {
+            let changed = try fixture { data in
+                var displays = data["displays"] as! [[String: Any]]
+                displays[1][key] = value; data["displays"] = displays
+            }
+            cases.append((original, evidence(changed), .stale))
+        }
+        for key in ["bootSession", "osBuild", "userID"] {
+            let changed = try fixture { $0[key] = key == "userID" ? getuid() + 1 : "changed" }
+            cases.append((original, evidence(changed), .stale))
+        }
+        var realDisplays = original.displays
+        for index in realDisplays.indices {
+            realDisplays[index].identityEvidence = RecoveryIdentityEvidence(
+                source: .cgAndCoreDisplay, capturedAt: Date(), transport: "DisplayPort",
+                hpd: "High", framebufferLocation: "connector-\(index + 1)")
+        }
+        let realCapture = RecoverySnapshot(bootSession: original.bootSession, osBuild: original.osBuild,
+                                           userID: original.userID, displays: realDisplays)
+        cases.append((realCapture, evidence(realCapture), .unsupported))
+        for (snapshot, inventory, outcome) in cases {
+            XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: snapshot, evidence: inventory).outcome, outcome)
+            if outcome == .eligible { continue }
+            let store = RecoveryStore(url: directory.appendingPathComponent(UUID().uuidString + ".json"))
+            try store.lock()
+            var journal = RecoveryJournal(snapshot: snapshot, disabledByUsID: 2)
+            try store.create(journal)
+            let backend = RecoveryReenable(inventory: { inventory }, enable: { _, _ in XCTFail("unsafe private write") })
+            let engine = RecoveryEngine(capture: { self.missing(snapshot) }, apply: { _ in XCTFail("unsafe public write") }, reenable: backend)
+            for _ in 0..<2 {
+                XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test"))
+                journal = try store.load()
+                XCTAssertEqual(journal.state, .needsAttention)
+                XCTAssertNil(journal.reenableAttempted)
+            }
+        }
+    }
+
+    func testMissingOrWrongIntentAndLegacyVersionCannotEnable() throws {
+        let original = try fixture()
+        for intent: UInt32? in [nil, 1, 2] {
+            let store = RecoveryStore(url: directory.appendingPathComponent(UUID().uuidString + ".json"))
+            try store.lock()
+            var journal = RecoveryJournal(snapshot: original, disabledByUsID: intent)
+            if intent == 2 {
+                var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(journal)) as! [String: Any]
+                object["version"] = 1
+                journal = try JSONDecoder().decode(RecoveryJournal.self, from: JSONSerialization.data(withJSONObject: object))
+            }
+            try store.create(journal)
+            let backend = RecoveryReenable(inventory: { self.evidence(original) }, enable: { _, _ in XCTFail("intent missing") })
+            XCTAssertThrowsError(try RecoveryEngine(capture: { self.missing(original) }, reenable: backend)
+                .finish(&journal, store: store, verifyOnly: false, trigger: "test"))
+            XCTAssertEqual(try store.load().state, .needsAttention)
+        }
+    }
+
+    func testEvidenceAndIntentRoundTripWithoutInferringAuthority() throws {
+        let original = try fixture(), store = try store()
+        try store.create(RecoveryJournal(snapshot: original, disabledByUsID: 2))
+        let loaded = try store.load()
+        XCTAssertEqual(loaded.version, 2)
+        XCTAssertEqual(loaded.disabledByUsID, 2)
+        XCTAssertEqual(loaded.snapshot, original)
+        var unqualified = evidence(loaded.snapshot); unqualified.binding = .unqualified
+        XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: loaded.snapshot, evidence: unqualified).outcome, .unsupported)
     }
 
     func testTransactionOrderingCancellationAndConsumedCommitErrors() throws {

@@ -49,6 +49,7 @@ struct RecoveryDisplay: Codable, Equatable {
     // Optional for legacy journals and profiles ineligible for normalization.
     let colorProfileDateIndependentDigest: String?
     let connector: String?
+    var identityEvidence: RecoveryIdentityEvidence? = nil
 
     func hasSameColorProfile(as other: Self) -> Bool {
         if colorProfileDigest == other.colorProfileDigest { return true }
@@ -112,7 +113,9 @@ struct RecoverySnapshot: Codable, Equatable {
                 mode: RecoveryMode(mode), colorSpace: colorSpace.name as String?,
                 colorProfileDigest: profile.map(RecoveryColorProfile.digest),
                 colorProfileDateIndependentDigest: profile.flatMap(RecoveryColorProfile.dateIndependentDigest),
-                connector: info?["IODisplayLocation"] as? String
+                connector: info?["IODisplayLocation"] as? String,
+                identityEvidence: RecoveryIdentityEvidence(source: .cgAndCoreDisplay, capturedAt: Date(),
+                    framebufferLocation: info?["IODisplayLocation"] as? String)
             )
         }
         return Self(bootSession: try systemString("kern.bootsessionuuid"),
@@ -259,7 +262,10 @@ struct RecoveryEngine {
                 guard journal.reenableAttempted != true else {
                     throw RecoveryError.unsafe("private re-enable was already attempted; retain evidence and recover manually")
                 }
-                _ = try reenable.target(snapshot: journal.snapshot, current: initial)
+                let target = try reenable.target(snapshot: journal.snapshot, current: initial)
+                guard journal.version == 2, journal.disabledByUsID == target.id else {
+                    throw RecoveryError.unsafe("missing disabled-by-us intent for retained target; manual recovery required")
+                }
                 journal.state = .restoring; journal.trigger = trigger
                 journal.reenableAttempted = true
                 // Durable one-shot intent: a crash must never replay enable.

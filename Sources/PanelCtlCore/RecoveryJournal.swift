@@ -19,17 +19,21 @@ struct RecoveryJournal: Codable {
     // Diagnostics only; never used to signal or identify a process for recovery.
     var watchdogPID: Int32?
     var reenableAttempted: Bool?
+    // Absent in legacy/public-only captures; never inferred from disappearance.
+    var disabledByUsID: UInt32?
 
-    init(snapshot: RecoverySnapshot, verifyOnly: Bool = false, timeout: TimeInterval? = nil) {
+    init(snapshot: RecoverySnapshot, verifyOnly: Bool = false, timeout: TimeInterval? = nil,
+         disabledByUsID: UInt32? = nil) {
         let now = Date()
-        version = 1; id = UUID(); createdAt = now; self.snapshot = snapshot
+        version = 2; id = UUID(); createdAt = now; self.snapshot = snapshot
+        self.disabledByUsID = disabledByUsID
         self.verifyOnly = verifyOnly
         deadline = timeout.map { now.addingTimeInterval($0) }
         state = .captured
     }
 
     func validate() throws {
-        guard version == 1 else { throw RecoveryError.unsafe("unsupported journal version \(version)") }
+        guard version == 1 || version == 2 else { throw RecoveryError.unsafe("unsupported journal version \(version)") }
         let displays = snapshot.displays
         guard !snapshot.bootSession.isEmpty, !snapshot.osBuild.isEmpty,
               snapshot.userID == getuid(), !displays.isEmpty, displays.count <= 128,

@@ -98,7 +98,10 @@ refresh rate, origin, rotation, mirror-source UUID, optional color-space name an
 SHA-256 of the readable ICC data, an optional bounded date-independent ICC hash,
 and optional `IODisplayLocation` from CoreDisplay metadata. The latter works on
 the investigated host's `IOMobileFramebufferShim` path without assuming an
-`AppleCLCD2` service exists.
+`AppleCLCD2` service exists. Version-2 journals also retain observation provenance
+and time; normal captures carry no disabled-by-us intent. These cached fields do
+not authorize private writes. See the [retained-ID policy](recovery-identity-policy.md)
+for typed refusal outcomes, legacy handling and synthetic-only eligibility.
 
 Not captured/restored: HDR enablement, VRR policy beyond the mode's reported
 refresh rate, full color profiles/calibration, DDC brightness/power/input state,

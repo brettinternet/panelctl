@@ -26,6 +26,8 @@ struct RecoveryEnableInventory {
     let userID: UInt32
     let identities: [RecoveryEnableIdentity]
     let onlineIDs: Set<UInt32>
+    enum Binding { case unqualified, stale, syntheticPhysicalFixture }
+    var binding: Binding = .unqualified
 }
 
 /// Internal, injection-only recovery seam. The default engine has no backend;
@@ -54,22 +56,9 @@ struct RecoveryReenable {
                                          displays: snapshot.displays.filter { $0.uuid != target.uuid })
         try remaining.validateRestoration(to: current)
         let evidence = try inventory()
-        guard evidence.bootSession == snapshot.bootSession, evidence.osBuild == snapshot.osBuild,
-              evidence.userID == snapshot.userID,
-              evidence.onlineIDs == Set(current.displays.map(\.id)),
-              Set(evidence.identities.map(\.id)).count == evidence.identities.count,
-              Set(evidence.identities.map(\.uuid)).count == evidence.identities.count,
-              evidence.identities.count == snapshot.displays.count else {
-            throw RecoveryError.unsafe("offline identity context or inventory is ambiguous/changed")
-        }
-        for original in snapshot.displays {
-            let identity = RecoveryEnableIdentity(original)
-            guard identity.id != 0, UUID(uuidString: identity.uuid) != nil,
-                  identity.vendor != 0, identity.model != 0, identity.serial != 0,
-                  identity.connector?.isEmpty == false,
-                  evidence.identities.filter({ $0 == identity }).count == 1 else {
-                throw RecoveryError.unsafe("offline hardware identity or connector cannot be proven for \(original.uuid)")
-            }
+        try RecoveryIdentityPolicy.evaluate(snapshot: snapshot, evidence: evidence).requireEligible()
+        guard evidence.onlineIDs == Set(current.displays.map(\.id)) else {
+            throw RecoveryError.unsafe("ambiguous: provider online inventory changed; manual recovery required")
         }
         guard !evidence.onlineIDs.contains(target.id) else {
             throw RecoveryError.unsafe("re-enable target is already online")
