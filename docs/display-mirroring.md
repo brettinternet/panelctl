@@ -4,7 +4,8 @@ TASK-13 provides an offline-tested alternative to private display disable. It
 mirrors one non-main external target onto an explicitly selected source, removing
 its separate desktop. It does **not** stop the Mac's signal, change monitor input,
 blank gamma, or write DDC. The monitor can still show another computer's input if
-the user selected it separately. No hardware behavior is qualified yet.
+the user selected it separately. One supervised S2721DGF → AW3423DW cycle is
+recorded below; other configurations and failure recovery remain unqualified.
 
 ## Commands (only after scoped human approval)
 
@@ -81,7 +82,7 @@ can race the operation despite our advisory locks. Avoid concurrent topology
 changes. Built-in/main targets, existing mirror groups and absent-display
 reconnection are unsupported. Other monitor/OS tuples remain untested.
 
-## Supervised trial — pending, no topology writes performed
+## Supervised trial protocol
 
 Before the first mirror, record date/build, freshly discovered S2721DGF target
 UUID/ID, explicit source UUID/ID, current modes/refresh/HDR, journal path, user
@@ -93,17 +94,44 @@ Record these observations rather than inferring them from the command result:
 
 | Observation | Result |
 | --- | --- |
-| Target no longer has a separate desktop; windows migrate | Untested |
-| Source resolution / HDR / refresh before vs after | Untested |
-| Cursor movement and Spaces behavior | Untested |
-| Source remains visibly usable | Untested |
-| Freshly approved unmirror restores arrangement/modes/main | Untested |
-| Recovery verify and visible restoration agree | Untested |
+| Target no longer has a separate desktop; windows migrate | User confirmed |
+| Source resolution / HDR / refresh before vs after | 3440×1440 / HDR off / 175 Hz unchanged |
+| Cursor movement and Spaces behavior | User confirmed no hidden desktop; Spaces usable |
+| Source remains visibly usable | User confirmed |
+| Freshly approved unmirror restores arrangement/modes/main | Passed exact snapshot verification |
+| Recovery verify and visible restoration agree | Separate verification passed; user confirmed |
 
 Stop on the first unexplained mismatch; retain journal/error evidence. Obtain
 fresh approval for unmirror or explicit recovery fallback before executing it.
-Do not repeat toggles or escalate to logout/reboot. TASK-13 AC4 remains blocked
-until an approved observed cycle is recorded; fake tests do not satisfy it.
+Do not repeat toggles or escalate to logout/reboot. Fake tests alone do not
+qualify a hardware cycle.
+
+### Observed cycle — 2026-10-04
+
+Implementation `e42b28a`, Apple M5 Max, macOS 27.0.1 build 26A434. The user
+approved exactly one mirror, then separately approved exactly one unmirror;
+no retries, recovery fallback, DDC, gamma or private setter writes ran.
+
+- Target: DELL S2721DGF, UUID `09084682-3C42-4455-AAB8-126A7431125B`, ID 1;
+  original 1440×2560 at 165 Hz, rotation 270°, origin (3440, -4).
+- Source: main Dell AW3423DW, UUID `1FC57E99-DE7C-4DAF-B896-3B512CEE064F`,
+  ID 5; 3440×1440 at 175 Hz, HDR off, origin (0, 0).
+- Other screens: AW3425DW 3440×1440 at 240 Hz and K272HUL 1440×2560 at
+  60 Hz. The user was present with another usable screen and accepted manual
+  Displays-settings correction as fallback.
+- Mirror returned success and verified the relationship. System Profiler reported
+  the target as a hardware mirror at 3440×1440 / 165 Hz, rotation still 270°;
+  the source mode remained unchanged. Visual observations are recorded above.
+- Unmirror restored the captured snapshot; a separate `recovery verify` passed
+  with journal state `restored`. System Profiler confirmed all original modes,
+  no mirrors, and the original main display. The user confirmed visible restoration.
+- Journal `45D19BD5-13A5-4328-BAE3-E5E4196BCF6D` remains at
+  `~/Library/Application Support/PanelCtl/Recovery/current.json`.
+
+This qualifies only the observed cycle, not other sources, HDR-on operation,
+crash/hotplug recovery, or a DDC handoff. Future topology writes still require
+fresh scoped approval; the CLI's conservative hardware warning remains applicable
+to untested configurations.
 
 ## Offline checks
 
