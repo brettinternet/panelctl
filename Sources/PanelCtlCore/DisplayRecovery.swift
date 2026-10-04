@@ -252,25 +252,59 @@ struct RecoveryEngine {
     // Only tests inject this until offline identity is independently qualified.
     var reenable: RecoveryReenable?
 
+    // At most six observations over one second per convergence phase. Never
+    // retry a writer. Inject the delay for deterministic offline tests.
+    var convergencePause: () -> Void = { Thread.sleep(forTimeInterval: 0.2) }
+
+    func converge(_ check: () throws -> Void) throws {
+        for attempt in 0..<6 {
+            do { try check(); return }
+            catch {
+                if attempt == 5 { throw error }
+                convergencePause()
+            }
+        }
+    }
+
+    /// Manual, startup and shutdown entry point. Helpers already own both
+    /// locks and call finish directly. Custom paths never bypass the user lock.
+    @discardableResult
+    func recover(store: RecoveryStore, verifyOnly: Bool = false, trigger: String) throws -> RecoveryJournal {
+        let operation = RecoveryStore.operationLock()
+        try operation.lock()
+        defer { operation.unlock() }
+        try store.lock()
+        defer { store.unlock() }
+        var journal = try store.load()
+        try finish(&journal, store: store, verifyOnly: verifyOnly, trigger: trigger)
+        return journal
+    }
+
     func finish(_ journal: inout RecoveryJournal, store: RecoveryStore, verifyOnly: Bool, trigger: String) throws {
+        // A command cannot upgrade rehearsal authority, or reactivate a
+        // resolved private intent after a later unrelated disappearance.
+        if journal.state.resolved { journal.privateRecoveryClosed = true }
+        let verifyOnly = verifyOnly || journal.verifyOnly || journal.state.resolved
         do {
             let initial = try capture()
             let missing = journal.snapshot.displays.contains { original in
                 !initial.displays.contains { $0.uuid == original.uuid }
             }
             if missing, !verifyOnly, let reenable {
-                guard journal.reenableAttempted != true else {
+                guard journal.reenableAttempted != true, journal.privateRecoveryClosed != true else {
                     throw RecoveryError.unsafe("private re-enable was already attempted; retain evidence and recover manually")
                 }
                 let target = try reenable.target(snapshot: journal.snapshot, current: initial)
-                guard journal.version == 2, journal.disabledByUsID == target.id else {
-                    throw RecoveryError.unsafe("missing disabled-by-us intent for retained target; manual recovery required")
+                guard journal.version == 2, journal.disabledByUsID == target.id,
+                      journal.disableStaged == true else {
+                    throw RecoveryError.unsafe("missing staged disable evidence for retained target; manual recovery required")
                 }
                 journal.state = .restoring; journal.trigger = trigger
                 journal.reenableAttempted = true
                 // Durable one-shot intent: a crash must never replay enable.
                 try store.save(journal)
                 try reenable.restoreMissing(snapshot: journal.snapshot, capture: capture)
+                try converge { try journal.snapshot.validateRestoration(to: capture()) }
             }
             try journal.snapshot.validateRestoration(to: capture())
             journal.trigger = trigger
@@ -284,9 +318,10 @@ struct RecoveryEngine {
                     try apply(journal.snapshot)
                 }
             }
-            try journal.snapshot.verify(capture())
-            journal.state = verifyOnly ? .verified : .restored
+            try converge { try journal.snapshot.verify(capture()) }
+            if !journal.state.resolved { journal.state = verifyOnly ? .verified : .restored }
             journal.failure = nil
+            journal.privateRecoveryClosed = true
             try store.save(journal)
         } catch {
             journal.state = .needsAttention

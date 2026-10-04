@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 enum RecoveryState: String, Codable {
-    case captured, armed, restoring, verified, restored, needsAttention
+    case captured, armed, disabling, disabled, restoring, verified, restored, needsAttention
     var resolved: Bool { self == .verified || self == .restored }
 }
 
@@ -21,12 +21,20 @@ struct RecoveryJournal: Codable {
     var reenableAttempted: Bool?
     // Absent in legacy/public-only captures; never inferred from disappearance.
     var disabledByUsID: UInt32?
+    // Write-ahead attempt, not proof of a successful commit. Recovery must
+    // consider a missing target even if the post-commit save never happened.
+    var disableAttempted: Bool?
+    // Successful staging is durable before completion can consume the
+    // transaction. Pre-staging intent alone never authorizes private recovery.
+    var disableStaged: Bool?
+    var privateRecoveryClosed: Bool?
 
     init(snapshot: RecoverySnapshot, verifyOnly: Bool = false, timeout: TimeInterval? = nil,
-         disabledByUsID: UInt32? = nil) {
+         disabledByUsID: UInt32? = nil, disableStaged: Bool? = nil) {
         let now = Date()
         version = 2; id = UUID(); createdAt = now; self.snapshot = snapshot
         self.disabledByUsID = disabledByUsID
+        self.disableStaged = disableStaged
         self.verifyOnly = verifyOnly
         deadline = timeout.map { now.addingTimeInterval($0) }
         state = .captured

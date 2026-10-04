@@ -96,31 +96,33 @@ func run() throws {
     try require(deadline["verifyOnly"] as? Bool == true, "rehearsal enabled a writer")
     print("PASS capture, unresolved protection, verify, deadline")
 
-    let crashURL = try fixture("parent-crash")
-    let parent = try Invocation(executable: binary, args: ["recovery", "rehearse", "--timeout", "30s", "--journal", crashURL.path])
-    let armed = try awaitState("armed", at: crashURL)
-    guard let helperPID = (armed["watchdogPID"] as? NSNumber)?.int32Value else {
-        throw TestFailure(description: "armed helper has no PID")
+    for signalNumber in [SIGINT, SIGTERM, SIGKILL] {
+        let crashURL = try fixture("parent-signal-\(signalNumber)")
+        let parent = try Invocation(executable: binary, args: ["recovery", "rehearse", "--timeout", "30s", "--journal", crashURL.path])
+        let armed = try awaitState("armed", at: crashURL)
+        guard let helperPID = (armed["watchdogPID"] as? NSNumber)?.int32Value else {
+            throw TestFailure(description: "armed helper has no PID")
+        }
+        // Observe exit as well as the journal: the terminal state is persisted
+        // before the helper releases its locks and exits.
+        let helperExited = DispatchSemaphore(value: 0)
+        let exitSource = DispatchSource.makeProcessSource(identifier: helperPID, eventMask: .exit, queue: .global())
+        exitSource.setEventHandler { helperExited.signal() }
+        exitSource.resume()
+        defer { exitSource.cancel() }
+        // An unrelated journal must not bypass the process-wide operation lock.
+        let otherURL = try fixture("concurrent-\(signalNumber)")
+        try command(["recovery", "capture", "--journal", otherURL.path], success: false)
+        try command(["recovery", "verify", "--journal", crashURL.path], success: false)
+        let recovered = try awaitState("verified", at: crashURL) {
+            try require(kill(parent.process.processIdentifier, signalNumber) == 0, "could not kill owned rehearsal parent")
+        }
+        try parent.wait(success: false)
+        try require(helperExited.wait(timeout: .now() + 5) == .success, "helper did not exit after verification")
+        try require(recovered["id"] as? String == armed["id"] as? String, "helper changed snapshot identity")
+        try require(recovered["trigger"] as? String == "parent-exit", "parent crash did not trigger verification")
+        print("PASS independent helper survives parent signal \(signalNumber); concurrent operations blocked")
     }
-    // Observe exit as well as the journal: the terminal state is persisted
-    // before the helper releases its locks and exits.
-    let helperExited = DispatchSemaphore(value: 0)
-    let exitSource = DispatchSource.makeProcessSource(identifier: helperPID, eventMask: .exit, queue: .global())
-    exitSource.setEventHandler { helperExited.signal() }
-    exitSource.resume()
-    defer { exitSource.cancel() }
-    // An unrelated journal must not bypass the process-wide operation lock.
-    let otherURL = try fixture("concurrent")
-    try command(["recovery", "capture", "--journal", otherURL.path], success: false)
-    try command(["recovery", "verify", "--journal", crashURL.path], success: false)
-    let recovered = try awaitState("verified", at: crashURL) {
-        try require(kill(parent.process.processIdentifier, SIGKILL) == 0, "could not kill owned rehearsal parent")
-    }
-    try parent.wait(success: false)
-    try require(helperExited.wait(timeout: .now() + 5) == .success, "helper did not exit after verification")
-    try require(recovered["id"] as? String == armed["id"] as? String, "helper changed snapshot identity")
-    try require(recovered["trigger"] as? String == "parent-exit", "parent crash did not trigger verification")
-    print("PASS independent helper survives parent SIGKILL; concurrent operations blocked")
 
     let helperDeathURL = try fixture("helper-death")
     let orphan = try Invocation(executable: binary, args: ["recovery", "rehearse", "--timeout", "30s", "--journal", helperDeathURL.path])

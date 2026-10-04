@@ -73,8 +73,8 @@ struct RecoveryReenable {
                 throw RecoveryError.unsafe("offline identity changed before enable commit")
             }
         }
-        // A successful setter/commit is NOT evidence of connectivity. No retries.
-        try snapshot.validateRestoration(to: capture())
+        // The engine performs bounded read-only convergence next. Setter or
+        // commit success is not evidence of connectivity; never retry writes.
     }
 }
 
@@ -91,13 +91,15 @@ struct RecoveryEnableTransaction {
         try configure(id: id, enabled: true, revalidate: revalidate)
     }
 
-    func configure(id: UInt32, enabled: Bool, revalidate: () throws -> Void) throws {
+    func configure(id: UInt32, enabled: Bool, didStage: () throws -> Void = {},
+                   revalidate: () throws -> Void) throws {
         try revalidate()
         let config = try begin()
         var consumed = false
         defer { if !consumed { cancel(config) } }
         try revalidate()
         try setEnabled(config, id, enabled)
+        try didStage()
         try revalidate()
         // CGCompleteDisplayConfiguration consumes the transaction even on error.
         consumed = true

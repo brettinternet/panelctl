@@ -25,6 +25,11 @@ public enum DisplayRecovery {
             }
             return
         }
+        if action != .capture {
+            try printJournal(RecoveryEngine().recover(store: store, verifyOnly: action == .verify,
+                                                       trigger: "manual-\(action.rawValue)"))
+            return
+        }
         let operationLock = RecoveryStore.operationLock()
         try operationLock.lock()
         defer { operationLock.unlock() }
@@ -38,10 +43,6 @@ public enum DisplayRecovery {
             let journal = RecoveryJournal(snapshot: snapshot)
             try store.create(journal)
             try printJournal(journal)
-        } else {
-            var journal = try store.load()
-            try RecoveryEngine().finish(&journal, store: store, verifyOnly: action == .verify, trigger: "manual-\(action.rawValue)")
-            try printJournal(journal)
         }
     }
 
@@ -52,7 +53,8 @@ public enum DisplayRecovery {
         } catch {
             // Include startup failures in durable evidence, but never alter a
             // different journal or one owned by another active helper.
-            if (try? store.lock()) != nil {
+            let operationLock = RecoveryStore.operationLock()
+            if (try? operationLock.lock()) != nil, (try? store.lock()) != nil {
                 defer { store.unlock() }
                 if var journal = try? store.load(), journal.id == id, !journal.state.resolved {
                     journal.state = .needsAttention
@@ -72,9 +74,9 @@ public enum DisplayRecovery {
     }
 }
 
-/// A future control operation must not mutate anything until start() returns
-/// (READY handshake), and must add missing-display reconnection first. There
-/// is intentionally no arbitrary command hook and no private disable API here.
+/// The helper is the sole writer for the whole bounded lease. The parent may
+/// request a disable, never execute one itself based on a stale READY. There is
+/// no arbitrary command hook and no production private backend installed.
 final class RecoveryWatchdog {
     let id: UUID
     private let process: Process
@@ -91,6 +93,21 @@ final class RecoveryWatchdog {
     }
 
     func wait() { process.waitUntilExit() }
+
+    func requestDisable(targetID: UInt32) throws {
+        guard process.isRunning,
+              fcntl(lease.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
+            throw RecoveryError.unsafe("watchdog unavailable; no disable request sent")
+        }
+        // A single sub-PIPE_BUF message. Delivery is not commit acknowledgment.
+        try lease.write(contentsOf: Data("DISABLE \(id.uuidString) \(targetID)\n".utf8))
+    }
+
+    func shutdown() throws {
+        // EOF invokes the same recovery engine as deadline/startup/manual use.
+        try lease.close()
+        wait()
+    }
 
     static func start(store: RecoveryStore, executable: URL, timeout: TimeInterval, verifyOnly: Bool) throws -> RecoveryWatchdog {
         guard timeout.isFinite, (1...60).contains(timeout) else {
@@ -154,7 +171,10 @@ final class RecoveryWatchdog {
         }
     }
 
-    static func runHelper(store: RecoveryStore, id: UUID) throws {
+    static func runHelper(store: RecoveryStore, id: UUID,
+                          engine: RecoveryEngine = RecoveryEngine(),
+                          disable: RecoveryDisable? = nil,
+                          resolveModes: (RecoverySnapshot) throws -> Void = { _ = try RecoveryConfiguration.resolveModes($0) }) throws {
         var inputInfo = stat()
         guard fstat(STDIN_FILENO, &inputInfo) == 0, inputInfo.st_mode & S_IFMT == S_IFIFO else {
             throw RecoveryError.unsafe("watchdog requires a parent lease pipe")
@@ -177,8 +197,8 @@ final class RecoveryWatchdog {
               let deadline = journal.deadline else {
             throw RecoveryError.unsafe("watchdog journal identity/state mismatch")
         }
-        try journal.snapshot.verify(.capture())
-        _ = try RecoveryConfiguration.resolveModes(journal.snapshot)
+        try journal.snapshot.verify(engine.capture())
+        try resolveModes(journal.snapshot)
         let remaining = deadline.timeIntervalSinceNow
         guard remaining > 0, remaining <= 60 else {
             throw RecoveryError.unsafe("watchdog deadline expired or invalid; no mutation allowed")
@@ -187,12 +207,25 @@ final class RecoveryWatchdog {
         let input = DispatchSource.makeReadSource(fileDescriptor: STDIN_FILENO, queue: .main)
         var signals: [DispatchSourceSignal] = []
         var finished = false
+        var readySent = false
+        let monotonicDeadline = ProcessInfo.processInfo.systemUptime + remaining
         var result: Error?
+        func validateLease() throws {
+            guard readySent, ProcessInfo.processInfo.systemUptime < monotonicDeadline else {
+                throw RecoveryError.unsafe("helper not ready or lease expired")
+            }
+            // The command has already been consumed. EOF/HUP or any further
+            // input revokes disable authority, including a queued shutdown.
+            var descriptor = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
+            guard poll(&descriptor, 1, 0) == 0 else {
+                throw RecoveryError.unsafe("parent lease closed or another request pending")
+            }
+        }
         func finish(_ trigger: String) {
             guard !finished else { return }
             finished = true
             do {
-                try RecoveryEngine().finish(&journal, store: store, verifyOnly: journal.verifyOnly, trigger: trigger)
+                try engine.finish(&journal, store: store, verifyOnly: journal.verifyOnly, trigger: trigger)
             } catch { result = error }
             timer.cancel(); input.cancel()
             signals.forEach { $0.cancel() }
@@ -203,7 +236,23 @@ final class RecoveryWatchdog {
             var buffer = [UInt8](repeating: 0, count: 64)
             let count = Darwin.read(STDIN_FILENO, &buffer, buffer.count)
             if count == 0 { finish("parent-exit") }
-            else if count > 0 { finish("parent-request") }
+            else if count > 0 {
+                let command = String(decoding: buffer.prefix(count), as: UTF8.self)
+                let parts = command.split(separator: " ")
+                do {
+                    guard parts.count == 3, parts[0] == "DISABLE", parts[1] == id.uuidString,
+                          command.hasSuffix("\n"), let target = UInt32(parts[2].dropLast()),
+                          let disable else {
+                        throw RecoveryError.unsafe("invalid or unavailable private disable request")
+                    }
+                    try disable.perform(&journal, store: store, targetID: target,
+                                        capture: engine.capture, lease: validateLease)
+                } catch {
+                    // An uncertain commit still goes through journal-driven
+                    // recovery. The write-ahead target survives a failed ack.
+                    finish("disable-error: \(error)")
+                }
+            }
             else if errno != EINTR && errno != EAGAIN { finish("parent-pipe-error") }
         }
         for number in [SIGTERM, SIGINT, SIGHUP] {
@@ -218,7 +267,8 @@ final class RecoveryWatchdog {
         try store.save(journal)
         let ready = Data("READY \(id.uuidString)\n".utf8)
         let written = ready.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress, $0.count) }
-        if written != ready.count { finish("parent-exit-before-ready") }
+        if written == ready.count { readySent = true }
+        else { finish("parent-exit-before-ready") }
         // Process-local run loop; timers and EOF are event-driven. No detached
         // service survives logout, reboot, SIGKILL of the helper, or OS failure.
         while !finished { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1)) }

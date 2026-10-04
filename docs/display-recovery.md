@@ -64,7 +64,10 @@ Eligible ICC profiles may differ only in creation-time bytes when both snapshots
 carry matching date-independent hashes; all other bytes remain protected. Legacy
 journals without that evidence stay raw-hash strict. This is not general color
 transform equivalence.
-Failures retain the baseline in `needsAttention` with a diagnostic. After manual
+Restoration uses bounded read-only convergence (six observations at 200 ms
+intervals), never repeated writes. A stored rehearsal `verifyOnly` flag cannot be
+overridden by the restore command. Failures retain the baseline in
+`needsAttention` with a diagnostic. After manual
 recovery, `verify` can resolve it without a write. There is no force/discard flag.
 
 If the OS/boot changed, verification also refuses the old journal. Keep that
@@ -127,7 +130,10 @@ to operate on offline or recycled IDs.
   for them. `guard` journals use the public restoration writer. No shell-command
   hook or production private control backend is installed. The internal injectable
   recovery seam and default transport both refuse without test injection. The
-  [offline transaction backend](display-transaction-backend.md) is internal and
+  [bounded private lease protocol](recovery-private-lease.md) extends this same
+  helper as the sole locked writer, with durable one-shot disable/recovery intent,
+  fresh lease checks and bounded read-only convergence. Its synthetic tests do
+  not authorize production writes. The [offline transaction backend](display-transaction-backend.md)
   remains disconnected from production recovery. The internal `_recovery-helper` entry
   point is not a standalone recovery command. The recorded helper PID is for
   diagnostics only; recovery never signals a PID loaded from a journal.
@@ -142,14 +148,13 @@ to operate on offline or recycled IDs.
 2. Add a mutation preflight that permits only one explicitly selected non-main
    external display and proves another usable **physical** screen remains.
    Online-count, UUID, and `builtin == false` alone do not prove this.
-3. Integrate the mutation with the existing READY/lease protocol, revalidate
-   readiness and topology immediately before mutation, and cover the remaining
-   crash/race windows. Extend the restoration backend to handle the specific
-   private operation without weakening identity checks. Do not bypass the
-   helper or treat its PID/readiness acknowledgment as lasting proof of health.
+3. Connect the offline-tested [single-writer lease protocol](recovery-private-lease.md)
+   to the guarded CLI only after the identity and preflight gates pass. Do not
+   bypass the helper or treat its PID/readiness acknowledgment as lasting proof
+   of health. TASK-5's injected tests are not hardware qualification.
 4. Qualify restoration of actual hardware modes/mirroring and asynchronous
-   convergence. Current immediate verification may conservatively report
-   `needsAttention` while macOS is still settling; it does not retry writes.
+   convergence. Bounded verification may conservatively report `needsAttention`
+   while macOS is still settling; it does not retry writes.
 5. Address HDR/color/rotation limitations, and agree with the user on acceptable
    physical recovery (replug/reboot) before any state-changing private call.
 
@@ -174,6 +179,6 @@ swift scripts/test-display-recovery.swift /absolute/path/to/built/panelctl
 ```
 
 Use `swift build --show-bin-path` to locate it. The script tests live snapshotting,
-deadline verification, parent SIGKILL/EOF recovery, operation-lock contention,
+deadline verification, parent SIGINT/SIGTERM/SIGKILL/EOF recovery, operation-lock contention,
 helper SIGKILL with retained evidence, and stale-boot rejection. It never invokes `guard` or `restore`, and retains
 private temporary artifacts at the printed path. It requires a GUI console session.

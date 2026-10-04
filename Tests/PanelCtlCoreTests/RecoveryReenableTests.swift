@@ -44,7 +44,7 @@ final class RecoveryReenableTests: XCTestCase {
         let original = try fixture(), absent = missing(original)
         XCTAssertThrowsError(try RecoveryReenable().target(snapshot: original, current: absent))
         let store = try store()
-        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2); try store.create(journal)
+        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2, disableStaged: true); try store.create(journal)
         let engine = RecoveryEngine(capture: { absent }, apply: { _ in XCTFail("public write") })
         XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test"))
         XCTAssertEqual(try store.load().state, .needsAttention)
@@ -125,7 +125,7 @@ final class RecoveryReenableTests: XCTestCase {
     func testOneShotEnablePersistsIntentThenPublicRestoreAndVerification() throws {
         let original = try fixture(), store = try store()
         var current = missing(original), writes = 0
-        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2); try store.create(journal)
+        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2, disableStaged: true); try store.create(journal)
         let backend = RecoveryReenable(inventory: { self.evidence(original) }, enable: { id, validate in
             XCTAssertEqual(id, 2)
             XCTAssertEqual(try store.load().state, .restoring)
@@ -148,7 +148,7 @@ final class RecoveryReenableTests: XCTestCase {
             let store = RecoveryStore(url: directory.appendingPathComponent(UUID().uuidString + ".json"))
             try store.lock()
             let original = try fixture(), absent = missing(original)
-            var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2); try store.create(journal)
+            var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2, disableStaged: true); try store.create(journal)
             var writes = 0
             let backend = RecoveryReenable(inventory: { self.evidence(original) }, enable: { _, validate in
                 try validate(); writes += 1
@@ -166,7 +166,7 @@ final class RecoveryReenableTests: XCTestCase {
 
     func testCrashAfterDurableIntentCannotReplayAndVerifyOnlyCannotEnable() throws {
         let original = try fixture(), absent = missing(original), store = try store()
-        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2)
+        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2, disableStaged: true)
         journal.state = .restoring; journal.reenableAttempted = true
         try store.create(journal) // Simulates process death after intent, before/after commit.
         journal = try store.load()
@@ -180,12 +180,12 @@ final class RecoveryReenableTests: XCTestCase {
     func testJournalFailurePreventsEnableAndCompletionFailureRetainsIntent() throws {
         let original = try fixture(), absent = missing(original)
         let unlocked = RecoveryStore(url: directory.appendingPathComponent("unlocked.json"))
-        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2)
+        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2, disableStaged: true)
         let blocked = RecoveryReenable(inventory: { self.evidence(original) }, enable: { _, _ in XCTFail("write without intent") })
         XCTAssertThrowsError(try RecoveryEngine(capture: { absent }, reenable: blocked)
             .finish(&journal, store: unlocked, verifyOnly: false, trigger: "test"))
 
-        let store = try store(); journal = RecoveryJournal(snapshot: original, disabledByUsID: 2); try store.create(journal)
+        let store = try store(); journal = RecoveryJournal(snapshot: original, disabledByUsID: 2, disableStaged: true); try store.create(journal)
         var current = absent
         let backend = RecoveryReenable(inventory: { self.evidence(original) }, enable: { _, validate in
             try validate(); current = original; store.unlock() // Inject final persistence failure.
@@ -199,7 +199,7 @@ final class RecoveryReenableTests: XCTestCase {
 
     func testIdentityRacePreventsSetter() throws {
         let original = try fixture(), absent = missing(original), store = try store()
-        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2); try store.create(journal)
+        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2, disableStaged: true); try store.create(journal)
         var reads = 0
         let backend = RecoveryReenable(inventory: {
             reads += 1
@@ -253,7 +253,7 @@ final class RecoveryReenableTests: XCTestCase {
             if outcome == .eligible { continue }
             let store = RecoveryStore(url: directory.appendingPathComponent(UUID().uuidString + ".json"))
             try store.lock()
-            var journal = RecoveryJournal(snapshot: snapshot, disabledByUsID: 2)
+            var journal = RecoveryJournal(snapshot: snapshot, disabledByUsID: 2, disableStaged: true)
             try store.create(journal)
             let backend = RecoveryReenable(inventory: { inventory }, enable: { _, _ in XCTFail("unsafe private write") })
             let engine = RecoveryEngine(capture: { self.missing(snapshot) }, apply: { _ in XCTFail("unsafe public write") }, reenable: backend)
@@ -271,7 +271,7 @@ final class RecoveryReenableTests: XCTestCase {
         for intent: UInt32? in [nil, 1, 2] {
             let store = RecoveryStore(url: directory.appendingPathComponent(UUID().uuidString + ".json"))
             try store.lock()
-            var journal = RecoveryJournal(snapshot: original, disabledByUsID: intent)
+            var journal = RecoveryJournal(snapshot: original, disabledByUsID: intent, disableStaged: true)
             if intent == 2 {
                 var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(journal)) as! [String: Any]
                 object["version"] = 1
@@ -285,12 +285,24 @@ final class RecoveryReenableTests: XCTestCase {
         }
     }
 
+    func testVersionTwoIntentWithoutStagingEvidenceCannotEnable() throws {
+        let original = try fixture(), store = try store()
+        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2)
+        try store.create(journal)
+        let backend = RecoveryReenable(inventory: { self.evidence(original) }, enable: { _, _ in XCTFail("unstaged intent") })
+        XCTAssertThrowsError(try RecoveryEngine(capture: { self.missing(original) }, reenable: backend)
+            .finish(&journal, store: store, verifyOnly: false, trigger: "startup"))
+        XCTAssertEqual(try store.load().state, .needsAttention)
+        XCTAssertNil(try store.load().reenableAttempted)
+    }
+
     func testEvidenceAndIntentRoundTripWithoutInferringAuthority() throws {
         let original = try fixture(), store = try store()
-        try store.create(RecoveryJournal(snapshot: original, disabledByUsID: 2))
+        try store.create(RecoveryJournal(snapshot: original, disabledByUsID: 2, disableStaged: true))
         let loaded = try store.load()
         XCTAssertEqual(loaded.version, 2)
         XCTAssertEqual(loaded.disabledByUsID, 2)
+        XCTAssertEqual(loaded.disableStaged, true)
         XCTAssertEqual(loaded.snapshot, original)
         var unqualified = evidence(loaded.snapshot); unqualified.binding = .unqualified
         XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: loaded.snapshot, evidence: unqualified).outcome, .unsupported)
@@ -298,7 +310,7 @@ final class RecoveryReenableTests: XCTestCase {
 
     func testConsumedTransactionFailurePreservesJournalAndCannotReplay() throws {
         let original = try fixture(), absent = missing(original), store = try store()
-        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2)
+        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2, disableStaged: true)
         try store.create(journal)
         var stages = 0, completions = 0, cancellations = 0
         let transaction = RecoveryEnableTransaction(begin: { CGDisplayConfigRef(bitPattern: 1)! },

@@ -176,7 +176,8 @@ final class DisplayRecoveryTests: XCTestCase {
         try store.create(journal)
         let changed = try changedDisplay("x", 100)
         let engine = RecoveryEngine(capture: { changed }, apply: { _ in XCTFail("verify must not write") })
-        XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: true, trigger: "test"))
+        // Even an explicit restore request cannot upgrade a rehearsal journal.
+        XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test"))
         XCTAssertEqual(try store.load().state, .needsAttention)
         XCTAssertEqual(try store.load().snapshot, journal.snapshot)
     }
