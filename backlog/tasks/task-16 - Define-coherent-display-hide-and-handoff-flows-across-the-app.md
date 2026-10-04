@@ -47,6 +47,8 @@ The app organizes Automation, Displays and Startup around OLED protection. Addin
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-04: Drafted docs/display-hide-ux.md against SettingsView/AppDelegate/AppModel/ProtectionService and MirrorController/HandoffController plus recorded hardware evidence. One general offline review checked all six criteria: use-case and lifecycle matrices, menu/Displays mockups, first/repeat confirmations, all seven observed states, absent-target/relaunch/hidden-icon recovery, truthful limitations, single/multi-display/no-DDC/partial-failure walkthroughs and keyboard/VoiceOver contract. Backend checks confirmed shared journal and locks, capture-before-input, restore-before-return-input, absent-target refusal and non-persisted input recovery. User explicitly selected Approve contract in the structured approval prompt: Hide/Show, per-operation confirmation, protection-only Restore and runtime protection suspension during hide/recovery. Design approval only; no hardware consent. Documentation link/fence checks and git diff --check passed. No source changes, native UI execution or hardware writes; native fixture verification belongs to TASK-17/18. Existing backlog re-slice was independently committed as aeece54 and was preserved. No remaining TASK-16 blocker; TASK-17 is next.
+
+Delivery: b40a702 on main commits the approved contract and completed task. Claim released; no worktree created, no push. Documentation checks passed and working tree was clean after delivery. Next resumable item is TASK-17.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
