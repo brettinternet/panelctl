@@ -314,19 +314,20 @@ public enum DDCInput {
         return try select(value, channel: session.channel, displayID: session.display.id, uuid: session.display.uuid)
     }
 
-    /// Read first (refusing if unreadable), write at most once, then poll
+    /// Use the caller's pre-read or read first (refusing if unreadable), write at most once, then poll
     /// read-only for up to `polls` × `interval` microseconds.
     static func select(
         _ value: UInt8,
         channel: DDCChannel,
         displayID: UInt32,
         uuid: String,
+        original preRead: UInt8? = nil,
         polls: Int = 12,
         interval: useconds_t = 250_000,
         pause: (useconds_t) -> Void = { usleep($0) }
     ) throws -> DDCInputSelection {
         precondition(polls > 0)
-        let original = try current(channel)
+        let original = try preRead ?? current(channel)
         func result(_ observed: UInt8?, _ outcome: DDCInputSelection.Outcome, _ detail: String? = nil) -> DDCInputSelection {
             DDCInputSelection(displayID: displayID, uuid: uuid, original: original, requested: value, observed: observed, outcome: outcome, detail: detail)
         }

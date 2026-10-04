@@ -63,7 +63,8 @@ struct MirrorController {
     var preflightModes: (RecoverySnapshot) throws -> Void = { _ = try RecoveryConfiguration.resolveModes($0) }
     var transaction = MirrorTransaction()
 
-    func mirror(selector: String, source: String, store: RecoveryStore) throws -> RecoveryJournal {
+    func mirror(selector: String, source: String, store: RecoveryStore,
+                beforeMirror: (RecoveryDisplay) throws -> Void = { _ in }) throws -> RecoveryJournal {
         let operation = RecoveryStore.operationLock()
         try operation.lock()
         defer { operation.unlock() }
@@ -99,6 +100,8 @@ struct MirrorController {
         journal.trigger = "mirror"
         try store.create(journal)
         do {
+            // Handoff input selection must not precede durable recovery capture.
+            try beforeMirror(snapshot.displays.first { $0.id == target.id }!)
             try transaction.apply(target: target.id, source: source.id) {
                 try snapshot.verify(engine.capture())
             }
@@ -125,7 +128,8 @@ struct MirrorController {
         }
     }
 
-    func unmirror(store: RecoveryStore) throws -> RecoveryJournal {
+    func unmirror(store: RecoveryStore, selector: String? = nil,
+                  afterRestore: (RecoveryDisplay) throws -> Void = { _ in }) throws -> RecoveryJournal {
         do {
             let operation = RecoveryStore.operationLock()
             try operation.lock()
@@ -136,8 +140,20 @@ struct MirrorController {
             guard journal.mirrorTargetID != nil, journal.mirrorSourceID != nil else {
                 throw RecoveryError.unsafe("not a mirror journal; inspect recovery status")
             }
+            let target = journal.snapshot.displays.first { $0.id == journal.mirrorTargetID }!
+            if let selector {
+                let available = try records()
+                guard Set(available.map(\.id)).count == available.count,
+                      Set(available.compactMap { $0.uuid?.lowercased() }).count == available.count,
+                      let selected = DisplaySelector.resolve(selector, in: available),
+                      selected.id == target.id,
+                      selected.uuid?.lowercased() == target.uuid.lowercased() else {
+                    throw RecoveryError.unsafe("back target does not match the journaled mirror target; use panelctl list and recovery status")
+                }
+            }
             // Public-only engine: no private re-enable, helper or gamma path.
             try engine.finish(&journal, store: store, verifyOnly: false, trigger: "unmirror")
+            try afterRestore(target)
             return journal
         } catch {
             throw fallback(error, store: store)

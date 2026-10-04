@@ -14,6 +14,8 @@ public enum CLIHelp {
               recovery         Experimental disable and journal-driven recovery
               mirror           Journal and mirror an external target onto a source
               unmirror         Restore and verify the journaled topology
+              away             Optionally switch input, then hide a display by mirroring
+              back             Unhide the journaled display, then optionally switch input
               blackout         Black out selected displays
               ddc-luminance    Read or set luminance
               ddc-input        Read or switch the monitor input
@@ -91,6 +93,27 @@ public enum CLIHelp {
             flags acknowledge writes; tests and prior trials do not supply approval.
             Uses the recovery default journal unless --journal is supplied. See
             docs/display-mirroring.md for restrictions and the pending trial protocol.
+            """
+        case "away", "back":
+            return """
+            Usage: panelctl away --display <selector> --source <selector> --consent-away [--input <code>] [--journal <path>]
+            Usage: panelctl back --display <selector> --consent-back [--input <code>] [--journal <path>]
+
+            away captures a durable mirror journal, optionally selects the monitor input,
+            then hides its separate desktop by public session-scoped mirroring.
+            back requires the same journal target, restores and verifies the captured
+            topology FIRST, then optionally selects the input. No DDC failure blocks unhide.
+            --input accepts dp1, dp2, hdmi1, hdmi2, decimal 1..255 or hex 0x01..0xFF.
+            DDC is attempted only with --input and a successful pre-read. Otherwise use
+            the monitor's input button. Mirroring keeps the Mac signal on: no automatic
+            input switching is promised for monitors without DDC. No private disable.
+            Target/source restrictions and mode/HDR/window/Spaces limitations match mirror.
+            Defaults to the shared recovery journal; use the same --journal for back.
+            Errors retain evidence and print recovery commands; no automatic rollback,
+            retry, watchdog or disruptive fallback. Stop on unexpected behavior.
+            Each hardware handoff requires fresh scoped approval. Consent flags do not
+            replace approval. Combined round trip not yet hardware-qualified.
+            See docs/display-handoff.md.
             """
         case "blackout":
             return """

@@ -58,8 +58,10 @@ for dated observations; historical results are not fresh probe results.
 
 This switches the monitor's input only. macOS still treats the display as
 attached, so windows, the cursor and Spaces stay on it while it shows the
-other computer. It is not a display disable and is not reported as one. If the
-display must leave the macOS topology, that remains TASK-12 and then TASK-9.
+other computer. It is not a display disable and is not reported as one.
+[away/back](display-handoff.md) combines optional input selection with public
+mirroring to hide the separate desktop, while keeping the Mac's signal on.
+Private signal removal remains parked in TASK-12 and then TASK-9.
 
 Switching back from the Mac requires the monitor to keep accepting DDC on its
 DisplayPort input while it shows HDMI. That varies by monitor and has to be

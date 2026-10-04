@@ -262,6 +262,155 @@ final class DisplayMirroringTests: XCTestCase {
         XCTAssertThrowsError(try invalid.validate())
     }
 
+    func testHandoffOrderingSkipsAndFailures() throws {
+        for scenario in ["success", "no-input", "no-ddc", "zero-input", "wrong-ddc-target", "unverified",
+                         "away-ddc-failure", "back-ddc-failure", "hide-failure", "unhide-failure", "journal-failure",
+                         "pre-read-failure", "readback-failure"] {
+            let store = RecoveryStore(url: directory.appendingPathComponent("\(scenario).json"))
+            let original = try snapshot()
+            let mirrored = try snapshot { $0[1]["mirrorUUID"] = sourceUUID; $0[1]["active"] = false }
+            var current = original
+            var events: [String] = []
+            var messages: [String] = []
+            var returning = false
+            var input: UInt16 = 15
+            var reads = 0
+            var sut = HandoffController(mirror: controller(original))
+            sut.mirror.records = { self.records(current) }
+            sut.mirror.engine.capture = { current }
+            sut.mirror.engine.apply = { saved in
+                events.append("unhide")
+                if scenario == "unhide-failure" { throw RecoveryError.unsafe("unhide failed") }
+                current = saved
+            }
+            sut.mirror.transaction = MirrorTransaction(begin: {
+                events.append("hide")
+                XCTAssertEqual(try store.load().snapshot, original)
+                if scenario == "hide-failure" { throw RecoveryError.unsafe("hide failed") }
+                return OpaquePointer(bitPattern: 1)!
+            }, stage: { _, _, _ in }, complete: { _, _ in current = mirrored }, cancel: { _ in })
+            sut.report = { messages.append($0) }
+            sut.open = { uuid in
+                events.append("open")
+                XCTAssertEqual(uuid, original.displays[1].uuid)
+                XCTAssertEqual(try store.load().snapshot, original, "journal precedes DDC")
+                if scenario == "no-ddc" { throw RecoveryError.unsafe("no DDC") }
+                return (DDC.DisplayTarget(id: scenario == "wrong-ddc-target" ? 99 : 8, uuid: uuid),
+                        DDCChannel(getVCP: { code in
+                            XCTAssertEqual(code, 0x60)
+                            events.append("read")
+                            reads += 1
+                            if scenario == "pre-read-failure" || (scenario == "readback-failure" && reads > 1) {
+                                throw RecoveryError.unsafe("read unavailable")
+                            }
+                            return (scenario == "zero-input" ? 0 : input, 0)
+                        }, setVCP: { code, value in
+                            XCTAssertEqual(code, 0x60)
+                            events.append(returning ? "back-input" : "away-input")
+                            if scenario == (returning ? "back-ddc-failure" : "away-ddc-failure") {
+                                throw RecoveryError.unsafe("DDC failed")
+                            }
+                            input = value
+                        }))
+            }
+            sut.select = { value, channel, id, uuid, originalInput in
+                if scenario == "unverified" {
+                    try channel.setVCP(0x60, UInt16(value))
+                    return DDCInputSelection(displayID: id, uuid: uuid, original: originalInput,
+                                             requested: value, observed: nil, outcome: .unverified, detail: "readback lost")
+                }
+                return try DDCInput.select(value, channel: channel, displayID: id, uuid: uuid, original: originalInput, polls: 1, pause: { _ in })
+            }
+            if scenario == "journal-failure" {
+                try FileManager.default.createDirectory(at: store.url, withIntermediateDirectories: false,
+                                                       attributes: [.posixPermissions: 0o700])
+            }
+            let away = { try sut.away(selector: "8", source: "7", input: scenario == "no-input" ? nil : 17, store: store) }
+            if ["away-ddc-failure", "hide-failure", "journal-failure"].contains(scenario) {
+                XCTAssertThrowsError(try away()) { error in
+                    if scenario != "journal-failure" {
+                        XCTAssertTrue(String(describing: error).contains("panelctl ddc-input --display"))
+                        XCTAssertTrue(String(describing: error).contains("panelctl recovery restore --journal"))
+                    }
+                }
+                XCTAssertFalse(events.contains("hide") && scenario == "away-ddc-failure")
+                if scenario == "journal-failure" { XCTAssertTrue(events.isEmpty) }
+                continue
+            }
+            try away()
+            XCTAssertEqual(try store.load().state, .mirrored)
+            let skipped = ["no-input", "no-ddc", "zero-input", "wrong-ddc-target", "pre-read-failure"].contains(scenario)
+            if skipped {
+                XCTAssertFalse(events.contains("away-input"))
+                XCTAssertTrue(messages.contains { $0.contains("use the monitor's input button") })
+            } else {
+                XCTAssertLessThan(try XCTUnwrap(events.firstIndex(of: "away-input")), try XCTUnwrap(events.firstIndex(of: "hide")))
+            }
+            if scenario == "readback-failure" {
+                XCTAssertEqual(events.filter { $0 == "away-input" }.count, 1)
+                XCTAssertEqual(reads, 2, "one pre-read and one readback")
+                XCTAssertTrue(messages.contains { $0.contains("Input switch is unverified") })
+            }
+            returning = true
+            reads = 0
+            events = []
+            let back = { try sut.back(selector: "8", input: scenario == "no-input" ? nil : 15, store: store) }
+            if ["back-ddc-failure", "unhide-failure"].contains(scenario) {
+                XCTAssertThrowsError(try back()) { error in
+                    XCTAssertTrue(String(describing: error).contains("panelctl recovery restore --journal"))
+                    if scenario == "back-ddc-failure" {
+                        XCTAssertTrue(String(describing: error).contains("panelctl ddc-input --display"))
+                    }
+                }
+            } else { try back() }
+            XCTAssertEqual(events.first, "unhide", scenario)
+            if scenario == "unhide-failure" {
+                XCTAssertEqual(events, ["unhide"])
+                XCTAssertEqual(try store.load().state, .needsAttention)
+            } else {
+                XCTAssertEqual(current, original)
+                XCTAssertEqual(try store.load().state, .restored)
+            }
+            if scenario == "no-input" { XCTAssertEqual(events, ["unhide"]) }
+            if scenario == "unverified" { XCTAssertTrue(messages.contains { $0.contains("Input switch is unverified") }) }
+        }
+    }
+
+    func testBackRefusesDifferentTargetBeforeRestoreOrDDC() throws {
+        let original = try snapshot()
+        _ = try journal(original)
+        var sut = HandoffController(mirror: controller(original))
+        sut.open = { _ in XCTFail("must not open DDC"); throw RecoveryError.unsafe("unexpected") }
+        for selector in ["7", "9", "missing"] {
+            XCTAssertThrowsError(try sut.back(selector: selector, input: 15, store: store))
+        }
+        XCTAssertEqual(try store.load().state, .captured)
+    }
+
+    func testHandoffParser() throws {
+        XCTAssertEqual(try CLIParser.parse(["away", "--display", "8", "--source", "7", "--consent-away", "--input", "hdmi1"]),
+                       .away(selector: "8", source: "7", input: 17, journalPath: nil))
+        XCTAssertEqual(try CLIParser.parse(["back", "--display", "8", "--consent-back", "--input", "0x0F", "--journal", "/private/j.json"]),
+                       .back(selector: "8", input: 15, journalPath: "/private/j.json"))
+        XCTAssertEqual(try CLIParser.parse(["back", "--display", "8", "--consent-back"]),
+                       .back(selector: "8", input: nil, journalPath: nil))
+        XCTAssertEqual(try CLIParser.parse(["away", "--display", "8", "--source", "7", "--consent-away"]),
+                       .away(selector: "8", source: "7", input: nil, journalPath: nil))
+        for command in ["away", "back"] {
+            XCTAssertEqual(try CLIParser.parse([command, "--help"]), .help(command: command))
+            XCTAssertTrue(CLIHelp.text(for: command).contains("monitor's input button"))
+            let base = [command, "--display", "8", "--consent-\(command)"] + (command == "away" ? ["--source", "7"] : [])
+            for extra in [["--input", "0"], ["--input", "256"], ["--input", "bogus"], ["--input"],
+                          ["--input", "dp1", "--input", "hdmi1"], ["--display", "9"], ["--consent-\(command)"], ["--bogus"]] {
+                XCTAssertThrowsError(try CLIParser.parse(base + extra))
+            }
+        }
+        for args in [["away"], ["back"], ["away", "--display", "8", "--consent-away"],
+                     ["back", "--display", "8"], ["back", "--display", "8", "--consent-back", "--source", "7"]] {
+            XCTAssertThrowsError(try CLIParser.parse(args))
+        }
+    }
+
     func testMirrorParserRequiresExplicitConsentAndSource() throws {
         XCTAssertEqual(try CLIParser.parse(["mirror", "--display", "8", "--source", "7", "--consent-mirror"]),
                        .mirror(selector: "8", source: "7", journalPath: nil))
