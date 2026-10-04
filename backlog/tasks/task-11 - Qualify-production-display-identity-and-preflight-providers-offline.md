@@ -4,7 +4,7 @@ title: Qualify production display identity and preflight providers offline
 status: To Do
 assignee: []
 created_date: '2026-10-04 14:49'
-updated_date: '2026-10-04 15:33'
+updated_date: '2026-10-04 15:34'
 labels:
   - display-disable
   - offline
@@ -52,4 +52,6 @@ User approved scoping this offline prerequisite after TASK-9 preparation confirm
 Bounded evidence assessment: docs/display-provider-qualification.md records unsupported fresh physical acquisition, unique retained-ID association and replacement/context invalidation. No complete production observation contract can be qualified from existing evidence; preserving all production refusals. Added isolated fake-writer refusal tests for unknown environment/initial lifecycle and fresh-timestamp production provenance attempting synthetic binding. No display writes or target selection. Independent review pending.
 
 Resumed on main with user-authorized takeover. Fresh verification: 81 core recovery tests (one optional retained-ICC skip), one app recovery test, zero failures; panelctl and PanelCtlApp warnings-as-errors builds passed; git diff --check passed. Independent reviewer de8a264b-8a87-498a-9f79-660b665cd174 found no validated defects and confirmed blocked verdict/provenance and writer gates. AC2 remains unchecked: production observation contract is unqualified, including recovery-boundary environment refresh. Updated TASK-9 technical gate. User chose preparation of a scoped investigation proposal; docs/display-provider-qualification.md now proposes one static DCP BUND reconstruction and operation-7 producer/invalidation trace, not execution. Exact next input: approve that proposal or defer; no live-write consent requested or granted. Claim released; To Do means externally blocked, not eligible for repeated research. No worktree created or adopted.
+
+Delivery: 95010c3 on main commits refusal regressions, bounded qualification evidence, independent review outcome, TASK-9 gate update and the requested investigation proposal. No push. AC2 remains blocked; proposal execution still needs explicit approval.
 <!-- SECTION:NOTES:END -->
