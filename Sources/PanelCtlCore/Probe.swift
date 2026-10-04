@@ -31,6 +31,20 @@ public struct CLCDRecord: Codable, Equatable {
     public let supportsActiveOff: Bool?
 }
 
+public struct DDCReadAvailability: Codable, Equatable {
+    public enum Status: String, Codable {
+        case readable, notApplicable, noController, ambiguousMapping, unsupported, transportError
+    }
+    public let status: Status
+    public let detail: String?
+}
+
+public struct DDCDisplayAvailability: Codable, Equatable {
+    public let displayID: UInt32
+    public let input: DDCReadAvailability
+    public let luminance: DDCReadAvailability
+}
+
 public struct ProbeReport: Codable, Equatable {
     public let displays: [DisplayRecord]
     public let os: String
@@ -38,12 +52,70 @@ public struct ProbeReport: Codable, Equatable {
     public let symbols: [SymbolEvidence]
     public let avServices: [AVServiceRecord]
     public let clcdServices: [CLCDRecord]
+    public let ddc: [DDCDisplayAvailability]
+    public let ddcNotice: String
 }
 
 public enum Probe {
+    public static let ddcNotice = "DDC Get VCP reads only; a successful read is not write qualification."
+
     public static func report() -> ProbeReport {
-        ProbeReport(displays: DisplayInventory.records(), os: ProcessInfo.processInfo.operatingSystemVersionString,
-                     architecture: architecture(), symbols: symbolEvidence(), avServices: avServices(), clcdServices: clcdServices())
+        let displays = DisplayInventory.records()
+        let arch = architecture()
+        return ProbeReport(displays: displays, os: ProcessInfo.processInfo.operatingSystemVersionString,
+                           architecture: arch, symbols: symbolEvidence(), avServices: avServices(), clcdServices: clcdServices(),
+                           ddc: ddcAvailability(displays: displays, architecture: arch), ddcNotice: ddcNotice)
+    }
+
+    static func ddcAvailability(
+        displays: [DisplayRecord], architecture: String,
+        open: (DisplayRecord) throws -> DDCChannel = { display in
+            // Numeric selectors are CG IDs, never inventory indexes.
+            try DDC.open(selector: String(display.id)).channel
+        }
+    ) -> [DDCDisplayAvailability] {
+        func failure(_ error: Error) -> DDCReadAvailability {
+            let status: DDCReadAvailability.Status
+            switch error as? DDCError {
+            case .controllerNotFound: status = .noController
+            case .ambiguousController: status = .ambiguousMapping
+            case .reportedUnsupported, .symbolUnavailable: status = .unsupported
+            case .unsupportedArchitecture: status = .notApplicable
+            default: status = .transportError
+            }
+            return DDCReadAvailability(status: status, detail: String(describing: error))
+        }
+        return displays.map { display in
+            func both(_ result: DDCReadAvailability) -> DDCDisplayAvailability {
+                DDCDisplayAvailability(displayID: display.id, input: result, luminance: result)
+            }
+            guard architecture == "arm64" else {
+                return both(DDCReadAvailability(status: .notApplicable, detail: "DDC requires arm64"))
+            }
+            guard !display.builtin, display.active, display.online else {
+                return both(DDCReadAvailability(status: .notApplicable, detail: "DDC requires an active online external display"))
+            }
+            do {
+                let channel = try open(display)
+                func read(_ code: UInt8) -> DDCReadAvailability {
+                    do {
+                        _ = try channel.getVCP(code)
+                        return DDCReadAvailability(status: .readable, detail: nil)
+                    } catch { return failure(error) }
+                }
+                return DDCDisplayAvailability(displayID: display.id, input: read(DDCInput.inputVCP),
+                                              luminance: read(DDCLuminance.luminanceVCP))
+            } catch { return both(failure(error)) }
+        }
+    }
+
+    static func ddcText(_ report: ProbeReport) -> String {
+        func value(_ result: DDCReadAvailability) -> String {
+            result.status.rawValue + (result.detail.map { " (\($0))" } ?? "")
+        }
+        return ([report.ddcNotice] + report.ddc.map {
+            "DDC displayID=\($0.displayID) input(0x60)=\(value($0.input)) luminance(0x10)=\(value($0.luminance))"
+        }).joined(separator: "\n")
     }
 
     public static func printReport(_ report: ProbeReport, json: Bool) throws {
@@ -59,6 +131,7 @@ public enum Probe {
                     print("Display index=\(d.index) id=\(d.id) uuid=\(uuid) name=\(name) active=\(d.active) online=\(d.online) asleep=\(d.asleep) builtin=\(d.builtin) main=\(d.main) vendor=\(d.vendor) model=\(d.model) serial=\(d.serial) bounds=\(d.bounds.x),\(d.bounds.y) \(d.bounds.width)x\(d.bounds.height) pixels=\(d.pixelWidth)x\(d.pixelHeight)")
                 }
             }
+            print(ddcText(report))
             for evidence in report.symbols {
                 let values = evidence.symbols.keys.sorted().map { "\($0)=\(evidence.symbols[$0] == true)" }.joined(separator: " ")
                 print("Symbols \(evidence.library): \(values)")

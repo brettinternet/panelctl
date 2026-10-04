@@ -31,7 +31,7 @@ public enum CLIHelp {
         case "list":
             return "Usage: panelctl list [--json]\nList connected displays."
         case "probe":
-            return "Usage: panelctl probe [--json]\nProbe display capabilities."
+            return "Usage: panelctl probe [--json]\nProbe display capabilities, including DDC Get VCP input/luminance reads.\nA successful read is not write qualification; no monitor values are set."
         case "recovery":
             return """
             Usage: panelctl recovery <capture|status|verify|restore|enable|panic|rehearse|guard> [--journal <path>]

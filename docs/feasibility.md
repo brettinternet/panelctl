@@ -133,9 +133,44 @@ preferred long-idle mode. Dell documents automatic Pixel Refresh in standby for
 the [AW3425DW](https://dl.dell.com/content/manual4846619-alienware-34-240hz-qd-oled-gaming-monitor-aw3425dw-user-s-guide.pdf?language=en-us)
 and [AW3423DW](https://www.dell.com/support/kbdoc/en-us/000198595/alienware-aw3423dw-pixel-refresh-will-turn-monitor-off).
 
+## Per-display DDC availability (TASK-14)
+
+`probe` now reports independent Get VCP readability for input (`0x60`) and
+luminance (`0x10`) in text and JSON, including failure reasons and not-applicable
+skips. It never sets monitor values. A successful read is not write qualification.
+See [DDC probe behavior](ddc-input.md#check-readability-first) for status meanings.
+
+### Approved read-only run: 2026-10-04
+
+At `2026-10-04T17:07:01Z`, the user approved one probe of all currently active
+external displays, limited to Get VCP `0x60` and `0x10`. Ran
+`.build/debug/panelctl probe --json` once (exit 0), with no Set VCP, topology,
+power or link-control commands, and no retries.
+
+Build: arm64, macOS 27.0.1 (`26A434`), Apple Swift 6.4
+(`swiftlang-6.4.0.34.1`), debug `panelctl` built with warnings as errors from
+base `b9dca94e8976d0c390b3cb5e823cd7a7fd2e1da2` plus the TASK-14 implementation.
+Binary SHA-256: `32c1520dba52b9fa2529fae0f5ca9ab33984d72e0a7504260b9c038916136262`.
+
+| Display (vendor/model/serial) | UUID | Input 0x60 | Luminance 0x10 |
+| --- | --- | --- | --- |
+| DELL S2721DGF (4268/16857/1094800204) | `09084682-3C42-4455-AAB8-126A7431125B` | transportError: invalid DDC reply: invalid payload length | Same error |
+| AW3425DW (4268/41613/809650259) | `A8D3635B-35EC-4171-BBE2-95FB8CF76111` | readable | readable |
+| K272HUL (1138/1316/1952494047) | `98402864-2A3E-4B75-92E6-0F801B89C132` | readable | readable |
+| Dell AW3423DW (4268/41444/809906515) | `1FC57E99-DE7C-4DAF-B896-3B512CEE064F` | transportError: DDC I2C request failed (IOReturn -535740416) | Same error |
+
+All four were active, online external displays. The inventory found four
+external DCPAVServiceProxy services on `dispext0`–`dispext3`; cable/adapter types,
+per-display connector mapping and firmware versions were not captured by this
+report. No physical connection or input changes were requested. The S2721DGF
+failure does not negate its historical successful reads/input trial: this run
+only establishes that it did not return valid replies at this time. Failures
+are not proof of permanent lack of DDC support. Neither readable result qualifies
+writes. The earlier hardware table remains separate historical evidence.
+
 ## Qualification commands
 
-Run from the logged-in GUI session:
+After user approval for DDC Get VCP reads, run from the logged-in GUI session:
 
 ```sh
 swift run panelctl list

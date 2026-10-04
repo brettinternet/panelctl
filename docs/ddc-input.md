@@ -15,6 +15,26 @@ Names map to common MCCS values: `dp1`=0x0F, `dp2`=0x10, `hdmi1`=0x11,
 `hdmi2`=0x12. Numeric values 1–255 (decimal or `0x` hex) are also accepted.
 Monitors differ, so read the value first while you are on a known input.
 
+## Check readability first
+
+`panelctl probe` (or `--json`) now sends Get VCP requests for input (`0x60`)
+and luminance (`0x10`) to each active online external display on arm64. It never
+sends Set VCP, power, or link-control commands. Get VCP uses an I2C request write
+followed by a reply read; it does not set monitor values.
+
+Text output and the JSON `ddc` array identify each display by `displayID` and
+report independent `input`/`luminance` statuses: `readable`, `noController`,
+`ambiguousMapping`, `unsupported`, or `transportError`, with failure `detail`.
+Built-in/inactive/offline displays and non-arm64 hosts report `notApplicable`
+without opening a channel. A feature or display failure does not stop other
+reads. Missing metadata and invalid replies are reported as transport errors;
+`unsupported` means a missing required symbol or explicit unsupported VCP reply,
+not a guess based on a timeout. No retry or write qualification is performed.
+
+**A successful read is not write qualification.** Request user approval before
+running this hardware probe during agent work. See [feasibility](feasibility.md)
+for dated observations; historical results are not fresh probe results.
+
 ## Behavior
 
 - **Explicit only.** Nothing switches automatically. There is no retry, no
