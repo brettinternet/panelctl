@@ -157,13 +157,15 @@ final class BlackoutDimming {
 
     /// Restores every journaled luminance while blackout windows are still up.
     /// Verified writes are removed; failures remain persisted for retry.
-    func restore() {
-        guard lockFD != nil else { return }
-        restoreLoadedEntries()
+    @discardableResult
+    func restore() -> Bool {
+        guard lockFD != nil else { return false }
+        return restoreLoadedEntries()
     }
 
-    private func restoreLoadedEntries() {
-        guard !entries.isEmpty else { return }
+    @discardableResult
+    private func restoreLoadedEntries() -> Bool {
+        guard !entries.isEmpty else { return true }
         for (key, entry) in Array(entries) {
             do {
                 _ = try set(entry.uuid, entry.original)
@@ -173,7 +175,12 @@ final class BlackoutDimming {
                 // Keep failed entries for a future launch/wake retry.
             }
         }
-        do { try persist() } catch { /* best effort */ }
+        do {
+            try persist()
+            return entries.isEmpty
+        } catch {
+            return false
+        }
     }
 
     private func loadJournal() throws -> [String: BlackoutLuminanceEntry] {

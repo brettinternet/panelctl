@@ -3,11 +3,12 @@ import AppKit
 import CoreGraphics
 import Darwin
 
-public enum RecoveryError: Error, CustomStringConvertible {
+public enum RecoveryError: Error, CustomStringConvertible, LocalizedError {
     case unsafe(String)
     public var description: String {
         switch self { case .unsafe(let reason): return "display recovery: \(reason)" }
     }
+    public var errorDescription: String? { description }
 }
 
 struct RecoveryMode: Codable, Equatable {
@@ -33,6 +34,7 @@ struct RecoveryMode: Codable, Equatable {
 struct RecoveryDisplay: Codable, Equatable {
     let uuid: String
     let id: UInt32
+    let name: String?
     let vendor: UInt32
     let model: UInt32
     let serial: UInt32
@@ -104,8 +106,11 @@ struct RecoverySnapshot: Codable, Equatable {
             let info = metadata?.info(id)?.takeRetainedValue() as? [String: Any]
             let colorSpace = CGDisplayCopyColorSpace(id)
             let profile = colorSpace.copyICCData() as Data?
+            let displayName = NSScreen.screens.first {
+                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id
+            }?.localizedName
             return RecoveryDisplay(
-                uuid: identities[id]!, id: id, vendor: CGDisplayVendorNumber(id),
+                uuid: identities[id]!, id: id, name: displayName, vendor: CGDisplayVendorNumber(id),
                 model: CGDisplayModelNumber(id), serial: CGDisplaySerialNumber(id),
                 builtin: CGDisplayIsBuiltin(id) != 0, main: CGDisplayIsMain(id) != 0,
                 active: CGDisplayIsActive(id) != 0, x: x, y: y,

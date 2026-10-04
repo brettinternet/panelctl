@@ -19,6 +19,7 @@ private final class DropdownPickerTarget: NSObject {
 private struct DropdownPicker<Value: Hashable>: NSViewRepresentable {
     @Binding var selection: Value
     let options: [(Value, String)]
+    var accessibilityLabel: String? = nil
 
     func makeCoordinator() -> DropdownPickerTarget {
         DropdownPickerTarget()
@@ -26,13 +27,20 @@ private struct DropdownPicker<Value: Hashable>: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSPopUpButton {
         let button = NSPopUpButton()
+        if let accessibilityLabel {
+            button.setAccessibilityLabel(accessibilityLabel)
+        }
         button.target = context.coordinator
         button.action = #selector(DropdownPickerTarget.selectionChanged(_:))
         button.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return button
     }
 
     func updateNSView(_ button: NSPopUpButton, context: Context) {
+        if let accessibilityLabel {
+            button.setAccessibilityLabel(accessibilityLabel)
+        }
         let titles = options.map(\.1)
         if button.itemTitles != titles {
             button.removeAllItems()
@@ -50,7 +58,12 @@ private struct DropdownPicker<Value: Hashable>: NSViewRepresentable {
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
-    @State private var selection: SettingsDestination? = .automation
+    @State private var selection: SettingsDestination?
+
+    init(model: AppModel) {
+        self.model = model
+        _selection = State(initialValue: model.protectionPausedForDisplayRecovery ? .displays : .automation)
+    }
 
     private let idleOptions: [TimeInterval] = [60, 2 * 60, 5 * 60, 10 * 60, 15 * 60, 30 * 60, 60 * 60]
     private let followUpOptions: [TimeInterval] = [5 * 60, 15 * 60, 30 * 60, 60 * 60, 2 * 60 * 60]
@@ -84,6 +97,11 @@ struct SettingsView: View {
                 Divider()
 
                 VStack(spacing: 0) {
+                    if model.protectionPausedForDisplayRecovery {
+                        recoveryBanner
+                            .padding(.top, 12)
+                            .padding(.horizontal, 16)
+                    }
                     statusHeader(isCompact: isCompact)
                         .padding(.top, 16)
                         .padding(.horizontal, 16)
@@ -97,6 +115,9 @@ struct SettingsView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+        .onChange(of: model.displayRecoveryFocusRequest) { _ in
+            selection = .displays
         }
         .alert(item: $model.notice) { notice in
             if notice.opensLoginItemSettings {
@@ -114,6 +135,32 @@ struct SettingsView: View {
                 message: Text(notice.message),
                 dismissButton: .default(Text("OK"))
             )
+        }
+    }
+
+    private var recoveryBanner: some View {
+        GroupBox {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Display recovery needs attention")
+                        .font(.headline)
+                    Text(model.handoffStatus?.hasUnresolvedJournal == true || model.handoffInspectionFailure != nil
+                        ? "App-managed protection is paused while the shared display journal is unresolved."
+                        : model.protectionQuiescenceFailure.map { "Protection cleanup needs attention: \($0)" }
+                            ?? "App-managed protection is paused during the confirmed display operation.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button("Review display recovery…") {
+                    model.requestDisplayRecoveryFocus()
+                }
+                .accessibilityLabel("Review display recovery")
+            }
         }
     }
 
@@ -181,7 +228,7 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                        if let message = model.validationMessage ?? model.runtimeState.errorMessage {
+                        if let message = model.validationMessage ?? model.protectionQuiescenceFailure ?? model.runtimeState.errorMessage {
                             Text(message)
                                 .font(.caption2)
                                 .foregroundStyle(.orange)
@@ -369,6 +416,9 @@ struct SettingsView: View {
             Text("Displays")
                 .font(.system(size: 14, weight: .semibold))
                 .padding(.bottom, 4)
+            displayRecoveryCard
+            Text("OLED protection displays")
+                .font(.system(size: 12, weight: .semibold))
             HStack {
                 Toggle(
                     "All connected displays",
@@ -378,6 +428,7 @@ struct SettingsView: View {
                 Button("Refresh") {
                     model.refreshDisplays()
                 }
+                .accessibilityLabel("Refresh display inventory and recovery status")
             }
             if model.preferences.allDisplays {
                 Text("Includes displays connected while protection is enabled.")
@@ -385,7 +436,6 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Divider()
             if displayRowCount == 0 {
                 Text("No active displays found.")
                     .foregroundStyle(.secondary)
@@ -401,8 +451,212 @@ struct SettingsView: View {
                     }
                 }
             }
+            Divider()
+            hideDisplaySection
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var displayRecoveryCard: some View {
+        if let status = model.handoffStatus, status.hasUnresolvedJournal {
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Recovery needed · shared display journal")
+                        .font(.headline)
+                    if let target = status.target {
+                        Text("Captured target: \(target.name) · \(target.identityDetail)")
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let source = status.source {
+                        Text("Captured mirror source: \(source.name) · \(source.identityDetail)")
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let reason = status.reason {
+                        Text(reason)
+                            .foregroundStyle(.orange)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Text("Journal: \(status.journalPath)")
+                        .font(.caption)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if status.state == .unsupported {
+                        Text(status.inspectionCommand)
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if let command = status.recoveryCommand {
+                        Text("After reviewing the journal, explicit CLI recovery is available: \(command)")
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    HStack {
+                        if status.state == .hidden || status.state == .recovery {
+                            Button("Show \(status.target?.name ?? "desktop")…") { model.requestShow() }
+                                .disabled(!status.canShow || model.hideOperation.isBusy || model.displayLifecycleTransitioning)
+                                .accessibilityLabel("Show captured display desktop")
+                        } else {
+                            Button("Review display recovery…") {
+                                model.requestDisplayRecoveryFocus()
+                            }
+                        }
+                        Button("Refresh") { model.refreshDisplays() }
+                    }
+                    if !status.canShow, status.state != .unsupported,
+                       let refusal = status.reason {
+                        Text("Show is unavailable: \(refusal)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .id("display-recovery-card")
+        } else if let failure = model.handoffInspectionFailure {
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Display recovery status unavailable")
+                        .font(.headline)
+                    Text(failure)
+                        .foregroundStyle(.orange)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Journal: \(DisplayHandoff.defaultJournalPath)")
+                        .font(.caption)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Refresh") { model.refreshDisplays() }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .id("display-recovery-card")
+        }
+    }
+
+    private var hideDisplaySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Hide a desktop · Experimental")
+                .font(.system(size: 12, weight: .semibold))
+            Text("Experimental · mirror hide removes a separate desktop by mirroring another display. The Mac signal stays on and the monitor may show the mirrored picture. Resolution, refresh rate, and HDR may change. Show restores the saved public layout and modes, not HDR, color profiles, rotation, windows, or Spaces. Hide does not switch inputs; use the monitor buttons when needed. Saving settings makes no topology, DDC, or brightness changes.")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Idle and empty-display rules control blackout/dimming, not Hide or monitor inputs. Launch at login never hides or shows a desktop.")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if model.hideDisplayConfigurations.isEmpty {
+                Text("No eligible external desktop is available to configure. Connect an awake, active, non-main external display, then Refresh.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(model.hideDisplayConfigurations, id: \.target.uuid) { configuration in
+                        hideDisplayCard(configuration)
+                    }
+                }
+            }
+        }
+    }
+
+    private func hideDisplayCard(_ configuration: DisplayHideConfiguration) -> some View {
+        let target = configuration.target
+        let matchingDisplay = model.displays.first {
+            $0.uuid?.caseInsensitiveCompare(target.uuid) == .orderedSame
+        }
+        let identityIsCurrent = model.identityIsCurrent(target)
+        let frozen = model.hideConfigurationFrozen || model.displayLifecycleTransitioning
+        let journalOwnsTarget = model.handoffStatus?.hasUnresolvedJournal == true &&
+            model.handoffStatus?.target?.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame
+        let readiness = model.hideReadinessMessage(for: configuration)
+        var sourceOptions: [(String, String)] = [("", "Choose a display…")]
+        for source in model.sourceChoices(for: configuration) {
+            let identity = DisplayIdentitySnapshot(source)
+            sourceOptions.append((identity.uuid, "\(source.name ?? "Display \(source.id)") · \(identity.identityDetail)"))
+        }
+        if let saved = configuration.source,
+           !sourceOptions.contains(where: { $0.0.caseInsensitiveCompare(saved.uuid) == .orderedSame }) {
+            sourceOptions.append((saved.uuid, "\(saved.name ?? "Display \(saved.id)") · Unavailable · \(saved.identityDetail)"))
+        }
+
+        return GroupBox {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("\(target.name ?? "Display \(target.id)") · \(target.identityDetail)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Desktop: \(model.observedDesktopState(for: configuration))")
+                    .accessibilityLabel("Desktop state: \(model.observedDesktopState(for: configuration))")
+                Text("OLED protection: \(model.protectionSelectionState(for: configuration))")
+                Toggle(
+                    "Enable experimental hide for this display",
+                    isOn: Binding(
+                        get: { configuration.enabled },
+                        set: { enabled in
+                            if let matchingDisplay {
+                                model.setHideEnabled(enabled, for: matchingDisplay)
+                            }
+                        }
+                    )
+                )
+                .disabled(frozen || !identityIsCurrent)
+                .accessibilityLabel("Enable experimental hide for \(target.name ?? target.uuid)")
+                settingRow("Mirror source") {
+                    DropdownPicker(
+                        selection: Binding(
+                            get: { configuration.source?.uuid ?? "" },
+                            set: { value in
+                                model.setHideSource(value.isEmpty ? nil : value, for: target.uuid)
+                            }
+                        ),
+                        options: sourceOptions,
+                        accessibilityLabel: "Mirror source for \(target.name ?? target.uuid)"
+                    )
+                    .accessibilityLabel("Mirror source for \(target.name ?? target.uuid)")
+                    .disabled(frozen || !identityIsCurrent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if case .hiding(let uuid) = model.hideOperation,
+                   uuid.caseInsensitiveCompare(target.uuid) == .orderedSame {
+                    Text("Hiding…")
+                        .accessibilityLabel("Hiding \(target.name ?? target.uuid) desktop")
+                } else if case .showing(let uuid) = model.hideOperation,
+                          uuid.caseInsensitiveCompare(target.uuid) == .orderedSame {
+                    Text("Showing…")
+                        .accessibilityLabel("Showing \(target.name ?? target.uuid) desktop")
+                } else if !journalOwnsTarget, !model.hideOperation.isBusy {
+                    Button("Hide \(target.name ?? "display")…") {
+                        model.requestHide(targetUUID: target.uuid)
+                    }
+                    .disabled(readiness != nil || frozen)
+                    .accessibilityLabel("Hide \(target.name ?? target.uuid) desktop")
+                }
+                if let readiness, !journalOwnsTarget {
+                    Text(readiness)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !identityIsCurrent {
+                    Text("This saved identity is unavailable or changed. Settings remain attached to its UUID and will not bind to a similar display.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !frozen, model.hasHideConfiguration(targetUUID: target.uuid) {
+                    Button("Remove hide configuration") {
+                        model.removeHideConfiguration(targetUUID: target.uuid)
+                    }
+                    .accessibilityLabel("Remove hide configuration for \(target.name ?? target.uuid)")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private var startupSection: some View {
@@ -424,7 +678,7 @@ struct SettingsView: View {
                         set: model.setShowMenuBarIcon
                     )
                 )
-                Text("Closing this window does not stop protection. If the menu icon is hidden, open PanelCtl again to return here.")
+                Text("Closing this window does not stop protection. If the menu icon is hidden, reopen PanelCtl to return here and review display recovery. Launch at login does not hide or show desktops.")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

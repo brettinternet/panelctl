@@ -44,6 +44,34 @@ To build a universal `PanelCtl.app` at `.build/PanelCtl.app`, install
 task build:release
 ```
 
+## Native Hide/Show fixtures
+
+The regular test suite uses fake display backends. Native menu navigation,
+configuration, confirmation controls and long-content layout are covered offline.
+Two additional keyboard/focus checks require a foreground XCTest host:
+
+```sh
+PANELCTL_RUN_NATIVE_DISPLAY_KEYBOARD_FIXTURES=1 swift test --disable-sandbox \
+  --filter DisplayHideAppTests.testNative -Xswiftc -warnings-as-errors
+```
+
+The opt-in temporarily attempts to activate XCTest and restores the previous app.
+Keyboard events target only XCTest, never the global event stream. The Escape
+fixture also requires macOS Accessibility event-post access; its skip message
+identifies the executable requiring access. Do not launch the real PanelCtl app
+or enable live blackout tests for this validation.
+
+On the current host, command-line XCTest does not become foreground even with
+opt-in, so Escape dismissal and success/error focus remain unverified. A GUI
+host is needed: open `Package.swift` in Xcode, select the app test suite, set the
+above environment variable in the scheme's Test action, and run the native tests.
+The XCTest fixture process itself must become foreground; focusing Xcode alone
+is not sufficient. If the package test runner still cannot activate, these checks
+need a dedicated GUI test-host target rather than repeated command-line retries.
+This Xcode route has not yet been verified. Grant Accessibility only if the test
+reports denied access, using System Settings → Privacy & Security → Accessibility.
+Human VoiceOver qualification and live monitor trials are separate and unclaimed.
+
 ## Package a release
 
 The version in `Sources/PanelCtlCore/CLIHelp.swift` must match the tag's base

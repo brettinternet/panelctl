@@ -844,7 +844,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         let helper = directory.appendingPathComponent("fake-panelctl")
         let script = """
         #!/bin/bash
-        trap 'printf "{\\"state\\":\\"blacked_out\\",\\"blackedOutDisplayIDs\\":[7]}\\n"; /bin/sleep 0.1; exit 0' TERM
+        trap 'printf "{\\"state\\":\\"blacked_out\\",\\"blackedOutDisplayIDs\\":[7]}\\n"; /bin/sleep 0.1; printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":true}\\n"; exit 0' TERM
         printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         while true; do /bin/sleep 0.02; done
         """
@@ -891,7 +891,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         else
             printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         fi
-        trap 'exit 0' TERM
+        trap 'printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":true}\\n"; exit 0' TERM
         while true; do /bin/sleep 0.02; done
         """
         try Data(script.utf8).write(to: helper)
@@ -981,7 +981,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         #!/bin/bash
         printf '%s:%s\\n' "$1" "${PANELCTL_REARM_ON_START:-0}" >> "$PANELCTL_TEST_LOG"
         printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
-        trap 'exit 0' TERM
+        trap 'printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":true}\\n"; exit 0' TERM
         while true; do /bin/sleep 0.05; done
         """
         try Data(script.utf8).write(to: helper)

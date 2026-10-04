@@ -59,13 +59,16 @@ struct MirrorTransaction {
 
 struct MirrorController {
     var records: () throws -> [DisplayRecord] = { DisplayInventory.records() }
+    var operationLock: () -> RecoveryStore = { RecoveryStore.operationLock() }
     var engine = RecoveryEngine.publicMirror
     var preflightModes: (RecoverySnapshot) throws -> Void = { _ = try RecoveryConfiguration.resolveModes($0) }
     var transaction = MirrorTransaction()
 
     func mirror(selector: String, source: String, store: RecoveryStore,
+                expectedTarget: DisplayHideIdentity? = nil,
+                expectedSource: DisplayHideIdentity? = nil,
                 beforeMirror: (RecoveryDisplay) throws -> Void = { _ in }) throws -> RecoveryJournal {
-        let operation = RecoveryStore.operationLock()
+        let operation = operationLock()
         try operation.lock()
         defer { operation.unlock() }
         try store.lock()
@@ -78,6 +81,12 @@ struct MirrorController {
               target.online, target.active, !target.asleep, !target.main, !target.builtin,
               source.online, source.active, !source.asleep else {
             throw RecoveryError.unsafe("mirror requires one non-main external active target and a distinct active source; missing/ambiguous selectors refused; use panelctl list")
+        }
+        if let expectedTarget, !matches(expectedTarget, record: target) {
+            throw RecoveryError.unsafe("target identity changed after confirmation; refresh Displays and confirm Hide again")
+        }
+        if let expectedSource, !matches(expectedSource, record: source) {
+            throw RecoveryError.unsafe("mirror source identity changed after confirmation; refresh Displays and confirm Hide again")
         }
         let snapshot = try engine.capture()
         guard Set(snapshot.displays.map(\.id)) == Set(available.filter(\.online).map(\.id)),
@@ -128,28 +137,44 @@ struct MirrorController {
         }
     }
 
-    func unmirror(store: RecoveryStore, selector: String? = nil,
+    func unmirror(store: RecoveryStore, selector: String? = nil, expectedID: UUID? = nil,
                   afterRestore: (RecoveryDisplay) throws -> Void = { _ in }) throws -> RecoveryJournal {
         do {
-            let operation = RecoveryStore.operationLock()
+            let operation = operationLock()
             try operation.lock()
             defer { operation.unlock() }
             try store.lock()
             defer { store.unlock() }
             var journal = try store.load()
+            if let expectedID, journal.id != expectedID {
+                throw RecoveryError.unsafe("journal changed since confirmation; inspect recovery status and confirm again")
+            }
             guard journal.mirrorTargetID != nil, journal.mirrorSourceID != nil else {
                 throw RecoveryError.unsafe("not a mirror journal; inspect recovery status")
             }
             let target = journal.snapshot.displays.first { $0.id == journal.mirrorTargetID }!
+            let source = journal.snapshot.displays.first { $0.id == journal.mirrorSourceID }!
+            let available = try records()
+            guard Set(available.map(\.id)).count == available.count,
+                  Set(available.compactMap { $0.uuid?.lowercased() }).count == available.count else {
+                throw RecoveryError.unsafe("display identities are ambiguous; reconnect the captured displays and inspect recovery status")
+            }
             if let selector {
-                let available = try records()
-                guard Set(available.map(\.id)).count == available.count,
-                      Set(available.compactMap { $0.uuid?.lowercased() }).count == available.count,
-                      let selected = DisplaySelector.resolve(selector, in: available),
+                guard let selected = DisplaySelector.resolve(selector, in: available),
                       selected.id == target.id,
                       selected.uuid?.lowercased() == target.uuid.lowercased() else {
                     throw RecoveryError.unsafe("back target does not match the journaled mirror target; use panelctl list and recovery status")
                 }
+            }
+            guard let targetRecord = available.first(where: {
+                $0.id == target.id && $0.uuid?.caseInsensitiveCompare(target.uuid) == .orderedSame
+            }), targetRecord.online, !targetRecord.asleep else {
+                throw RecoveryError.unsafe("journaled target is asleep or unavailable; wake or reconnect the exact display, then inspect recovery status before Show")
+            }
+            guard let sourceRecord = available.first(where: {
+                $0.id == source.id && $0.uuid?.caseInsensitiveCompare(source.uuid) == .orderedSame
+            }), sourceRecord.online, sourceRecord.active, !sourceRecord.asleep else {
+                throw RecoveryError.unsafe("journaled mirror source is asleep, inactive, or unavailable; wake or reconnect the exact display, then inspect recovery status before Show")
             }
             // Public-only engine: no private re-enable, helper or gamma path.
             try engine.finish(&journal, store: store, verifyOnly: false, trigger: "unmirror")
@@ -158,6 +183,12 @@ struct MirrorController {
         } catch {
             throw fallback(error, store: store)
         }
+    }
+
+    private func matches(_ expected: DisplayHideIdentity, record: DisplayRecord) -> Bool {
+        expected.uuid.caseInsensitiveCompare(record.uuid ?? "") == .orderedSame &&
+            expected.displayID == record.id && expected.vendor == record.vendor &&
+            expected.model == record.model && expected.serial == record.serial
     }
 
     private func fallback(_ error: Error, store: RecoveryStore) -> RecoveryError {

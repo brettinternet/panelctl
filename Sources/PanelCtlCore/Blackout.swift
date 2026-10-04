@@ -64,17 +64,21 @@ public enum BlackoutRuntimeState: String, Codable, Equatable {
 public struct BlackoutRuntimeStatus: Codable, Equatable {
     public let state: BlackoutRuntimeState
     public let blackedOutDisplayIDs: [CGDirectDisplayID]
+    public let cleanupSucceeded: Bool?
     private enum CodingKeys: String, CodingKey {
         case state
         case blackedOutDisplayIDs
+        case cleanupSucceeded
     }
 
     public init(
         state: BlackoutRuntimeState,
-        blackedOutDisplayIDs: [CGDirectDisplayID]
+        blackedOutDisplayIDs: [CGDirectDisplayID],
+        cleanupSucceeded: Bool? = nil
     ) {
         self.state = state
         self.blackedOutDisplayIDs = Array(Set(blackedOutDisplayIDs)).sorted()
+        self.cleanupSucceeded = cleanupSucceeded
     }
 
     public init(from decoder: Decoder) throws {
@@ -84,7 +88,8 @@ public struct BlackoutRuntimeStatus: Codable, Equatable {
             blackedOutDisplayIDs: try values.decode(
                 [CGDirectDisplayID].self,
                 forKey: .blackedOutDisplayIDs
-            )
+            ),
+            cleanupSucceeded: try values.decodeIfPresent(Bool.self, forKey: .cleanupSucceeded)
         )
     }
 }
@@ -424,6 +429,7 @@ public final class BlackoutController {
     private var manualActivityUptime: TimeInterval?
     private var restoreGeneration: UInt64 = 0
     private var dimming: BlackoutDimming?
+    private var cleanupSucceeded: Bool?
     private let occupancySource: DisplayOccupancySource
     private let idleSource: IdleTimeSource
     private let uptime: () -> TimeInterval
@@ -1296,10 +1302,11 @@ public final class BlackoutController {
         windows.removeAll()
     }
 
-    private func clearAllCoverage(resetGrace: Bool) {
+    @discardableResult
+    private func clearAllCoverage(resetGrace: Bool) -> Bool {
         fullCycleActive = false
         let restoreStartedAt = uptime()
-        dimming?.restore()
+        let dimmingRestored = dimming?.restore() ?? true
         let restoreElapsed = uptime() - restoreStartedAt
         let closeStartedAt = uptime()
         closeAllWindows()
@@ -1314,6 +1321,7 @@ public final class BlackoutController {
         if resetGrace {
             emptyDisplayPolicy.reset()
         }
+        return dimmingRestored
     }
 
     private func setRuntimeState(
@@ -1327,7 +1335,8 @@ public final class BlackoutController {
     private func emitStatus(force: Bool = false) {
         let status = BlackoutRuntimeStatus(
             state: runtimeState,
-            blackedOutDisplayIDs: Array(windows.keys)
+            blackedOutDisplayIDs: Array(windows.keys),
+            cleanupSucceeded: runtimeState == .stopped ? cleanupSucceeded : nil
         )
         guard force || status != lastStatus else { return }
         lastStatus = status
@@ -1490,7 +1499,7 @@ public final class BlackoutController {
 
     public func stop() {
         stopRequested = true
-        clearAllCoverage(resetGrace: true)
+        cleanupSucceeded = clearAllCoverage(resetGrace: true)
         dimming?.stop()
         dimming = nil
         signalSources.forEach { $0.cancel() }

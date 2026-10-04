@@ -7,6 +7,10 @@ private let shutdownLogger = Logger(
     subsystem: "com.brettinternet.panelctl",
     category: "shutdown"
 )
+private let displayHideLogger = Logger(
+    subsystem: "com.brettinternet.panelctl",
+    category: "display-hide"
+)
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -18,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var launchedAsLoginItem = false
     private var suppressInitialSettings = false
     private var terminationPending = false
+    private var quitAfterShow = false
+    private var systemSleeping = false
     private lazy var blackoutFocusController = BlackoutFocusController { [weak self] in
         self?.requestBlackoutRestore() ?? false
     }
@@ -34,6 +40,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         model = AppModel()
+        model.onRequestHide = { [weak self] request in
+            self?.confirmHide(request)
+        }
+        model.onRequestShow = { [weak self] status in
+            self?.confirmShow(status)
+        }
+        model.onShowCompletion = { [weak self] succeeded in
+            guard let self, self.quitAfterShow else { return }
+            self.quitAfterShow = false
+            if succeeded { NSApp.terminate(nil) }
+        }
+        if model.protectionPausedForDisplayRecovery {
+            displayHideLogger.error("Startup found unresolved display recovery: \(self.model.handoffStatus?.inspectionCommand ?? "inspect shared display journal", privacy: .public)")
+        }
         let controlServer = AppControlServer { [weak self] request in
             self?.handleControlRequest(request) ?? .unavailable()
         }
@@ -59,7 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateBlackoutFocus()
 
         if !launchedAsLoginItem && !suppressInitialSettings {
-            showSettings()
+            showSettings(focusRecovery: model.protectionPausedForDisplayRecovery)
         }
     }
 
@@ -67,7 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
-        showSettings()
+        showSettings(focusRecovery: model.protectionPausedForDisplayRecovery)
         return false
     }
 
@@ -85,6 +105,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     ) -> NSApplication.TerminateReply {
         guard let model else { return .terminateNow }
         guard !terminationPending else { return .terminateLater }
+        if model.hideOperation.isBusy {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Display operation in progress"
+            alert.informativeText = "PanelCtl is finishing a confirmed Hide or Show. Wait for it to finish before quitting. The operation cannot be canceled after it starts."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return .terminateCancel
+        }
+        if model.handoffStatus?.hasUnresolvedJournal == true || model.protectionQuiescenceFailure != nil {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Hidden desktop/recovery remains after quitting"
+            alert.informativeText = "PanelCtl will not automatically Show, restore topology, or switch monitor inputs when it quits. The shared journal remains available after relaunch."
+            alert.addButton(withTitle: "Cancel")
+            let canShow = (model.handoffStatus?.state == .hidden || model.handoffStatus?.state == .recovery) &&
+                model.handoffStatus?.canShow == true
+            alert.addButton(withTitle: canShow ? "Show…" : "Review recovery…")
+            alert.addButton(withTitle: "Quit Without Showing")
+            if let cancel = alert.buttons.first {
+                alert.window.defaultButtonCell = cancel.cell as? NSButtonCell
+            }
+            switch alert.runModal() {
+            case .alertSecondButtonReturn:
+                if canShow, let status = model.handoffStatus {
+                    confirmShow(status, quitAfterShow: true)
+                } else {
+                    showSettings(focusRecovery: true)
+                }
+                return .terminateCancel
+            case .alertThirdButtonReturn:
+                break
+            default:
+                return .terminateCancel
+            }
+        }
         terminationPending = true
         let startedAt = ProcessInfo.processInfo.systemUptime
         shutdownLogger.info("Application termination requested")
@@ -256,14 +312,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         switch model.runtimeState {
         case .blackedOut, .sleeping:
-            menu.addItem(item("Restore", action: #selector(restoreNow)))
+            menu.addItem(restoreMenuItem())
         default:
             menu.addItem(item(
                 Self.blackoutActionTitle(for: model.preferences.mode),
                 action: #selector(blackoutNow)
             ))
             if !model.blackedOutDisplayIDs.isEmpty {
-                menu.addItem(item("Restore", action: #selector(restoreNow)))
+                menu.addItem(restoreMenuItem())
             }
         }
         menu.addItem(item("Sleep All Now", action: #selector(sleepAllNow)))
@@ -279,6 +335,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(snoozeMenuItem)
         }
 
+        menu.addItem(.separator())
+        let hideHeading = NSMenuItem(title: "Hide a desktop · Experimental", action: nil, keyEquivalent: "")
+        hideHeading.isEnabled = false
+        menu.addItem(hideHeading)
+        switch model.hideOperation {
+        case .hiding:
+            disabledMenuItem("Hiding…", in: menu)
+        case .showing:
+            disabledMenuItem("Showing…", in: menu)
+        case .idle:
+            if model.handoffStatus?.hasUnresolvedJournal == true {
+                if model.handoffStatus?.state == .hidden,
+                   model.handoffStatus?.canShow == true {
+                    let name = model.handoffStatus?.target?.name ?? "desktop"
+                    let show = item("Show \(name)…", action: #selector(showDisplayFromMenu))
+                    show.toolTip = model.handoffStatus?.target?.identityDetail
+                    show.isEnabled = !model.displayLifecycleTransitioning
+                    menu.addItem(show)
+                    disabledMenuItem("Desktop hidden by PanelCtl · input unknown", in: menu)
+                } else {
+                    menu.addItem(item("Review display recovery…", action: #selector(reviewDisplayRecovery)))
+                }
+            } else if model.displayLifecycleTransitioning {
+                disabledMenuItem("Display transition in progress · Refresh after wake", in: menu)
+            } else if model.menuHideConfigurations.isEmpty {
+                menu.addItem(item("Configure in Displays…", action: #selector(reviewDisplayRecovery)))
+            } else {
+                for configuration in model.menuHideConfigurations {
+                    let name = configuration.target.name ?? "Display \(configuration.target.id)"
+                    let suffix = String(configuration.target.uuid.prefix(8))
+                    let hide = item("Hide \(name) · \(suffix)…", action: #selector(hideDisplayFromMenu(_:)))
+                    hide.toolTip = configuration.target.identityDetail
+                    hide.representedObject = configuration.target.uuid
+                    menu.addItem(hide)
+                }
+            }
+        }
+        menu.addItem(.separator())
+
         if model.runtimeState.errorMessage != nil, model.preferences.isEnabled {
             menu.addItem(item("Retry Watcher", action: #selector(retryProtection)))
         }
@@ -291,6 +386,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        model.refreshHandoffStatus()
         guard let status = menu.items.first else { return }
         status.title = model.statusSummary
         status.image = NSImage(
@@ -311,6 +407,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return menuItem
     }
 
+    private func restoreMenuItem() -> NSMenuItem {
+        let restore = item("Restore", action: #selector(restoreNow))
+        restore.toolTip = "Removes PanelCtl blackout or dimming; does not show hidden desktops or switch inputs. Use Show for that."
+        return restore
+    }
+
+    private func disabledMenuItem(_ title: String, in menu: NSMenu) {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        menu.addItem(item)
+    }
+
     private func snoozeItem(_ title: String, duration: TimeInterval) -> NSMenuItem {
         let menuItem = item(title, action: #selector(snoozeForDuration(_:)))
         menuItem.representedObject = duration
@@ -326,6 +434,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func retryProtection() {
         model.retryProtection()
+    }
+
+    @objc private func hideDisplayFromMenu(_ sender: NSMenuItem) {
+        guard let uuid = sender.representedObject as? String else { return }
+        model.requestHide(targetUUID: uuid)
+    }
+
+    @objc private func showDisplayFromMenu() {
+        model.requestShow()
+    }
+
+    @objc private func reviewDisplayRecovery() {
+        showSettings(focusRecovery: true)
     }
 
     @objc private func blackoutNow() {
@@ -378,13 +499,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.openGitHub()
     }
 
-    private func showSettings() {
+    private func confirmHide(_ request: DisplayHideRequest) {
+        let targetName = request.target.name ?? "Display \(request.target.id)"
+        let message = DisplayOperationConfirmation.hideMessage(
+            request,
+            journalPath: DisplayHandoff.defaultJournalPath
+        )
+        guard DisplayOperationConfirmation.confirm(
+            title: "Hide \(targetName) desktop?",
+            message: message,
+            actionTitle: "Hide desktop"
+        ) else { return }
+        model.confirmHide(request, acknowledged: true)
+    }
+
+    private func confirmShow(_ status: DisplayHandoffStatus, quitAfterShow shouldQuit: Bool = false) {
+        let target = status.target
+        let targetName = target?.name ?? "journaled display"
+        let message = DisplayOperationConfirmation.showMessage(status)
+        guard DisplayOperationConfirmation.confirm(
+            title: "Show \(targetName) desktop?",
+            message: message,
+            actionTitle: "Show desktop"
+        ) else { return }
+        quitAfterShow = shouldQuit
+        model.confirmShow(status, acknowledged: true)
+        if model.hideOperation == .idle {
+            quitAfterShow = false
+        }
+    }
+
+    private func showSettings(focusRecovery: Bool = false) {
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(model: model)
         }
         model.refreshLaunchAtLoginStatus()
         model.refreshDisplays()
         settingsWindowController?.present()
+        if focusRecovery || model.protectionPausedForDisplayRecovery {
+            model.requestDisplayRecoveryFocus()
+        }
     }
 
     private func handleControlRequest(
@@ -499,12 +653,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func screenConfigurationChanged(_ notification: Notification) {
         guard !terminationPending else { return }
+        if notification.name == NSWorkspace.willSleepNotification ||
+            notification.name == NSWorkspace.screensDidSleepNotification {
+            systemSleeping = true
+            model.setDisplayLifecycleTransitioning(true)
+            model.refreshHandoffStatus()
+            return
+        }
+        if notification.name == NSWorkspace.didWakeNotification {
+            model.setDisplayLifecycleTransitioning(true)
+            model.refreshDisplays(restartWatcher: true)
+            return
+        }
+        if notification.name == NSWorkspace.screensDidWakeNotification {
+            model.setDisplayLifecycleTransitioning(true)
+            model.refreshDisplays(restartWatcher: true)
+            systemSleeping = false
+            model.setDisplayLifecycleTransitioning(false)
+            return
+        }
+        model.setDisplayLifecycleTransitioning(true)
         // AppKit can retain stale display coordinate transforms after a display
         // transition. Replace the helper's WindowServer connection; the service
         // rearms the idle interval so replacement cannot cause a blackout.
         model.refreshDisplays(
             restartWatcher: Self.shouldRestartWatcher(after: notification.name)
         )
+        if !systemSleeping {
+            model.setDisplayLifecycleTransitioning(false)
+        }
     }
 
     private func presentNoticeIfNeeded(_ notice: AppNotice) {
@@ -542,12 +719,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             name: NSApplication.didChangeScreenParametersNotification,
             object: nil
         )
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self,
-            selector: #selector(screenConfigurationChanged),
-            name: NSWorkspace.screensDidWakeNotification,
-            object: nil
-        )
+        for name in [
+            NSWorkspace.willSleepNotification,
+            NSWorkspace.didWakeNotification,
+            NSWorkspace.screensDidSleepNotification,
+            NSWorkspace.screensDidWakeNotification
+        ] {
+            NSWorkspace.shared.notificationCenter.addObserver(
+                self,
+                selector: #selector(screenConfigurationChanged),
+                name: name,
+                object: nil
+            )
+        }
         DistributedNotificationCenter.default().addObserver(
             self,
             selector: #selector(screenConfigurationChanged),

@@ -324,6 +324,27 @@ final class BlackoutPolicyTests: XCTestCase {
         XCTAssertTrue(policy.shouldBegin(idleSeconds: 5))
     }
 
+    func testTopologyRearmRejectsPreRecoveryIdleUntilFreshInputAndFullCountdown() {
+        var state = BlackoutWatchState()
+        let policy = BlackoutPolicy(idleAfter: 5, timeout: nil, sleepAfter: nil)
+        state.reset(.topologyChanged, after: 100)
+
+        XCTAssertFalse(state.consumeFreshInput(
+            IdleSample(seconds: 3_600, lastInputUptime: 100),
+            allowScreenWakeFallback: true
+        ))
+        XCTAssertFalse(state.mayBeginCycle)
+
+        XCTAssertTrue(state.consumeFreshInput(
+            IdleSample(seconds: 0, lastInputUptime: 101),
+            allowScreenWakeFallback: true
+        ))
+        XCTAssertTrue(state.mayBeginCycle)
+        XCTAssertFalse(policy.shouldBegin(idleSeconds: 0))
+        XCTAssertFalse(policy.shouldBegin(idleSeconds: 4.9))
+        XCTAssertTrue(policy.shouldBegin(idleSeconds: 5))
+    }
+
     func testWatchTimeoutRequiresFreshInputBeforeRearm() {
         var state = BlackoutWatchState()
 

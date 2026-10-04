@@ -122,6 +122,9 @@ final class ProtectionService {
     private var lifetimeWriteHandle: FileHandle?
     private var forceTerminationWorkItem: DispatchWorkItem?
     private var shutdownCompletion: (() -> Void)?
+    private var stopCompletions: [((Bool, String?) -> Void)] = []
+    private var cleanupResultObserved: Bool?
+    private var unresolvedCleanupFailure: String?
     private var shutdownStartedAt: TimeInterval?
 
     init(
@@ -178,6 +181,10 @@ final class ProtectionService {
 
     func disable() {
         stop(then: .disabled)
+    }
+
+    func disableForDisplayHide(completion: @escaping (Bool, String?) -> Void) {
+        stop(then: .disabled, completion: completion)
     }
 
     func fail(_ message: String) {
@@ -252,7 +259,13 @@ final class ProtectionService {
         requestTermination(of: process)
     }
 
-    private func stop(then finalState: ProtectionRuntimeState) {
+    private func stop(
+        then finalState: ProtectionRuntimeState,
+        completion: ((Bool, String?) -> Void)? = nil
+    ) {
+        if let completion {
+            stopCompletions.append(completion)
+        }
         pendingArguments = nil
         pendingControlIntent = nil
         pendingControlSourceProcess = nil
@@ -263,11 +276,23 @@ final class ProtectionService {
         guard let process else {
             self.process = nil
             currentArguments = nil
-            state = finalState
+            if let unresolvedCleanupFailure {
+                state = .failed(unresolvedCleanupFailure)
+                finishStopCompletions(succeeded: false, message: unresolvedCleanupFailure)
+            } else {
+                state = finalState
+                finishStopCompletions(succeeded: true)
+            }
             return
         }
         state = .stopping
         requestTermination(of: process)
+    }
+
+    private func finishStopCompletions(succeeded: Bool, message: String? = nil) {
+        let completions = stopCompletions
+        stopCompletions.removeAll()
+        completions.forEach { $0(succeeded, message) }
     }
 
     private func launch(arguments: [String]) {
@@ -300,6 +325,7 @@ final class ProtectionService {
 
             statusBuffer.removeAll(keepingCapacity: true)
             errorBuffer.removeAll(keepingCapacity: true)
+            cleanupResultObserved = nil
             statusPipe.fileHandleForReading.readabilityHandler = { [weak self, weak process] handle in
                 let data = handle.availableData
                 guard !data.isEmpty, let process else {
@@ -379,6 +405,16 @@ final class ProtectionService {
                 continue
             }
             let runtimeState = status.state
+            if runtimeState == .stopped {
+                cleanupResultObserved = status.cleanupSucceeded
+                if status.cleanupSucceeded == true {
+                    unresolvedCleanupFailure = nil
+                } else if status.cleanupSucceeded == false {
+                    unresolvedCleanupFailure = "Hardware brightness cleanup failed; retry protection cleanup before hiding a display."
+                } else {
+                    unresolvedCleanupFailure = "Protection cleanup could not be verified; retry protection cleanup before hiding a display."
+                }
+            }
             if state == .stopping {
                 updateInheritedControlIntent(for: status, from: sourceProcess)
                 continue
@@ -510,6 +546,13 @@ final class ProtectionService {
         currentArguments = nil
         statusBuffer.removeAll(keepingCapacity: true)
         blackedOutDisplayIDs = []
+        if cleanupResultObserved == true {
+            unresolvedCleanupFailure = nil
+        } else if cleanupResultObserved == false {
+            unresolvedCleanupFailure = "Hardware brightness cleanup failed; retry protection cleanup before hiding a display."
+        } else {
+            unresolvedCleanupFailure = "Protection cleanup could not be verified; retry protection cleanup before hiding a display."
+        }
 
         if let pendingArguments {
             self.pendingArguments = nil
@@ -521,7 +564,20 @@ final class ProtectionService {
             pendingControlSourceProcess = nil
             inFlightControlIntent = nil
             stateAfterTermination = nil
-            state = finalState
+            let processFailure: String? = finished.terminationReason != .exit || finished.terminationStatus != 0
+                ? String(data: errorBuffer, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .nonEmpty ?? "The protection helper did not exit cleanly (status \(finished.terminationStatus))."
+                : nil
+            let stopFailure = unresolvedCleanupFailure ?? (stopCompletions.isEmpty ? nil : processFailure)
+            cleanupResultObserved = nil
+            if let stopFailure {
+                state = .failed(stopFailure)
+                finishStopCompletions(succeeded: false, message: stopFailure)
+            } else {
+                state = finalState
+                finishStopCompletions(succeeded: true)
+            }
             let completion = shutdownCompletion
             shutdownCompletion = nil
             if let startedAt = shutdownStartedAt {
@@ -618,6 +674,10 @@ final class ProtectionService {
     }
 }
 
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
+}
 
 private enum HelperError: Error, LocalizedError {
     case notFound
