@@ -55,12 +55,12 @@ belong here.
 
 | Field | Observation |
 | --- | --- |
-| Date, host, macOS build | not yet run |
-| Monitor, firmware, connection | DELL S2721DGF; DP from this Mac; other computer on HDMI (to confirm) |
-| Selector used | UUID from fresh `panelctl list` |
-| Current input read on DP | not yet run |
-| `--set hdmi1` outcome, visible result | not yet run |
-| Readback while on HDMI | not yet run |
-| Switch back to DP from the Mac | not yet run |
-| Fallback needed | not yet run |
-| Verdict | unqualified |
+| Date, host, macOS build | 2026-10-04, this Apple Silicon Mac, macOS build `26A434`; supervised, user present, scoped consent recorded in TASK-10 |
+| Monitor, firmware, connection | DELL S2721DGF (vendor 4268, model 16857, non-main, portrait); DP from this Mac; other computer on HDMI 1; firmware not recorded |
+| Selector used | UUID `09084682-3C42-4455-AAB8-126A7431125B` from a fresh `panelctl list` |
+| Current input read on DP | `0x0F` (dp1), matches the MCCS default |
+| `--set hdmi1` outcome, visible result | One write; outcome `unverified`. Every readback in the 3 s window was an invalid reply ("not a Get VCP Feature reply"). User saw the other computer's picture. macOS still listed the display as active and online. |
+| Readback while on HDMI | Later, still on HDMI, the Mac read `0x11` over DP |
+| Switch back to DP from the Mac | `--set 0x0F`: one write; outcome `verified` (read back `0x0F`). User confirmed the Mac's picture returned. |
+| Fallback needed | No; the monitor's input button was not used |
+| Verdict | **Qualified for this tuple only**: S2721DGF on DP plus HDMI 1, this host and build, one round trip. Other monitors, ports, builds, sleep/wake and repeated switching are unqualified. Window placement during HDMI was not observed. |

@@ -1,11 +1,11 @@
 ---
 id: TASK-10
 title: Add explicit DDC input selection as a standalone monitor-switch path
-status: In Progress
+status: Done
 assignee:
   - '@pi'
 created_date: '2026-10-04 05:03'
-updated_date: '2026-10-04 16:20'
+updated_date: '2026-10-04 16:24'
 labels:
   - display-disable
   - ddc
@@ -29,15 +29,15 @@ Goal: let this Mac hand the multi-input monitor (DELL S2721DGF on DisplayPort, o
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 An explicit CLI command reads the current input (VCP 0x60) and, only with an explicit value (MCCS name or numeric 1..255), writes it once to one resolved external display; no automatic, blind or cycling writes, no power/link control, and an unreadable current input or ambiguous controller mapping refuses before any write.
-- [ ] #2 Results distinguish already-selected (no write), verified, and unverified-after-write (readback lost, expected when the monitor leaves the Mac's input); a readback of a different input is an error with a switch-back hint. Output never claims topology change or display disable.
-- [ ] #3 Fake-transport tests cover request encoding, reply parsing without continuous-range assumptions, unsupported feature, transport loss before and after the write, ambiguous controller mapping, readback mismatch and already-selected; focused tests and warnings-as-errors builds pass without hardware writes.
-- [ ] #4 A monitor-specific qualification record documents usage, value codes, limitations and fresh observations from a human-approved supervised trial on the target (read current input, switch to HDMI, switch back to DP from the Mac); untested behavior stays unsupported and only observed results are recorded.
+- [x] #1 An explicit CLI command reads the current input (VCP 0x60) and, only with an explicit value (MCCS name or numeric 1..255), writes it once to one resolved external display; no automatic, blind or cycling writes, no power/link control, and an unreadable current input or ambiguous controller mapping refuses before any write.
+- [x] #2 Results distinguish already-selected (no write), verified, and unverified-after-write (readback lost, expected when the monitor leaves the Mac's input); a readback of a different input is an error with a switch-back hint. Output never claims topology change or display disable.
+- [x] #3 Fake-transport tests cover request encoding, reply parsing without continuous-range assumptions, unsupported feature, transport loss before and after the write, ambiguous controller mapping, readback mismatch and already-selected; focused tests and warnings-as-errors builds pass without hardware writes.
+- [x] #4 A monitor-specific qualification record documents usage, value codes, limitations and fresh observations from a human-approved supervised trial on the target (read current input, switch to HDMI, switch back to DP from the Mac); untested behavior stays unsupported and only observed results are recorded.
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Record changed files, validation commands/results, residual risks and handoff evidence; preserve existing checked criteria and never claim unperformed hardware qualification.
+- [x] #1 Record changed files, validation commands/results, residual risks and handoff evidence; preserve existing checked criteria and never claim unperformed hardware qualification.
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -55,4 +55,14 @@ Goal: let this Mac hand the multi-input monitor (DELL S2721DGF on DisplayPort, o
 
 <!-- SECTION:NOTES:BEGIN -->
 Offline slice: DDC.swift now shares framing/transport by VCP code (DDCLuminanceError renamed DDCError; ambiguous controller mappings refuse, which also applies to ddc-luminance). Added DDCInput (read low byte of 0x60; select reads first, skips if already selected, writes once, read-only polls 12x250ms; verified/unverified/mismatch) and 'panelctl ddc-input'. Docs: docs/ddc-input.md with unqualified hardware record. Validation: swift test --disable-sandbox, 174 core tests (2 skipped) + 54 app tests, 0 failures (.build/task10-tests.log); panelctl and PanelCtlApp builds with -warnings-as-errors passed; git diff --check clean; LSP unknown (timed out). No real DDC read or write performed. Fresh read-only 'panelctl list': target DELL S2721DGF uuid 09084682-3C42-4455-AAB8-126A7431125B id=1, non-main. Next: scoped human approval for supervised trial.
+
+Scoped consent 2026-10-04 (user, present): DELL S2721DGF uuid 09084682-3C42-4455-AAB8-126A7431125B; steps (1) read 0x60, (2) one --set hdmi1 (0x11), (3) user reports visible result, (4) one switch back to DP code read in step 1 from the Mac; fallback = monitor input button. No retries, no power control.
+
+Supervised trial 2026-10-04 (build 26A434, user present): read 0x0F; --set hdmi1 -> one write, outcome unverified (all readbacks invalid 'not a Get VCP Feature reply' within 3 s), user saw other computer; later read 0x11 over DP while on HDMI; --set 0x0F -> verified, user confirmed Mac picture returned; input button not used. macOS kept the display active/online throughout. Recorded in docs/ddc-input.md. Changed files: Sources/PanelCtlCore/DDC.swift, CLIParser.swift, CLIHelp.swift, Sources/panelctl/main.swift, Tests/PanelCtlCoreTests/DDCTests.swift, CLIParserTests.swift, docs/ddc-input.md. Residual risks: qualification is one round trip on this tuple only; transient invalid replies right after switching away; low-byte input decoding assumed; window placement while on HDMI not observed; ambiguous-controller refusal now also affects ddc-luminance.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added 'panelctl ddc-input' (explicit VCP 0x60 read/select: read-first, single write, read-only verification, verified/unverified/mismatch outcomes, no retries or power control) on shared DDC framing; ambiguous controller mappings now refuse. Verified by fake-transport tests (174 core/54 app tests pass, warnings-as-errors builds) and a supervised round trip on the DELL S2721DGF: DP->HDMI 1 switched (unverified readback, visually confirmed) and HDMI->DP from the Mac verified and visually confirmed. Qualified for that tuple only; macOS topology is unchanged, so this is not a display disable. TASK-12/TASK-9 remain open pending the user's decision on whether topology removal is still needed.
+<!-- SECTION:FINAL_SUMMARY:END -->
