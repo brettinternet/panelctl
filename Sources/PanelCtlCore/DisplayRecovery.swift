@@ -169,7 +169,7 @@ struct RecoverySnapshot: Codable, Equatable {
     }
 }
 
-private func systemString(_ name: String) throws -> String {
+func systemString(_ name: String) throws -> String {
     var size = 0
     guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 1, size < 4096 else {
         throw RecoveryError.unsafe("cannot read \(name)")

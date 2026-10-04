@@ -32,7 +32,7 @@ struct RecoveryEnableInventory {
 
 /// Internal, injection-only recovery seam. The default engine has no backend;
 /// both the identity provider and transport refuse by default. The branch's
-/// live binding is deferred to TASK-4; no user flag bypasses these boundaries.
+/// verified binding remains disconnected; no user flag bypasses these boundaries.
 struct RecoveryReenable {
     var inventory: () throws -> RecoveryEnableInventory = {
         throw RecoveryError.unsafe("offline hardware-to-CG-ID binding is unqualified; private re-enable unavailable")
@@ -78,26 +78,30 @@ struct RecoveryReenable {
     }
 }
 
-/// Injected enable transaction ordering, reused from recovery-enable. No live
-/// binding exists here; TASK-4 must supply and verify session-only completion.
-/// Closure injection matches RecoveryEngine's seam; tests use fake writers.
+/// Internal transaction primitive shared by re-enable and the future disable
+/// orchestrator. No production caller installs it. Closure injection matches
+/// RecoveryEngine's seam; tests use fake writers.
 struct RecoveryEnableTransaction {
     var begin: () throws -> CGDisplayConfigRef
-    var setEnabled: (CGDisplayConfigRef, UInt32) throws -> Void
-    var commit: (CGDisplayConfigRef) throws -> Void
+    var setEnabled: (CGDisplayConfigRef, UInt32, Bool) throws -> Void
+    var commit: (CGDisplayConfigRef, CGConfigureOption) throws -> Void
     var cancel: (CGDisplayConfigRef) -> Void
 
     func enable(id: UInt32, revalidate: () throws -> Void) throws {
+        try configure(id: id, enabled: true, revalidate: revalidate)
+    }
+
+    func configure(id: UInt32, enabled: Bool, revalidate: () throws -> Void) throws {
         try revalidate()
         let config = try begin()
         var consumed = false
         defer { if !consumed { cancel(config) } }
         try revalidate()
-        try setEnabled(config, id)
+        try setEnabled(config, id, enabled)
         try revalidate()
         // CGCompleteDisplayConfiguration consumes the transaction even on error.
         consumed = true
-        try commit(config)
+        try commit(config, .forSession)
     }
 
 }

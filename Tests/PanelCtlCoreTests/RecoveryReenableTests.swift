@@ -296,17 +296,43 @@ final class RecoveryReenableTests: XCTestCase {
         XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: loaded.snapshot, evidence: unqualified).outcome, .unsupported)
     }
 
+    func testConsumedTransactionFailurePreservesJournalAndCannotReplay() throws {
+        let original = try fixture(), absent = missing(original), store = try store()
+        var journal = RecoveryJournal(snapshot: original, disabledByUsID: 2)
+        try store.create(journal)
+        var stages = 0, completions = 0, cancellations = 0
+        let transaction = RecoveryEnableTransaction(begin: { CGDisplayConfigRef(bitPattern: 1)! },
+            setEnabled: { _, id, enabled in
+                XCTAssertEqual(id, 2); XCTAssertTrue(enabled); stages += 1
+            }, commit: { _, scope in
+                XCTAssertEqual(scope, .forSession); completions += 1
+                throw RecoveryError.unsafe("completion failed")
+            }, cancel: { _ in cancellations += 1 })
+        let backend = RecoveryReenable(inventory: { self.evidence(original) }, enable: transaction.enable)
+        let engine = RecoveryEngine(capture: { absent }, apply: { _ in XCTFail("public write") }, reenable: backend)
+        XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "test"))
+        journal = try store.load()
+        XCTAssertEqual(journal.state, .needsAttention)
+        XCTAssertEqual(journal.snapshot, original)
+        XCTAssertEqual(journal.reenableAttempted, true)
+        XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "retry"))
+        XCTAssertEqual(stages, 1); XCTAssertEqual(completions, 1); XCTAssertEqual(cancellations, 0)
+    }
+
     func testTransactionOrderingCancellationAndConsumedCommitErrors() throws {
         let config = CGDisplayConfigRef(bitPattern: 1)!
-        for failure in ["none", "begin", "set", "commit", "validate-3"] {
+        for failure in ["none", "begin", "set", "commit", "validate-1", "validate-2", "validate-3"] {
             var events: [String] = [], validations = 0
             func step(_ name: String) throws {
                 events.append(name)
                 if failure == name { throw RecoveryError.unsafe(name) }
             }
             let transaction = RecoveryEnableTransaction(begin: { try step("begin"); return config },
-                setEnabled: { pointer, id in XCTAssertEqual(pointer, config); XCTAssertEqual(id, 2); try step("set") },
-                commit: { _ in try step("commit") }, cancel: { _ in events.append("cancel") })
+                setEnabled: { pointer, id, enabled in
+                    XCTAssertEqual(pointer, config); XCTAssertEqual(id, 2); XCTAssertTrue(enabled); try step("set")
+                }, commit: { pointer, scope in
+                    XCTAssertEqual(pointer, config); XCTAssertEqual(scope, .forSession); try step("commit")
+                }, cancel: { _ in events.append("cancel") })
             let operation = {
                 try transaction.enable(id: 2) {
                     validations += 1; try step("validate-\(validations)")
@@ -314,7 +340,8 @@ final class RecoveryReenableTests: XCTestCase {
             }
             if failure == "none" { XCTAssertNoThrow(try operation()) }
             else { XCTAssertThrowsError(try operation()) }
-            XCTAssertEqual(events.contains("cancel"), ["set", "validate-3"].contains(failure))
+            XCTAssertEqual(events.filter { $0 == "cancel" }.count, ["set", "validate-2", "validate-3"].contains(failure) ? 1 : 0)
+            XCTAssertEqual(events.contains("commit"), ["none", "commit"].contains(failure))
             if failure == "none" {
                 XCTAssertEqual(events, ["validate-1", "begin", "validate-2", "set", "validate-3", "commit"])
             }

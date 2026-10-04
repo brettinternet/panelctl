@@ -126,7 +126,9 @@ to operate on offline or recycled IDs.
 - `rehearse` journals have `verifyOnly: true`; the helper never calls the writer
   for them. `guard` journals use the public restoration writer. No shell-command
   hook or production private control backend is installed. The internal injectable
-  recovery seam and default transport both refuse without test injection. The internal `_recovery-helper` entry
+  recovery seam and default transport both refuse without test injection. The
+  [offline transaction backend](display-transaction-backend.md) is internal and
+  remains disconnected from production recovery. The internal `_recovery-helper` entry
   point is not a standalone recovery command. The recorded helper PID is for
   diagnostics only; recovery never signals a PID loaded from a journal.
 - The helper cannot survive its own SIGKILL, logout, reboot, or a hung/crashed
