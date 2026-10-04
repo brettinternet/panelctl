@@ -119,13 +119,14 @@ final class RecoveryCLITests: XCTestCase {
         XCTAssertEqual(try CLIParser.parse(arguments), .recoveryDisable(selector: "2", timeout: 5, journalPath: nil))
         XCTAssertEqual(try CLIParser.parse(["recovery", "disable", "--index", "2", "--consent-disable", "--timeout", "1m", "--journal", "/x"]),
                        .recoveryDisable(selector: "index:2", timeout: 60, journalPath: "/x"))
-        for args in [Array(arguments.dropLast(2)), Array(arguments.dropLast(3)),
+        let invalidArguments: [[String]] = [Array(arguments.dropLast(2)), Array(arguments.dropLast(3)),
                      ["recovery", "disable", "--timeout", "5", "--consent-disable"],
                      arguments + ["--display", "1"], arguments + ["--index", "2"], arguments + ["--all"],
                      arguments + ["--consent-disable"], arguments + ["--timeout", "2"],
                      arguments + ["--force"], arguments + ["--journal", ""],
                      ["recovery", "enable", "--display", "2"], ["recovery", "panic", "--global-reset"],
-                     ["recovery", "status", "--consent-disable"]] {
+                     ["recovery", "status", "--consent-disable"]]
+        for args in invalidArguments {
             XCTAssertThrowsError(try CLIParser.parse(args), args.joined(separator: " "))
         }
         for value in ["0", "0.5", "61", "nan", "inf", "-1"] {
@@ -334,3 +335,4 @@ final class RecoveryCLITests: XCTestCase {
         XCTAssertEqual(f.begins, 0)
     }
 }
+
