@@ -1,13 +1,46 @@
 # Display disable: implementation recommendation and gated plan
 
-Status: recommended to proceed, gated. This records the decision, the remaining
-gaps, the implementation contract, and the live-trial protocol. Inputs:
+Status: recommended to proceed with offline implementation, gated. This is the
+canonical direction for future display-disable work; Backlog.md in `backlog/`
+tracks execution and dependencies. Historical research is evidence, not a second
+implementation plan or permission for a live experiment. Inputs:
 [undocumented-display-control.md](undocumented-display-control.md)
 (candidate API landscape and qualification gates),
 [display-disable-tool-survey.md](display-disable-tool-survey.md)
 (surveyed-tool mechanisms, scopes, and failure evidence),
 [display-recovery.md](display-recovery.md) and the recovery work on the
-`recovery-enable` branch (journal/helper/rehearsal groundwork).
+`recovery-enable` branch (journal/helper/rehearsal groundwork plus unmerged, gated re-enable work).
+
+## Delivery boundary and source reconciliation
+
+The goal is to release this Mac's DisplayPort signal so a multi-input monitor can
+switch to another computer, then restore the Mac's display safely. Start with an
+experimental CLI, not automatic blackout policy or app startup disable. The
+first supported operation is one explicitly selected non-main external display,
+no mirroring, Apple Silicon, with another verified usable physical screen.
+Overlay blackout remains the existing safe alternative, not equivalent success.
+
+Main already contains `DisplayRecovery.swift`, `RecoveryJournal.swift`, and
+`RecoveryWatchdog.swift`. The unmerged `recovery-enable` branch (inspected at
+`418fa33`) adds true-only private re-enable groundwork, identity research,
+ICC comparison fixes, and other changes. Its production identity provider remains
+blocked. Inspect and reconcile that work before extending it; do not rebuild it
+or blindly merge unrelated blackout changes. Its worktree is not owned by the
+next agent merely because this document names it.
+
+The newer bounded refusal contract below replaces the requirement to solve
+universal offline identity before *offline development*. It does not make cached
+metadata fresh or authorize a write to an unproven target. A refusal is valid
+safe behavior, but cannot count as successful reconnection or hardware
+qualification. If the first target cannot pass identity preflight, live work
+stays blocked; report the exact missing evidence rather than weakening checks.
+Keep old journals and the strict public restoration path safe.
+
+Routine implementation and tests must use fake writers. Live private calls,
+including enable of an already-online display, require separate explicit human
+approval. Rehearsal, symbol resolution, ABI evidence, and green tests do not grant
+that approval. No DDC power, link-stop/start, permanent writes, blind ID sweeps,
+automatic re-disconnect, or automatic escalation to logout/reboot is in scope.
 
 ## Recommendation
 
@@ -86,11 +119,14 @@ identity contract, permanent-scope anything, and DDC power (excluded).
     (surveyed Intel behavior is caveat-laden, and one tool ships arm64 only);
   - accept system-initiated re-enables (e.g. after wake) rather than fighting
     them; re-disconnection stays an explicit user action.
-- Panic restore command: re-enable everything journaled, then
-  `CGRestorePermanentDisplayConfiguration()` (plus
-  `CGDisplayRestoreColorSyncSettings()` if gamma is ever in play).
-- Nonzero private-call returns cancel the transaction and surface the error;
-  no partial commits.
+- Panic restore is an explicit, separately warned action: attempt eligible
+  disabled-by-us journal entries using the same identity checks, report refusals,
+  then offer `CGRestorePermanentDisplayConfiguration()` as an unproven global
+  fallback. It must not bypass identity checks or silently run after refusal.
+  Gamma is out of scope; no ColorSync reset is needed in the initial feature.
+- Nonzero setter returns cancel the uncompleted transaction and surface the
+  error; no partial commits. Completion consumes the transaction even on error:
+  never cancel after `CGCompleteDisplayConfiguration` has been called.
 
 ## Live trial protocol — explicit approval required
 
@@ -109,11 +145,11 @@ with a short deadline, user present.
    acceptance on this host/OS; DP signal returns; monitor returns to the DP
    input or stays parked on HDMI (determines whether a DDC `0x60` input-select
    follow-up is needed).
-3. Restore-lever verification: after a second disable, test
-   `CGRestorePermanentDisplayConfiguration()` alone, then (separately, next
-   logout) whether reboot clears a session-scope disable. Until both pass,
-   treat the panic lever and logout/reboot as *unproven* in the failure
-   ladder.
+3. Restore-lever verification, only with separate approval for each disruptive
+   step: after a second disable, test
+   `CGRestorePermanentDisplayConfiguration()` alone. Test logout and reboot
+   separately, recording which was actually observed. Until each is tested,
+   treat it as *unproven* in the failure ladder. Never execute these automatically.
 4. Failure ladder, honest and in order: journal re-enable → panic restore →
    logout/reboot → physical replug or different port. The survey shows
    same-port replug may stay disabled; the journal must key on more than the
@@ -122,13 +158,25 @@ with a short deadline, user present.
 ## Sequence
 
 1. ABI verification (offline, bounded).
-2. Coordinate with the `recovery-enable` branch: its journal/helper tooling is
-   the foundation; build the disable feature on it rather than beside it, and
-   reconcile before merge.
-3. Implement the contract above behind the consent flag (offline).
-4. Live trial (approval gate) and iterate on the observed behavior.
-5. DDC `0x60` input-select as a separately qualified follow-up tier for
-   reclaiming monitor focus after re-enable.
+2. Reconcile relevant `recovery-enable` work with main without importing its
+   historical blanket research stop as the current development plan.
+3. Deliver the bounded identity/refusal policy and exact-ABI transaction backend.
+4. Extend the existing journal/helper protocol and physical-display preflight,
+   then expose consent-gated disable, journal-driven enable/status, and explicit
+   panic recovery. Keep recovery active through the short bounded disable lease;
+   indefinite disconnect is not part of the first trial.
+5. Complete offline failure/race tests and an independent safety review.
+6. Live trial only after its explicit approval and technical gates pass. Record
+   negative results as such; do not repeatedly toggle an unexplained failure.
+7. DDC `0x60` input-select is a separate, conditional follow-up for reclaiming
+   monitor focus after re-enable, not a prerequisite or implicit firmware write.
+
+Use `mise exec -- backlog task list --plain` for current task IDs, dependencies,
+and state. Start with TASK-1 (bounded offline ABI verification). TASK-2 reconciles
+the existing branch; TASK-3 through TASK-8 deliver and check the offline feature;
+TASK-9 is the human-gated trial; TASK-10 is conditional DDC input selection.
+Deeper fresh-sink identity research and multi-identical-display support remain
+later hardening, not an invitation to resume open-ended research now.
 
 ## Open questions only the trial can answer
 

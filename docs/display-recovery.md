@@ -4,6 +4,14 @@ This tooling prepares for future private display-control experiments. **It does
 not disable displays, reconnect privately disconnected displays, or qualify a
 private API as safe.** Rehearsal is deliberately verification-only.
 
+This describes the current main-branch implementation, not the unmerged
+`recovery-enable` work or a completed disable feature. Future direction and the
+bounded identity/refusal contract are in the
+[canonical implementation plan](display-disable-implementation-plan.md); execution
+is tracked in `backlog/`. TASK-2 reconciles the branch before extensions. The
+requirements below remain safety gates, not a mandate for open-ended identity
+research or authority to call private setters.
+
 ## Commands
 
 Run from the logged-in console user's GUI session:

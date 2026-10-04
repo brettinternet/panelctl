@@ -64,3 +64,5 @@ automatic deferrals, and manual blackout, restore, sleep, and wake controls.
 - [Development and release packaging](docs/development.md)
 - [Selected-display feasibility research](docs/feasibility.md)
 - [Recovery tooling and future experiment safety](docs/display-recovery.md)
+- [Display-disable direction and gated implementation](docs/display-disable-implementation-plan.md)
+- [Backlog setup and task workflow](docs/development.md#backlog)

@@ -26,6 +26,14 @@ compensation paths.
 sleep/wake, private-API probes, and verified DDC luminance reads/writes. It does
 not invoke private topology APIs or send DDC power commands.
 
+## Current direction
+
+The findings below are historical evidence for the stated host, not qualification
+of later machines. The [display-disable implementation plan](display-disable-implementation-plan.md)
+now recommends bounded offline development of a consent-gated soft disconnect,
+with strict recovery/refusal and separately approved hardware trials. `backlog/`
+tracks that future work; this does not change the current feature claims above.
+
 ## Further exploration
 
 [Recovery-first undocumented display control](undocumented-display-control.md)

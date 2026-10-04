@@ -1,0 +1,45 @@
+---
+id: TASK-9
+title: Qualify one supervised display-disable and recovery cycle
+status: To Do
+assignee: []
+created_date: '2026-10-04 05:03'
+labels:
+  - display-disable
+  - human-gated
+  - hardware
+dependencies:
+  - TASK-8
+references:
+  - docs/display-disable-implementation-plan.md
+  - docs/display-disable-tool-survey.md
+  - docs/recovery-validation.md
+documentation:
+  - docs/display-disable-implementation-plan.md
+  - docs/display-disable-tool-survey.md
+priority: medium
+type: task
+ordinal: 9
+---
+
+## Description
+
+<!-- SECTION:DESCRIPTION:BEGIN -->
+HUMAN GATE: this item is not autonomously executable merely because dependencies are Done. Ask the user for explicit approval of the exact target, short timeout, another verified usable physical display, presence during the test, and acceptable physical fallback. Historical target is non-main DELL S2721DGF on Mac DisplayPort with another computer on HDMI; rediscover actual identities and connection, never reuse historical numeric IDs. Technical gate: production identity/preflight must positively qualify this target and helper must be armed. If it cannot, record the exact blocker; do not call the setter or relax identity checks. Prepare evidence/template autonomously, then pause for approval. Unattended private calls, even online enable, are forbidden.
+
+Direction: docs/display-disable-implementation-plan.md is canonical. This task is approval-gated; task creation and dependency completion do not grant live-write permission. Preserve unresolved journals and report exact blockers. No DDC power, blind IDs, permanent writes or automatic disruptive fallback.
+<!-- SECTION:DESCRIPTION:END -->
+
+## Acceptance Criteria
+<!-- AC:BEGIN -->
+- [ ] #1 Before any write, record scoped consent, host/OS/monitor/firmware/connection and qualification evidence, private journal location, independent helper readiness/deadline, usable surviving physical screen and agreed fallback. No concurrent topology changes or mirroring are allowed.
+- [ ] #2 For the approved simple cycle, record disable result, public enumeration, observed signal/standby versus no-signal message, HDMI auto-select and HPD where readable; on retained-ID enable record driver acceptance, visible output and whether input returns to DP.
+- [ ] #3 Verify restored connectivity/topology/exact mode and disclose HDR/color/rotation/window/Spaces limits; user-visible output matters, not just return codes. Preserve evidence and stop on the first unexplained mismatch without repeated toggling.
+- [ ] #4 Global restore alone, logout, reboot, hotplug and crash/sleep trials each require separate explicit approval after the simple cycle. Record each as observed or untested; same-port replug is never promised as recovery.
+- [ ] #5 Publish a scoped verdict: qualified only for the tested tuple and observations, or failed/blocked with follow-up work and remaining gates. Do not call the feature reliable or mark successful-cycle acceptance met on a refusal or failed recovery.
+<!-- AC:END -->
+
+## Definition of Done
+<!-- DOD:BEGIN -->
+- [ ] #1 Record changed files, validation commands/results, residual risks and handoff evidence; preserve existing checked criteria and never claim unperformed hardware qualification.
+<!-- DOD:END -->

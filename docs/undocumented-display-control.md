@@ -1,6 +1,15 @@
 # Undocumented selected-display control: recovery-first exploration
 
-## Recommendation
+## Current direction
+
+This document preserves the initial research and qualification evidence. The
+[implementation plan](display-disable-implementation-plan.md) is now the canonical
+direction: proceed with bounded offline development and conservative identity
+refusal, starting with ABI verification. `backlog/` tracks execution. The gates
+below still constrain live writes; they are not a reason to repeat broad research
+or permission to bypass an unknown identity.
+
+## Initial recommendation
 
 Investigate macOS-side soft disconnect through `CGSConfigureDisplayEnabled`
 first. Do not enable it as a normal feature yet. It avoids deliberately sending
