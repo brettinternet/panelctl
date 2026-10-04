@@ -3,8 +3,8 @@
 One command hides a monitor's separate Mac desktop and optionally switches its
 input to another computer; the other restores the desktop and optionally selects
 the Mac input. This uses public mirroring, **not private display disable**. The
-combined hardware round trip is not yet qualified; previous independent DDC and
-mirroring trials do not qualify their combination.
+S2721DGF round trip recorded below is qualified only for that observed setup;
+other monitors, HDR-on operation and failure recovery remain unqualified.
 
 ## Commands
 
@@ -77,13 +77,14 @@ for the full contract. Stop on unexplained mismatch rather than repeating toggle
 `swift test --disable-sandbox --filter 'DisplayMirroringTests|DDCTests|CLIParserTests' -Xswiftc -warnings-as-errors`
 uses fake channels, snapshots and configuration writers. Handoff cases cover
 ordered success, omitted input, unavailable DDC, zero input, changed DDC target,
-unverified selection, DDC failure on either command, hide/unhide failure,
+unverified selection, initial pre-read failure, lost readback after one pre-read,
+DDC failure on either command, hide/unhide failure,
 journal creation failure and a back selector different from the saved target.
 No hardware changes or DDC hardware queries are needed for these tests.
 
-## Pending supervised round trip
+## Supervised round trip protocol
 
-AC4 remains pending. Fresh approval must name the S2721DGF target and explicit
+Future trials require fresh approval naming the S2721DGF target and explicit
 surviving source, input codes (historically HDMI 1 / DP1), journal path, user
 presence, and acceptable monitor-input-button / manual Displays-settings
 fallback. Rediscover current identities; do not reuse historical numeric IDs.
@@ -97,3 +98,32 @@ source mode/HDR effects and cursor/Spaces behavior after away. After back,
 record verified topology plus visible Mac output, arrangement/modes/main and any
 window/Spaces changes. Non-DDC monitors remain manual-input and untested unless
 separately approved and observed.
+
+### Observed round trip — 2026-10-04
+
+Build `0308e43`, Apple M5 Max, macOS 27.0.1 build 26A434. The user was
+present and separately approved exactly one away and one back, accepting the
+physical input button and manual Displays-settings fallback. No retries,
+private setters, gamma writes or recovery fallback were used.
+
+- Fresh target: S2721DGF UUID `09084682-3C42-4455-AAB8-126A7431125B`, ID 1,
+  1440×2560 / 165 Hz, rotation 270°, origin (3440, -4), HDR off (user confirmed).
+- Fresh source: main AW3423DW UUID `1FC57E99-DE7C-4DAF-B896-3B512CEE064F`,
+  ID 5, 3440×1440 / 175 Hz, origin (0, 0), HDR off (user confirmed).
+- Target input pre-read was DP1 (`0x0F`); away selected HDMI1 (`0x11`)
+  with verified readback, then verified mirroring. The user confirmed the other
+  computer's picture, no separate hidden Mac desktop, usable source/cursor/Spaces
+  and unchanged HDR. System Profiler showed source mode unchanged; target was
+  mirrored at 3440×1440 / 165 Hz, rotation 270°.
+- Back restored and verified the captured topology before selecting DP1, also
+  with verified readback. Separate `recovery verify` passed. System Profiler
+  showed all four original modes, no mirrors and unchanged main display. The
+  user confirmed visible Mac output, arrangement, usable windows/Spaces and HDR
+  still off, with no unexpected visible changes remaining.
+- Other screens remained AW3425DW 3440×1440 / 240 Hz and K272HUL
+  1440×2560 / 60 Hz. Firmware and physical cabling were not independently recorded;
+  qualification must not be extrapolated to another firmware/connection tuple.
+- Journal `1508F303-6EC8-4F99-A149-EAD7A816DBDD` is retained in state `restored`
+  at `~/Library/Application Support/PanelCtl/Recovery/current.json`.
+
+Non-DDC handoff remains offline-tested only, with manual input switching required.

@@ -112,7 +112,7 @@ public enum CLIHelp {
             Errors retain evidence and print recovery commands; no automatic rollback,
             retry, watchdog or disruptive fallback. Stop on unexpected behavior.
             Each hardware handoff requires fresh scoped approval. Consent flags do not
-            replace approval. Combined round trip not yet hardware-qualified.
+            replace approval. Only the documented S2721DGF round trip is hardware-qualified.
             See docs/display-handoff.md.
             """
         case "blackout":
