@@ -254,6 +254,12 @@ final class CLIParserTests: XCTestCase {
         XCTAssertThrowsError(try CLIParser.parse(["ddc-luminance"])) { XCTAssertEqual($0 as? CLIParseError, .missingValue("--display")) }
         XCTAssertThrowsError(try CLIParser.parse(["ddc-luminance", "--display", "1", "--set", "65536"])) { XCTAssertEqual($0 as? CLIParseError, .invalidLuminance) }
         XCTAssertThrowsError(try CLIParser.parse(["ddc-luminance", "--display", "1", "--set", "1", "--set", "2"])) { XCTAssertEqual($0 as? CLIParseError, .duplicateOption("--set")) }
+        XCTAssertEqual(try CLIParser.parse(["ddc-input", "--display", "index:2"]), .ddcInput(selector: "index:2", setValue: nil, json: false))
+        XCTAssertEqual(try CLIParser.parse(["ddc-input", "--display", "0x5", "--set", "hdmi1", "--json"]), .ddcInput(selector: "0x5", setValue: 0x11, json: true))
+        XCTAssertEqual(try CLIParser.parse(["ddc-input", "--display", "1", "--set", "0x0f"]), .ddcInput(selector: "1", setValue: 0x0F, json: false))
+        XCTAssertThrowsError(try CLIParser.parse(["ddc-input"])) { XCTAssertEqual($0 as? CLIParseError, .missingValue("--display")) }
+        XCTAssertThrowsError(try CLIParser.parse(["ddc-input", "--display", "1", "--set", "0"])) { XCTAssertEqual($0 as? CLIParseError, .invalidInputValue("0")) }
+        XCTAssertThrowsError(try CLIParser.parse(["ddc-input", "--display", "1", "--set", "1", "--set", "2"])) { XCTAssertEqual($0 as? CLIParseError, .duplicateOption("--set")) }
     }
 
     func testRejectsUnsafeValues() {

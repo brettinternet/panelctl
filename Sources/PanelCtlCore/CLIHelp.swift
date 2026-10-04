@@ -14,6 +14,7 @@ public enum CLIHelp {
               recovery         Experimental disable and journal-driven recovery
               blackout         Black out selected displays
               ddc-luminance    Read or set luminance
+              ddc-input        Read or switch the monitor input
               sleep-displays   Sleep every display
               wake-displays    Wake every display
               app              Control the PanelCtl app
@@ -108,6 +109,16 @@ public enum CLIHelp {
             """
         case "ddc-luminance":
             return "Usage: panelctl ddc-luminance --display <selector> [--set <0..65535>] [--json]\nRead luminance, or set and verify it."
+        case "ddc-input":
+            return """
+            Usage: panelctl ddc-input --display <selector> [--set <dp1|dp2|hdmi1|hdmi2|1..255>] [--json]
+            Read the monitor's input source (DDC VCP 0x60), or switch it. --set reads the
+            current input first, writes once, then checks by reading. If the monitor stops
+            answering after leaving this Mac's input, the result is unverified. Codes vary
+            by monitor: read the current value on a known input first. This switches the
+            monitor's input only; macOS still treats the display as attached. The monitor's
+            input button is the fallback.
+            """
         case "sleep-displays":
             return "Usage: panelctl sleep-displays [--keep-system-awake [--timeout <duration>]]\nSleep every display; --timeout requires --keep-system-awake."
         case "wake-displays":

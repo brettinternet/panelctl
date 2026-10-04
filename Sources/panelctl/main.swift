@@ -41,6 +41,26 @@ struct PanelCtlMain {
                         print("id=\(reading.displayID) uuid=\(reading.uuid) luminance=\(reading.current)/\(reading.maximum)")
                     }
                 }
+            case .ddcInput(let selector, let setValue, let json):
+                if let setValue {
+                    let result = try DDCInput.set(selector: selector, value: setValue)
+                    if json {
+                        try printJSON(result)
+                    } else {
+                        var line = String(format: "id=%u uuid=%@ original=0x%02X requested=0x%02X", result.displayID, result.uuid, result.original, result.requested)
+                        if let observed = result.observed { line += String(format: " observed=0x%02X", observed) }
+                        line += " outcome=\(result.outcome.rawValue)"
+                        if let detail = result.detail { line += " detail=\(quoted(detail))" }
+                        print(line)
+                    }
+                } else {
+                    let reading = try DDCInput.read(selector: selector)
+                    if json {
+                        try printJSON(reading)
+                    } else {
+                        print(String(format: "id=%u uuid=%@ input=0x%02X", reading.displayID, reading.uuid, reading.current))
+                    }
+                }
             case .sleepDisplays(let keepSystemAwake, let timeout):
                 let controller = DisplaySleepController()
                 try controller.start(keepSystemAwake: keepSystemAwake, timeout: timeout)
