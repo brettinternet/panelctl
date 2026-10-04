@@ -92,7 +92,7 @@ struct RecoveryEnableTransaction {
     }
 
     func configure(id: UInt32, enabled: Bool, didStage: () throws -> Void = {},
-                   revalidate: () throws -> Void) throws {
+                   willCommit: () throws -> Void = {}, revalidate: () throws -> Void) throws {
         try revalidate()
         let config = try begin()
         var consumed = false
@@ -101,6 +101,7 @@ struct RecoveryEnableTransaction {
         try setEnabled(config, id, enabled)
         try didStage()
         try revalidate()
+        try willCommit()
         // CGCompleteDisplayConfiguration consumes the transaction even on error.
         consumed = true
         try commit(config, .forSession)

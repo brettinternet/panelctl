@@ -29,19 +29,23 @@ The version-2 journal retains its baseline and gains optional fields/states:
 | Evidence | Meaning |
 | --- | --- |
 | `disabledByUsID`, `disableAttempted: true`, `disabling` | Selected intent synchronized **before** any transaction call; alone this never authorizes re-enable |
-| `disableStaged: true` | Setter staged successfully; synchronized before final revalidation/completion. Required for any private recovery attempt |
+| `disableStaged: true` | Setter staged successfully; synchronized before final revalidation. Alone this never authorizes recovery |
+| `disableCommitStarted: true` | Final validation passed; synchronized immediately before completion may be invoked. Required with staging for private recovery |
 | `disabled` | Completion returned and the following save succeeded; not proof of signal loss |
 | `reenableAttempted: true`, `restoring` | Synchronized before the one permitted private enable attempt |
-| `privateRecoveryClosed: true` | Successful verification retired private authority, even if a later observation fails |
+| `privateRecoveryClosed: true` | Verification, observation of the retained ID online, or canceled completion-intent persistence retired write authority, even if later verification fails |
 | `needsAttention` | Retained evidence with refusal/failure; never silently discarded |
 
 Recovery must not require the post-commit `disabled` acknowledgment. A crash in
-that window leaves `disabling`, `disableStaged` and the retained target, sufficient
-to *evaluate* one identity-checked recovery attempt, not sufficient to bypass
-identity checks. Death before successful staging cannot authorize re-enable if
-the target later disappears for an unrelated reason. Staging persistence failure
-cancels without completion. The durable staged marker still cannot prove whether
-completion happened: write-ahead evidence and a display commit are not atomic.
+that window leaves `disabling`, `disableStaged`, `disableCommitStarted` and the
+retained target, sufficient to *evaluate* one identity-checked recovery attempt,
+not sufficient to bypass identity checks. Death or cancellation before the final
+validation cannot authorize re-enable after an unrelated disappearance. Staging
+or completion-intent persistence failure cancels without completion; the latter
+also revokes in-memory authority and attempts to persist that revocation.
+The completion-intent marker still cannot prove whether completion happened:
+write-ahead evidence and a display commit are not atomic. A process death or
+filesystem failure during intent persistence remains an uncertain boundary.
 Setter failure cancels the uncompleted transaction; completion consumes it even
 on error. A failed or interrupted enable attempt is never automatically replayed.
 
@@ -63,12 +67,19 @@ success without connectivity/configuration convergence ends in `needsAttention`.
 An interrupted enable can subsequently be verified if the baseline is present,
 but cannot be replayed while the target is missing.
 
-Legacy version-1 journals and version-2 journals without successful staging
-evidence never authorize private writes. Missing intent never
+Legacy version-1 journals and version-2 journals without both successful staging
+and completion-attempt evidence never authorize private writes. Older staging-only
+journals are preserved, not upgraded by inference. Missing intent never
 comes from disappearance alone. A stored `verifyOnly` flag cannot be overridden
 by `restore`; it forbids public **and** private writers. Successfully resolved
 private intent cannot be revived by a later unrelated disappearance. Unresolved
 journals continue to block replacement; resolved baselines are archived.
+
+The shared engine retires authority durably when it observes the retained ID
+online, before verifying identity/layout. This only removes permission: a reused
+ID still fails strict verification. All subsequent attempts are verify-only,
+including after a mismatch, so manual/startup recovery cannot repair a system
+re-enable's layout or revive old intent after another disappearance.
 
 ## Limits
 
@@ -81,7 +92,11 @@ recovery can evaluate retained evidence; new boot/OS/user or unknown identity
 requires manual attention. Real offline identity is still unqualified on this
 host. Refusal is safe behavior, not successful reconnection.
 
-## Fresh offline validation
+## TASK-5 validation (historical)
+
+[TASK-8 acceptance](display-disable-offline-acceptance.md) records fresh results
+and the later independent-review corrections to completion intent and shared
+system-re-enable retirement.
 
 - `swift test --disable-sandbox --filter RecoveryLeaseTests`: fake transactions,
   durable ordering, lease/topology/preflight/persistence refusal, cancellation,

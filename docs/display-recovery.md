@@ -68,8 +68,11 @@ or unknown physical/awake state is permitted. Selection is tied to the captured
 identity; changes refuse rather than choosing a new target. The parent checks
 preflight, persists the baseline and waits for READY. Only the locked helper can
 stage disable, after durable intent and fresh identity/topology/lifecycle/lease
-checks at every transaction boundary. `disableCompleted` records an acknowledged
-completion, separately from staging evidence needed after a crash. Setter or
+checks at every transaction boundary. `disableCommitStarted` is saved only after
+final validation and before completion can run; staging alone cannot authorize
+recovery after cancellation. Older staging-only journals remain preserved but
+refuse private recovery. `disableCompleted` records an acknowledged completion,
+separately from the staging and completion-attempt evidence needed after a crash. Setter or
 completion failure must not become CLI success merely because recovery succeeded.
 
 The foreground CLI waits for bounded recovery. Ordinary exit, SIGINT/SIGTERM and
@@ -88,13 +91,16 @@ the lease. Survivor loss requests guarded recovery; it cannot relax identity.
 Transitions defer writes with the fixed five-second lifecycle budget; exhaustion
 preserves `needsAttention`. System re-enable is accepted with verify-only journal
 reconciliation on every finish path, including EOF/signal/deadline races. Private
-authority is durably closed before verification, even if layout verification fails;
+authority is durably closed before verification, even if layout verification fails.
+The shared manual/startup engine also retires authority upon observing the retained
+ID online, retaining strict identity verification but forbidding layout repair;
+subsequent recovery stays verify-only. Thus
 there is never a second disable or a layout write to fight the OS. This is
 not a wall-clock recovery guarantee during sleep. A future production provider
 must establish fresh awake/physical/driver evidence at transaction boundaries;
 queued notifications alone are insufficient.
 
-`status` prints the retained snapshot, `disabledByUsID`, staging/completion/one-shot
+`status` prints the retained snapshot, `disabledByUsID`, staging/completion-intent/completion/one-shot
 attempt evidence, `state`, `trigger` and `failure`, even if the target is absent
 from inventory. It does not enumerate displays or write configuration. `enable`
 and `panic` accept no selector and attempt only the journal's staged target under
@@ -241,9 +247,10 @@ See [the research and risk assessment](undocumented-display-control.md).
 
 ## Validation
 
-See the [implementation validation checkpoint](recovery-validation.md) for
-historical checks and the [reconciliation record](recovery-reconciliation.md)
-for fresh TASK-2 checks and unqualified behavior.
+See [TASK-8 offline acceptance](display-disable-offline-acceptance.md) for fresh
+checks, the independent safety review and remaining pre-trial gates. The
+[implementation validation checkpoint](recovery-validation.md) and
+[reconciliation record](recovery-reconciliation.md) retain historical evidence.
 
 `swift test --filter DisplayRecoveryTests` exercises journal locking, archives,
 permissions, corruption, identity rejection, write-ahead ordering, failed writes,

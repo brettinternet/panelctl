@@ -62,6 +62,7 @@ final class RecoveryLeaseTests: XCTestCase {
         }, commit: { _, scope in
             XCTAssertEqual(scope, .forSession)
             XCTAssertEqual(try store.load().disableStaged, true)
+            XCTAssertEqual(try store.load().disableCommitStarted, true)
             events.append("commit")
         }, cancel: { _ in XCTFail("unexpected cancel") })
         let disable = RecoveryDisable(transaction: transaction,
@@ -103,21 +104,45 @@ final class RecoveryLeaseTests: XCTestCase {
         }
     }
 
-    func testLeaseLossAfterBeginCancelsWithoutSetter() throws {
-        let baseline = try snapshot(), store = try store()
-        var journal = RecoveryJournal(snapshot: baseline, timeout: 30); journal.state = .armed
-        try store.create(journal)
-        var alive = true, cancelled = false
-        let transaction = RecoveryEnableTransaction(begin: {
-            alive = false; return CGDisplayConfigRef(bitPattern: 1)!
-        }, setEnabled: { _, _, _ in XCTFail("dead lease") }, commit: { _, _ in XCTFail("commit") }, cancel: { _ in cancelled = true })
-        let disable = RecoveryDisable(transaction: transaction,
-            inventory: { self.inventory(baseline, online: [1, 2]) }, preflight: { _, _ in })
-        XCTAssertThrowsError(try disable.perform(&journal, store: store, targetID: 2, capture: { baseline }, lease: {
-            if !alive { throw RecoveryError.unsafe("parent died") }
-        }))
-        XCTAssertTrue(cancelled)
-        XCTAssertEqual(try store.load().disabledByUsID, 2)
+    func testLeaseLossAtEveryDisableBoundaryPreventsCompletion() throws {
+        let baseline = try snapshot()
+        // Before intent, before begin, before setter, and before completion.
+        for revokedAt in 1...4 {
+            let store = try store()
+            var journal = RecoveryJournal(snapshot: baseline, timeout: 30); journal.state = .armed
+            try store.create(journal)
+            var checks = 0, begins = 0, setters = 0, cancellations = 0
+            let transaction = RecoveryEnableTransaction(begin: {
+                begins += 1; return CGDisplayConfigRef(bitPattern: 1)!
+            }, setEnabled: { _, id, enabled in
+                XCTAssertEqual(id, 2); XCTAssertFalse(enabled); setters += 1
+            }, commit: { _, _ in XCTFail("completion after revoked lease") }, cancel: { _ in cancellations += 1 })
+            let disable = RecoveryDisable(transaction: transaction,
+                inventory: { self.inventory(baseline, online: [1, 2]) }, preflight: { _, _ in })
+            XCTAssertThrowsError(try disable.perform(&journal, store: store, targetID: 2, capture: { baseline }, lease: {
+                checks += 1
+                if checks == revokedAt { throw RecoveryError.unsafe("parent died") }
+            }))
+            XCTAssertEqual(checks, revokedAt)
+            XCTAssertEqual(begins, revokedAt >= 3 ? 1 : 0)
+            XCTAssertEqual(setters, revokedAt == 4 ? 1 : 0)
+            XCTAssertEqual(cancellations, begins)
+            let saved = try store.load()
+            XCTAssertEqual(saved.snapshot, baseline)
+            XCTAssertEqual(saved.disabledByUsID, revokedAt == 1 ? nil : 2)
+            XCTAssertEqual(saved.disableAttempted, revokedAt == 1 ? nil : true)
+            XCTAssertEqual(saved.disableStaged, revokedAt == 4 ? true : nil)
+            XCTAssertNil(saved.disableCommitStarted)
+            XCTAssertNil(saved.disableCompleted)
+            XCTAssertEqual(saved.state, revokedAt == 1 ? .armed : .disabling)
+            store.unlock()
+            let engine = RecoveryEngine(capture: { self.absent(baseline) }, apply: { _ in XCTFail("public write") },
+                reenable: RecoveryReenable(inventory: { self.inventory(baseline, online: [1]) }, enable: { _, _ in
+                    XCTFail("cancelled disable authorized a later private enable")
+                }), convergencePause: {})
+            XCTAssertThrowsError(try engine.recover(store: store, trigger: "startup"))
+            XCTAssertNil(try store.load().reenableAttempted)
+        }
     }
 
     func testCrashWindowsRetainTargetAndStartupUsesSameOneShotRecovery() throws {
@@ -162,13 +187,77 @@ final class RecoveryLeaseTests: XCTestCase {
         }
     }
 
+    func testCommitIntentSaveFailureAndLegacyStagingCannotAuthorizeRecovery() throws {
+        let baseline = try snapshot()
+        for legacy in [false, true] {
+            let store = try store()
+            var journal = RecoveryJournal(snapshot: baseline, timeout: 30)
+            journal.state = .armed
+            if legacy { journal.disabledByUsID = 2; journal.disableStaged = true }
+            try store.create(journal)
+            if !legacy {
+                var validations = 0, cancellations = 0
+                let transaction = RecoveryEnableTransaction(begin: { OpaquePointer(bitPattern: 1)! },
+                    setEnabled: { _, _, _ in }, commit: { _, _ in XCTFail("commit without durable intent") },
+                    cancel: { _ in cancellations += 1 })
+                let disable = RecoveryDisable(transaction: transaction,
+                    inventory: { self.inventory(baseline, online: [1, 2]) }, preflight: { _, _ in
+                        validations += 1
+                        if validations == 4 { store.unlock() }
+                    })
+                XCTAssertThrowsError(try disable.perform(&journal, store: store, targetID: 2, capture: { baseline }, lease: {}))
+                XCTAssertEqual(cancellations, 1)
+            }
+            XCTAssertEqual(try store.load().disableStaged, true)
+            XCTAssertNil(try store.load().disableCommitStarted)
+            store.unlock()
+            let engine = RecoveryEngine(capture: { self.absent(baseline) }, apply: { _ in XCTFail("public write") },
+                reenable: RecoveryReenable(inventory: { self.inventory(baseline, online: [1]) }, enable: { _, _ in
+                    XCTFail("staging alone granted private authority")
+                }), convergencePause: {})
+            if !legacy {
+                XCTAssertNil(journal.disableCommitStarted)
+                XCTAssertEqual(journal.privateRecoveryClosed, true)
+                try store.lock()
+                XCTAssertThrowsError(try engine.finish(&journal, store: store, verifyOnly: false, trigger: "disable-error"))
+                store.unlock()
+            }
+            XCTAssertThrowsError(try engine.recover(store: store, trigger: "startup"))
+            XCTAssertNil(try store.load().reenableAttempted)
+            XCTAssertEqual(try store.load().state, .needsAttention)
+            XCTAssertEqual(try store.load().snapshot, baseline)
+        }
+    }
+
+    func testManualSystemReenableRetiresAuthorityBeforeFailedVerification() throws {
+        let baseline = try snapshot(), store = try store()
+        var displays = baseline.displays; displays[1].x += 10
+        var current = RecoverySnapshot(bootSession: baseline.bootSession, osBuild: baseline.osBuild,
+                                       userID: baseline.userID, displays: displays)
+        let journal = RecoveryJournal(snapshot: baseline, disabledByUsID: 2, disableStaged: true, disableCommitStarted: true)
+        try store.create(journal); store.unlock()
+        let engine = RecoveryEngine(capture: { current }, apply: { _ in
+            XCTFail("must not repair layout after a system re-enable")
+            throw RecoveryError.unsafe("layout repair failed")
+        }, reenable: RecoveryReenable(inventory: { self.inventory(baseline, online: [1]) }, enable: { _, _ in
+            XCTFail("system re-enable revived old private authority")
+        }), convergencePause: {})
+        XCTAssertThrowsError(try engine.recover(store: store, trigger: "manual-enable", ownedOnly: true))
+        XCTAssertEqual(try store.load().privateRecoveryClosed, true)
+        XCTAssertEqual(try store.load().state, .needsAttention)
+        current = absent(baseline)
+        XCTAssertThrowsError(try engine.recover(store: store, trigger: "startup", ownedOnly: true))
+        XCTAssertNil(try store.load().reenableAttempted)
+        XCTAssertEqual(try store.load().snapshot, baseline)
+    }
+
     func testBoundedConvergenceAfterEnableAndPublicRestoreNeverRepeatsWrites() throws {
         let baseline = try snapshot(), store = try store()
         var current = absent(baseline), phase = 0, pauses = 0, enables = 0, publicWrites = 0
         var shifted = baseline.displays; shifted[1].x += 10
         let changed = RecoverySnapshot(bootSession: baseline.bootSession, osBuild: baseline.osBuild,
                                        userID: baseline.userID, displays: shifted)
-        var journal = RecoveryJournal(snapshot: baseline, disabledByUsID: 2, disableStaged: true)
+        var journal = RecoveryJournal(snapshot: baseline, disabledByUsID: 2, disableStaged: true, disableCommitStarted: true)
         try store.create(journal)
         let backend = RecoveryReenable(inventory: { self.inventory(baseline, online: [1]) }, enable: { _, validate in
             try validate(); enables += 1; phase = 1
@@ -188,7 +277,7 @@ final class RecoveryLeaseTests: XCTestCase {
         let baseline = try snapshot()
         for resolved in [false, true] {
             let store = try store()
-            var journal = RecoveryJournal(snapshot: baseline, verifyOnly: !resolved, disabledByUsID: 2, disableStaged: true)
+            var journal = RecoveryJournal(snapshot: baseline, verifyOnly: !resolved, disabledByUsID: 2, disableStaged: true, disableCommitStarted: true)
             if resolved { journal.state = .verified }
             try store.create(journal)
             let backend = RecoveryReenable(inventory: { self.inventory(baseline, online: [1]) },
@@ -205,7 +294,7 @@ final class RecoveryLeaseTests: XCTestCase {
 
     func testExhaustedConvergencePreservesEvidenceAndAttemptBudget() throws {
         let baseline = try snapshot(), store = try store()
-        var journal = RecoveryJournal(snapshot: baseline, disabledByUsID: 2, disableStaged: true)
+        var journal = RecoveryJournal(snapshot: baseline, disabledByUsID: 2, disableStaged: true, disableCommitStarted: true)
         try store.create(journal)
         var writes = 0, pauses = 0
         let engine = RecoveryEngine(capture: { self.absent(baseline) }, apply: { _ in XCTFail("public write") },
@@ -427,7 +516,9 @@ final class RecoveryLeaseTests: XCTestCase {
                     XCTAssertEqual(try store.load().state, .needsAttention, fault)
                 } else {
                     XCTAssertEqual(saved.disableStaged, true, fault)
-                    XCTAssertEqual(try engine.recover(store: store, trigger: "startup").state, .restored)
+                    XCTAssertEqual(saved.disableCommitStarted, true, fault)
+                    XCTAssertEqual(try engine.recover(store: store, trigger: "startup").state,
+                                   fault == "before-commit" ? .verified : .restored)
                 }
                 XCTAssertEqual(enables, fault == "after-commit" ? 1 : 0, fault)
             }

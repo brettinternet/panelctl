@@ -24,7 +24,9 @@ The existing `RecoveryEnableTransaction` now stages either Boolean value. Its
 
 1. Revalidates, then begins a fresh transaction.
 2. Revalidates immediately before staging the retained ID/value.
-3. Revalidates immediately before completing with session scope only.
+3. Revalidates before completing with session scope only. Disable then synchronizes
+   completion-attempt intent before invoking completion (TASK-8); a final-validation
+   failure never grants private recovery authority.
 4. Cancels exactly once for errors after begin but before complete. Complete
    consumes the configuration on success or failure; neither case cancels it.
 

@@ -4,6 +4,9 @@ import XCTest
 final class BlackoutGeometryTests: XCTestCase {
     @MainActor
     func testWindowPlacementOnConnectedExternalScreens() throws {
+        guard ProcessInfo.processInfo.environment["PANELCTL_TEST_LIVE_BLACKOUT"] == "1" else {
+            throw XCTSkip("live blackout windows require PANELCTL_TEST_LIVE_BLACKOUT=1")
+        }
         let screens = NSScreen.screens.filter { screen in
             let key = NSDeviceDescriptionKey("NSScreenNumber")
             return (screen.deviceDescription[key] as? NSNumber)?.uint32Value != CGMainDisplayID()

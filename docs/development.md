@@ -27,6 +27,16 @@ swift build --product PanelCtlApp
 scripts/test-release-version.sh
 ```
 
+Routine tests use fake display writers. The connected-screen geometry test can
+briefly cover external screens with opaque blackout windows; it is skipped unless
+`PANELCTL_TEST_LIVE_BLACKOUT=1` is explicitly set. Leave it unset for offline
+recovery acceptance. `PANELCTL_ICC_EVIDENCE_DIR` optionally enables read-only replay
+of retained ICC artifacts; an unset variable is a reported skip, not qualification.
+Neither opt-in authorizes private display setters or restoration trials.
+
+For fresh offline recovery results, failure-matrix coverage and the remaining
+live-trial gates, see [TASK-8 acceptance](display-disable-offline-acceptance.md).
+
 To build a universal `PanelCtl.app` at `.build/PanelCtl.app`, install
 [Task](https://taskfile.dev/) and run:
 

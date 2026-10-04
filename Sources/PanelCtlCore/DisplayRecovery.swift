@@ -297,9 +297,18 @@ struct RecoveryEngine {
         // A command cannot upgrade rehearsal authority, or reactivate a
         // resolved private intent after a later unrelated disappearance.
         if journal.state.resolved { journal.privateRecoveryClosed = true }
-        let verifyOnly = verifyOnly || journal.verifyOnly || journal.state.resolved
+        var verifyOnly = verifyOnly || journal.verifyOnly || journal.state.resolved || journal.privateRecoveryClosed == true
         do {
             let initial = try capture()
+            if journal.disableStaged == true, let targetID = journal.disabledByUsID,
+               initial.displays.contains(where: { $0.id == targetID }) {
+                // Observing the retained ID online retires authority even if
+                // identity/layout verification fails. This only removes write
+                // permission; it never treats a reused ID as qualified identity.
+                journal.privateRecoveryClosed = true
+                try store.save(journal)
+                verifyOnly = true
+            }
             let missing = journal.snapshot.displays.contains { original in
                 !initial.displays.contains { $0.uuid == original.uuid }
             }
@@ -310,8 +319,8 @@ struct RecoveryEngine {
                 }
                 let target = try reenable.target(snapshot: journal.snapshot, current: initial)
                 guard journal.version == 2, journal.disabledByUsID == target.id,
-                      journal.disableStaged == true else {
-                    throw RecoveryError.unsafe("missing staged disable evidence for retained target; manual recovery required")
+                      journal.disableStaged == true, journal.disableCommitStarted == true else {
+                    throw RecoveryError.unsafe("missing disable completion-attempt evidence for retained target; manual recovery required")
                 }
                 journal.state = .restoring; journal.trigger = trigger
                 journal.reenableAttempted = true

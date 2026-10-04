@@ -27,16 +27,20 @@ struct RecoveryJournal: Codable {
     // Successful staging is durable before completion can consume the
     // transaction. Pre-staging intent alone never authorizes private recovery.
     var disableStaged: Bool?
+    // Final validation passed and completion may have been invoked. Staging
+    // alone (including older journals) cannot authorize private recovery.
+    var disableCommitStarted: Bool?
     var disableCompleted: Bool?
     var privateRecoveryClosed: Bool?
     var privateLease: Bool?
 
     init(snapshot: RecoverySnapshot, verifyOnly: Bool = false, timeout: TimeInterval? = nil,
-         disabledByUsID: UInt32? = nil, disableStaged: Bool? = nil) {
+         disabledByUsID: UInt32? = nil, disableStaged: Bool? = nil, disableCommitStarted: Bool? = nil) {
         let now = Date()
         version = 2; id = UUID(); createdAt = now; self.snapshot = snapshot
         self.disabledByUsID = disabledByUsID
         self.disableStaged = disableStaged
+        self.disableCommitStarted = disableCommitStarted
         self.verifyOnly = verifyOnly
         deadline = timeout.map { now.addingTimeInterval($0) }
         state = .captured

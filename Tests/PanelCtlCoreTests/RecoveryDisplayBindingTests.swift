@@ -133,7 +133,7 @@ final class RecoveryDisplayBindingTests: XCTestCase {
 
     func testBothDirectionsCancelOnlyBeforeCompletion() {
         for enabled in [false, true] {
-            for failure in ["none", "validate-1", "begin", "validate-2", "stage", "validate-3", "complete"] {
+            for failure in ["none", "validate-1", "begin", "validate-2", "stage", "validate-3", "will-commit", "complete"] {
                 var events: [String] = [], validations = 0
                 func step(_ event: String) throws {
                     events.append(event)
@@ -147,15 +147,15 @@ final class RecoveryDisplayBindingTests: XCTestCase {
                     XCTAssertEqual(scope, .forSession); try step("complete")
                 }, cancel: { _ in events.append("cancel") })
                 let operation = {
-                    try transaction.configure(id: 42, enabled: enabled) {
+                    try transaction.configure(id: 42, enabled: enabled, willCommit: { try step("will-commit") }) {
                         validations += 1; try step("validate-\(validations)")
                     }
                 }
                 if failure == "none" { XCTAssertNoThrow(try operation()) }
                 else { XCTAssertThrowsError(try operation()) }
-                let order = ["validate-1", "begin", "validate-2", "stage", "validate-3", "complete"]
+                let order = ["validate-1", "begin", "validate-2", "stage", "validate-3", "will-commit", "complete"]
                 var expected = failure == "none" ? order : Array(order.prefix(through: order.firstIndex(of: failure)!))
-                if ["validate-2", "stage", "validate-3"].contains(failure) { expected.append("cancel") }
+                if ["validate-2", "stage", "validate-3", "will-commit"].contains(failure) { expected.append("cancel") }
                 XCTAssertEqual(events, expected)
             }
         }

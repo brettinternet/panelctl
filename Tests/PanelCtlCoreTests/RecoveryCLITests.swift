@@ -171,7 +171,7 @@ final class RecoveryCLITests: XCTestCase {
 
     private func stranded(_ f: Fixture, store: RecoveryStore) throws {
         try store.lock()
-        var journal = RecoveryJournal(snapshot: f.baseline, disabledByUsID: 2, disableStaged: true)
+        var journal = RecoveryJournal(snapshot: f.baseline, disabledByUsID: 2, disableStaged: true, disableCommitStarted: true)
         journal.state = .disabled; journal.disableCompleted = true
         try store.create(journal); store.unlock()
         f.current = f.absent

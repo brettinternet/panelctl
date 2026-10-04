@@ -14,7 +14,8 @@ struct RecoveryDisable {
     func perform(_ journal: inout RecoveryJournal, store: RecoveryStore, targetID: UInt32,
                  capture: () throws -> RecoverySnapshot, lease: () throws -> Void) throws {
         guard journal.version == 2, !journal.verifyOnly, journal.state == .armed,
-              journal.disableAttempted != true, journal.disableStaged != true, journal.disabledByUsID == nil,
+              journal.disableAttempted != true, journal.disableStaged != true,
+              journal.disableCommitStarted != true, journal.disabledByUsID == nil,
               journal.reenableAttempted != true, journal.privateRecoveryClosed != true,
               let deadline = journal.deadline,
               let target = journal.snapshot.displays.first(where: { $0.id == targetID }),
@@ -48,6 +49,19 @@ struct RecoveryDisable {
             // Completion cannot run unless successful staging is durable.
             // A failed save cancels the still-uncompleted transaction.
             try store.save(journal)
+        }, willCommit: {
+            // A failed final validation cancels staging without granting future
+            // enable authority. Persist only once completion can be attempted.
+            journal.disableCommitStarted = true
+            do { try store.save(journal) }
+            catch {
+                // Completion will not run. Revoke the in-memory permission too:
+                // the helper finishes with this journal, not a fresh disk load.
+                journal.disableCommitStarted = nil
+                journal.privateRecoveryClosed = true
+                try? store.save(journal)
+                throw error
+            }
         }, revalidate: validate)
         journal.disableCompleted = true
         journal.state = .disabled

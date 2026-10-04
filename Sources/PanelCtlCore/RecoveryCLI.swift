@@ -70,7 +70,7 @@ struct RecoveryCLI {
         }
         let journal = try store.load()
         guard journal.id == lease.id, journal.disabledByUsID == target.id,
-              journal.disableStaged == true, journal.disableCompleted == true,
+              journal.disableStaged == true, journal.disableCommitStarted == true, journal.disableCompleted == true,
               journal.state.resolved, journal.privateRecoveryClosed == true,
               journal.trigger?.hasPrefix("disable-error") != true else {
             throw RecoveryError.unsafe(journal.failure ?? "disable/recovery was not acknowledged; retain journal")

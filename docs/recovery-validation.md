@@ -1,5 +1,9 @@
 # Recovery validation checkpoint
 
+Historical groundwork evidence. For fresh full-suite/build/subprocess results,
+independent review and the pre-trial gates, see
+[TASK-8 offline acceptance](display-disable-offline-acceptance.md).
+
 Host: macOS 27.0.1 (26A434), arm64, Apple M5 Max Mac Studio.
 
 Completed:
