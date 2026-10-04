@@ -11,7 +11,8 @@ was changed. Vendor help text is reported as a claim, not observed behavior.
 
 This complements [undocumented-display-control.md](undocumented-display-control.md)
 (candidate API landscape) and [display-recovery.md](display-recovery.md)
-(our recovery groundwork).
+(our recovery groundwork). The resulting recommendation and gated plan live in
+[display-disable-implementation-plan.md](display-disable-implementation-plan.md).
 
 ## Consensus mechanism
 
