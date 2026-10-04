@@ -129,10 +129,74 @@ Use the bundled CLI if the standalone one is not installed:
 /Applications/PanelCtl.app/Contents/Helpers/panelctl app toggle
 ```
 
-`status` does not launch the app; other commands start it in the background if
-needed. Only `open-settings` shows a window. Status exits `0` when the app
-answers, `3` when it is not running, and `1` on control failure. JSON status may
+`status`, `hide` and `show` do not launch the app; other commands start it in
+the background if needed. Only `open-settings` shows a window. JSON status may
 include `nextAction`, `secondsRemaining`, and `snoozedUntil`.
+
+### Scripted desktop Hide/Show
+
+Configure the exact target and mirror source in Settings → Displays first.
+Use the target UUID, not a numeric ID, name or index:
+
+```sh
+panelctl app hide --display 00000000-0000-0000-0000-000000000002 --json
+panelctl app show --display 00000000-0000-0000-0000-000000000002 --json
+```
+
+Replace the example UUID with your configured display's UUID. These commands
+check current identity and shared-journal observations using the app's UI
+settings, including optional monitor inputs. **Every actual change still needs
+fresh UI confirmation.** A headless request returns `confirmation-required`
+and directs you to Settings → Displays; it never opens a hidden modal or treats
+saved opt-in as consent. There is no `--yes` bypass. Open the app and choose
+Hide or Show to review the source, inputs, protection suspension and fallback.
+An already hidden/shown desktop returns `no-op`, with no repeated DDC write.
+Show confirmation/recovery remains available while protection is disabled or
+snoozed, and uses the journal owner rather than guessing an absent target.
+
+For a Shortcut, use **Run Shell Script** with the bundled CLI and capture the
+JSON even on a nonzero result:
+
+```sh
+/Applications/PanelCtl.app/Contents/Helpers/panelctl app show \
+  --display 00000000-0000-0000-0000-000000000002 --json || :
+```
+
+Read `outcome` in the returned dictionary. On `confirmation-required`, instruct
+the user to open PanelCtl and confirm Show in Displays. Do not poll/retry Hide
+or Show to obtain consent. On `response-lost`, inspect `app status --json`
+before taking any further action; the CLI does not resend these requests.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Successful existing action/status, or Hide/Show `no-op` |
+| 1 | `refused`, `busy`, `response-lost`, or other control failure |
+| 2 | Invalid CLI arguments (usage error on stderr, no JSON) |
+| 3 | App unavailable (Hide/Show/status do not launch it) |
+| 4 | `confirmation-required`; complete the operation in the UI |
+| 5 | Status reports `partial`: a session input result was skipped, unverified, not attempted or failed |
+| 6 | `recovery-needed`; inspect the shared journal in Displays |
+
+Status keeps `state` as the protection state. Its added `displays` array contains
+`targetUUID`, `observedState` (`separate`, `hidden-by-panelctl`,
+`mirrored-externally`, `unavailable`, `recovery-needed`,
+`unsupported-recovery` or `unknown`), `operation` (`idle`, `hiding`,
+`showing`), `recoveryNeeded`, and optional `lastInputOutcome`. Input evidence
+includes its state, requested/observed codes, detail and any recovery command.
+It is the last app operation result **in this session**, not a live input reading
+or saved configuration. Relaunch discards it rather than inventing input state.
+A partial input result can coexist with a restored desktop; repeated Show is
+still a successful no-op, while status retains the warning. Status `ok: true`
+means inspection answered, not that every display/input operation succeeded:
+check `outcome` and the exit code. Oversized status fails explicitly rather than
+silently dropping recovery/input evidence.
+
+Existing enable/disable/toggle, blackout-now, restore, snooze/resume and sleep-now
+retain their meanings. Restore only removes protection; it never Shows or
+switches inputs. Idle/empty-display automation remains blackout/dimming-only,
+and hide/recovery suspends protection as described in the
+[Hide/Show contract](display-hide-ux.md). Launch/wake never re-hide or retry DDC.
+This script interface adds no hardware qualification or live-write approval.
 
 For a persistent CLI watcher, edit the executable path and display UUID in the
 [LaunchAgent example](../examples/com.brettinternet.panelctl.blackout.plist).

@@ -449,6 +449,118 @@ final class AppModel: ObservableObject {
         hidePreferences[targetUUID] != nil
     }
 
+    // Input results are session evidence, not a claim about the monitor's current input.
+    private var controlInputOutcomes: [String: DisplayInputOutcome] = [:]
+
+    var controlDisplayOutcome: AppControlOutcome? {
+        if hideOperation.isBusy || handoffStatus?.state == .busy { return .busy }
+        if handoffInspectionFailure != nil || handoffStatus?.state == .recovery ||
+            handoffStatus?.state == .unsupported ||
+            (handoffStatus?.state == .hidden && handoffStatus?.canShow != true) { return .recoveryNeeded }
+        if controlInputOutcomes.values.contains(where: {
+            [.failed, .skipped, .unverified, .notAttempted].contains($0.state)
+        }) { return .partial }
+        return nil
+    }
+
+    var controlDisplayStatuses: [AppControlDisplayStatus] {
+        hideDisplayConfigurations.map { configuration in
+            let uuid = configuration.target.uuid
+            let operation: String
+            switch hideOperation {
+            case .hiding(let target) where target.caseInsensitiveCompare(uuid) == .orderedSame:
+                operation = "hiding"
+            case .showing(let target) where target.caseInsensitiveCompare(uuid) == .orderedSame:
+                operation = "showing"
+            default: operation = "idle"
+            }
+            let state: String
+            switch observedDesktopState(for: configuration) {
+            case "Separate": state = "separate"
+            case "Hidden by PanelCtl": state = "hidden-by-panelctl"
+            case "Unavailable": state = "unavailable"
+            case "Mirrored outside PanelCtl": state = "mirrored-externally"
+            case "Recovery needed": state = "recovery-needed"
+            case "Unsupported recovery journal": state = "unsupported-recovery"
+            default: state = "unknown"
+            }
+            return AppControlDisplayStatus(
+                targetUUID: uuid, observedState: state, operation: operation,
+                recoveryNeeded: handoffInspectionFailure != nil ||
+                    handoffStatus?.state == .recovery || handoffStatus?.state == .unsupported ||
+                    (handoffStatus?.state == .hidden && handoffStatus?.canShow != true),
+                lastInputOutcome: controlInputOutcomes[uuid.lowercased()]
+            )
+        }
+    }
+
+    /// Headless calls never open confirmation UI or supply consent. The approved
+    /// contract requires a fresh, scoped UI confirmation for every actual change.
+    func handleDisplayControlRequest(_ request: AppControlRequest) -> AppControlResponse {
+        func response(_ outcome: AppControlOutcome, _ message: String) -> AppControlResponse {
+            AppControlResponse(
+                ok: outcome == .noOp, running: true, enabled: preferences.isEnabled,
+                state: runtimeState.controlIdentifier, summary: message,
+                error: outcome == .noOp ? nil : message, outcome: outcome,
+                displays: controlDisplayStatuses
+            )
+        }
+        guard request.protocolVersion == AppControlRequest.currentProtocol,
+              request.command == .hide || request.command == .show,
+              request.durationSeconds == nil,
+              let uuid = request.targetUUID, UUID(uuidString: uuid) != nil else {
+            return response(.refused, "Hide/Show requires --display with an exact UUID and a supported protocol; no duration is accepted.")
+        }
+        guard !hideOperation.isBusy else {
+            return response(.busy, "A UI Hide/Show is in progress. Inspect status after it finishes.")
+        }
+        displays = displayProvider()
+        refreshHandoffStatus()
+        guard handoffStatus?.state != .busy else {
+            return response(.busy, "Another display operation owns the shared lock. Retry status after it finishes.")
+        }
+        guard handoffInspectionFailure == nil, handoffStatus != nil else {
+            return response(.recoveryNeeded, handoffInspectionFailure ?? "Display recovery status is unknown. Review Settings → Displays.")
+        }
+        guard !displayLifecycleTransitioning else {
+            return response(.refused, "Wait for displays to wake and the display transition to finish.")
+        }
+        if handoffStatus?.hasUnresolvedJournal == true {
+            guard let target = handoffStatus?.target,
+                  target.uuid.caseInsensitiveCompare(uuid) == .orderedSame else {
+                return response(.recoveryNeeded, "A different or unknown target owns the shared journal. Review display recovery; no target substitution is allowed.")
+            }
+            if request.command == .hide {
+                guard handoffStatus?.state == .hidden, handoffStatus?.canShow == true else {
+                    return response(.recoveryNeeded, handoffStatus?.reason ?? "Resolve display recovery before Hide.")
+                }
+                return response(.noOp, "Desktop is already hidden by PanelCtl; no topology or input write was attempted.")
+            }
+            do {
+                _ = try makeShowRequest()
+                return response(.confirmationRequired, "Show requires confirmation of the journaled layout and saved Mac input. Open PanelCtl Settings → Displays and choose Show. Protection may remain disabled or snoozed.")
+            } catch {
+                return response(.recoveryNeeded, error.localizedDescription)
+            }
+        }
+        guard let configuration = hidePreferences[uuid],
+              matchingDisplay(configuration.target) != nil else {
+            return response(.refused, "No matching saved display identity. Configure the exact display in Settings → Displays; do not substitute an ID.")
+        }
+        if request.command == .show {
+            guard observedDesktopState(for: configuration) == "Separate" else {
+                return response(.refused, "The target is not an observed separate desktop and has no PanelCtl-owned journal. Review macOS Displays.")
+            }
+            return response(.noOp, "Desktop is already shown; no topology or input write was attempted.")
+        }
+        do {
+            _ = try makeHideRequest(targetUUID: uuid)
+            return response(.confirmationRequired, "Hide requires confirmation of the saved source, optional inputs, protection suspension and manual fallback. Open PanelCtl Settings → Displays and choose Hide.")
+        } catch {
+            return response(.refused, error.localizedDescription)
+        }
+    }
+
     func makeHideRequest(targetUUID: String) throws -> DisplayHideRequest {
         guard !hideOperation.isBusy else { throw DisplayHideError.actionInProgress }
         guard !displayLifecycleTransitioning else { throw DisplayHideError.sleeping }
@@ -1151,6 +1263,7 @@ final class AppModel: ObservableObject {
                 coreIdentity(request.target), coreIdentity(request.source), request.awayInput
             )
             returnedInputOutcome = inputOutcome
+            controlInputOutcomes[request.target.uuid.lowercased()] = inputOutcome
             refreshHandoffStatus()
             guard handoffStatus?.state == .hidden else {
                 throw DisplayHideError.recoveryBlocksAction(
@@ -1174,6 +1287,7 @@ final class AppModel: ObservableObject {
                     requestedInput: request.awayInput,
                     detail: "Input operation details are unavailable because the guarded Hide operation did not complete."
                 )
+            controlInputOutcomes[request.target.uuid.lowercased()] = outcome
             let desktopResult = returnedInputOutcome == nil
                 ? "Desktop: Hide did not complete."
                 : "Desktop: Hide backend returned, but current desktop/recovery status could not be confirmed. Refresh Displays and review recovery before another action."
@@ -1226,6 +1340,9 @@ final class AppModel: ObservableObject {
         do {
             let inputOutcome = try showDisplay(expectedJournalID, request.returnInput)
             returnedInputOutcome = inputOutcome
+            if let uuid = request.status.target?.uuid {
+                controlInputOutcomes[uuid.lowercased()] = inputOutcome
+            }
             refreshHandoffStatus()
             guard handoffStatus?.hasUnresolvedJournal != true,
                   handoffInspectionFailure == nil else {
@@ -1255,6 +1372,9 @@ final class AppModel: ObservableObject {
                     requestedInput: request.returnInput,
                     detail: "Input operation details are unavailable because guarded Show did not complete."
                 )
+            if let uuid = request.status.target?.uuid {
+                controlInputOutcomes[uuid.lowercased()] = outcome
+            }
             let desktopResult = returnedInputOutcome == nil
                 ? "Desktop: Show did not complete."
                 : "Desktop: Show backend returned, but current desktop/recovery status could not be confirmed. Refresh Displays and review recovery before assuming the result."

@@ -545,7 +545,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func handleControlRequest(
+    func handleControlRequest(
         _ request: AppControlRequest
     ) -> AppControlResponse {
         guard request.protocolVersion == AppControlRequest.currentProtocol else {
@@ -556,6 +556,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         switch request.command {
+        case .hide, .show:
+            return model.handleDisplayControlRequest(request)
         case .enable:
             model.setProtectionEnabled(true)
         case .disable:
@@ -563,7 +565,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .toggle:
             model.setProtectionEnabled(!model.preferences.isEnabled)
         case .status:
-            break
+            model.refreshDisplays()
+            return controlResponse(ok: true, outcome: model.controlDisplayOutcome,
+                                   displays: model.controlDisplayStatuses)
         case .blackoutNow:
             do {
                 try model.blackoutNow()
@@ -635,7 +639,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func controlResponse(
         ok: Bool,
         summary: String? = nil,
-        error: String? = nil
+        error: String? = nil,
+        outcome: AppControlOutcome? = nil,
+        displays: [AppControlDisplayStatus]? = nil
     ) -> AppControlResponse {
         AppControlResponse(
             ok: ok,
@@ -647,7 +653,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             error: error,
             nextAction: model.nextAction,
             secondsRemaining: model.secondsRemaining,
-            snoozedUntil: model.snoozedUntil.map(Self.iso8601.string)
+            snoozedUntil: model.snoozedUntil.map(Self.iso8601.string),
+            outcome: outcome,
+            displays: displays
         )
     }
 
@@ -752,7 +760,7 @@ private extension AppDelegate {
     static let iso8601 = ISO8601DateFormatter()
 }
 
-private extension ProtectionRuntimeState {
+extension ProtectionRuntimeState {
     var controlIdentifier: String {
         switch self {
         case .disabled: return "disabled"

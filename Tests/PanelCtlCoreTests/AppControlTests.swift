@@ -105,6 +105,39 @@ final class AppControlTests: XCTestCase {
         }
     }
 
+    func testDisplayRequestsParsingOutcomesAndUnavailableApp() throws {
+        let uuid = "00000000-0000-0000-0000-000000000002"
+        for command in [AppControlCommand.hide, .show] {
+            XCTAssertEqual(
+                try CLIParser.parse(["app", command.rawValue, "--display", uuid, "--json"]),
+                .app(command: command, durationSeconds: nil, targetUUID: uuid, json: true)
+            )
+            for arguments in [
+                ["app", command.rawValue],
+                ["app", command.rawValue, "--display", "123"],
+                ["app", command.rawValue, "--display", uuid, "--display", uuid],
+                ["app", command.rawValue, "--display", uuid, "--for", "5m"]
+            ] { XCTAssertThrowsError(try CLIParser.parse(arguments)) }
+            let request = AppControlRequest(command: command, targetUUID: uuid)
+            XCTAssertEqual(try JSONDecoder().decode(AppControlRequest.self, from: JSONEncoder().encode(request)), request)
+            let client = try AppControlClient(
+                socketPath: "/private/tmp/panelctl-absent-\(UUID().uuidString)",
+                launch: { XCTFail("Hide/Show must not launch the app") },
+                isAppRunning: { false }
+            )
+            XCTAssertEqual(try client.execute(command, targetUUID: uuid).exitCode, 3)
+        }
+        XCTAssertThrowsError(try CLIParser.parse(["app", "enable", "--display", uuid]))
+        for (outcome, exitCode) in [(AppControlOutcome.noOp, Int32(0)), (.refused, 1),
+                                    (.busy, 1), (.confirmationRequired, 4), (.partial, 5),
+                                    (.recoveryNeeded, 6), (.responseLost, 1)] {
+            let response = AppControlResponse(ok: outcome == .noOp, running: true, enabled: false,
+                                              state: "disabled", summary: "fixture", outcome: outcome)
+            XCTAssertEqual(response.exitCode, exitCode)
+            XCTAssertEqual(try JSONDecoder().decode(AppControlResponse.self, from: JSONEncoder().encode(response)), response)
+        }
+    }
+
     func testAppCommandParsing() throws {
         XCTAssertEqual(try CLIParser.parse(["app", "enable"]), .app(command: .enable, durationSeconds: nil, json: false))
         XCTAssertEqual(try CLIParser.parse(["app", "open-settings", "--json"]), .app(command: .openSettings, durationSeconds: nil, json: true))

@@ -4,6 +4,8 @@ import Darwin
 
 /// Commands understood by the PanelCtl.app control socket.
 public enum AppControlCommand: String, Codable, Equatable, Sendable {
+    case hide
+    case show
     case enable
     case disable
     case toggle
@@ -23,21 +25,24 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
     public let protocolVersion: Int
     public let command: AppControlCommand
     public let durationSeconds: TimeInterval?
+    public let targetUUID: String?
 
     public init(
         command: AppControlCommand,
         durationSeconds: TimeInterval? = nil,
+        targetUUID: String? = nil,
         protocolVersion: Int = AppControlRequest.currentProtocol
     ) {
         self.protocolVersion = protocolVersion
         self.command = command
         self.durationSeconds = durationSeconds
+        self.targetUUID = targetUUID
     }
 
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol"
         case command
-        case durationSeconds
+        case durationSeconds, targetUUID
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -45,6 +50,7 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
         try container.encode(protocolVersion, forKey: .protocolVersion)
         try container.encode(command, forKey: .command)
         try container.encodeIfPresent(durationSeconds, forKey: .durationSeconds)
+        try container.encodeIfPresent(targetUUID, forKey: .targetUUID)
     }
 }
 
@@ -62,6 +68,14 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
     public let nextAction: String?
     public let secondsRemaining: Int?
     public let snoozedUntil: String?
+    public let outcome: AppControlOutcome?
+    public let displays: [AppControlDisplayStatus]?
+
+    public var exitCode: Int32 {
+        if !running { return 3 }
+        if let outcome, outcome != .noOp { return outcome.exitCode }
+        return ok ? 0 : 1
+    }
 
     public init(
         protocolVersion: Int = AppControlRequest.currentProtocol,
@@ -74,7 +88,9 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         error: String? = nil,
         nextAction: String? = nil,
         secondsRemaining: Int? = nil,
-        snoozedUntil: String? = nil
+        snoozedUntil: String? = nil,
+        outcome: AppControlOutcome? = nil,
+        displays: [AppControlDisplayStatus]? = nil
     ) {
         self.protocolVersion = protocolVersion
         self.ok = ok
@@ -87,6 +103,8 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         self.nextAction = nextAction
         self.secondsRemaining = secondsRemaining
         self.snoozedUntil = snoozedUntil
+        self.outcome = outcome
+        self.displays = displays
     }
 
     public static func unavailable(_ message: String = "PanelCtl.app is not running") -> Self {
@@ -103,7 +121,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol"
         case ok, running, enabled, state, summary, detail, error
-        case nextAction, secondsRemaining, snoozedUntil
+        case nextAction, secondsRemaining, snoozedUntil, outcome, displays
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -119,6 +137,8 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         try container.encodeIfPresent(nextAction, forKey: .nextAction)
         try container.encodeIfPresent(secondsRemaining, forKey: .secondsRemaining)
         try container.encodeIfPresent(snoozedUntil, forKey: .snoozedUntil)
+        try container.encodeIfPresent(outcome, forKey: .outcome)
+        try container.encodeIfPresent(displays, forKey: .displays)
     }
 }
 
@@ -224,11 +244,13 @@ public struct AppControlClient {
     /// have reached the socket.
     public func execute(
         _ command: AppControlCommand,
-        durationSeconds: TimeInterval? = nil
+        durationSeconds: TimeInterval? = nil,
+        targetUUID: String? = nil
     ) throws -> AppControlResponse {
         try execute(
             command,
             durationSeconds: durationSeconds,
+            targetUUID: targetUUID,
             deadline: Self.defaultDeadline
         )
     }
@@ -236,18 +258,19 @@ public struct AppControlClient {
     func execute(
         _ command: AppControlCommand,
         durationSeconds: TimeInterval? = nil,
+        targetUUID: String? = nil,
         deadline: TimeInterval
     ) throws -> AppControlResponse {
         do {
-            return try send(command, durationSeconds: durationSeconds)
+            return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID)
         } catch let error as AppControlTransportError {
-            if command == .status {
+            if command == .status || command == .hide || command == .show {
                 if !error.requestBytesWritten, !isAppRunning() {
                     return .unavailable(error.description)
                 }
                 throw AppControlError.transport(error.description)
             }
-            if command == .toggle && error.requestBytesWritten {
+            if (command == .toggle || command == .hide || command == .show) && error.requestBytesWritten {
                 throw AppControlError.transport(error.description)
             }
             if isAppRunning() {
@@ -257,7 +280,7 @@ public struct AppControlClient {
                     )
                 }
                 do {
-                    return try send(command, durationSeconds: durationSeconds)
+                    return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID)
                 } catch {
                     throw AppControlError.transport(error.localizedDescription)
                 }
@@ -271,7 +294,7 @@ public struct AppControlClient {
             }
             _ = waitForSocket(deadline: deadline)
             do {
-                return try send(command, durationSeconds: durationSeconds)
+                return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID)
             } catch {
                 throw AppControlError.transport(error.localizedDescription)
             }
@@ -289,11 +312,13 @@ public struct AppControlClient {
 
     private func send(
         _ command: AppControlCommand,
-        durationSeconds: TimeInterval?
+        durationSeconds: TimeInterval?,
+        targetUUID: String?
     ) throws -> AppControlResponse {
         let request = AppControlRequest(
             command: command,
-            durationSeconds: durationSeconds
+            durationSeconds: durationSeconds,
+            targetUUID: targetUUID
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]

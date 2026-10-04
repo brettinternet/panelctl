@@ -78,12 +78,24 @@ struct PanelCtlMain {
                 }
             case .wakeDisplays:
                 try DisplaySleepController.wake()
-            case .app(let appCommand, let durationSeconds, let json):
+            case .app(let appCommand, let durationSeconds, let targetUUID, let json):
                 let client = try AppControlClient()
-                let response = try client.execute(
-                    appCommand,
-                    durationSeconds: durationSeconds
-                )
+                let response: AppControlResponse
+                do {
+                    response = try client.execute(
+                        appCommand,
+                        durationSeconds: durationSeconds,
+                        targetUUID: targetUUID
+                    )
+                } catch {
+                    guard appCommand == .hide || appCommand == .show else { throw error }
+                    // A transport failure does not prove whether the request was received.
+                    response = AppControlResponse(
+                        ok: false, running: true, enabled: false, state: "unknown",
+                        summary: "App control result unavailable; inspect status before retrying.",
+                        error: error.localizedDescription, outcome: .responseLost
+                    )
+                }
                 if json {
                     try printJSON(response)
                 } else if !response.ok, appCommand != .status {
@@ -107,11 +119,8 @@ struct PanelCtlMain {
                     }
                     print(line)
                 }
-                if appCommand == .status, !response.running {
-                    Foundation.exit(3)
-                }
-                if !response.ok {
-                    Foundation.exit(EXIT_FAILURE)
+                if response.exitCode != 0 {
+                    Foundation.exit(response.exitCode)
                 }
             case .help(let command):
                 print(CLIHelp.text(for: command))

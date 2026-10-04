@@ -231,11 +231,16 @@ final class AppControlServer {
 
         let requiredFieldsOnly = AppControlResponse(
             protocolVersion: response.protocolVersion,
-            ok: response.ok,
+            ok: response.displays == nil ? response.ok : false,
             running: response.running,
             enabled: response.enabled,
             state: String(response.state.prefix(64)),
-            summary: String(response.summary.prefix(512))
+            summary: response.displays == nil
+                ? String(response.summary.prefix(512))
+                : "Response exceeded the control message limit; no complete status is available.",
+            error: response.displays == nil ? response.error.map { String($0.prefix(512)) }
+                : "Reduce saved display configurations and retry status; do not infer an operation result.",
+            outcome: response.displays == nil ? response.outcome : .refused
         )
         guard let data = try? encoder.encode(requiredFieldsOnly),
               data.count + 1 <= AppControlSocket.messageLimit else {

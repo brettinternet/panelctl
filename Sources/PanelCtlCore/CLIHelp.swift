@@ -180,10 +180,18 @@ public enum CLIHelp {
               snooze --for <duration>
               resume
               open-settings
+              hide --display <UUID>
+              show --display <UUID>
 
             Control PanelCtl.app; status does not launch the app. --json emits
             the machine-readable response. snooze temporarily pauses automation
             for up to 30 days; resume ends a snooze early.
+            Hide/Show require an already running app and an exact saved UUID.
+            Already-observed desired state is a no-op; changes require fresh UI
+            confirmation (exit 4), never a hidden dialog or unattended write.
+            Exit codes: 0 success, 1 refusal/busy/control failure, 2 usage,
+            3 app unavailable, 4 confirmation required, 5 partial input outcome,
+            6 recovery needed. Status includes observed displays and input outcomes.
             """
         default:
             return text(for: nil)

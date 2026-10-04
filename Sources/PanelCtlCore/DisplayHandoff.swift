@@ -24,8 +24,8 @@ public struct DisplayHandoffIdentity: Equatable {
     }
 }
 
-public struct DisplayInputOutcome: Equatable {
-    public enum State: String, Equatable {
+public struct DisplayInputOutcome: Codable, Equatable, Sendable {
+    public enum State: String, Codable, Equatable, Sendable {
         case notRequested
         case notAttempted
         case skipped
