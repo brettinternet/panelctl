@@ -4,6 +4,7 @@ title: Qualify production display identity and preflight providers offline
 status: To Do
 assignee: []
 created_date: '2026-10-04 14:49'
+updated_date: '2026-10-04 15:33'
 labels:
   - display-disable
   - offline
@@ -30,9 +31,25 @@ User approved scoping this offline prerequisite after TASK-9 preparation confirm
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Document a bounded evidence matrix for fresh retained-ID identity online and offline, target and survivor physical classification, driver exclusion, awake/lid and lifecycle state; distinguish independently established facts from cached or synthetic observations and name unsupported cases.
+- [x] #1 Document a bounded evidence matrix for fresh retained-ID identity online and offline, target and survivor physical classification, driver exclusion, awake/lid and lifecycle state; distinguish independently established facts from cached or synthetic observations and name unsupported cases.
 - [ ] #2 Where independently supportable, integrate production observations through the existing provider seams; unknown, stale, ambiguous, replaced, recycled-ID or unsupported evidence refuses before writer construction and at every mutation boundary. Never promote syntheticPhysicalFixture to production qualification.
-- [ ] #3 Fake-writer tests cover provider freshness and invalidation, identity reuse/replacement, unsupported hardware/OS, survivor loss, driver and lifecycle uncertainty; relevant compiler and focused recovery checks pass without display writes.
-- [ ] #4 One independent safety review traces production observation provenance and the command-to-writer gates; concrete findings are resolved or retained as explicit blockers. Publish either target-specific offline qualification evidence or an exact blocked verdict; refusal is not hardware qualification and unresolved provider criteria remain unchecked.
-- [ ] #5 Update TASK-9 with the precise technical gate result and next resumable step; no live trial is authorized by completion, and offline-inaccessible evidence requires a new scoped human decision, not guard relaxation.
+- [x] #3 Fake-writer tests cover provider freshness and invalidation, identity reuse/replacement, unsupported hardware/OS, survivor loss, driver and lifecycle uncertainty; relevant compiler and focused recovery checks pass without display writes.
+- [x] #4 One independent safety review traces production observation provenance and the command-to-writer gates; concrete findings are resolved or retained as explicit blockers. Publish either target-specific offline qualification evidence or an exact blocked verdict; refusal is not hardware qualification and unresolved provider criteria remain unchecked.
+- [x] #5 Update TASK-9 with the precise technical gate result and next resumable step; no live trial is authorized by completion, and offline-inaccessible evidence requires a new scoped human decision, not guard relaxation.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Evaluate existing identity research and production gates; build a bounded provenance matrix.
+2. Integrate only independently supported observations and exercise existing fake-writer gates; stop unsupported seams with exact evidence gaps.
+3. Obtain one independent safety review, record qualification or blocked verdict, update TASK-9, and commit on main.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Bounded evidence assessment: docs/display-provider-qualification.md records unsupported fresh physical acquisition, unique retained-ID association and replacement/context invalidation. No complete production observation contract can be qualified from existing evidence; preserving all production refusals. Added isolated fake-writer refusal tests for unknown environment/initial lifecycle and fresh-timestamp production provenance attempting synthetic binding. No display writes or target selection. Independent review pending.
+
+Resumed on main with user-authorized takeover. Fresh verification: 81 core recovery tests (one optional retained-ICC skip), one app recovery test, zero failures; panelctl and PanelCtlApp warnings-as-errors builds passed; git diff --check passed. Independent reviewer de8a264b-8a87-498a-9f79-660b665cd174 found no validated defects and confirmed blocked verdict/provenance and writer gates. AC2 remains unchecked: production observation contract is unqualified, including recovery-boundary environment refresh. Updated TASK-9 technical gate. User chose preparation of a scoped investigation proposal; docs/display-provider-qualification.md now proposes one static DCP BUND reconstruction and operation-7 producer/invalidation trace, not execution. Exact next input: approve that proposal or defer; no live-write consent requested or granted. Claim released; To Do means externally blocked, not eligible for repeated research. No worktree created or adopted.
+<!-- SECTION:NOTES:END -->

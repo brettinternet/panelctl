@@ -40,6 +40,22 @@ metadata, HPD, synthetic bindings or historical numeric IDs. Then obtain fresh
 scoped approval for the simple cycle below. TASK-10 still depends on actual
 TASK-9 input-return observations.
 
+## TASK-11 offline checkpoint
+
+The [provider qualification matrix](display-provider-qualification.md) records
+why the production gate remains closed: no proven fresh physical acquisition,
+unique absent-sink-to-retained-ID association, or replacement/context invalidation;
+physical survivor/driver/initial awake and synchronous lifecycle observations also
+remain unqualified. Matching the ABI host tuple does not qualify these properties.
+No production authority was added. New isolated fake-writer regressions preserve
+unknown environment/lifecycle and synthetic-binding refusal; they are not a live
+trial. TASK-11 cannot be marked complete while provider qualification is unresolved.
+
+Next: a separately scoped decision to defer private disable or propose a bounded,
+evidence-producing investigation of a named source, with explicit permissions
+and stop conditions. Do not repeatedly query cached metadata or relax guards.
+Even a qualified provider would still require the fresh trial consent below.
+
 ## Trial record template — all fields pending, not approval
 
 Complete this record with fresh evidence only after the technical gates pass.

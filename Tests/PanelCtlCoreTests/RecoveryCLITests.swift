@@ -246,6 +246,52 @@ final class RecoveryCLITests: XCTestCase {
         }
     }
 
+    func testUnqualifiedEnvironmentAndInitialLifecycleRefuseBeforeWriterConstruction() throws {
+        let f = try Fixture()
+        var constructions = 0
+        let writer: () throws -> RecoveryEnableTransaction = {
+            constructions += 1
+            throw RecoveryError.unsafe("must not construct writer")
+        }
+        // Isolate each production default from the other refusal gates.
+        let unknownEnvironment = RecoveryPrivateSession(snapshot: f.baseline,
+            inventory: f.session.inventory, transaction: writer, initiallyAwake: true)
+        XCTAssertThrowsError(try unknownEnvironment.prepareDisable(targetID: 2)) { error in
+            XCTAssertTrue(String(describing: error).contains("unknown driver state"))
+        }
+        let unknownLifecycle = RecoveryPrivateSession(snapshot: f.baseline,
+            inventory: f.session.inventory, environment: { f.environment }, transaction: writer,
+            now: { f.clock })
+        for event: RecoveryLifecycle.Event in [.resume(.system), .resume(.screens), .resume(.session)] {
+            unknownLifecycle.receive(event)
+        }
+        f.clock += 2
+        XCTAssertEqual(unknownLifecycle.gate, .needsAttention)
+        XCTAssertThrowsError(try unknownLifecycle.prepareDisable(targetID: 2)) { error in
+            XCTAssertTrue(String(describing: error).contains("observation unavailable"))
+        }
+        XCTAssertEqual(constructions, 0)
+    }
+
+    func testProductionProvenanceCannotUseSyntheticBindingEvenWithFreshTimestamp() throws {
+        let f = try Fixture()
+        var displays = f.baseline.displays
+        for index in displays.indices {
+            displays[index].identityEvidence = RecoveryIdentityEvidence(source: .cgAndCoreDisplay,
+                capturedAt: Date(), transport: "DisplayPort", hpd: "High", framebufferLocation: "port-\(index + 1)")
+        }
+        let baseline = RecoverySnapshot(bootSession: f.baseline.bootSession, osBuild: f.baseline.osBuild,
+            userID: f.baseline.userID, displays: displays)
+        let session = RecoveryPrivateSession(snapshot: baseline, inventory: f.session.inventory,
+            environment: { f.environment }, transaction: {
+                XCTFail("cached production provenance constructed writer")
+                throw RecoveryError.unsafe("must not run")
+            }, initiallyAwake: true)
+        XCTAssertThrowsError(try session.prepareDisable(targetID: 2)) { error in
+            XCTAssertTrue(String(describing: error).contains("synthetic binding cannot authorize a real capture"))
+        }
+    }
+
     func testRuntimeNotificationDeliverySleepAndSystemReenable() throws {
         let f = try Fixture()
         f.session.observeNotifications()
