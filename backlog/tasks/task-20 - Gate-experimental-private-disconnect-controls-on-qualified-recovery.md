@@ -4,11 +4,12 @@ title: Gate experimental private disconnect controls on qualified recovery
 status: To Do
 assignee: []
 created_date: '2026-10-04 17:13'
+updated_date: '2026-10-04 18:15'
 labels:
   - display-hide
   - app
 dependencies:
-  - TASK-18
+  - TASK-17
   - TASK-12
   - TASK-9
 references:
@@ -17,7 +18,7 @@ references:
   - docs/display-recovery.md
   - Sources/PanelCtlApp/SettingsView.swift
   - Sources/PanelCtlCore/DisplayRecovery.swift
-priority: medium
+priority: low
 type: feature
 ordinal: 10010
 ---
@@ -36,3 +37,9 @@ Mirror hide does not drop the Mac display signal. Users seeking signal removal n
 - [ ] #4 Private disconnect is excluded from idle/empty-display automation, startup, wake and automatic re-disconnect. Any future unattended support requires a separate scoped decision and qualification task; panic/global restoration remains separately warned and explicitly approved.
 - [ ] #5 Fake UI/core integration tests cover unavailable qualification, lease progress, refusal, watchdog recovery, relaunch and failed reconnect. Native UI verification uses synthetic states; any live trial is separately approved and recorded with exact scope and limitations.
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Parked 2026-10-04 with TASK-12/TASK-9 (user decision: mirroring is the first hide route). App dependency is now TASK-17, which owns app journal recovery after the TASK-17/18 re-slice. Resume only if those tasks are resumed and qualified.
+<!-- SECTION:NOTES:END -->

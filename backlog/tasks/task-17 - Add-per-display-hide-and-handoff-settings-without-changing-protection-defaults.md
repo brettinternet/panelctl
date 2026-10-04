@@ -1,20 +1,24 @@
 ---
 id: TASK-17
-title: Add per-display hide and handoff settings without changing protection defaults
+title: Add hide and show for one configured display to the app
 status: To Do
 assignee: []
 created_date: '2026-10-04 17:13'
+updated_date: '2026-10-04 18:15'
 labels:
   - display-hide
   - app
 dependencies:
   - TASK-16
+  - TASK-13
 references:
   - Sources/PanelCtlApp/SettingsView.swift
-  - Sources/PanelCtlApp/ProtectionPreferences.swift
+  - Sources/PanelCtlApp/AppDelegate.swift
   - Sources/PanelCtlApp/AppModel.swift
+  - Sources/PanelCtlApp/ProtectionPreferences.swift
+  - Sources/PanelCtlCore/DisplayMirroring.swift
+  - Sources/PanelCtlCore/DisplayHandoff.swift
   - docs/display-mirroring.md
-  - docs/ddc-input.md
 priority: medium
 type: feature
 ordinal: 7010
@@ -23,14 +27,15 @@ ordinal: 7010
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Users need to configure a monitor once for temporary desktop removal or handoff, without changing which displays receive OLED protection. Follow the approved interaction contract and extend existing preferences/UI conventions. Configuration must remain separate from executing an operation, with manual input switching a first-class supported choice. Offline design, implementation and fake/no-write validation only. This task does not authorize live mirror/unmirror, DDC or private setter writes. Any hardware validation needs fresh scoped human approval; record untested behavior honestly.
+Hiding an external desktop is CLI-only today, requiring UUIDs, consent flags and a remembered journal path. Deliver the first usable app slice of the approved TASK-16 contract: configure a display once (target and explicit mirror source), hide and show it from the approved surfaces, and recover from the journal, with no DDC. This replaces the earlier split between a settings-only task and a controls task, because saved configuration without an action is unverifiable dead UI. Reuse MirrorController/HandoffController, their locks and the shared recovery journal; do not build a parallel recovery path. Protection selection and defaults stay unchanged. Offline implementation and fake/no-write validation only; any live mirror/unmirror needs fresh scoped human approval and untested behavior is recorded honestly.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Expose the approved per-display settings in existing navigation, with separate protection selection and hide/handoff configuration; show target identity, an explicit eligible mirror source and optional away/return input codes with clear Mac/other-computer labels.
-- [ ] #2 DDC is opt-in and capability-dependent. Unknown, unavailable and failed capability states explain manual monitor-button switching; no input code, source display or target identity is guessed. Do not require DDC to save a hide-only configuration.
-- [ ] #3 Saving, editing, loading or migrating settings performs no topology or DDC write. Existing installations retain their protection behavior, and launch at login never implies hide, handoff or private disable.
-- [ ] #4 Missing displays retain intelligible saved configuration but cannot silently bind to a different display; ambiguous identity, invalid inputs, ineligible sources and unsupported targets produce actionable validation before execution.
-- [ ] #5 Persistence and migration tests cover legacy preferences, per-display independence, unavailable/reconnected displays and invalid values. Verify the actual native Settings UI with fixtures for layout, keyboard navigation, accessible labels and conditional controls.
+- [ ] #1 Per-display hide configuration lives in the approved place in existing navigation, separate from protection selection: target identity and an explicit eligible mirror source. Nothing is guessed; saving, editing, loading or migrating settings performs no topology write, existing installations keep their protection behavior and launch at login never implies hide.
+- [ ] #2 Users can hide and show one configured eligible non-main external display from the approved surfaces, seeing target and source before the approved confirmation. Backend eligibility, locks and journal-before-write guarantees are reused; busy actions cannot be submitted twice or race CLI operations.
+- [ ] #3 Show uses the journaled target and captured topology, not the current selection. Identity refusal, restoration mismatch and partial failure keep the journal and show an actionable next step without reporting success; journals created by panelctl mirror/away are recognized.
+- [ ] #4 Observed state is rendered separately from saved configuration and protection status. Journal-owned hidden or unavailable targets keep a show/recovery action that works with Settings closed, after relaunch and with the menu icon hidden; missing displays keep intelligible configuration but never bind to a different display.
+- [ ] #5 The approved coexistence and lifecycle behavior for protection, Restore, snooze, quit/relaunch, sleep/wake and hotplug is implemented. The app does not fight system restoration, silently re-hide, clear unresolved journals or escalate to global reset/logout/reboot.
+- [ ] #6 Tests cover legacy preference migration, per-display independence, stale/missing targets, duplicate requests, backend refusal, interruption and partial failure with fake writers. Native menu and Settings flows are verified with synthetic states for layout, keyboard navigation and accessible labels; relevant tests and warnings-as-errors builds pass.
 <!-- AC:END -->
