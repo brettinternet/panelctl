@@ -112,7 +112,18 @@ implemented. Then TASK-9 still needs fresh exact-target, short-timeout, usable
 survivor, presence and fallback consent. Ordinary consent alone cannot make the
 current provider safe. TASK-10 still waits on actual input-return observations.
 
-## Proposed next investigation — approval pending
+## Decision (2026-10-04)
+
+The investigation below was **not approved** as the TASK-9 path. Even a full
+success would close only one gap and could not establish retained-CG-ID
+mapping. The freshness/unique-absent-mapping bar applied above also exceeds the
+canonical plan, which deliberately defers the full offline identity contract.
+Provider work proceeds in TASK-12 under the plan's contract: exact
+capture-evidence matching, otherwise refuse. Residual risks are documented
+there, not claimed solved. The proposal is kept for possible later
+identical-display hardening only.
+
+## Proposed next investigation — not approved
 
 The user requested a scoped proposal, not execution or hardware permission.
 The single candidate source is the historical DCP firmware operation-7 receiver
