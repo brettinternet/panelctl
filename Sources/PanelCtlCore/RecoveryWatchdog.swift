@@ -34,12 +34,10 @@ public enum DisplayRecovery {
             let engine: RecoveryEngine
             if saved.mirrorTargetID != nil {
                 engine = .publicMirror
-            } else if saved.disabledByUsID == nil {
-                engine = RecoveryEngine()
             } else {
                 let session = RecoveryPrivateSession(snapshot: saved.snapshot)
                 session.observeNotifications()
-                engine = session.engine
+                engine = session.makeEngine(requiresPrivateIdentity: saved.disabledByUsID != nil)
             }
             try printJournal(engine.recover(store: store, verifyOnly: action == .verify,
                                             trigger: "manual-\(action.rawValue)", expectedID: saved.id))
@@ -195,7 +193,7 @@ final class RecoveryWatchdog {
     }
 
     static func runHelper(store: RecoveryStore, id: UUID,
-                          engine: RecoveryEngine = RecoveryEngine(),
+                          engine injectedEngine: RecoveryEngine? = nil,
                           disable: RecoveryDisable? = nil,
                           session injectedSession: RecoveryPrivateSession? = nil,
                           resolveModes: (RecoverySnapshot) throws -> Void = { _ = try RecoveryConfiguration.resolveModes($0) }) throws {
@@ -221,9 +219,10 @@ final class RecoveryWatchdog {
               let deadline = journal.deadline else {
             throw RecoveryError.unsafe("watchdog journal identity/state mismatch")
         }
-        let session = injectedSession ?? (journal.privateLease == true ? RecoveryPrivateSession(snapshot: journal.snapshot) : nil)
+        let session = injectedSession ?? (injectedEngine == nil ? RecoveryPrivateSession(snapshot: journal.snapshot) : nil)
         session?.observeNotifications()
-        let engine = session?.engine ?? engine
+        let requiresPrivateIdentity = journal.privateLease == true || journal.disabledByUsID != nil || disable != nil
+        let engine = session?.makeEngine(requiresPrivateIdentity: requiresPrivateIdentity) ?? injectedEngine ?? RecoveryEngine()
         try journal.snapshot.verify(engine.capture())
         try resolveModes(journal.snapshot)
         let remaining = deadline.timeIntervalSinceNow

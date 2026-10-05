@@ -1,10 +1,12 @@
 # Display recovery groundwork
 
-The experimental CLI composes the offline-tested disable/recovery protocol, but
-**production private control still refuses unqualified physical-sink identity and
-awake/physical-driver evidence.** No force flag bypasses this boundary. The
-commands do not qualify a private API as safe or grant permission for a live
-trial. Rehearsal is deliberately verification-only.
+The experimental CLI composes the offline-tested disable/recovery protocol.
+TASK-12 adds read-only capture/current identity, physical-screen, driver and
+lifecycle observations, but the production driver inventory remains unknown
+because no complete native-only allowlist is qualified. Production private
+selection therefore still refuses before writer construction. No force flag
+bypasses this boundary. The commands do not qualify a private API as safe or
+grant permission for a live trial. Rehearsal is deliberately verification-only.
 
 This describes the current main-branch implementation, including the selectively
 adopted [recovery foundation](recovery-reconciliation.md), not a completed disable
@@ -61,10 +63,11 @@ panelctl recovery panic
 ```
 
 Do not run the state-changing paths on hardware without separate scoped approval.
-The current production providers refuse before constructing a disable writer.
-Synthetic tests exercise the complete flow; a real provider may not substitute
-cached CG/HPD/registry observations for qualified fresh identity. No app UI or
-background disable policy is added.
+The current production providers refuse before constructing a disable writer
+when driver inventory is unknown. A bounded identity match may be reported
+eligible, but cached CG/IOKit/HPD metadata does not prove fresh physical-sink
+acquisition or eliminate same-port replacement/ID-reuse risk. Fake-writer tests
+exercise the transaction flow; no app UI or background disable policy is added.
 
 Disable requires exactly one UUID, decimal/hex ID or `--index` from `panelctl list`,
 affirmative `--consent-disable`, and an explicit 1–60-second timeout. No `--all`,
@@ -91,8 +94,10 @@ selection, avoiding index reuse after reconnection. Custom journals must be
 supplied explicitly; there is no directory scan or arbitrary ID sweep.
 
 `RecoveryPrivateSession` delivers workspace sleep/wake/session and screen-parameter
-notifications on the helper run loop. Fresh observations are also sampled during
-the lease. Survivor loss requests guarded recovery; it cannot relax identity.
+notifications on the helper run loop. Read-only lifecycle, current identity and
+applicable environment observations are also refreshed synchronously at each
+disable, enable and public-restoration writer boundary, as well as during the
+lease. Survivor loss requests guarded recovery; it cannot relax identity.
 Transitions defer writes with the fixed five-second lifecycle budget; exhaustion
 preserves `needsAttention`. System re-enable is accepted with verify-only journal
 reconciliation on every finish path, including EOF/signal/deadline races. Private
@@ -184,16 +189,18 @@ call is authorized by a successful guard startup.
 
 ## What the snapshot means
 
-Captured: OS build, boot-session UUID, user ID, display UUID and CG ID,
-vendor/model/serial, built-in/main/active flags, exact mode attributes and ID,
-refresh rate, origin, rotation, mirror-source UUID, optional color-space name and
-SHA-256 of the readable ICC data, an optional bounded date-independent ICC hash,
-and optional `IODisplayLocation` from CoreDisplay metadata. The latter works on
-the investigated host's `IOMobileFramebufferShim` path without assuming an
-`AppleCLCD2` service exists. Version-2 journals also retain observation provenance
-and time; normal captures carry no disabled-by-us intent. These cached fields do
-not authorize private writes. See the [retained-ID policy](recovery-identity-policy.md)
-for typed refusal outcomes, legacy handling and synthetic-only eligibility.
+Captured: OS build, boot-session UUID, user ID and host model; display UUID and
+CG ID, vendor/model/serial, built-in/main/active flags, exact mode attributes
+and ID, refresh rate, origin, rotation, mirror-source UUID, optional color-space
+name and ICC digests, and read-only IOKit transport/type/location/HPD plus
+optional CoreDisplay `IODisplayLocation`. The persisted `connector` remains the
+CoreDisplay location (nil when public mirror capture omits CoreDisplay); the
+new IOKit transport location is separate optional identity evidence, not a
+replacement. Version-2 journals retain observation provenance and time; normal
+captures carry no disabled-by-us intent. These cached fields can support only
+the bounded capture/current match on the TASK-1-supported host/build and do not
+prove fresh sink identity. See the [retained-ID policy](recovery-identity-policy.md)
+for refusal cases and residual risks.
 
 Not captured/restored: HDR enablement, VRR policy beyond the mode's reported
 refresh rate, full color profiles/calibration, DDC brightness/power/input state,
@@ -218,13 +225,15 @@ to operate on offline or recycled IDs.
 - `rehearse` journals have `verifyOnly: true`; the helper never calls the writer
   for them. `guard` journals use the public restoration writer. No shell-command
   hook or production identity bypass is installed. Private-lease sessions use the
-  shared runtime adapter, whose production identity/physical/lifecycle providers
-  refuse without qualified evidence. The
+  shared runtime adapter, which applies the bounded identity contract and refreshes
+  read-only lifecycle/environment observations at writer boundaries. The current
+  driver inventory remains unknown, so private selection refuses. The
   [bounded private lease protocol](recovery-private-lease.md) extends this same
   helper as the sole locked writer, with durable one-shot disable/recovery intent,
   fresh lease checks and bounded read-only convergence. Its synthetic tests do
   not authorize production writes. The [offline transaction backend](display-transaction-backend.md)
-  is constructed only after preflight; current production observations cannot pass.
+  is constructed only after preflight; current production observations cannot pass
+  the unknown native-only driver gate.
   The internal `_recovery-helper` entry
   point is not a standalone recovery command. The recorded helper PID is for
   diagnostics only; recovery never signals a PID loaded from a journal.

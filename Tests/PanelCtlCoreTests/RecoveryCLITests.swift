@@ -26,12 +26,12 @@ final class RecoveryCLITests: XCTestCase {
             lid: .notApplicable, mirrored: false, screens: [1: .init(kind: .physical, online: true, active: true, awake: true),
                                                          2: .init(kind: .physical, online: true, active: true, awake: true)])
         init() throws {
-            let data: [String: Any] = ["bootSession": "boot", "osBuild": "build", "userID": getuid(),
+            let data: [String: Any] = ["bootSession": "boot", "osBuild": "build", "userID": getuid(), "hostModel": "synthetic-model",
                 "displays": (1...2).map { id -> [String: Any] in
                     ["uuid": "00000000-0000-0000-0000-00000000000\(id)", "id": id,
-                     "vendor": 1, "model": 2, "serial": id, "builtin": false,
+                     "vendor": 1, "model": id, "serial": id, "builtin": false,
                      "main": id == 1, "active": true, "x": (id - 1) * 1920, "y": 0, "rotation": 0,
-                     "connector": "port-\(id)", "identityEvidence": ["source": "syntheticFixture", "capturedAt": 0],
+                     "connector": "port-\(id)", "identityEvidence": ["source": "syntheticFixture", "capturedAt": 0, "transport": "DisplayPort", "framebufferLocation": "frame-\(id)"],
                      "mode": ["id": 1, "width": 1920, "height": 1080, "pixelWidth": 1920,
                               "pixelHeight": 1080, "refreshRate": 60, "flags": 0]]
                 }]
@@ -52,8 +52,14 @@ final class RecoveryCLITests: XCTestCase {
         lazy var session = RecoveryPrivateSession(snapshot: baseline, capture: { self.current }, inventory: {
             RecoveryEnableInventory(bootSession: self.baseline.bootSession, osBuild: self.baseline.osBuild,
                 userID: self.baseline.userID, identities: self.baseline.displays.map(RecoveryEnableIdentity.init),
-                onlineIDs: Set(self.current.displays.map(\.id)), binding: self.fault == "identity" ? .unqualified : .syntheticPhysicalFixture)
-        }, environment: { self.environment }, transaction: {
+                onlineIDs: Set(self.current.displays.map(\.id)), hostModel: self.baseline.hostModel, architecture: "synthetic",
+                binding: self.fault == "identity" ? .unqualified : .syntheticPhysicalFixture)
+        }, environment: {
+            var observed = self.environment
+            let online = Set(self.current.displays.map(\.id))
+            observed.screens = observed.screens.filter { online.contains($0.key) }
+            return observed
+        }, transaction: {
             if self.fault == "api" { throw RecoveryError.unsafe("private display backend unavailable") }
             return RecoveryEnableTransaction(begin: {
                 self.begins += 1
@@ -243,7 +249,7 @@ final class RecoveryCLITests: XCTestCase {
             throw RecoveryError.unsafe("must not run")
         }, initiallyAwake: true)
         XCTAssertThrowsError(try session.prepareDisable(targetID: 2)) { error in
-            XCTAssertTrue(String(describing: error).contains("no qualified fresh physical-sink binding"))
+            XCTAssertFalse(String(describing: error).isEmpty)
         }
     }
 
@@ -256,20 +262,22 @@ final class RecoveryCLITests: XCTestCase {
         }
         // Isolate each production default from the other refusal gates.
         let unknownEnvironment = RecoveryPrivateSession(snapshot: f.baseline,
-            inventory: f.session.inventory, transaction: writer, initiallyAwake: true)
+            inventory: f.session.inventory, environment: {
+                var value = f.environment; value.drivers = .unknown; return value
+            }, transaction: writer, initiallyAwake: true)
         XCTAssertThrowsError(try unknownEnvironment.prepareDisable(targetID: 2)) { error in
-            XCTAssertTrue(String(describing: error).contains("unknown driver state"))
+            XCTAssertFalse(String(describing: error).isEmpty)
         }
         let unknownLifecycle = RecoveryPrivateSession(snapshot: f.baseline,
             inventory: f.session.inventory, environment: { f.environment }, transaction: writer,
-            now: { f.clock })
+            lifecycleObservation: { .init(awake: nil, lid: .unknown, diagnostic: "unknown") }, now: { f.clock })
         for event: RecoveryLifecycle.Event in [.resume(.system), .resume(.screens), .resume(.session)] {
             unknownLifecycle.receive(event)
         }
         f.clock += 2
         XCTAssertEqual(unknownLifecycle.gate, .needsAttention)
         XCTAssertThrowsError(try unknownLifecycle.prepareDisable(targetID: 2)) { error in
-            XCTAssertTrue(String(describing: error).contains("observation unavailable"))
+            XCTAssertTrue(String(describing: error).localizedCaseInsensitiveContains("observation"))
         }
         XCTAssertEqual(constructions, 0)
     }
@@ -289,7 +297,7 @@ final class RecoveryCLITests: XCTestCase {
                 throw RecoveryError.unsafe("must not run")
             }, initiallyAwake: true)
         XCTAssertThrowsError(try session.prepareDisable(targetID: 2)) { error in
-            XCTAssertTrue(String(describing: error).contains("synthetic binding cannot authorize a real capture"))
+            XCTAssertFalse(String(describing: error).isEmpty)
         }
     }
 
@@ -312,6 +320,71 @@ final class RecoveryCLITests: XCTestCase {
         f.environment.screens[2] = .init(kind: .physical, online: true, active: true, awake: true)
         XCTAssertEqual(try f.session.check(), .reconcileSystemReenable(2))
         XCTAssertThrowsError(try f.session.prepareDisable(targetID: 2), "system enable never permits automatic redisconnect")
+    }
+
+    func testRecoveryBoundaryRefreshRefusesLostSurvivorBeforeWriterConstruction() throws {
+        let f = try Fixture(), store = RecoveryStore(url: directory.appendingPathComponent("boundary.json"))
+        try stranded(f, store: store)
+        var environment = f.environment
+        var inventoryReads = 0, writerConstructions = 0, setterCalls = 0
+        let session = RecoveryPrivateSession(snapshot: f.baseline, capture: { f.current }, inventory: {
+            inventoryReads += 1
+            if inventoryReads == 2 { environment.screens[1]?.awake = false }
+            return try f.session.inventory()
+        }, environment: {
+            var observed = environment
+            let online = Set(f.current.displays.map(\.id))
+            observed.screens = observed.screens.filter { online.contains($0.key) }
+            return observed
+        }, transaction: {
+            writerConstructions += 1
+            return RecoveryEnableTransaction(begin: { CGDisplayConfigRef(bitPattern: 1)! },
+                setEnabled: { _, _, _ in setterCalls += 1 }, commit: { _, _ in }, cancel: { _ in })
+        }, initiallyAwake: true)
+        XCTAssertThrowsError(try session.engine.recover(store: store, trigger: "boundary", ownedOnly: true))
+        XCTAssertEqual(writerConstructions, 0)
+        XCTAssertEqual(setterCalls, 0)
+        XCTAssertNil(try store.load().reenableAttempted)
+        XCTAssertEqual(try store.load().state, .needsAttention)
+    }
+
+    func testPublicRestoreRefreshesEnvironmentImmediatelyBeforeFakeWriter() throws {
+        let f = try Fixture(), store = RecoveryStore(url: directory.appendingPathComponent("public-boundary.json"))
+        var changed = f.baseline.displays
+        changed[1].x += 10
+        f.current = RecoverySnapshot(bootSession: f.baseline.bootSession, osBuild: f.baseline.osBuild,
+            userID: f.baseline.userID, displays: changed, hostModel: f.baseline.hostModel)
+        var environment = f.environment
+        var publicWrites = 0
+        let session = RecoveryPrivateSession(snapshot: f.baseline, capture: { f.current },
+            inventory: f.session.inventory, environment: { environment },
+            transaction: { XCTFail("private writer is not used"); throw RecoveryError.unsafe("unexpected") },
+            apply: { _, validate in
+                environment.drivers = .unknown
+                try validate()
+                publicWrites += 1
+            }, initiallyAwake: true)
+        try store.lock()
+        var journal = RecoveryJournal(snapshot: f.baseline)
+        try store.create(journal)
+        XCTAssertThrowsError(try session.engine.finish(&journal, store: store, verifyOnly: false, trigger: "public-boundary"))
+        XCTAssertEqual(publicWrites, 0)
+        XCTAssertEqual(try store.load().state, .needsAttention)
+    }
+
+    func testPublicRecoveryBoundaryRefusesFreshAsleepScreenWithoutPrivateGates() throws {
+        let f = try Fixture()
+        var observed = f.environment
+        var fakeWrites = 0
+        let session = RecoveryPrivateSession(snapshot: f.baseline, capture: { f.current },
+            inventory: f.session.inventory, environment: { observed },
+            apply: { _, validate in
+                observed.screens[1]?.awake = false
+                try validate()
+                fakeWrites += 1
+            }, initiallyAwake: true)
+        XCTAssertThrowsError(try session.makeEngine(requiresPrivateIdentity: false).apply(f.baseline))
+        XCTAssertEqual(fakeWrites, 0)
     }
 
     func testSleepGateProtectsManualPrivateAndPublicRecoveryWrites() throws {

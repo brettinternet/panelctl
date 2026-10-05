@@ -50,6 +50,24 @@ struct RecoveryLifecycle {
         }
     }
 
+    mutating func refreshAwakeObservation(_ awake: Bool?, now: TimeInterval) {
+        guard now.isFinite, now >= lastEvent else {
+            if knownAwake { revision &+= 1 }
+            knownAwake = false
+            return
+        }
+        guard awake == true else {
+            if knownAwake { revision &+= 1 }
+            knownAwake = false
+            return
+        }
+        // Fresh positive system/screen/session observations may establish an
+        // initially unknown state, but cannot clear notification suspensions.
+        guard suspensions.isEmpty else { return }
+        if !knownAwake { revision &+= 1 }
+        knownAwake = true
+    }
+
     mutating func receive(_ event: Event, now: TimeInterval) {
         let wasReady = writeGate(now: now) == .ready
         revision &+= 1

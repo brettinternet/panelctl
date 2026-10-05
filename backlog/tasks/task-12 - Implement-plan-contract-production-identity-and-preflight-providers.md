@@ -1,10 +1,11 @@
 ---
 id: TASK-12
 title: Implement plan-contract production identity and preflight providers
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-10-04 15:50'
-updated_date: '2026-10-04 16:37'
+updated_date: '2026-10-05 04:26'
 labels:
   - display-disable
   - offline
@@ -39,8 +40,24 @@ TASK-11 found production providers always refuse because the identity policy (fr
 - [ ] #5 A no-write rehearsal on this Mac records the provider verdict and evidence for the actually connected target and survivor (either outcome, with exact reason); an independent safety review checks the providers against the plan contract with findings resolved or recorded as blockers. TASK-9's technical-gate status is updated; no live trial is authorized.
 <!-- AC:END -->
 
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Implement bounded capture/current identity matching and real read-only host, display, driver and lifecycle observations through existing seams; retain unknown-state refusal and document residual risks.
+2. Refresh identity/environment/lifecycle at disable, enable and public-restoration mutation boundaries; add fake-writer regression tests.
+3. Run focused recovery tests and warnings-as-errors builds, and a no-write connected-display rehearsal.
+4. Perform one independent safety review focused on false qualification and boundary invalidation; fix concrete findings and rerun affected checks.
+5. Update TASK-9 technical gate and task evidence, release claim, and commit on main. No hardware writes or live helper arming.
+<!-- SECTION:PLAN:END -->
+
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Parked 2026-10-04 by user decision: DDC input select works (TASK-10), and public mirroring (TASK-13) is the first route to hide the display. Resume only if mirroring fails or its side effects are unacceptable, or if the signal must drop so monitors without DDC can switch inputs automatically. Away/back command: TASK-15.
+
+User explicitly resumed TASK-12 offline in this session; prior parking decision lifted for this provider implementation only. No hardware writes authorized.
+
+Implementation checkpoint: bounded production identity/read-only environment and lifecycle providers implemented; actual Mac17,14 arm64 26A434 no-write rehearsal matches identity but all target selections refuse unknown complete native-only driver inventory. No hardware writes or live helper arming. Parent focused recovery checks and warnings-as-errors CLI/app builds passed; full suite passed 311 tests on rerun (4 skips); initial full run had unrelated native-menu focus assertions. LSP diagnostics unknown (bounded timeout). Independent safety review 8ca963d8-65b8-4c97-a523-ab3467e6d975 identified four concrete defects: public fresh sleep ignored; inactive mirror destination wrongly blocks unmirror; changed connector semantics break legacy journals; sleep observation prematurely ends watchdog deferral. Scoped corrections/regression tests are in progress; no acceptance checked yet. Executor timeout was resumed from preserved changes; no work lost. Main advanced with unrelated TASK-22 commits, preserved.
+
+Final validation and review: independent review 8ca963d8-65b8-4c97-a523-ab3467e6d975 found four defects, all corrected with focused regressions for fresh public sleep refusal, inactive awake mirror destinations, legacy connector compatibility, and realistic sleep/resume watchdog deferral. No second general review. Parent final swift test --disable-sandbox passed 314 tests (4 skips); CLI and app warnings-as-errors builds and git diff --check passed. Logs .build/task12-final-tests.log, task12-final-cli-build.log, task12-final-app-build.log. Required provider rehearsal passed read-only with exact driver-unknown refusal documented in docs/display-provider-qualification.md. TASK-9 technical gate updated; no hardware qualification or write approval. Files: recovery capture/identity/production providers, eligibility/lifecycle/session/reenable/watchdog, focused recovery/mirroring tests, identity/eligibility/recovery/provider/trial docs. Unknown driver inventory is valid fail-closed behavior under AC2/5, not an unfinished permission to enable writes. No worktree created; unrelated TASK-22 commits preserved. Ready for implementation commit and final status.
 <!-- SECTION:NOTES:END -->

@@ -68,6 +68,37 @@ final class DisplayMirroringTests: XCTestCase {
         return journal
     }
 
+    func testLegacyPublicAndMirrorConnectorsMatchFreshTransportEvidence() throws {
+        let legacyPublic = try snapshot { displays in
+            for index in displays.indices { displays[index]["connector"] = "CoreDisplay-\(index + 1)" }
+        }
+        let freshPublic = try snapshot { displays in
+            for index in displays.indices {
+                let location = "CoreDisplay-\(index + 1)"
+                displays[index]["connector"] = location
+                displays[index]["identityEvidence"] = ["source": "cgAndCoreDisplay", "capturedAt": 0,
+                    "transport": "DisplayPort", "transportLocation": "IOKit-Port-\(index + 1)",
+                    "framebufferLocation": location]
+            }
+        }
+        XCTAssertNoThrow(try legacyPublic.validateRestoration(to: freshPublic))
+
+        let legacyMirror = try snapshot()
+        let freshMirror = try snapshot { displays in
+            for index in displays.indices {
+                displays[index]["identityEvidence"] = ["source": "cgAndIOKit", "capturedAt": 0,
+                    "transport": "DisplayPort", "transportLocation": "IOKit-Port-\(index + 1)"]
+            }
+        }
+        XCTAssertTrue(legacyMirror.displays.allSatisfy { $0.connector == nil })
+        XCTAssertNoThrow(try legacyMirror.validateRestoration(to: freshMirror))
+
+        let changedPublic = try snapshot { displays in displays[0]["connector"] = "different CoreDisplay location" }
+        XCTAssertThrowsError(try legacyPublic.validateRestoration(to: changedPublic))
+        let changedMirror = try snapshot { displays in displays[0]["connector"] = "new IOKit location" }
+        XCTAssertThrowsError(try legacyMirror.validateRestoration(to: changedMirror))
+    }
+
     func testMirrorJournalsBeforeBeginAndKeepsUnresolvedIntent() throws {
         let original = try snapshot()
         let mirrored = try snapshot { $0[1]["mirrorUUID"] = sourceUUID; $0[1]["active"] = false }

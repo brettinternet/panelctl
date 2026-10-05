@@ -1,8 +1,13 @@
-# Production provider qualification (TASK-11)
+# Production provider qualification (TASK-11 / TASK-12)
 
-## Verdict: blocked; no hardware qualified
+## Current verdict: private gate blocked; no hardware write-qualified
 
-Bounded offline assessment on 2026-10-04, baseline `3e9eab3` on `main`.
+TASK-11's assessment below records the historical baseline from 2026-10-04
+(`3e9eab3`). TASK-12 later implemented the plan's bounded production
+capture/current identity and read-only preflight observations; the current
+status and fresh no-write rehearsal are recorded at the end. The historical
+assessment remains evidence of what was known then, not the current provider
+implementation.
 Fresh `sw_vers` and `uname -m` report macOS 27.0.1 build `26A434`, arm64.
 These establish only the running OS/architecture, not a physical monitor or
 fresh sink binding. No target was selected, no real journal/helper created, and
@@ -10,14 +15,13 @@ no display setter, public restore, DDC operation, topology change, sleep,
 crash or hotplug trial was run. Historical DELL S2721DGF/DisplayPort evidence
 is not a fresh observation of today's target or survivor.
 
-The existing evidence does not support a production identity provider, online
-or absent. In particular, it does not establish acquisition freshness, a unique
-physical-sink-to-retained-CG-ID association, and replacement/ID-reuse invalidation
-as one contract. Stop that seam here. Repeating cached queries, assigning a TTL,
-or adding an architecture detector cannot close it. No new production provider
-or authority-bearing binding case is introduced; existing safe refusal remains.
+The historical evidence did not support a production identity provider under
+the earlier fresh-sink-binding contract. TASK-12 adopted the canonical plan's
+bounded exact capture/current match instead. That change does not solve physical
+acquisition freshness, same-port replacement or retained-ID reuse; the current
+residual risks and fail-closed driver status are recorded below.
 
-## Bounded evidence matrix
+## TASK-11 historical bounded evidence matrix
 
 “Observed” below does not mean “qualified.” The preserved historical research is
 in [reconciliation](recovery-reconciliation.md); the software contracts are in
@@ -42,7 +46,7 @@ production seam. Existing host/context and CG capture diagnostics are retained,
 not duplicated or upgraded into authorization. The environment and lifecycle
 seams must be qualified separately even if the identity gap is later closed.
 
-## Command-to-writer trace
+## TASK-11 command-to-writer trace (historical)
 
 - `RecoveryCLI.disable`: exact selection/capture agreement → production
   `preflight` → `RecoveryPrivateSession.prepareDisable` → identity/environment/
@@ -96,7 +100,7 @@ intent/lifecycle gates, and confirmed the new tests isolate their intended
 refusals. It retained all five provider gaps below, including recovery-boundary
 environment refresh. No qualification is claimed.
 
-## Exact resume condition
+## TASK-11 historical exact resume condition
 
 TASK-9 remains blocked. A new scoped decision must either defer private disable
 and retain safe refusal, or authorize a bounded evidence-acquisition proposal
@@ -123,7 +127,7 @@ capture-evidence matching, otherwise refuse. Residual risks are documented
 there, not claimed solved. The proposal is kept for possible later
 identical-display hardening only.
 
-## Proposed next investigation — not approved
+## TASK-11 proposed next investigation — not approved
 
 The user requested a scoped proposal, not execution or hardware permission.
 The single candidate source is the historical DCP firmware operation-7 receiver
@@ -159,3 +163,75 @@ into other interfaces or universal research. Even a successful trace does not
 attest the running firmware or prove unique online/absent retained-CG mapping.
 Those and physical/driver/lifecycle qualification remain separate gates requiring
 another decision. Execution of this proposal requires explicit approval.
+
+## TASK-12 current offline implementation and rehearsal (2026-10-05)
+
+Production capture records `hw.model`, CG identity, optional CoreDisplay
+`IODisplayLocation`, and read-only IOKit DisplayPort transport/type/location/HPD.
+The persisted connector retains its historical CoreDisplay meaning (including
+nil in public-mirror captures); IOKit `transportLocation` is separate optional
+identity evidence, not a replacement. Current identity inventory rereads the
+snapshot and transport inventory, requiring exact nonzero vendor/product/serial,
+CoreDisplay connector, IOKit transport/location and host context. It rejects
+identical vendor/product peers, incomplete or duplicate matches, changed
+IDs/context and unsupported host/build. Production scope is limited to
+`Mac17,14`, arm64, build `26A434`. This is the canonical plan's bounded
+capture/current contract, not proof of fresh physical acquisition. Cached IOKit
+or CG metadata could conceal a same-port replacement or reused ID.
+
+Eligibility reads online/active/mode state, requires one matching active/high-HPD
+external IOKit transport for an external physical classification, and reports
+unknown when evidence is incomplete. It recognizes known DisplayLink and
+virtual-display services but does **not** infer native-only from a scan with no
+known prohibited name; no complete native-only allowlist is qualified, so
+production driver state remains `unknown`. Initial lifecycle observation reads
+IOPMrootDomain power/clamshell state, current-console user/session and
+CoreGraphics screen awake state (inactive mirror destinations can still be awake).
+Disable, enable and public restoration
+synchronously refresh applicable environment/lifecycle at each writer boundary.
+Public recovery keeps its strict topology/configuration policy without private
+physical/driver restrictions.
+
+Fresh test-only no-write rehearsal command: `swift test --disable-sandbox --filter 'RecoveryProductionProviderTests'`. Result: passed; no writer was
+constructed. Host `Mac17,14`, build `26A434`, arm64; lifecycle awake `true`, lid
+`unknown`; identity verdict `eligible`, complete capture/current match;
+mirroring `false`. DELL S2721DGF (ID 1, IOKit transport location
+`Port-USB-C@3/DisplayPort`, 1440x2560), K272HUL (ID 3,
+`Port-USB-C@1/DisplayPort`, 1440x2560), and AW3425DW (ID 2,
+`Port-HDMI@1/DisplayPort`, 3440x1440) were observed online, active, High-HPD,
+and classified physical with usable modes. Dell AW3423DW (ID 5,
+`Port-USB-C@2/DisplayPort`, 3440x1440) was an online, active, High-HPD physical
+survivor candidate. Persisted connector fields remained their separate CoreDisplay
+`IODisplayLocation` values; id 1 was observed at an `IOService:/.../IOMobileFramebufferShim`
+location. No target was selected. Each target verdict was refusal:
+`DisplayLink, virtual or unknown driver state`; all three have other observed
+survivor candidates. No actual disable target was selected, no journal/helper
+was armed, and no display state changed.
+
+This is a valid no-write refusal, not TASK-9 qualification or approval. The
+remaining exact gate is a qualified complete native-only driver inventory plus
+separate fresh scoped consent. The historical DCP proposal above remains
+unapproved and was not executed.
+
+### Final offline validation and safety review
+
+Independent review `8ca963d8-65b8-4c97-a523-ab3467e6d975` found four defects;
+a scoped correction pass addressed each with regression tests:
+
+- Public restoration now rejects newly observed asleep screens without private
+  driver/physical gates (`testPublicRecoveryBoundaryRefusesFreshAsleepScreenWithoutPrivateGates`).
+- Awake inactive mirror destinations permit public unmirror
+  (`testAwakeMirrorDestinationPermitsFakePublicUnmirrorRestoration`).
+- Legacy connector semantics remain unchanged; IOKit location is separate
+  (`testLegacyPublicAndMirrorConnectorsMatchFreshTransportEvidence`).
+- Watchdog sleep deferral survives real asleep observations and recovers after
+  resume/settling (fake-helper `runtime-sleep` and expiry cases).
+
+Final parent verification: `swift test --disable-sandbox` passed 314 tests
+(4 skips), including the no-write rehearsal; both `panelctl` and `PanelCtlApp`
+builds passed with `-Xswiftc -warnings-as-errors`; `git diff --check` passed.
+Logs: `.build/task12-final-tests.log`, `.build/task12-final-cli-build.log`,
+`.build/task12-final-app-build.log`. An earlier full run had transient native-menu
+focus assertions; subsequent full runs passed. LSP diagnostics timed out
+(unknown, not clean). No second general review or hardware trial was performed.
+Driver-inventory qualification remains a TASK-9 blocker, not an inferred success.

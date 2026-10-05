@@ -2,59 +2,51 @@
 
 ## Current verdict: blocked, not hardware-qualified
 
-Preparation checkpoint: 2026-10-04, source baseline `671015c` on `main`.
+Preparation checkpoint: 2026-10-05, offline provider implementation on `main`.
 No live cycle, display mutation, DDC write or disruptive fallback was performed.
 No scoped human consent has been obtained. TASK-8's
 [offline acceptance](display-disable-offline-acceptance.md) is not live approval.
 The [canonical plan](display-disable-implementation-plan.md) governs the trial.
 
-The technical gate also fails before any writer is constructed:
-
-- `RecoveryPrivateSession` defaults to an inventory provider that throws
-  `unsupported: no qualified fresh physical-sink binding; private display control unavailable`.
-- Its physical/driver environment is unqualified and initial awake state defaults
-  to false. Notifications alone do not qualify fresh mutation-boundary evidence.
-- `RecoveryEnableInventory.Binding` has only unqualified, stale and synthetic
-  fixture cases; none authorizes a real physical target. The default
-  `RecoveryReenable` inventory also refuses offline hardware-to-CG-ID binding.
+The technical gate still fails before any writer is constructed. The production
+identity provider returned an exact supported-host capture/current match in the
+no-write rehearsal, and read-only IOKit/CG observations classified connected
+external candidates and a survivor. The production driver provider found no
+recognized prohibited service name but cannot prove a complete native-only
+driver inventory, so it reports `unknown`; every target is refused with
+`DisplayLink, virtual or unknown driver state`. Production refusal remains
+strict. Cached identity limitations (same-port replacement and reused IDs) are
+documented in the [identity policy](recovery-identity-policy.md).
 
 Fresh focused verification:
 
 ```sh
-swift test --disable-sandbox --filter RecoveryCLITests/testProductionProviderRefusesBeforeConstructingAnyWriter
+swift test --disable-sandbox --filter 'RecoveryProductionProviderTests'
 ```
 
-Result: one test passed, zero failures. It uses a fixture and asserts refusal
-before writer construction even with initial awake state injected as true.
-This establishes a software refusal, not present hardware identity or recovery.
-No live target was selected and no new journal or helper was created.
+Result: rehearsal passed with no writer construction and exact candidate/survivor
+observations recorded in the [provider qualification matrix](display-provider-qualification.md).
+No private setter, public restore, DDC operation, helper arming or topology
+change was performed. No live target was selected and no new journal/helper was
+created.
 
-**Resume condition:** separately scoped work must implement and independently
-qualify real target identity (including while offline), physical survivor,
-driver and fresh lifecycle evidence without weakening refusal. User approval
-alone cannot unblock the current providers. Agree that follow-up scope before
-starting it. The user approved scoping this prerequisite as TASK-11; that approval
-is offline-only, not consent for a hardware cycle. Do not reopen open-ended
-identity research or substitute cached
-metadata, HPD, synthetic bindings or historical numeric IDs. Then obtain fresh
-scoped approval for the simple cycle below. TASK-10 still depends on actual
-TASK-9 input-return observations.
+**Resume condition:** independently qualify a complete native-only driver
+inventory, address the documented identity residual risks or explicitly accept
+the bounded plan contract for the specific setup, then obtain fresh scoped
+approval for the simple cycle below. Approval alone cannot bypass a technical
+gate. No DCP investigation or hardware write is authorized by this record.
+TASK-10 still depends on actual TASK-9 input-return observations.
 
-## TASK-11 offline checkpoint
+## TASK-11 historical offline checkpoint
 
-The [provider qualification matrix](display-provider-qualification.md) records
-why the production gate remains closed: no proven fresh physical acquisition,
-unique absent-sink-to-retained-ID association, or replacement/context invalidation;
-physical survivor/driver/initial awake and synchronous lifecycle observations also
-remain unqualified. Matching the ABI host tuple does not qualify these properties.
-No production authority was added. New isolated fake-writer regressions preserve
-unknown environment/lifecycle and synthetic-binding refusal; they are not a live
-trial. TASK-11 cannot be marked complete while provider qualification is unresolved.
-
-Next: a separately scoped decision to defer private disable or propose a bounded,
-evidence-producing investigation of a named source, with explicit permissions
-and stop conditions. Do not repeatedly query cached metadata or relax guards.
-Even a qualified provider would still require the fresh trial consent below.
+TASK-11's 2026-10-04 assessment found the production inventory and environment
+seams refusing by default under the earlier fresh-sink-binding contract.
+TASK-12 later implemented the canonical bounded capture/current contract and
+real read-only observations. The remaining provider gate is the unknown complete
+native-only driver inventory. The identity policy documents cached-metadata,
+same-port replacement and ID-reuse risks. TASK-11/TASK-12 fake-writer tests do
+not qualify hardware. Do not repeatedly query cached metadata or relax guards.
+Even a qualified provider still requires the fresh trial consent below.
 
 ## Trial record template — all fields pending, not approval
 

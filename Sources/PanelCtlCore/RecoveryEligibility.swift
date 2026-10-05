@@ -19,6 +19,7 @@ struct RecoveryEligibilityEnvironment: Equatable {
     // nil means the provider could not establish the mirror topology.
     var mirrored: Bool? = nil
     var screens: [UInt32: Screen] = [:]
+    var driverInventory: String? = nil
 }
 
 struct RecoveryEligibilityDecision {

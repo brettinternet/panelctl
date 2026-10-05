@@ -6,13 +6,13 @@ import CoreGraphics
 final class RecoveryEligibilityTests: XCTestCase {
     private func snapshot(ids: [Int] = [1, 2], builtin: Int? = nil, main: Int = 1,
                           mirrored: Bool = false, serialOffset: Int = 0) throws -> RecoverySnapshot {
-        let value: [String: Any] = ["bootSession": "boot", "osBuild": "build", "userID": 501,
+        let value: [String: Any] = ["bootSession": "boot", "osBuild": "build", "userID": 501, "hostModel": "synthetic-model",
             "displays": ids.map { id -> [String: Any] in
                 var display: [String: Any] = [
                     "uuid": "00000000-0000-0000-0000-00000000000\(id)", "id": id,
-                    "vendor": 1, "model": 2, "serial": id + serialOffset, "builtin": id == builtin,
+                    "vendor": 1, "model": id, "serial": id + serialOffset, "builtin": id == builtin,
                     "main": id == main, "active": true, "x": (id - 1) * 1920, "y": 0, "rotation": 0,
-                    "connector": "port-\(id)", "identityEvidence": ["source": "syntheticFixture", "capturedAt": 0],
+                    "connector": "port-\(id)", "identityEvidence": ["source": "syntheticFixture", "capturedAt": 0, "transport": "DisplayPort", "framebufferLocation": "frame-\(id)"],
                     "mode": ["id": 1, "width": 1920, "height": 1080, "pixelWidth": 1920,
                              "pixelHeight": 1080, "refreshRate": 60, "flags": 0]]
                 if mirrored { display["mirrorUUID"] = "00000000-0000-0000-0000-000000000001" }
@@ -24,7 +24,7 @@ final class RecoveryEligibilityTests: XCTestCase {
     private func identity(_ snapshot: RecoverySnapshot, online: Set<UInt32> = [1, 2]) -> RecoveryEnableInventory {
         RecoveryEnableInventory(bootSession: snapshot.bootSession, osBuild: snapshot.osBuild,
             userID: snapshot.userID, identities: snapshot.displays.map(RecoveryEnableIdentity.init),
-            onlineIDs: online, binding: .syntheticPhysicalFixture)
+            onlineIDs: online, hostModel: snapshot.hostModel, architecture: "synthetic", binding: .syntheticPhysicalFixture)
     }
 
     private func environment(ids: [UInt32] = [1, 2]) -> RecoveryEligibilityEnvironment {

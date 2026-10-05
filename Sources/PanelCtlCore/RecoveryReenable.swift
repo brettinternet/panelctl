@@ -1,22 +1,36 @@
 import Foundation
 import CoreGraphics
 
-/// An offline provider must independently establish these bindings, not merely
-/// return cached CG metadata for a saved numeric ID. No such provider is yet
-/// qualified on this host. This inventory is deliberately not journal data.
+/// Production observations use the bounded capture/current contract on the
+/// TASK-1 host/build. They do not prove fresh sink acquisition or rule out
+/// cached same-port replacement/CG-ID reuse. This inventory is never journal data.
 struct RecoveryEnableIdentity: Equatable {
-    let uuid: String
+    let uuid: String?
     let id: UInt32
     let vendor: UInt32
     let model: UInt32
     let serial: UInt32
     let builtin: Bool
-    let connector: String?
+    let connector: String
+    let transport: String
+    let transportLocation: String?
+    let framebufferLocation: String?
 
     init(_ display: RecoveryDisplay) {
-        uuid = display.uuid; id = display.id; vendor = display.vendor
-        model = display.model; serial = display.serial
-        builtin = display.builtin; connector = display.connector
+        self.init(uuid: display.uuid, id: display.id, vendor: display.vendor, model: display.model,
+                  serial: display.serial, builtin: display.builtin, connector: display.connector ?? "",
+                  transport: display.identityEvidence?.transport ?? "",
+                  framebufferLocation: display.identityEvidence?.framebufferLocation,
+                  transportLocation: display.identityEvidence?.transportLocation)
+    }
+
+    init(uuid: String?, id: UInt32, vendor: UInt32, model: UInt32, serial: UInt32,
+         builtin: Bool, connector: String, transport: String, framebufferLocation: String?,
+         transportLocation: String? = nil) {
+        self.uuid = uuid; self.id = id; self.vendor = vendor; self.model = model
+        self.serial = serial; self.builtin = builtin; self.connector = connector
+        self.transport = transport; self.transportLocation = transportLocation
+        self.framebufferLocation = framebufferLocation
     }
 }
 
@@ -24,10 +38,20 @@ struct RecoveryEnableInventory {
     let bootSession: String
     let osBuild: String
     let userID: UInt32
-    let identities: [RecoveryEnableIdentity]
+    var identities: [RecoveryEnableIdentity]
     let onlineIDs: Set<UInt32>
-    enum Binding { case unqualified, stale, syntheticPhysicalFixture }
+    let hostModel: String?
+    let architecture: String
+    enum Binding: Equatable { case unqualified, stale, captureMatch, syntheticPhysicalFixture }
     var binding: Binding = .unqualified
+
+    init(bootSession: String, osBuild: String, userID: UInt32,
+         identities: [RecoveryEnableIdentity], onlineIDs: Set<UInt32>,
+         hostModel: String? = nil, architecture: String = "unknown", binding: Binding = .unqualified) {
+        self.bootSession = bootSession; self.osBuild = osBuild; self.userID = userID
+        self.identities = identities; self.onlineIDs = onlineIDs
+        self.hostModel = hostModel; self.architecture = architecture; self.binding = binding
+    }
 }
 
 /// Shared guarded recovery seam. The public-only engine has no backend;
@@ -35,11 +59,12 @@ struct RecoveryEnableInventory {
 /// and no user flag bypasses qualification.
 struct RecoveryReenable {
     var inventory: () throws -> RecoveryEnableInventory = {
-        throw RecoveryError.unsafe("offline hardware-to-CG-ID binding is unqualified; private re-enable unavailable")
+        throw RecoveryError.unsafe("no current hardware identity provider was supplied; private re-enable unavailable")
     }
     var enable: (UInt32, () throws -> Void) throws -> Void = { _, _ in
         throw RecoveryError.unsafe("private transport unavailable until the verified backend gates pass")
     }
+    var preflight: (RecoverySnapshot, RecoverySnapshot) throws -> Void = { _, _ in }
 
     func target(snapshot: RecoverySnapshot, current: RecoverySnapshot) throws -> RecoveryDisplay {
         // Validate the remaining online displays with the existing strict rules.
@@ -54,7 +79,11 @@ struct RecoveryReenable {
         let remaining = RecoverySnapshot(bootSession: snapshot.bootSession, osBuild: snapshot.osBuild,
                                          userID: snapshot.userID,
                                          displays: snapshot.displays.filter { $0.uuid != target.uuid })
-        try remaining.validateRestoration(to: current)
+        do { try remaining.validateRestoration(to: current) }
+        catch {
+            throw RecoveryError.unsafe("remaining displays \(remaining.displays.map(\.uuid)) do not match online \(current.displays.map(\.uuid)): \(error)")
+        }
+        try preflight(snapshot, current)
         let evidence = try inventory()
         try RecoveryIdentityPolicy.evaluate(snapshot: snapshot, evidence: evidence).requireEligible()
         guard evidence.onlineIDs == Set(current.displays.map(\.id)) else {

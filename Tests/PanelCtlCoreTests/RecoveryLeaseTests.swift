@@ -15,13 +15,13 @@ final class RecoveryLeaseTests: XCTestCase {
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: directory) }
 
     private func snapshot() throws -> RecoverySnapshot {
-        let value: [String: Any] = ["bootSession": "boot", "osBuild": "build", "userID": getuid(),
+        let value: [String: Any] = ["bootSession": "boot", "osBuild": "build", "userID": getuid(), "hostModel": "synthetic-model",
             "displays": (1...2).map { id -> [String: Any] in
                 ["uuid": "00000000-0000-0000-0000-00000000000\(id)", "id": id,
-                 "vendor": 1, "model": 2, "serial": id, "builtin": false,
+                 "vendor": 1, "model": id, "serial": id, "builtin": false,
                  "main": id == 1, "active": true, "x": (id - 1) * 1920, "y": 0, "rotation": 0,
                  "connector": "port-\(id)", "colorSpace": "color",
-                 "identityEvidence": ["source": "syntheticFixture", "capturedAt": 0],
+                 "identityEvidence": ["source": "syntheticFixture", "capturedAt": 0, "transport": "DisplayPort", "framebufferLocation": "frame-\(id)"],
                  "mode": ["id": 1, "width": 1920, "height": 1080, "pixelWidth": 1920,
                           "pixelHeight": 1080, "refreshRate": 60, "flags": 0]]
             }]
@@ -36,7 +36,7 @@ final class RecoveryLeaseTests: XCTestCase {
     private func inventory(_ original: RecoverySnapshot, online: Set<UInt32>) -> RecoveryEnableInventory {
         RecoveryEnableInventory(bootSession: original.bootSession, osBuild: original.osBuild,
             userID: original.userID, identities: original.displays.map(RecoveryEnableIdentity.init),
-            onlineIDs: online, binding: .syntheticPhysicalFixture)
+            onlineIDs: online, hostModel: original.hostModel, architecture: "synthetic", binding: .syntheticPhysicalFixture)
     }
 
     private func store() throws -> RecoveryStore {
@@ -331,15 +331,21 @@ final class RecoveryLeaseTests: XCTestCase {
         let store = RecoveryStore(url: URL(fileURLWithPath: path))
         let journal = try store.load(), baseline = journal.snapshot
         let displayURL = store.url.appendingPathExtension("display")
+        let asleepWriteURL = store.url.appendingPathExtension("asleep-write")
         var current = baseline
         var pendingEnabled = false
+        var runtimeAwake = true
         var runtime: RecoveryPrivateSession?
         func crash(_ point: String) {
             if fault == point { _ = kill(getpid(), SIGKILL) }
         }
         let transaction = RecoveryEnableTransaction(begin: {
             crash("begin"); return CGDisplayConfigRef(bitPattern: 1)!
-        }, setEnabled: { _, _, enabled in pendingEnabled = enabled; crash("setter") }, commit: { _, _ in
+        }, setEnabled: { _, _, enabled in
+            pendingEnabled = enabled
+            if enabled && !runtimeAwake { try? Data("write while asleep".utf8).write(to: asleepWriteURL) }
+            crash("setter")
+        }, commit: { _, _ in
             crash("before-commit")
             current = pendingEnabled ? baseline : self.absent(baseline)
             try JSONEncoder().encode(current).write(to: displayURL, options: .atomic)
@@ -353,9 +359,13 @@ final class RecoveryLeaseTests: XCTestCase {
                 }
                 if fault == "runtime-sleep" || fault == "runtime-sleep-expired" {
                     DispatchQueue.main.async {
+                        runtimeAwake = false
                         runtime?.receive(.suspend(.system))
                         if fault == "runtime-sleep" {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { runtime?.receive(.resume(.system)) }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                runtimeAwake = true
+                                runtime?.receive(.resume(.system))
+                            }
                         }
                     }
                 }
@@ -382,6 +392,9 @@ final class RecoveryLeaseTests: XCTestCase {
             }, transaction: { transaction }, apply: { _, _ in
                 try Data("public-write".utf8).write(to: store.url.appendingPathExtension("public-write"))
                 XCTFail("unexpected public write")
+            }, lifecycleObservation: {
+                RecoveryProductionProviders.LifecycleObservation(awake: runtimeAwake, lid: .notApplicable,
+                    diagnostic: "fake dynamic runtime power state")
             }, initiallyAwake: true)
         }
         try RecoveryWatchdog.runHelper(store: store, id: journal.id, engine: engine, disable: disable,
@@ -472,22 +485,26 @@ final class RecoveryLeaseTests: XCTestCase {
             XCTAssertEqual(exited.wait(timeout: .now() + 8), .success, fault)
             let saved = try store.load()
             XCTAssertFalse(FileManager.default.fileExists(atPath: store.url.appendingPathExtension("public-write").path), fault)
+            if fault == "runtime-sleep" {
+                XCTAssertFalse(FileManager.default.fileExists(atPath: store.url.appendingPathExtension("asleep-write").path),
+                    "private recovery writer must wait for matching resume and settle")
+            }
             XCTAssertEqual(saved.id, journal.id); XCTAssertEqual(saved.snapshot, baseline)
             if fault == "runtime-system-layout" || fault == "runtime-system-layout-EOF" {
                 XCTAssertNotEqual(process.terminationStatus, 0)
                 XCTAssertEqual(saved.state, .needsAttention)
                 XCTAssertEqual(saved.privateRecoveryClosed, true, "system re-enable must durably retire authority even if layout verification fails")
                 XCTAssertNil(saved.reenableAttempted)
-            } else if fault == "runtime-sleep-expired" {
+            } else if fault == "runtime-sleep-expired" || fault == "runtime-collapse" {
                 XCTAssertNotEqual(process.terminationStatus, 0)
                 XCTAssertEqual(saved.state, .needsAttention)
-                XCTAssertNil(saved.reenableAttempted, "exhausted sleep gate must not enable")
+                XCTAssertNil(saved.reenableAttempted, "invalid recovery-boundary observations must not enable")
+                if fault == "runtime-collapse" { XCTAssertTrue(saved.trigger?.hasPrefix("eligibility:") == true) }
             } else if ["shutdown", "deadline", "SIGINT", "SIGTERM"].contains(fault) || fault.hasPrefix("runtime-") {
-                XCTAssertEqual(process.terminationStatus, 0, fault)
-                XCTAssertEqual(saved.state, fault == "runtime-system-enable" ? .verified : .restored, fault)
+                XCTAssertEqual(process.terminationStatus, 0, "\(fault): \(saved.failure ?? "no failure diagnostic")")
+                XCTAssertEqual(saved.state, fault == "runtime-system-enable" ? .verified : .restored, "\(fault): \(saved.failure ?? "no failure diagnostic")")
                 XCTAssertEqual(saved.reenableAttempted, fault == "runtime-system-enable" ? nil : true, fault)
                 if fault == "runtime-system-enable" { XCTAssertEqual(saved.trigger, "system-reenable") }
-                if fault == "runtime-collapse" { XCTAssertTrue(saved.trigger?.hasPrefix("eligibility:") == true) }
             } else {
                 XCTAssertEqual(process.terminationReason, .uncaughtSignal, fault)
                 XCTAssertEqual(process.terminationStatus, SIGKILL, fault)

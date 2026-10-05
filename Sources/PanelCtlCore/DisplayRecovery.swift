@@ -67,6 +67,7 @@ struct RecoverySnapshot: Codable, Equatable {
     let osBuild: String
     let userID: UInt32
     let displays: [RecoveryDisplay]
+    var hostModel: String? = nil
 
     static func capture(includePrivateMetadata: Bool = true) throws -> Self {
         guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
@@ -91,6 +92,7 @@ struct RecoverySnapshot: Codable, Equatable {
             throw RecoveryError.unsafe("display UUIDs are ambiguous")
         }
         let metadata = includePrivateMetadata ? try? CoreDisplayMetadata() : nil
+        let transports = (try? RecoveryProductionProviders.transports()) ?? []
         let displays = try ids.map { id -> RecoveryDisplay in
             guard let mode = CGDisplayCopyDisplayMode(id) else {
                 throw RecoveryError.unsafe("display \(id) has no readable mode")
@@ -104,6 +106,16 @@ struct RecoverySnapshot: Codable, Equatable {
                 throw RecoveryError.unsafe("display \(id) has an unknown mirror source")
             }
             let info = metadata?.info(id)?.takeRetainedValue() as? [String: Any]
+            let transportMatches = transports.filter {
+                $0.vendor == CGDisplayVendorNumber(id) && $0.product == CGDisplayModelNumber(id) &&
+                $0.serial == CGDisplaySerialNumber(id)
+            }
+            let transport = transportMatches.count == 1 ? transportMatches.first : nil
+            let framebufferLocation = info?["IODisplayLocation"] as? String
+            // Preserve the journaled connector's original CoreDisplay meaning;
+            // IOKit transport location is separate supplementary evidence.
+            let connector = framebufferLocation
+            let transportName = CGDisplayIsBuiltin(id) != 0 ? "InternalDisplay" : transport?.kind
             let colorSpace = CGDisplayCopyColorSpace(id)
             let profile = colorSpace.copyICCData() as Data?
             let displayName = NSScreen.screens.first {
@@ -118,14 +130,16 @@ struct RecoverySnapshot: Codable, Equatable {
                 mode: RecoveryMode(mode), colorSpace: colorSpace.name as String?,
                 colorProfileDigest: profile.map(RecoveryColorProfile.digest),
                 colorProfileDateIndependentDigest: profile.flatMap(RecoveryColorProfile.dateIndependentDigest),
-                connector: info?["IODisplayLocation"] as? String,
-                identityEvidence: RecoveryIdentityEvidence(source: .cgAndCoreDisplay, capturedAt: Date(),
-                    framebufferLocation: info?["IODisplayLocation"] as? String)
+                connector: connector,
+                identityEvidence: RecoveryIdentityEvidence(
+                    source: includePrivateMetadata && framebufferLocation != nil ? .cgAndCoreDisplay : .cgAndIOKit,
+                    capturedAt: Date(), transport: transportName, transportLocation: transport?.location,
+                    hpd: transport?.hpd, framebufferLocation: framebufferLocation)
             )
         }
         return Self(bootSession: try systemString("kern.bootsessionuuid"),
                     osBuild: try systemString("kern.osversion"), userID: getuid(),
-                    displays: displays.sorted { $0.uuid < $1.uuid })
+                    displays: displays.sorted { $0.uuid < $1.uuid }, hostModel: try? systemString("hw.model"))
     }
 
     /// No ordinal or stale numeric-ID fallback. The current topology must have
@@ -259,8 +273,14 @@ struct RecoveryEngine {
     // Public mirror journals deliberately omit CoreDisplay metadata; use the
     // same public-only identity observations for both capture and restoration.
     static var publicMirror: Self {
-        Self(capture: { try .capture(includePrivateMetadata: false) }, apply: {
-            try RecoveryConfiguration.restore($0, capture: { try .capture(includePrivateMetadata: false) })
+        Self(capture: { try .capture(includePrivateMetadata: false) }, apply: { snapshot in
+            let publicCapture = { try RecoverySnapshot.capture(includePrivateMetadata: false) }
+            let session = RecoveryPrivateSession(snapshot: snapshot, capture: publicCapture,
+                apply: { baseline, validate in
+                    try RecoveryConfiguration.restore(baseline, revalidate: validate, capture: publicCapture)
+                })
+            session.observeNotifications()
+            try session.makeEngine(requiresPrivateIdentity: false).apply(snapshot)
         })
     }
 

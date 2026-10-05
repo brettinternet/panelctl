@@ -4,7 +4,7 @@ title: Qualify one supervised display-disable and recovery cycle
 status: To Do
 assignee: []
 created_date: '2026-10-04 05:03'
-updated_date: '2026-10-04 16:37'
+updated_date: '2026-10-05 04:26'
 labels:
   - display-disable
   - human-gated
@@ -68,4 +68,6 @@ TASK-11 bounded assessment and independent review confirm the technical gate rem
 2026-10-04 user decision: identity bar reverts to the canonical plan's bounded capture-evidence matching contract. Technical gate now waits on TASK-12 (plan-contract providers + no-write rehearsal), not TASK-11 AC2 or firmware research. Live trial still needs fresh scoped consent.
 
 Parked 2026-10-04 by user decision: DDC input select works (TASK-10), and public mirroring (TASK-13) is the first route to hide the display. Resume only if mirroring fails or its side effects are unacceptable, or if the signal must drop so monitors without DDC can switch inputs automatically. Away/back command: TASK-15.
+
+TASK-12 offline implementation now supplies bounded capture/current identity and real read-only preflight providers; independent safety review findings corrected with regressions. Fresh no-write rehearsal on Mac17,14 arm64 build 26A434 found matching connected identity, awake physical target/survivor candidates, but every target refused: DisplayLink, virtual or unknown driver state. Production scan cannot qualify a complete native-only driver inventory and deliberately returns unknown. Technical gate remains closed until complete driver inventory is positively qualified; never treat absence of recognized names as native-only. See docs/display-provider-qualification.md for current evidence and residual cached-metadata/ID-reuse risks. Prior live-work parking remains; no private setter, restoration, DDC, topology trial or helper arming occurred. Fresh exact-target/timeout/survivor/presence/fallback consent is still mandatory; no TASK-9 acceptance is claimed.
 <!-- SECTION:NOTES:END -->

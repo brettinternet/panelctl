@@ -13,15 +13,17 @@ final class RecoveryReenableTests: XCTestCase {
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: directory) }
 
     private func fixture(_ modify: (inout [String: Any]) -> Void = { _ in }) throws -> RecoverySnapshot {
-        var value: [String: Any] = ["bootSession": "boot", "osBuild": "build", "userID": getuid(),
+        var value: [String: Any] = ["bootSession": "boot", "osBuild": "build", "userID": getuid(), "hostModel": "synthetic-model",
             "displays": (1...2).map { index -> [String: Any] in
-                ["uuid": "00000000-0000-0000-0000-00000000000\(index)", "id": index,
-                 "vendor": 4268, "model": 16857, "serial": index, "builtin": false,
-                 "main": index == 1, "active": true, "x": (index - 1) * 1920, "y": 0,
-                 "rotation": 0, "connector": "connector-\(index)", "colorSpace": "test",
-                 "identityEvidence": ["source": "syntheticFixture", "capturedAt": 0],
-                 "mode": ["id": 1, "width": 1920, "height": 1080, "pixelWidth": 1920,
-                          "pixelHeight": 1080, "refreshRate": 60, "flags": 0]]
+                let identityEvidence: [String: Any] = ["source": "syntheticFixture", "capturedAt": 0,
+                    "transport": "DisplayPort", "framebufferLocation": "frame-\(index)"]
+                return ["uuid": "00000000-0000-0000-0000-00000000000\(index)", "id": index,
+                    "vendor": 4268, "model": index + 16857, "serial": index, "builtin": false,
+                    "main": index == 1, "active": true, "x": (index - 1) * 1920, "y": 0,
+                    "rotation": 0, "connector": "connector-\(index)", "colorSpace": "test",
+                    "identityEvidence": identityEvidence,
+                    "mode": ["id": 1, "width": 1920, "height": 1080, "pixelWidth": 1920,
+                             "pixelHeight": 1080, "refreshRate": 60, "flags": 0]]
             }]
         modify(&value)
         return try JSONDecoder().decode(RecoverySnapshot.self, from: JSONSerialization.data(withJSONObject: value))
@@ -33,7 +35,7 @@ final class RecoveryReenableTests: XCTestCase {
     private func evidence(_ original: RecoverySnapshot, online: Set<UInt32> = [1]) -> RecoveryEnableInventory {
         RecoveryEnableInventory(bootSession: original.bootSession, osBuild: original.osBuild,
                                 userID: original.userID, identities: original.displays.map(RecoveryEnableIdentity.init),
-                                onlineIDs: online, binding: .syntheticPhysicalFixture)
+                                onlineIDs: online, hostModel: original.hostModel, architecture: "synthetic", binding: .syntheticPhysicalFixture)
     }
     private func store() throws -> RecoveryStore {
         let store = RecoveryStore(url: directory.appendingPathComponent("current.json"))
@@ -120,6 +122,126 @@ final class RecoveryReenableTests: XCTestCase {
             displays[0]["main"] = false; displays[1]["main"] = true; data["displays"] = displays
         }
         XCTAssertThrowsError(try RecoveryReenable(inventory: { self.evidence(main) }).target(snapshot: main, current: missing(main)))
+    }
+
+    private func productionFixture(_ modify: (inout [String: Any]) -> Void = { _ in }) throws -> RecoverySnapshot {
+        try fixture { data in
+            data["osBuild"] = RecoveryIdentityPolicy.supportedOSBuild
+            data["hostModel"] = RecoveryIdentityPolicy.supportedHostModel
+            var displays = data["displays"] as! [[String: Any]]
+            for index in displays.indices {
+                displays[index]["identityEvidence"] = ["source": "cgAndCoreDisplay", "capturedAt": 0,
+                    "transport": "DisplayPort", "transportLocation": "transport-frame-\(index + 1)",
+                    "hpd": "High", "framebufferLocation": "frame-\(index + 1)"]
+            }
+            data["displays"] = displays
+            modify(&data)
+        }
+    }
+
+    private func productionEvidence(_ snapshot: RecoverySnapshot, online: Set<UInt32> = [1]) -> RecoveryEnableInventory {
+        let identities = snapshot.displays.map { display in
+            RecoveryEnableIdentity(uuid: online.contains(display.id) ? display.uuid : nil, id: display.id,
+                vendor: display.vendor, model: display.model, serial: display.serial, builtin: display.builtin,
+                connector: display.connector ?? "", transport: display.identityEvidence?.transport ?? "",
+                framebufferLocation: online.contains(display.id) ? display.identityEvidence?.framebufferLocation : nil,
+                transportLocation: display.identityEvidence?.transportLocation)
+        }
+        return RecoveryEnableInventory(bootSession: snapshot.bootSession, osBuild: snapshot.osBuild,
+            userID: snapshot.userID, identities: identities, onlineIDs: online, hostModel: snapshot.hostModel,
+            architecture: "arm64", binding: .captureMatch)
+    }
+
+    func testCompleteProductionIdentityMatchAndMismatchMatrix() throws {
+        let snapshot = try productionFixture()
+        let matched = productionEvidence(snapshot)
+        XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: snapshot, evidence: matched).outcome, .eligible)
+        let changes: [(String, (inout RecoveryEnableIdentity) -> Void)] = [
+            ("vendor", { $0 = RecoveryEnableIdentity(uuid: $0.uuid, id: $0.id, vendor: 9, model: $0.model, serial: $0.serial, builtin: $0.builtin, connector: $0.connector, transport: $0.transport, framebufferLocation: $0.framebufferLocation, transportLocation: $0.transportLocation) }),
+            ("product", { $0 = RecoveryEnableIdentity(uuid: $0.uuid, id: $0.id, vendor: $0.vendor, model: 9, serial: $0.serial, builtin: $0.builtin, connector: $0.connector, transport: $0.transport, framebufferLocation: $0.framebufferLocation, transportLocation: $0.transportLocation) }),
+            ("serial", { $0 = RecoveryEnableIdentity(uuid: $0.uuid, id: $0.id, vendor: $0.vendor, model: $0.model, serial: 9, builtin: $0.builtin, connector: $0.connector, transport: $0.transport, framebufferLocation: $0.framebufferLocation, transportLocation: $0.transportLocation) }),
+            ("connector", { $0 = RecoveryEnableIdentity(uuid: $0.uuid, id: $0.id, vendor: $0.vendor, model: $0.model, serial: $0.serial, builtin: $0.builtin, connector: "other", transport: $0.transport, framebufferLocation: $0.framebufferLocation, transportLocation: $0.transportLocation) }),
+            ("transport", { $0 = RecoveryEnableIdentity(uuid: $0.uuid, id: $0.id, vendor: $0.vendor, model: $0.model, serial: $0.serial, builtin: $0.builtin, connector: $0.connector, transport: "HDMI", framebufferLocation: $0.framebufferLocation, transportLocation: $0.transportLocation) }),
+            ("transport location", { $0 = RecoveryEnableIdentity(uuid: $0.uuid, id: $0.id, vendor: $0.vendor, model: $0.model, serial: $0.serial, builtin: $0.builtin, connector: $0.connector, transport: $0.transport, framebufferLocation: $0.framebufferLocation, transportLocation: "other") }),
+            ("location", { $0 = RecoveryEnableIdentity(uuid: $0.uuid, id: $0.id, vendor: $0.vendor, model: $0.model, serial: $0.serial, builtin: $0.builtin, connector: $0.connector, transport: $0.transport, framebufferLocation: "other", transportLocation: $0.transportLocation) }),
+            ("uuid", { $0 = RecoveryEnableIdentity(uuid: "00000000-0000-0000-0000-000000000099", id: $0.id, vendor: $0.vendor, model: $0.model, serial: $0.serial, builtin: $0.builtin, connector: $0.connector, transport: $0.transport, framebufferLocation: $0.framebufferLocation, transportLocation: $0.transportLocation) })
+        ]
+        for (field, mutate) in changes {
+            var evidence = matched
+            mutate(&evidence.identities[0])
+            XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: snapshot, evidence: evidence).outcome, .stale, field)
+        }
+        for field in ["vendor", "product", "serial", "connector", "transport", "transportLocation"] {
+            var evidence = matched
+            let old = evidence.identities[0]
+            evidence.identities[0] = RecoveryEnableIdentity(uuid: old.uuid, id: old.id,
+                vendor: field == "vendor" ? 0 : old.vendor, model: field == "product" ? 0 : old.model,
+                serial: field == "serial" ? 0 : old.serial, builtin: old.builtin,
+                connector: field == "connector" ? "" : old.connector,
+                transport: field == "transport" ? "" : old.transport, framebufferLocation: old.framebufferLocation,
+                transportLocation: field == "transportLocation" ? "" : old.transportLocation)
+            XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: snapshot, evidence: evidence).outcome, .missingEvidence, field)
+        }
+        let peers = try productionFixture { data in
+            var displays = data["displays"] as! [[String: Any]]
+            displays[1]["model"] = displays[0]["model"]
+            data["displays"] = displays
+        }
+        XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: peers, evidence: productionEvidence(peers)).outcome, .ambiguous)
+        var wrongArchitecture = matched; wrongArchitecture = RecoveryEnableInventory(bootSession: matched.bootSession,
+            osBuild: matched.osBuild, userID: matched.userID, identities: matched.identities,
+            onlineIDs: matched.onlineIDs, hostModel: matched.hostModel, architecture: "x86_64", binding: .captureMatch)
+        XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: snapshot, evidence: wrongArchitecture).outcome, .unsupported)
+        var wrongBuild = RecoveryEnableInventory(bootSession: matched.bootSession, osBuild: "26A435",
+            userID: matched.userID, identities: matched.identities, onlineIDs: matched.onlineIDs,
+            hostModel: matched.hostModel, architecture: "arm64", binding: .captureMatch)
+        XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: snapshot, evidence: wrongBuild).outcome, .stale)
+        wrongBuild = RecoveryEnableInventory(bootSession: snapshot.bootSession, osBuild: "26A435",
+            userID: snapshot.userID, identities: matched.identities, onlineIDs: matched.onlineIDs,
+            hostModel: snapshot.hostModel, architecture: "arm64", binding: .captureMatch)
+        let unsupportedBuild = RecoverySnapshot(bootSession: snapshot.bootSession, osBuild: "26A435",
+            userID: snapshot.userID, displays: snapshot.displays, hostModel: snapshot.hostModel)
+        XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: unsupportedBuild, evidence: wrongBuild).outcome, .unsupported)
+        let unsupportedHost = try productionFixture { $0["hostModel"] = "Mac14,13" }
+        XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: unsupportedHost,
+            evidence: productionEvidence(unsupportedHost)).outcome, .unsupported)
+        var changedHost = matched
+        changedHost = RecoveryEnableInventory(bootSession: matched.bootSession, osBuild: matched.osBuild,
+            userID: matched.userID, identities: matched.identities, onlineIDs: matched.onlineIDs,
+            hostModel: "Mac14,13", architecture: "arm64", binding: .captureMatch)
+        XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: snapshot, evidence: changedHost).outcome, .stale)
+    }
+
+    func testAbsentTargetCaptureMatchRetainsIDAndFakeWriterEnableRefusesBoundaryChange() throws {
+        let snapshot = try productionFixture(), absent = missing(snapshot)
+        let store = try store()
+        var journal = RecoveryJournal(snapshot: snapshot, disabledByUsID: 2, disableStaged: true, disableCommitStarted: true)
+        try store.create(journal)
+        var current = absent, calls: [String] = []
+        let evidence = productionEvidence(snapshot)
+        let transaction = RecoveryEnableTransaction(begin: { calls.append("begin"); return CGDisplayConfigRef(bitPattern: 1)! },
+            setEnabled: { _, id, enabled in XCTAssertEqual(id, 2); XCTAssertTrue(enabled); calls.append("setter") },
+            commit: { _, scope in XCTAssertEqual(scope, .forSession); calls.append("commit"); current = snapshot },
+            cancel: { _ in calls.append("cancel") })
+        let backend = RecoveryReenable(inventory: { evidence },
+            enable: { id, validate in try transaction.enable(id: id, revalidate: validate) })
+        let engine = RecoveryEngine(capture: { current }, apply: { _ in XCTFail("public writer not expected") },
+            reenable: backend, convergencePause: {})
+        try engine.finish(&journal, store: store, verifyOnly: false, trigger: "fake-writer")
+        XCTAssertEqual(calls, ["begin", "setter", "commit"])
+        XCTAssertEqual(try store.load().state, .restored)
+
+        var invalidated = evidence
+        invalidated.identities[1] = RecoveryEnableIdentity(uuid: nil, id: 2, vendor: 4268,
+            model: snapshot.displays[1].model, serial: 99, builtin: false,
+            connector: snapshot.displays[1].connector ?? "", transport: "DisplayPort", framebufferLocation: nil,
+            transportLocation: snapshot.displays[1].identityEvidence?.transportLocation)
+        var refusals: [String] = []
+        let guarded = RecoveryReenable(inventory: { invalidated }, enable: { _, _ in XCTFail("mismatch wrote") })
+        XCTAssertThrowsError(try guarded.target(snapshot: snapshot, current: absent))
+        refusals.append(RecoveryIdentityPolicy.evaluate(snapshot: snapshot, evidence: invalidated).diagnostic)
+        XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: snapshot, evidence: invalidated).outcome, .stale)
+        XCTAssertFalse(refusals.isEmpty)
     }
 
     func testOneShotEnablePersistsIntentThenPublicRestoreAndVerification() throws {
@@ -219,7 +341,7 @@ final class RecoveryReenableTests: XCTestCase {
         var stale = evidence(original); stale.binding = .stale
         cases.append((original, stale, .stale))
         for (key, value, outcome): (String, Any, RecoveryIdentityOutcome) in [
-            ("serial", 0, .missingEvidence), ("serial", 1, .ambiguous),
+            ("serial", 0, .missingEvidence),
             ("connector", "", .missingEvidence), ("identityEvidence", NSNull(), .missingEvidence)
         ] {
             let snapshot = try fixture { data in
@@ -239,14 +361,20 @@ final class RecoveryReenableTests: XCTestCase {
             let changed = try fixture { $0[key] = key == "userID" ? getuid() + 1 : "changed" }
             cases.append((original, evidence(changed), .stale))
         }
+        let identicalModelPeer = try fixture { data in
+            var displays = data["displays"] as! [[String: Any]]
+            displays[1]["model"] = displays[0]["model"]
+            data["displays"] = displays
+        }
+        cases.append((identicalModelPeer, evidence(identicalModelPeer), .ambiguous))
         var realDisplays = original.displays
         for index in realDisplays.indices {
             realDisplays[index].identityEvidence = RecoveryIdentityEvidence(
                 source: .cgAndCoreDisplay, capturedAt: Date(), transport: "DisplayPort",
-                hpd: "High", framebufferLocation: "connector-\(index + 1)")
+                hpd: "High", framebufferLocation: "frame-\(index + 1)")
         }
         let realCapture = RecoverySnapshot(bootSession: original.bootSession, osBuild: original.osBuild,
-                                           userID: original.userID, displays: realDisplays)
+                                           userID: original.userID, displays: realDisplays, hostModel: original.hostModel)
         cases.append((realCapture, evidence(realCapture), .unsupported))
         for (snapshot, inventory, outcome) in cases {
             XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: snapshot, evidence: inventory).outcome, outcome)
