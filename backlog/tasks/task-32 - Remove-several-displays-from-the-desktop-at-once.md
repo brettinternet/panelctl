@@ -1,9 +1,11 @@
 ---
 id: TASK-32
 title: Remove several displays from the desktop at once
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-10-05 19:42'
+updated_date: '2026-10-05 22:31'
 labels:
   - app
   - cli
@@ -49,3 +51,17 @@ The user hands several monitors to another computer at once. On the recorded set
 - [ ] #7 Fake-topology tests cover two and three removals shown in every order, shared and distinct sources, main-display removal combined with others, macOS rearranging displays on mirror, failure or interruption during a second Hide or first Show, wake self-restore, disconnection of one removed display, refusals, relaunch with several removals, legacy journals and CLI ambiguity. Full offline suite and warnings-as-errors builds pass with no real topology writes.
 - [ ] #8 display-hide-ux.md, display-recovery.md, display-mirroring.md and usage.md describe several removals, Show order and what's qualified. A supervised trial, each write separately approved by the user, removes the S2721DGF and then the AW3425DW onto the AW3423DW with input switching and shows them in the same order, recording arrangement, modes and verification. Untested combinations stay unsupported.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Extend the existing locked, atomically saved recovery journal with a versioned public-mirror session: immutable pre-first-Hide layout plus independently identified per-display removals, each with write-ahead topology and operation state. Preserve legacy recovery and private-disable single-transaction behavior. 2. Implement per-target Hide/Show and strict partial-layout verification without replaying other removals; restore and verify the exact original arrangement, modes and main display on final Show. Reconcile only proven system restorations, retaining disconnected/failed entries. 3. Update app/menu/scripts, source overlays, automation pause, recovery/quit UI and per-display setup eligibility; enforce visible-survivor and source protections across both Hide styles. 4. Make CLI selection explicit where several entries make a command ambiguous; document status, back, unmirror, verify and restore behavior. 5. Add fake-topology permutation, interruption, relaunch, legacy and ambiguity coverage; run full offline suite and warnings-as-errors builds, then one independent safety review. 6. Obtain separately scoped approval for each required live-trial write, record exact qualification evidence, commit and merge authorized changes to main, and clean only the session-owned worktree. Architecture plan requires approval before source implementation.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Claimed by Pi session 01a10e2f-abc7-743d-bd4d-d5742cdb4439. Created .worktrees/multi-display-removal on branch multi-display-removal using Worktrunk; ownership receipt is .git/worktrees/multi-display-removal/agent-creation.json. Existing recovery-enable worktree is unrelated and must remain untouched. Primary main advanced concurrently to 27e9935; preserve unrelated backlog work. Inspected RecoveryJournal, MirrorController, DisplayHideController, RecoverySnapshot verification and public restoration: current singleton assumptions span persistence, whole-layout restore and app status. Proposed one atomic session document rather than independently written files, so baseline and all per-display recovery entries remain crash-consistent. No source changes or display/DDC writes yet. Next: approve architecture plan, then implement and validate offline; hardware approval is separate.
+
+User approved the proposed atomic session journal architecture in-session: original baseline plus per-display removal entries, per-target Show, exact final-layout verification, legacy compatibility and private-disable safeguards. Approval covers offline implementation/review only; each live write still requires separate approval.
+<!-- SECTION:NOTES:END -->
