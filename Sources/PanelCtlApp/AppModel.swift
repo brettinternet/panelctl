@@ -14,7 +14,7 @@ typealias ProtectionQuiesce = (@escaping (Bool, String?) -> Void) -> Void
 @MainActor
 final class AppModel: ObservableObject {
     static let githubURL = URL(string: "https://github.com/brettinternet/panelctl")!
-    static let experimentalDocsURL = URL(string: "https://github.com/brettinternet/panelctl/blob/main/docs/display-hide-ux.md")!
+    static let experimentalDocsURL = URL(string: "https://github.com/brettinternet/panelctl/blob/main/docs/display-hide-ux.md#experimental-features")!
 
     @Published var preferences: ProtectionPreferences {
         didSet {

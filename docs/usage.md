@@ -54,8 +54,33 @@ Move `PanelCtl.app` to `/Applications` and open it. Settings has three tabs:
 (idle blackout, dimming, timers, pause rules) and **General** (launch at login,
 menu icon, Experimental features).
 
-Closing Settings keeps protection running. Quitting removes blackouts and stops
-the watcher. Reopen the app to show Settings when the menu icon is hidden.
+Select a display tile to see its state, Hide/Show button, setup and inline
+results. Hide defaults to **Black out**: it leaves the desktop in place and
+stays black until Show or Escape with the pointer on that display. It is not
+the same as an automation blackout: **Restore** does not show a hidden display.
+
+To move windows off an eligible external non-main display, enable **General →
+Experimental features**, accept the configuration-time prompt, then turn on
+**Remove from desktop** for that display. Choose **Mirror onto** and optionally
+**Switch monitor to**. Show restores the saved layout before switching back to
+the Mac's detected input. Turning Experimental features off makes new Hides
+black out instead, but never removes Show or recovery for a removed display.
+
+The menu also offers per-display Hide/Show. Results stay inline, including
+input-switch warnings; ordinary Hide/Show has no per-operation confirmation.
+Private disconnect is separate and requires its own scoped consent each time.
+See [Hide styles and safety boundaries](display-hide-ux.md).
+
+![Displays tab with experimental removal setup](settings.png)
+
+*Rendered using fake display fixtures, not a live monitor trial.*
+
+Closing Settings keeps automation and Black out Hides running. Quitting clears
+app-owned covers and stops the watcher, but a removed desktop may remain hidden;
+the quit prompt offers **Show and Quit**. Reopen the app to show Settings when
+the menu icon is hidden. Recovery problems appear on the affected display (or
+above the tiles), with a Review banner on the other tabs and **Review Display
+Recovery…** in the menu.
 
 ## App automation
 
@@ -85,12 +110,16 @@ or a Shortcuts **Run Shell Script** action:
 
 ```sh
 /Applications/PanelCtl.app/Contents/Helpers/panelctl app toggle-hide \
-  --display 00000000-0000-0000-0000-000000000002 --json || :
+  --display DISPLAY_UUID --json
 ```
 
 ```json
 { "outcome": "done", "summary": "<desktop result>", "detail": "<input result>", "displays": [ … ] }
 ```
+
+Replace `DISPLAY_UUID` with the UUID from `panelctl list`, or use the exact
+command copied from the app. Keep the exit status if your automation needs to
+detect failure or partial success.
 
 The command waits up to 30 seconds and is never queued or resent. A display
 already in the requested state returns `no-op` without another input switch.

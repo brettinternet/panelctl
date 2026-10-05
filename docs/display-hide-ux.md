@@ -1,155 +1,219 @@
 # Hide and Show
 
-Each display tile in **Settings → Displays** has a Hide/Show button. Hide works
-in one of two styles:
+This is the current app contract. **Settings → Displays** shows display tiles
+in arrangement order. Select a tile to see its state, Hide/Show action, setup,
+inline result and Scripts command. The menu's **Hide _display_** / **Show
+_display_** actions and [scripts](#scripting) use the same per-display behavior.
+**Automation** configures idle protection; **General** holds app preferences
+and the Experimental features gate.
 
-| Style | What happens | Availability |
+## Hide styles
+
+| Style | What happens | Configuration |
 | --- | --- | --- |
-| **Black out** (default) | An opaque app-owned window covers the display; the desktop stays put | Always |
-| **Remove from desktop** | The display is [mirrored](display-mirroring.md) onto another, so windows move off it; optionally the monitor switches to another computer's input | Experimental features on |
+| **Black out** (default) | An opaque app-owned window covers the display; its desktop stays put | Leave Remove from desktop off |
+| **Remove from desktop** | The display is [mirrored](display-mirroring.md) onto another, so windows move off it; optionally switch the monitor to another computer's input | Enable Experimental features, then the display's Remove from desktop switch |
 
 Neither style removes the Mac's signal, puts the monitor in standby, or
-guarantees OLED maintenance.
+guarantees OLED maintenance. Hide is independent of the displays selected for
+Automation. There is no separate Hide-style picker.
 
-## Remove from desktop
+### Black out
 
-Turn on **General → Experimental features** and accept the one-time prompt.
-Then, on the display's tile:
+Hide keeps the cover until Show, or Escape with the pointer on that display.
+Ordinary input does not show it. Multiple displays can be blacked out, including
+the main or built-in display, but Hide refuses the last visible display.
+Targets need a unique stable UUID and must be online, active and awake.
 
-```text
-Hide                  [Black out | Remove from desktop]
-Mirror onto           [main display ▾]          default: the only tested source
-This Mac's input      DisplayPort 1             read once over DDC (read-only)
-Switch monitor to     [Don't switch | HDMI 1 | … | Other…]
-```
+Closing Settings leaves covers in place. Sleep/wake and display changes keep
+the session's Hide intent; a disconnected display is covered again when it
+reconnects. If macOS starts mirroring it, or no other display remains connected,
+PanelCtl shows it. A failed cover is reported inline, not silently treated as
+success. Quit, crash and relaunch clear these app-owned covers; Black out Hide
+is not persisted as a recovery transaction.
 
-- Hide mirrors the display and, if an input is chosen, switches the monitor to
-  it first. Show restores the saved layout, then switches back to the Mac's
-  input.
-- "This Mac's input" is read automatically, even with **Don't switch**, so you
-  can tell which input is the other computer's. A reading of 0, or of the input
-  Hide switches to, never replaces it.
-- With **Don't switch**, Hide and Show make no DDC requests; use the monitor's
-  input button.
-- Show restores public layout and modes only, not HDR, color profiles,
-  rotation, windows or Spaces. Resolution, refresh rate or HDR can change while
-  hidden.
-- Tested only with the setup in [mirroring](display-mirroring.md#observed-cycle-2026-10-04)
-  and [handoff](display-handoff.md#observed-round-trip-2026-10-04).
+Automation skips displays hidden this way. Its **Restore** action and timeouts
+never show them. Black out Hide does not switch monitor inputs or dim via DDC.
 
-Turning Experimental features off hides this configuration and refuses new
-Remove-from-desktop Hides. Show and recovery stay available whenever a journal
-exists.
+## Experimental features
 
-## Private disconnect
+In **General**, turn on **Experimental features** and accept the prompt. The
+flag persists; enabling it again after turning it off asks again. This is
+configuration-time consent, not a dialog before every Hide or Show. It covers
+public mirroring and optional input switching, not private disconnect.
 
-The separate **Private disconnect · Experimental** section in Displays does not
-change either Hide style. It supports only the recorded Dell/firmware/host/build/
-connection, requires fresh per-operation consent, and holds a fixed 15-second
-watchdog lease. General experimental consent is insufficient. Turn off automation
-and show hidden displays first. Journal-driven reconnect stays available without
-an enumerable target or the experimental gate. No script, idle, startup or wake
-path disconnects a display. See [qualification and recovery limits](display-disable.md#app-controls).
+Turning the flag off hides removal setup and makes subsequent Hide actions use
+Black out instead. It does not show an already removed display, erase its saved
+setup or discard its recovery journal. Show and journal-driven recovery stay
+available with the flag off.
 
-## Rules
+### Remove from desktop
 
-- One display can be removed from the desktop at a time; an unresolved
-  [recovery journal](display-recovery.md) blocks every new Hide.
-- Hide never covers or removes the last usable display.
-- Only a person or a [script](usage.md#scripted-hide-and-show) hides a display.
-  Idle, startup, login, wake and reconnection never hide, show or switch inputs.
-- **Restore** in the menu only removes automation blackout or dimming. It never
-  shows a hidden display or switches inputs.
-- Black out hides use app windows, so quitting or a crash shows those displays.
-  A removed desktop survives quitting; the quit prompt offers **Show and Quit**.
+Select an eligible display in **Displays** and turn on **Remove from desktop**.
+The setup then shows:
 
-## States
+| Control | Meaning |
+| --- | --- |
+| **Mirror onto** | The source display; defaults to the main display |
+| **This Mac's input** | Read-only DDC detection; Detect Again appears when detection needs attention |
+| **Switch monitor to** | Don't switch, a named input, or Other… with a decimal/hex input code |
 
-| Tile state | Meaning | Action |
-| --- | --- | --- |
-| Separate | Normal desktop | Hide, or a reason it can't |
-| Hiding… / Showing… | Operation running | None; other requests report busy, no cancel or retry |
-| Hidden by PanelCtl | Blacked out, or mirrored with a healthy journal | Show |
-| Unavailable | Display disconnected, no journal | Reconnect; nothing is rebound to another display |
-| Recovery needed — target unavailable | Journal owns a disconnected display | Reconnect the same hardware, then Check Again |
-| Mirrored outside PanelCtl | Someone else mirrored it | Fix in System Settings → Displays |
-| Recovery needed: *reason* | Journal or verification failed | Review the recovery card; Show only when checks pass |
+Only awake, active external non-main displays with a stable ID are eligible
+for removal. To remove the current main display, first make another display
+main in System Settings → Displays. The source must be available and not
+blacked out. Setup is frozen while a removal journal is unresolved or an
+operation/cleanup is pending.
 
-State comes from current observations plus the journal, never from saved
-preferences. A stale or unknown observation is recovery-needed. If macOS
-restores the layout itself (for example after wake), PanelCtl verifies it
-against the snapshot and resolves the journal without mirroring again.
+- Hide captures recovery, switches the input if requested, then mirrors. Show
+  restores and verifies the saved layout first, then switches back when a valid
+  return input is known. If not, use the monitor's buttons.
+- Opening the setup reads This Mac's input once per app session even with
+  **Don't switch**. A zero reading or a reading of the configured away input
+  never replaces the saved return input. Detection is read-only, not a write.
+- With **Don't switch**, the Hide/Show operations themselves make no DDC
+  requests. Use the monitor's input button if needed.
+- Show restores public layout and modes, not HDR, color profiles, rotation,
+  windows or Spaces. Resolution, refresh rate or HDR can change while hidden.
+- Only the setups recorded in [mirroring](display-mirroring.md#observed-cycle-2026-10-04)
+  and [handoff](display-handoff.md#observed-round-trip-2026-10-04) are tested.
+  Consent and passing offline tests do not qualify other hardware.
 
-With unresolved recovery, a banner on every Settings tab links to the recovery
-card, the menu shows **Review Display Recovery…**, and reopening the app from
-Finder focuses that card even when the menu icon is hidden. Login launch only
-reports it. Custom CLI journals aren't scanned; recover them with
-`panelctl recovery restore --journal <path>`.
+### Private disconnect
 
-## Results and failures
+The separate **Private disconnect · Experimental** section in Displays does
+not change either Hide style. It supports only the recorded Dell/firmware/host/
+build/connection, requires fresh per-operation consent, and holds a fixed
+15-second watchdog lease. General experimental consent is insufficient. Turn
+off automation and show hidden displays first. Journal-driven reconnect stays
+available without an enumerable target or the experimental gate. No script,
+idle, startup or wake path disconnects a display. See
+[qualification and recovery limits](display-disable.md#app-controls).
 
-When an input switch is requested, results report **Desktop** and **Monitor
-input** separately.
+## Coexistence and safety boundaries
+
+- Only one display can be removed from the desktop at a time. An unresolved
+  journal blocks another removal; it is never overwritten to start one.
+- Other independent displays can still use Black out. The removed target and
+  its mirror source cannot: covering a mirror source would copy its cover to
+  the target. Displays mirrored outside PanelCtl also refuse Black out.
+- Removed and blacked-out displays do not count as visible for Black out's
+  last-visible check. Removing onto a blacked-out source is refused.
+- Only an explicit person or script action starts Hide. Idle, startup, login,
+  wake and reconnection never initiate a new removal or input switch. Re-covering
+  a Black out Hide within the same session preserves an existing explicit Hide.
+- **Restore** only removes automation blackout/dimming; it never shows a hidden
+  display or switches inputs. **Show** acts on the selected hidden display.
+- A removed desktop can survive quitting. The quit prompt offers **Show and
+  Quit**; failed restoration keeps the app running rather than reporting success.
+- External CLI watchers and other display apps are not coordinated; stop them
+  before topology work. No automatic logout, reboot or guessed identity is a
+  recovery strategy.
+
+## States and recovery
+
+| Tile state | Meaning / action |
+| --- | --- |
+| On | Normal desktop; Hide, or an inline reason it cannot run |
+| Hidden | Blacked out, or removed with a healthy journal; Show |
+| Hiding… / Showing… / Busy | Operation in progress; no cancel, queue or automatic retry |
+| Blacked out | Automation's cover, not a Hide; Restore controls it |
+| Asleep / Unavailable | Wake or reconnect the display |
+| Mirrored | Mirrored by macOS outside PanelCtl; fix in System Settings → Displays |
+| Needs recovery | Read the reason and recovery details; Show only when checks permit it |
+
+Removal state comes from observations and the journal, not the saved switch.
+A journaled target remains visible as a tile even when disconnected. Reconnect
+the same hardware, then **Check Again**; PanelCtl does not rebind recovery to a
+different monitor. If macOS restores the captured layout itself, PanelCtl
+verifies it and resolves the journal without mirroring again.
+
+A healthy removed display has recovery details on its selected tile, not an
+error banner. Problems appear on the affected tile, or above the tiles if no
+target can represent them. **Automation** and **General** show a recovery banner
+with **Review…**. The menu offers **Review Display Recovery…**; reopening the app
+from Finder focuses recovery even when the menu icon is hidden. Login launch
+only reports it. Custom CLI journals are not scanned: use
+`panelctl recovery restore --journal <path>` and the [recovery guide](display-recovery.md).
+
+## Inline results and failures
+
+The selected display's state reports the desktop result. Warnings, input
+outcomes and a copyable undo-input command appear below it, without a completion
+dialog. Monitor input and desktop success are independent:
 
 | Case | Desktop | Monitor input |
 | --- | --- | --- |
 | Input verified, hide succeeds | Hidden | Switched |
-| Input `unverified` | Hidden | "Input change unverified — check monitor" |
+| Input unverified | Hidden | Check monitor; no retry |
 | DDC unavailable | Hidden | Skipped; use monitor buttons |
-| Input write fails | Not hidden; journal kept | Failed, with undo command |
-| Input switched, mirror fails | Failed; journal recovery offered | Undo command shown; no automatic rollback |
+| Input write fails | Not hidden; journal kept | Failed, with undo command when available |
+| Input switched, mirror fails | Failed; recovery offered | Undo command shown; no automatic rollback |
 | Show: topology fails | Not restored; no input write | — |
-| Show: input fails | Restored | Failed; repeating Show is a no-op, not another DDC write |
+| Show: input fails | Restored | Failed; repeated scripted Show is a no-op, not another write |
 
-The undo-input command is shown but not persisted. After a crash PanelCtl
-doesn't guess the previous input.
+The result and undo-input command are session-only. After a crash PanelCtl does
+not reconstruct or guess an input rollback from missing outcome evidence.
+
+## Scripting
+
+**Displays → Scripts** provides a copyable command using the CLI bundled in the
+app. Use it in Stream Deck or Shortcuts with an action that runs a shell command:
+
+```sh
+/Applications/PanelCtl.app/Contents/Helpers/panelctl app toggle-hide --display DISPLAY_UUID --json
+```
+
+Use `hide` or `show` instead of `toggle-hide` to request a particular state.
+These commands require the app to be running; they never launch it, open a
+confirmation dialog or bypass configuration/identity/recovery checks. Already
+in the requested state is a `no-op` and does not repeat an input switch. Requests
+are not queued or resent. After a lost response, inspect `app status --json`
+before deciding what to do. See [exit codes and status fields](usage.md#scripted-hide-and-show).
 
 ## Automation cleanup
 
 If brightness restoration cannot be confirmed, **Retry Automation Cleanup** is
-available in the menu and in both **Settings → Displays** and **Automation**,
-including when automation is off and no desktop is hidden. The retry only
-restores saved brightness values from the luminance journal; it never hides or
-shows a display, switches inputs, or starts a blackout. Automation resumes with
-a fresh countdown only if it was enabled and no other recovery block remains.
+available in the menu and in both **Displays** and **Automation**, even with
+automation off and no desktop hidden. It only restores saved luminance-journal
+values; it never hides/shows a display, switches inputs or starts blackout.
+Automation resumes with a fresh countdown only if enabled and no other recovery
+block remains.
 
-A failed retry keeps the reason and the Hide block, including after relaunch.
-Reconnect any unavailable monitor before retrying. A locked, unreadable or
-nonempty luminance journal is not successful cleanup. After a helper exits,
-its windows are gone; an empty journal checked under the luminance lock proves
-there is no outstanding brightness restoration, even if an early exit omitted
-its final status report.
+A failed retry retains its reason and removal block across relaunch. Reconnect
+unavailable monitors first. A locked, unreadable or nonempty luminance journal
+is not successful cleanup. After a helper exits, its windows are gone; an empty
+journal checked under the luminance lock proves brightness cleanup, even if the
+helper omitted its final status report.
 
 ## Automation while hidden
 
-While a display is removed from the desktop, automation pauses except for one
-case: if the mirror source is selected in Automation and automation is enabled
-and not snoozed, the source may get an overlay blackout. The mirrored target
-then also looks black on the Mac input. The target is never itself an overlay
-target.
+While a display is removed, automation pauses except for a source-only overlay:
+if the source is selected in Automation and automation is enabled and not
+snoozed, it may be blacked out. The removed target also looks black on the Mac's
+input; it is never itself an overlay target. This automation exception does not
+make the source's manual Hide available.
 
 | Event | Behavior |
 | --- | --- |
-| Hide while automation is active | Stop treatment and restore brightness first; refuse if cleanup fails |
-| Idle / Black Out Now while hidden | Source-only overlay when the journal and topology verify; no DDC dimming, empty-display blackout or follow-up sleep |
-| Restore interval while hidden | Restore-only overlay timeout, capped at 24 hours ("until activity" uses 24 hours); no sleep or Show at timeout |
-| Activity / Escape / Restore | Remove only the overlay; display stays hidden |
-| Show | Remove the overlay first, then restore; afterward normal automation restarts with a fresh countdown |
-| Wake / hotplug | Re-verify; never re-hide or retry input; changed identity keeps the recovery entry |
-| Crash / relaunch | Journal survives; relaunch inspects it and never captures over it |
+| Remove while automation is active | Stop treatment and restore brightness first; refuse on cleanup failure |
+| Idle / Black Out Now while removed | Source-only overlay with verified journal/topology; no DDC dimming, empty-display blackout or follow-up sleep |
+| Restore interval while removed | Overlay-only timeout, capped at 24 hours (also for until activity); no sleep or Show |
+| Activity / Escape / Restore | Remove only automation's overlay; display stays removed |
+| Show removed display | Remove the overlay first, restore layout, then restart normal automation with a fresh countdown |
+| Wake / hotplug | Re-verify; never re-mirror or retry input; changed identity keeps recovery |
+| Crash / relaunch | Journal survives; inspect it, never capture over it |
 
-The overlay requires, under the operation and journal locks: an unresolved
-mirror journal in `mirrored` state, the exact target observed mirrored onto the
-exact source, a separate identity-matched source, and Show still possible.
-Anything else removes the overlay. Plain `panelctl blackout` still refuses
-mirrored displays. External CLI watchers and other display apps aren't
-coordinated; stop them first.
+Under the operation and journal locks, the overlay requires a journal in
+`mirrored` state, the exact target mirrored onto the exact identity-matched
+source, and Show still possible. Otherwise it is removed. Standalone
+`panelctl blackout` still refuses mirrored displays.
 
-## Accessibility
+## Keyboard and accessibility
 
-Native controls in reading order: identity → state → configuration → action.
-Tab/Shift-Tab moves between enabled controls, Space activates, arrows navigate
-menus and pickers, Cmd-comma opens Settings. There's no global Hide hotkey.
-Disabled actions have a visible explanation, not only a tooltip or color.
-Errors are selectable text. After an operation, focus returns to the action; on
-error it moves to the recovery summary.
+Cmd-comma opens Settings; Cmd-1, Cmd-2 and Cmd-3 select Displays, Automation and
+General. Native controls expose display names and states to accessibility.
+Tab/Shift-Tab, Space and arrow keys navigate controls according to macOS keyboard
+navigation settings. There is no global Hide hotkey. Disabled actions have a
+visible explanation, not only a tooltip or color; errors and recovery commands
+are selectable text. Results stay on the selected display rather than opening
+a modal completion dialog.

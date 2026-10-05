@@ -4,8 +4,8 @@
 
 <h1 align="center">panelctl</h1>
 
-A macOS CLI and menu-bar app for OLED blackouts, click-through dimming,
-display sleep, display inventory, and experimental DDC brightness control.
+A macOS CLI and menu-bar app for per-display Hide/Show, idle blackout,
+click-through dimming, display sleep and experimental monitor controls.
 
 ## Install
 
@@ -52,10 +52,29 @@ panelctl wake-displays
 
 Run `panelctl help` or `panelctl <command> --help` for all options.
 
-The menu-bar app adds saved per-display settings, snooze, launch at login,
-automatic deferrals, and manual blackout, restore, sleep, and wake controls.
+The app's Settings has three tabs: **Displays** for per-display Hide/Show,
+**Automation** for idle blackout, dimming and pause rules, and **General** for
+launch at login, the menu icon and **Experimental features**.
 
-![PanelCtl settings](docs/settings.png)
+Hide defaults to **Black out**, keeping the desktop in place until Show. With
+Experimental features enabled and consent accepted, a display's **Remove from
+desktop** switch makes Hide mirror it onto another display, optionally switching
+its monitor input. Neither style powers the monitor off. Show and recovery stay
+available when the experimental flag is off.
+
+Use the menu's per-display actions, or copy a command from **Displays → Scripts**
+for Stream Deck or Shortcuts. With the app already running:
+
+```sh
+panelctl app toggle-hide --display DISPLAY_UUID --json
+```
+
+See [Hide and Show](docs/display-hide-ux.md) for eligibility and recovery limits,
+and [scripted commands](docs/usage.md#scripted-hide-and-show) for exit codes.
+
+![Displays tab with display tiles and experimental Remove from desktop setup](docs/settings.png)
+
+*Settings rendered with synthetic displays; not a hardware qualification result.*
 
 ## Documentation
 
