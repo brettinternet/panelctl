@@ -10,10 +10,10 @@ stays on.
 | Piece | State |
 | --- | --- |
 | Setter ABI | Verified offline for macOS `26A434` arm64 ([evidence](display-enable-abi.md)) |
-| Transaction backend, journal, helper lease, CLI | Implemented; fake-writer tests only |
+| Transaction backend, journal, helper lease, CLI | Implemented; fake-writer tests plus one supervised cycle |
 | Identity, eligibility, driver, lifecycle providers | Pass a no-write rehearsal on `Mac17,14` / arm64 / `26A434`; refuse everywhere else |
-| Live disable/enable cycle | **Never performed.** Requires a supervised trial |
-| Signal drop, monitor auto-select, input return | Unknown |
+| Live disable/enable cycle | One supervised DELL S2721DGF/M3T101 cycle passed on the tuple below; [evidence and limits](display-disable-trial.md) |
+| Signal drop, monitor auto-select, input return | HDMI auto-selection observed; DP return required manual input selection; electrical link state unproven |
 
 Blackout remains the safe overlay alternative.
 
@@ -193,8 +193,9 @@ aren't restored.
 
 ## Test coverage
 
-All tests in `Tests/PanelCtlCoreTests/` use injected writers; none call Apple's
-setter.
+Mutation tests in `Tests/PanelCtlCoreTests/` use injected writers; none call
+Apple's setter. A read-only real-loader test checks the verified versioned image
+paths and UUIDs without constructing a transaction.
 
 | Risk | Covered by |
 | --- | --- |
@@ -249,14 +250,16 @@ logout, reboot, hotplug, crash and sleep trials each need separate approval
 after a successful simple cycle. A refusal is a blocked result, never a
 successful cycle.
 
-## Open questions
+## Observed result and open questions
 
-- Does the driver accept re-enable while the display is offline, and does the
-  retained ID survive?
-- Does disable actually drop the DP signal, or only enter standby? (The
-  S2721DGF reports `SupportsSuspend = No` and `SupportsActiveOff = No`.) If only
-  standby, this route doesn't meet the goal.
-- Does the monitor auto-select HDMI on signal loss and return to DP on restore?
+- One [supervised cycle](display-disable-trial.md) on Mac17,14 / `26A434` with
+  DELL S2721DGF / M3T101 accepted retained-ID re-enable and restored exact
+  topology/modes. Other tuples and repeated reliability remain unqualified.
+- In that cycle the monitor auto-selected HDMI; standby/no-signal indications
+  were uncertain. HPD and link-rate metadata stayed unchanged, so electrical
+  link shutdown is not proven.
+- DP did not return automatically: manual OSD selection restored usable Mac
+  output. Automatic return focus needs a separately scoped solution.
 - Does DDC still reach a disabled display, so an input-select follow-up works?
 - Does the session-scoped flag survive logout or reboot, and does
   `CGRestorePermanentDisplayConfiguration()` alone re-enable it?
