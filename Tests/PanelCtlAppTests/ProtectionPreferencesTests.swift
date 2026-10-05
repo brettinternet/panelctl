@@ -510,7 +510,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         #!/bin/bash
         printf '{"state":"waiting_for_playback","blackedOutDisplayIDs":[]}\n'
         trap 'exit 0' TERM
-        while true; do /bin/sleep 0.02; done
+        while kill -0 "$PPID" 2>/dev/null; do /bin/sleep 0.02; done
         """
         try Data(script.utf8).write(to: helper)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
@@ -801,7 +801,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         printf 'launch:%s\\n' "$1" >> "$PANELCTL_TEST_LOG"
         if [[ ! -e "$PANELCTL_TEST_MARKER" ]]; then
             touch "$PANELCTL_TEST_MARKER"
-            while [[ ! -e "$PANELCTL_TEST_ALLOW_EXIT" ]]; do
+            while [[ ! -e "$PANELCTL_TEST_ALLOW_EXIT" ]] && kill -0 "$PPID" 2>/dev/null; do
                 /bin/sleep 0.01
             done
             exit 0
@@ -868,7 +868,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         printf 'launch:%s\\n' "$1" >> "$PANELCTL_TEST_LOG"
         if [[ ! -e "$PANELCTL_TEST_MARKER" ]]; then
             touch "$PANELCTL_TEST_MARKER"
-            while [[ ! -e "$PANELCTL_TEST_ALLOW_EXIT" ]]; do
+            while [[ ! -e "$PANELCTL_TEST_ALLOW_EXIT" ]] && kill -0 "$PPID" 2>/dev/null; do
                 /bin/sleep 0.01
             done
             exit 0
@@ -927,7 +927,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         #!/bin/bash
         trap 'printf "{\\"state\\":\\"blacked_out\\",\\"blackedOutDisplayIDs\\":[7]}\\n"; /bin/sleep 0.1; printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":true}\\n"; exit 0' TERM
         printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
-        while true; do /bin/sleep 0.02; done
+        while kill -0 "$PPID" 2>/dev/null; do /bin/sleep 0.02; done
         """
         try Data(script.utf8).write(to: helper)
         try FileManager.default.setAttributes(
@@ -973,7 +973,7 @@ final class ProtectionPreferencesTests: XCTestCase {
             printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         fi
         trap 'printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":true}\\n"; exit 0' TERM
-        while true; do /bin/sleep 0.02; done
+        while kill -0 "$PPID" 2>/dev/null; do /bin/sleep 0.02; done
         """
         try Data(script.utf8).write(to: helper)
         try FileManager.default.setAttributes(
@@ -1063,7 +1063,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         printf '%s:%s\\n' "$1" "${PANELCTL_REARM_ON_START:-0}" >> "$PANELCTL_TEST_LOG"
         printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         trap 'printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":true}\\n"; exit 0' TERM
-        while true; do /bin/sleep 0.05; done
+        while kill -0 "$PPID" 2>/dev/null; do /bin/sleep 0.05; done
         """
         try Data(script.utf8).write(to: helper)
         try FileManager.default.setAttributes(
@@ -1119,7 +1119,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         #!/bin/bash
         printf '{"state":"waiting_for_input","blackedOutDisplayIDs":[]}\\n'
         trap 'exit 0' TERM
-        while true; do /bin/sleep 0.02; done
+        while kill -0 "$PPID" 2>/dev/null; do /bin/sleep 0.02; done
         """
         try Data(script.utf8).write(to: helper)
         try FileManager.default.setAttributes(
@@ -1368,7 +1368,7 @@ final class ProtectionPreferencesTests: XCTestCase {
             printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
             if [[ "$command" == "restore" ]]; then
                 printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
-                while [[ ! -e "$PANELCTL_TEST_ALLOW_REBLACKOUT" ]]; do
+                while [[ ! -e "$PANELCTL_TEST_ALLOW_REBLACKOUT" ]] && kill -0 "$PPID" 2>/dev/null; do
                     /bin/sleep 0.01
                 done
                 printf '{"state":"waiting","blackedOutDisplayIDs":[202]}\\n'

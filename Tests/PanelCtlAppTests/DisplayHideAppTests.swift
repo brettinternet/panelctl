@@ -218,7 +218,7 @@ final class DisplayHideAppTests: XCTestCase {
         #!/bin/bash
         printf '{"state":"waiting_for_playback","blackedOutDisplayIDs":[]}\\n'
         trap 'printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":true}\\n"; exit 0' TERM
-        while true; do /bin/sleep 0.02; done
+        while kill -0 "$PPID" 2>/dev/null; do /bin/sleep 0.02; done
         """
         try Data(script.utf8).write(to: helper)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
@@ -263,7 +263,7 @@ final class DisplayHideAppTests: XCTestCase {
         printf 'launch\\n' >> "$PANELCTL_TEST_LOG"
         printf '{"state":"blacked_out","blackedOutDisplayIDs":[303]}\\n'
         trap 'kill -KILL $$' TERM
-        while true; do /bin/sleep 0.02; done
+        while kill -0 "$PPID" 2>/dev/null; do /bin/sleep 0.02; done
         """
         try Data(script.utf8).write(to: helper)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
@@ -974,7 +974,7 @@ final class DisplayHideAppTests: XCTestCase {
         #!/bin/bash
         printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         trap 'if [[ "$PANELCTL_TEST_CLEANUP_RESULT" != "unknown" ]]; then printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":false}\\n"; fi; exit 0' TERM
-        while true; do /bin/sleep 0.02; done
+        while kill -0 "$PPID" 2>/dev/null; do /bin/sleep 0.02; done
         """
         try Data(script.utf8).write(to: helper)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
@@ -1923,7 +1923,7 @@ final class DisplayHideAppTests: XCTestCase {
         else
             printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         fi
-        while true; do /bin/sleep 0.02; done
+        while kill -0 "$PPID" 2>/dev/null; do /bin/sleep 0.02; done
         """
         try Data(script.utf8).write(to: helper)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
