@@ -21,6 +21,7 @@ public struct BlackoutOptions: Equatable {
     public let hardwareBrightnessPercent: Int?
     public let deferPlayback: Bool
     public let deferCamera: Bool
+    public let hiddenMirrorSourceUUID: String?
 
     var effectiveKeepBlackoutOnInput: Bool {
         mode == .working || keepBlackoutOnInput
@@ -41,7 +42,8 @@ public struct BlackoutOptions: Equatable {
         overlayOpacityPercent: Int? = 100,
         hardwareBrightnessPercent: Int? = nil,
         deferPlayback: Bool = true,
-        deferCamera: Bool = false
+        deferCamera: Bool = false,
+        hiddenMirrorSourceUUID: String? = nil
     ) {
         self.selectors = selectors
         self.all = all
@@ -58,6 +60,7 @@ public struct BlackoutOptions: Equatable {
         self.hardwareBrightnessPercent = hardwareBrightnessPercent
         self.deferPlayback = deferPlayback
         self.deferCamera = deferCamera
+        self.hiddenMirrorSourceUUID = hiddenMirrorSourceUUID
     }
 }
 
@@ -118,6 +121,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case invalidHardwareBrightness(String)
     case conflictingOverlayOptions
     case workingOverlayRequired
+    case invalidHiddenMirrorSourceOverlay
     public var description: String {
         switch self {
         case .missingCommand: return "missing command (use 'panelctl help' for usage)"
@@ -148,6 +152,8 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
             return "--no-overlay cannot be combined with --overlay-opacity"
         case .workingOverlayRequired:
             return "--no-overlay or overlay opacity below 100 requires --mode working"
+        case .invalidHiddenMirrorSourceOverlay:
+            return "--panelctl-hidden-mirror-source requires a single matching UUID target, --watch, --idle-after, and a finite --timeout; it cannot be combined with all-screen, sleep, dimming, or display-awake options"
         case .invalidLuminance: return "luminance must be an integer from 0 through 65535"
         case .invalidInputValue(let value):
             return "invalid input value: \(value) (expected dp1, dp2, hdmi1, hdmi2, or 1 through 255; hex with 0x)"
@@ -453,6 +459,7 @@ public enum CLIParser {
         var hardwareBrightnessPercent: Int?
         var deferPlayback = true
         var deferCamera = false
+        var hiddenMirrorSourceUUID: String?
         var i = 0
         while i < args.count {
             switch args[i] {
@@ -538,6 +545,15 @@ public enum CLIParser {
             case "--defer-camera":
                 guard !deferCamera else { throw CLIParseError.duplicateOption("--defer-camera") }
                 deferCamera = true
+            case "--panelctl-hidden-mirror-source":
+                guard hiddenMirrorSourceUUID == nil else {
+                    throw CLIParseError.duplicateOption("--panelctl-hidden-mirror-source")
+                }
+                i += 1
+                guard i < args.count, !args[i].hasPrefix("--") else {
+                    throw CLIParseError.missingValue("--panelctl-hidden-mirror-source")
+                }
+                hiddenMirrorSourceUUID = args[i]
             default:
                 throw CLIParseError.unknownOption(args[i])
             }
@@ -559,6 +575,17 @@ public enum CLIParser {
         if timeout != nil && sleepAfter != nil { throw CLIParseError.conflictingBlackoutLimits }
         if keepDisplaysAwake && sleepAfter == nil { throw CLIParseError.keepDisplaysAwakeRequiresSleepAfter }
         if all && timeout == nil && sleepAfter == nil { throw CLIParseError.allRequiresLimit }
+        if let hiddenMirrorSourceUUID {
+            guard UUID(uuidString: hiddenMirrorSourceUUID) != nil,
+                  !all, selectors.count == 1,
+                  selectors[0].caseInsensitiveCompare(hiddenMirrorSourceUUID) == .orderedSame,
+                  watch, idleAfter != nil, timeout != nil, sleepAfter == nil,
+                  !caffeinate, !keepDisplaysAwake, !blackoutEmptyDisplays,
+                  mode == .blocking, overlayOpacityPercent == 100,
+                  hardwareBrightnessPercent == nil else {
+                throw CLIParseError.invalidHiddenMirrorSourceOverlay
+            }
+        }
         return .blackout(BlackoutOptions(
             selectors: selectors,
             all: all,
@@ -574,7 +601,8 @@ public enum CLIParser {
             overlayOpacityPercent: overlayOpacityPercent,
             hardwareBrightnessPercent: hardwareBrightnessPercent,
             deferPlayback: deferPlayback,
-            deferCamera: deferCamera
+            deferCamera: deferCamera,
+            hiddenMirrorSourceUUID: hiddenMirrorSourceUUID
         ))
     }
 

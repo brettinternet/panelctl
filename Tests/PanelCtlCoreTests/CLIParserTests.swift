@@ -82,6 +82,42 @@ final class CLIParserTests: XCTestCase {
             "--keep-blackout-on-input", "--dim-to", "0"
         ]))
     }
+    func testHiddenMirrorSourceOverlayOptionsAreNarrowAndExplicit() throws {
+        let source = "00000000-0000-0000-0000-000000000003"
+        let command = try CLIParser.parse([
+            "blackout", "--display", source,
+            "--panelctl-hidden-mirror-source", source,
+            "--mode", "blocking", "--overlay-opacity", "100",
+            "--watch", "--idle-after", "300", "--timeout", "1800"
+        ])
+        guard case .blackout(let options) = command else {
+            return XCTFail("expected scoped blackout command")
+        }
+        XCTAssertEqual(options.hiddenMirrorSourceUUID, source)
+        XCTAssertNil(options.hardwareBrightnessPercent)
+        XCTAssertNil(options.sleepAfter)
+        XCTAssertFalse(options.keepDisplaysAwake)
+        XCTAssertFalse(options.blackoutEmptyDisplays)
+        XCTAssertTrue(options.watch)
+        XCTAssertNoThrow(try BlackoutController.validateOptions(options))
+
+        let rejected: [([String], CLIParseError)] = [
+            (["--display", source, "--panelctl-hidden-mirror-source", "00000000-0000-0000-0000-000000000002", "--watch", "--idle-after", "10", "--timeout", "60"], .invalidHiddenMirrorSourceOverlay),
+            (["--display", source, "--panelctl-hidden-mirror-source", source, "--watch", "--idle-after", "10"], .invalidHiddenMirrorSourceOverlay),
+            (["--display", source, "--panelctl-hidden-mirror-source", source, "--watch", "--idle-after", "10", "--timeout", "60", "--dim-to", "20"], .invalidHiddenMirrorSourceOverlay),
+            (["--display", source, "--panelctl-hidden-mirror-source", source, "--watch", "--idle-after", "10", "--timeout", "60", "--sleep-after", "30"], .conflictingBlackoutLimits)
+        ]
+        for (arguments, expected) in rejected {
+            XCTAssertThrowsError(try CLIParser.parse(["blackout"] + arguments)) {
+                XCTAssertEqual($0 as? CLIParseError, expected)
+            }
+        }
+        guard case .blackout(let normal) = try CLIParser.parse(["blackout", "--display", source]) else {
+            return XCTFail("expected normal blackout")
+        }
+        XCTAssertNil(normal.hiddenMirrorSourceUUID, "ordinary CLI blackout has no mirror permission")
+    }
+
     func testBlackoutModeAndChannelDefaults() throws {
         let command = try CLIParser.parse(["blackout", "--display", "1"])
         guard case .blackout(let options) = command else {

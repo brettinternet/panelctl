@@ -116,11 +116,13 @@ No global topology reset, implicit Show-all or private recovery is added.
    consent and does not change protection selection or startup behavior.
 2. Hide… opens a confirmation on a usable screen. Show target/source names and
    identities, actual journal path, intended input change or “No input change”,
-   mode/HDR limitations, and physical/manual fallback. State that protection
-   will pause while hidden/recovery is unresolved (see coexistence below), and
-   name the consequence plainly: “While hidden, PanelCtl cannot black out
-   <source> or any other display. An OLED source stays lit until you Show or
-   macOS display sleep turns it off.”
+   mode/HDR limitations, and physical/manual fallback. Explain the approved
+   coexistence behavior: when the shared journal and current topology verify
+   Hidden by PanelCtl, app protection may cover only the selected mirror source
+   with an overlay. The mirrored target is never an overlay target, but it also
+   appears black on the Mac input. Brightness dimming and automatic follow-up
+   Sleep stay suspended. If the source is not selected, protection is disabled
+   or snoozed, or verification is busy/stale/unknown, protection remains paused.
 3. Require acknowledgement “I have another usable display and can use the
    monitor buttons or macOS Displays settings if needed.” Default button is
    Cancel; explicit **Hide desktop** authorizes only this operation.
@@ -176,35 +178,70 @@ as unsupported recovery with CLI guidance, never routed to mirror Show.
 
 ## Coexistence and lifecycle
 
-The deliberately conservative first slice pauses app-managed protection while
-its shared mirror journal is unresolved, including an app-discovered CLI hide.
-Blackout already refuses every display in a mirror set
-(`CGDisplayIsInMirrorSet`), including the mirror source, so the source could not
-be protected anyway. The cost is real: in the recorded setup the source is the
-OLED AW3423DW, which stays unprotected for the whole hide or handoff while the
-Mac may sit idle. Overlay-only blackout of a mirror-set source is a separate
-gated follow-up (TASK-21), not part of TASK-17.
-This is runtime suspension, not a saved preference change or a snooze. It keeps
-the survivor usable and avoids overlay/brightness/input/topology races. External
-CLI watchers and other display apps are not controlled: instruct users to stop
+Approved coexistence contract (TASK-21): while the shared default journal and
+current topology verify **Hidden by PanelCtl**, app protection may install an
+opaque desktop overlay on the captured mirror source only, and only when that
+exact source is selected for enabled, unsnoozed protection. The mirrored target
+is never selected as an overlay target; because it mirrors the source, it also
+shows black on the Mac input. This is expected on a handed-off input and visible
+black on a plain Hide. Never add the target to a blackout selection to achieve
+this effect.
+
+The exception is overlay-only. It makes no topology, DDC input, or brightness
+writes and installs no display-awake assertion. Hardware brightness dimming,
+empty-display treatment, and automatic follow-up Sleep remain suspended while
+the journal is unresolved. A configured Restore/Sleep interval becomes a
+Restore-only overlay timeout; **until activity** uses a 24-hour timeout. The
+timeout is capped at 24 hours, so persistent blackout retains a finite safety
+bound even if the mirror source is the only drawable screen. At timeout the
+overlay is removed and the watcher waits for fresh input before a new idle
+countdown; it does not Sleep or Show. Existing activity policy may remove the
+overlay or reset its timeout. Escape and protection Restore only remove the
+overlay; neither invokes Show, changes input, or changes topology.
+
+Show and recovery remain reachable from the menu and Displays settings over an
+active overlay. Show stops and verifies overlay cleanup before capturing or
+verifying the layout. A cleanup refusal means no Show topology or input action.
+The menu/status text distinguishes overlay-only source protection from paused
+protection; confirmation states the target-black effect and that DDC/brightness/
+topology are not touched by this overlay behavior.
+
+Authorization is not an app/UI boolean: blackout core resolves the current
+source identity and re-inspects the shared journal/current topology under the
+existing operation and journal locks when resolving targets and again when
+revalidating after topology changes. The journal must be the unresolved public
+mirror journal in `mirrored` state, the exact target must be observed mirrored
+to the exact source, the source must remain separate and identity-matched, and
+Show preflight must still be available. A mirrored target, external mirror,
+recovery-needed journal, busy lock, or stale/unknown identity/topology refuses
+and removes/does not install the overlay. The scoped helper argument never
+grants blanket mirror permission; ordinary `panelctl blackout` continues to
+refuse mirrored displays. Existing all-screen safety validation is retained;
+the finite Restore timeout is the bound, not a global exemption.
+
+This is runtime policy, not a saved preference change or snooze. External CLI
+watchers and other display apps are not controlled: instruct users to stop
 those before proceeding; advisory locks do not make those combinations safe.
+The new coexistence behavior has fake-core and native-fixture validation only.
+Hardware qualification is **unperformed**; there has been no live mirrored
+blackout, monitor trial, DDC write, or topology write as part of TASK-21.
 
 | Event / action | Contract |
 | --- | --- |
-| Hide while protection active | Stop/quiesce app treatment and finish brightness cleanup before capture; refuse on cleanup failure. Revalidate afterward. Leave saved protection selection/timers unchanged. |
-| Idle / empty-display triggers while hidden or recovery unresolved | Suspended app-wide, including hardware dimming and protection follow-up sleep. Display “Protection paused for hidden desktop/recovery”. No empty-display feedback loop. |
-| Activity / Escape / protection Restore | Existing overlay cleanup only; never Show or DDC input selection. Cannot silently undo manual hide. |
-| Enable/disable protection, snooze/resume | Update existing protection preference/snooze state, not topology. Suspension wins while journal unresolved; Show remains available. |
-| Blackout Now during suspension | Refuse actionably: Show/resolve recovery first. No blackout of the surviving screen. |
-| Show succeeds / verified external restoration | Release suspension; if enabled and not snoozed, restart normal protection with a fresh idle countdown. Never immediately replay an old empty/idle decision. |
+| Hide while protection active | Stop/quiesce app treatment and finish brightness cleanup before capture; refuse on cleanup failure. Revalidate afterward. After verified Hide, start the restricted source-only overlay watcher only if the exact source is selected, protection is enabled and not snoozed, and the journal remains healthy. Leave saved preferences unchanged. |
+| Idle / empty-display triggers while hidden or recovery unresolved | Only an eligible verified mirror source may receive an overlay. No hardware dimming, empty-display overlay, display-awake assertion, or automatic follow-up Sleep. Unknown/external/busy/recovery state keeps protection paused. |
+| Activity / Escape / protection Restore | Activity follows the configured overlay activity policy; Escape and Restore remove only the overlay. None invokes Show or DDC input selection. The hidden desktop remains hidden. |
+| Enable/disable protection, snooze/resume | Update existing protection preference/snooze state, not topology. While hidden, enabled/unsnoozed protection may run only the verified source overlay; Show remains available. |
+| Blackout Now during hidden/recovery state | Permit only a source-only overlay when the current shared journal/topology verify Hidden by PanelCtl and the exact source is selected. Otherwise refuse actionably. Never black out the target or surviving display. |
+| Show succeeds / verified external restoration | Quiesce/verify overlay cleanup before Show capture; release restricted treatment after verified resolution. If enabled and not snoozed, restart normal protection with a fresh idle countdown. Never immediately replay an old empty/idle decision. |
 | Hide refused before capture | Restore normal protection according to current preferences, using a fresh countdown; no hidden state. |
-| Partial failure after capture | Keep journal and recovery status; protection stays suspended until topology is verified restored. Do not auto-rollback or repeat DDC. |
+| Partial failure after capture | Keep journal and recovery status; only a still-verified healthy Hidden state may use the bounded source overlay. Recovery-needed, busy, or unknown state keeps it off. Do not auto-rollback or repeat DDC. |
 | DDC failure after verified Show | Desktop restored, input needs manual attention. Topology journal may already be resolved by backend; do not falsely call it unresolved or replay Show just to retry DDC. Release topology suspension, retain visible input warning. |
-| Sleep All Now / system sleep | Existing explicit all-display sleep remains available; does not Show or switch input. No new hide/show during asleep or transition/unknown state. |
-| Wake / hotplug | Refresh and verify; accept system restoration, never re-hide or retry input. Missing/changed identity refuses Show and retains recovery entry. |
+| Sleep All Now / system sleep | Existing explicit all-display sleep remains available; does not Show or switch input. No automatic follow-up sleep while hidden. No new hide/show during asleep or transition/unknown state. |
+| Wake / hotplug | Refresh and verify; accept system restoration, never re-hide or retry input. Missing/changed identity refuses Show and retains recovery entry. Overlay stops/revalidates through the same transitions. |
 | Quit | Stop existing protection as today. If unresolved, warn “Hidden desktop/recovery remains after quitting”; offer Cancel, Show… or Quit Without Showing. No automatic topology or input writes. |
-| Crash / force quit | No public-mirror watchdog guarantee. Journal survives; relaunch inspects, offers explicit recovery and never captures over unresolved evidence. |
-| Launch at login / app relaunch | Existing protection defaults unchanged for no journal; unresolved mirror journal suspends treatment and surfaces recovery. No startup hide, Show or input switching. |
+| Crash / force quit | No public-mirror watchdog guarantee. Journal survives; relaunch inspects, offers explicit recovery and never captures over unresolved evidence. Overlay restarts only after fresh journal/topology verification. |
+| Launch at login / app relaunch | Existing protection defaults unchanged for no journal; unresolved mirror journal is inspected. Only a verified healthy hidden mirror source may receive the bounded overlay; otherwise protection pauses. No startup hide, Show or input switching. |
 
 Automation adds explanation only: “Idle and empty-display rules control
 blackout/dimming, not Hide or monitor inputs.” No hide treatment choice. Startup

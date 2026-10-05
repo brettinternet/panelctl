@@ -53,6 +53,22 @@ public struct DisplayHideJournalSummary: Equatable {
     public let canShow: Bool
     public let showRefusal: String?
     public let failure: String?
+    public let mirrorTopologyVerified: Bool
+
+    init(id: String, state: String, target: DisplayHideIdentity?, source: DisplayHideIdentity?,
+         isMirrorJournal: Bool, isUnresolved: Bool, canShow: Bool, showRefusal: String?,
+         failure: String?, mirrorTopologyVerified: Bool = false) {
+        self.id = id
+        self.state = state
+        self.target = target
+        self.source = source
+        self.isMirrorJournal = isMirrorJournal
+        self.isUnresolved = isUnresolved
+        self.canShow = canShow
+        self.showRefusal = showRefusal
+        self.failure = failure
+        self.mirrorTopologyVerified = mirrorTopologyVerified
+    }
 }
 
 public struct DisplayHideStatus: Equatable {
@@ -285,7 +301,9 @@ public struct DisplayHideController {
             isUnresolved: unresolved,
             canShow: canShow,
             showRefusal: unresolved ? refusal : nil,
-            failure: journal.failure
+            failure: journal.failure,
+            mirrorTopologyVerified: unresolved && journal.state == .mirrored &&
+                Self.matchesHiddenMirrorTopology(journal, current: current)
         )
         return DisplayHideStatus(
             journalPath: store.url.path,
@@ -293,6 +311,31 @@ public struct DisplayHideController {
             journal: summary,
             inspectionFailure: nil
         )
+    }
+
+    private static func matchesHiddenMirrorTopology(
+        _ journal: RecoveryJournal,
+        current: RecoverySnapshot
+    ) -> Bool {
+        guard let targetID = journal.mirrorTargetID,
+              let sourceID = journal.mirrorSourceID,
+              let source = journal.snapshot.displays.first(where: { $0.id == sourceID }) else {
+            return false
+        }
+        let originalByID = Dictionary(uniqueKeysWithValues: journal.snapshot.displays.map { ($0.id, $0) })
+        guard current.displays.count == originalByID.count else { return false }
+        return current.displays.allSatisfy { display in
+            guard let original = originalByID[display.id] else { return false }
+            let expectedMirror = display.id == targetID ? source.uuid : nil
+            let mirrorMatches: Bool
+            if let expectedMirror, let observedMirror = display.mirrorUUID {
+                mirrorMatches = expectedMirror.caseInsensitiveCompare(observedMirror) == .orderedSame
+            } else {
+                mirrorMatches = expectedMirror == nil && display.mirrorUUID == nil
+            }
+            return mirrorMatches && display.main == original.main &&
+                (display.id != sourceID || display.active)
+        }
     }
 
     private func statusForUnsupportedJournal(_ journal: RecoveryJournal, records: [DisplayRecord],

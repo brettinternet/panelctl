@@ -160,6 +160,43 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertNoThrow(try preferences.commandArguments(for: displays))
     }
 
+    func testHiddenMirrorOverlayArgumentsAreSourceOnlyOverlayBoundAndHardwareFree() throws {
+        let sourceUUID = "00000000-0000-0000-0000-000000000001"
+        var preferences = ProtectionPreferences()
+        preferences.selectedDisplayUUIDs = [sourceUUID]
+        preferences.mode = .working
+        preferences.workingOverlayEnabled = false
+        preferences.hardwareDimmingEnabled = true
+        preferences.hardwareBrightnessPercent = 10
+        preferences.blackoutEmptyDisplays = true
+
+        let source = display(index: 1, id: 101, uuid: sourceUUID, width: 1920, height: 1080)
+        let arguments = try XCTUnwrap(preferences.hiddenMirrorOverlayArguments(for: source))
+        XCTAssertEqual(
+            arguments,
+            [
+                "blackout", "--display", sourceUUID,
+                "--panelctl-hidden-mirror-source", sourceUUID,
+                "--mode", "blocking", "--overlay-opacity", "100",
+                "--idle-after", "300", "--watch", "--timeout", "1800",
+                "--keep-blackout-on-input"
+            ]
+        )
+        XCTAssertFalse(arguments.contains("--dim-to"))
+        XCTAssertFalse(arguments.contains("--sleep-after"))
+        XCTAssertFalse(arguments.contains("--keep-displays-awake"))
+        XCTAssertFalse(arguments.contains("--blackout-empty-displays"))
+
+        preferences.followUpAction = .untilActivity
+        preferences.followUpSeconds = 30 * 24 * 60 * 60
+        let untilActivity = try XCTUnwrap(preferences.hiddenMirrorOverlayArguments(for: source))
+        let timeoutIndex = try XCTUnwrap(untilActivity.firstIndex(of: "--timeout"))
+        XCTAssertEqual(untilActivity[timeoutIndex + 1], "86400")
+
+        preferences.selectedDisplayUUIDs = ["00000000-0000-0000-0000-000000000002"]
+        XCTAssertNil(try preferences.hiddenMirrorOverlayArguments(for: source), "an unselected mirror source receives no overlay")
+    }
+
     func testPlaybackDeferralOptOutEmitsIgnoreFlag() throws {
         var preferences = ProtectionPreferences()
         preferences.selectedDisplayUUIDs = ["AAAA-UUID"]

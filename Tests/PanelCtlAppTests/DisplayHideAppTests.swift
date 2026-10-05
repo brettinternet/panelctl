@@ -93,6 +93,298 @@ final class DisplayHideAppTests: XCTestCase {
         dispatchNativeEvents()
     }
 
+    func testHiddenOverlayIsSourceOnlyRestoreOnlyAndQuiescedBeforeShow() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panelctl-hidden-overlay-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("helper.log")
+        let helper = try writeHiddenOverlayHelper(in: directory, log: log)
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var preferences = ProtectionPreferences()
+        preferences.isEnabled = true
+        preferences.didChooseDisplays = true
+        preferences.selectedDisplayUUIDs = [Self.sourceUUID]
+        preferences.mode = .working
+        preferences.hardwareDimmingEnabled = true
+        preferences.hardwareBrightnessPercent = 10
+        defaults.set(try JSONEncoder().encode(preferences), forKey: "blackoutPreferences")
+
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        unsetenv("PANELCTL_REARM_ON_START")
+        defer {
+            unsetenv("PANELCTL_HELPER")
+            unsetenv("PANELCTL_REARM_ON_START")
+            unsetenv("PANELCTL_TEST_LOG")
+        }
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        let hidden = handoffStatus(.hidden, target: displays[1], source: displays[2], journalID: "overlay-journal", canShow: true)
+        let box = StatusBox(hidden)
+        var showCalls = 0
+        var watcherWasStoppedBeforeShow = false
+        let model = makeModel(
+            defaults: defaults,
+            displays: displays,
+            status: { box.value },
+            useManagedProtectionService: true,
+            showDisplay: { _, _ in
+                showCalls += 1
+                let lines = try String(contentsOf: log, encoding: .utf8)
+                    .split(separator: "\n").map(String.init)
+                watcherWasStoppedBeforeShow = lines.contains("stop")
+                box.value = self.handoffStatus(.none, target: nil, source: nil)
+                return .notRequested
+            }
+        )
+        try await waitUntil { model.runtimeState == .blackedOut }
+        var lines = try await waitForLogLines(1, at: log)
+        XCTAssertTrue(model.protectionPausedForDisplayRecovery)
+        XCTAssertTrue(model.hiddenMirrorOverlayPolicyEligible)
+        XCTAssertEqual(model.effectiveBlackoutMode, .blocking)
+        XCTAssertTrue(model.statusSummary.contains("overlay blackout on Mirror source"))
+        XCTAssertTrue(lines[0].contains("--display \(Self.sourceUUID)"))
+        XCTAssertTrue(lines[0].contains("--panelctl-hidden-mirror-source \(Self.sourceUUID)"))
+        XCTAssertFalse(lines[0].contains(Self.targetUUID))
+        XCTAssertFalse(lines[0].contains("--dim-to"))
+        XCTAssertFalse(lines[0].contains("--sleep-after"))
+        XCTAssertFalse(lines[0].contains("--keep-displays-awake"))
+
+        let delegate = AppDelegate()
+        delegate.model = model
+        let menuTitles = delegate.makeMenu().items.map(\.title)
+        XCTAssertTrue(menuTitles.contains("Show Target…"), "Show stays reachable over a source overlay")
+        XCTAssertTrue(menuTitles.contains("Restore"), "protection Restore stays available over a source overlay")
+        XCTAssertTrue(try model.restoreBlackout(), "Restore controls the overlay while the journal remains hidden")
+        lines = try await waitForLogLines(2, at: log)
+        XCTAssertEqual(lines[1], "command:restore")
+        XCTAssertEqual(showCalls, 0, "Restore never invokes Show")
+        XCTAssertEqual(model.handoffStatus?.state, .hidden)
+
+        try model.blackoutNow()
+        try await waitUntil { model.runtimeState == .blackedOut }
+        let request = try model.makeShowRequest()
+        model.confirmShow(request, acknowledged: true)
+        try await waitUntil { showCalls == 1 && !model.hideOperation.isBusy }
+        lines = try String(contentsOf: log, encoding: .utf8).split(separator: "\n").map(String.init)
+        XCTAssertTrue(watcherWasStoppedBeforeShow)
+        XCTAssertEqual(lines.filter { $0 == "stop" }.count, 1)
+        XCTAssertEqual(showCalls, 1)
+        XCTAssertEqual(box.value.state, .none)
+
+        let stopped = expectation(description: "normal watcher stopped")
+        model.shutdown { stopped.fulfill() }
+        await fulfillment(of: [stopped], timeout: 3)
+    }
+
+    func testHiddenOverlaySummaryReportsFailedHelperWithHealthyHiddenJournal() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panelctl-hidden-overlay-failure-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let script = """
+        #!/bin/bash
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
+        printf 'synthetic overlay startup failure\\n' >&2
+        exit 7
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var preferences = ProtectionPreferences()
+        preferences.isEnabled = true
+        preferences.didChooseDisplays = true
+        preferences.selectedDisplayUUIDs = [Self.sourceUUID]
+        defaults.set(try JSONEncoder().encode(preferences), forKey: "blackoutPreferences")
+
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        defer { unsetenv("PANELCTL_HELPER") }
+        let healthyHidden = handoffStatus(
+            .hidden, target: displays[1], source: displays[2], journalID: "healthy-hidden-journal", canShow: true
+        )
+        let model = makeModel(
+            defaults: defaults,
+            displays: displays,
+            status: { healthyHidden },
+            useManagedProtectionService: true
+        )
+        try await waitUntil {
+            if case .failed = model.runtimeState { return true }
+            return false
+        }
+
+        XCTAssertTrue(model.hiddenMirrorProtectionSummary.contains("overlay protection failed"))
+        XCTAssertTrue(model.hiddenMirrorProtectionSummary.contains("synthetic overlay startup failure"))
+        XCTAssertFalse(model.hiddenMirrorProtectionSummary.contains("watching"))
+
+        let stopped = expectation(description: "failed overlay service shut down")
+        model.shutdown { stopped.fulfill() }
+        await fulfillment(of: [stopped], timeout: 3)
+    }
+
+    func testHiddenOverlaySummaryReportsPausedPlaybackState() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panelctl-hidden-overlay-paused-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let script = """
+        #!/bin/bash
+        printf '{"state":"waiting_for_playback","blackedOutDisplayIDs":[]}\\n'
+        trap 'printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":true}\\n"; exit 0' TERM
+        while true; do /bin/sleep 0.02; done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var preferences = ProtectionPreferences()
+        preferences.isEnabled = true
+        preferences.didChooseDisplays = true
+        preferences.selectedDisplayUUIDs = [Self.sourceUUID]
+        defaults.set(try JSONEncoder().encode(preferences), forKey: "blackoutPreferences")
+
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        defer { unsetenv("PANELCTL_HELPER") }
+        let hidden = handoffStatus(
+            .hidden, target: displays[1], source: displays[2], journalID: "paused-hidden-journal", canShow: true
+        )
+        let model = makeModel(
+            defaults: defaults,
+            displays: displays,
+            status: { hidden },
+            useManagedProtectionService: true
+        )
+        try await waitUntil { model.runtimeState == .waitingForPlayback }
+        XCTAssertTrue(model.hiddenMirrorProtectionSummary.contains("overlay protection paused"))
+        XCTAssertTrue(model.hiddenMirrorProtectionSummary.contains("media or camera activity"))
+
+        let stopped = expectation(description: "paused overlay service shut down")
+        model.shutdown { stopped.fulfill() }
+        await fulfillment(of: [stopped], timeout: 3)
+    }
+
+    func testCrashedWindowOnlyOverlayAllowsRepeatedShowWithoutStoppedAcknowledgement() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panelctl-hidden-overlay-crash-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let log = directory.appendingPathComponent("helper.log")
+        let script = """
+        #!/bin/bash
+        printf 'launch\\n' >> "$PANELCTL_TEST_LOG"
+        printf '{"state":"blacked_out","blackedOutDisplayIDs":[303]}\\n'
+        trap 'kill -KILL $$' TERM
+        while true; do /bin/sleep 0.02; done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        defer {
+            unsetenv("PANELCTL_HELPER")
+            unsetenv("PANELCTL_TEST_LOG")
+        }
+
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var preferences = ProtectionPreferences()
+        preferences.isEnabled = true
+        preferences.didChooseDisplays = true
+        preferences.selectedDisplayUUIDs = [Self.sourceUUID]
+        defaults.set(try JSONEncoder().encode(preferences), forKey: "blackoutPreferences")
+
+        let hidden = handoffStatus(
+            .hidden, target: displays[1], source: displays[2], journalID: "crashed-overlay-journal", canShow: true
+        )
+        let box = StatusBox(hidden)
+        var showCalls = 0
+        var model: AppModel!
+        model = makeModel(
+            defaults: defaults,
+            displays: displays,
+            status: { box.value },
+            useManagedProtectionService: true,
+            showDisplay: { _, _ in
+                showCalls += 1
+                if showCalls == 1 {
+                    model.preferences.isEnabled = false
+                    throw NSError(domain: "FakeShow", code: 1, userInfo: [
+                        NSLocalizedDescriptionKey: "fake no-write Show refusal"
+                    ])
+                }
+                box.value = self.handoffStatus(.none, target: nil, source: nil)
+                return .notRequested
+            }
+        )
+        try await waitUntil { model.runtimeState == .blackedOut }
+        XCTAssertTrue(model.hiddenMirrorOverlayPolicyEligible)
+
+        model.confirmShow(try model.makeShowRequest(), acknowledged: true)
+        try await waitUntil { showCalls == 1 && !model.hideOperation.isBusy }
+        XCTAssertNil(model.protectionQuiescenceFailure, "process death proves that its windows are gone")
+        XCTAssertEqual(model.notice?.title, "Could not show the journaled desktop")
+        XCTAssertEqual(try String(contentsOf: log, encoding: .utf8).split(separator: "\n").count, 1)
+
+        model.confirmShow(try model.makeShowRequest(), acknowledged: true)
+        try await waitUntil { showCalls == 2 && !model.hideOperation.isBusy }
+        XCTAssertNil(model.protectionQuiescenceFailure, "a second Show is not blocked by a stale cleanup latch")
+        XCTAssertEqual(box.value.state, .none)
+        XCTAssertEqual(model.notice?.title, "Desktop restored")
+        XCTAssertEqual(try String(contentsOf: log, encoding: .utf8).split(separator: "\n").count, 1,
+                       "no helper restart is required to prove the overlay process terminated")
+
+        let stopped = expectation(description: "overlay service shut down")
+        model.shutdown { stopped.fulfill() }
+        await fulfillment(of: [stopped], timeout: 3)
+    }
+
+    func testHiddenOverlayAppPolicyRefusesUnselectedOrUnhealthyState() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var preferences = ProtectionPreferences()
+        preferences.isEnabled = true
+        preferences.didChooseDisplays = true
+        preferences.selectedDisplayUUIDs = [Self.targetUUID]
+        defaults.set(try JSONEncoder().encode(preferences), forKey: "blackoutPreferences")
+
+        let hidden = handoffStatus(.hidden, target: displays[1], source: displays[2], journalID: "unselected-source", canShow: true)
+        let unselected = makeModel(defaults: defaults, displays: displays, status: { hidden })
+        try await waitUntil { !unselected.protectionQuiescencePending }
+        XCTAssertNil(unselected.selectedHiddenMirrorSource)
+        XCTAssertFalse(unselected.hiddenMirrorOverlayPolicyEligible)
+        XCTAssertTrue(unselected.hiddenMirrorProtectionSummary.contains("not selected"))
+
+        for state in [DisplayHandoffStatus.State.recovery, .busy, .unsupported, .none] {
+            let status = handoffStatus(
+                state,
+                target: displays[1],
+                source: displays[2],
+                journalID: "refused-\(state)",
+                canShow: false,
+                observationState: state == .none ? .mirroredExternally : nil
+            )
+            let model = makeModel(defaults: defaults, displays: displays, status: { status })
+            try await waitUntil { !model.protectionQuiescencePending }
+            XCTAssertNil(model.verifiedHiddenMirrorSource, "\(state) must not authorize an overlay")
+            XCTAssertFalse(model.hiddenMirrorOverlayPolicyEligible)
+        }
+
+        let staleSource = Self.display(index: 3, id: 304, uuid: Self.sourceUUID, name: "Changed source", main: false)
+        let stale = makeModel(
+            defaults: defaults,
+            displays: [displays[0], displays[1], staleSource],
+            status: { hidden }
+        )
+        try await waitUntil { !stale.protectionQuiescencePending }
+        XCTAssertNil(stale.verifiedHiddenMirrorSource, "a stale source display ID is refused")
+    }
+
     func testVerifiedRecoveryReleaseRearmsHelperBeforeStaleIdleCanTrigger() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("panelctl-recovery-rearm-\(UUID().uuidString)", isDirectory: true)
@@ -621,6 +913,25 @@ final class DisplayHideAppTests: XCTestCase {
                 return false
             }
 
+            let overlayArguments = [
+                "blackout", "--display", Self.sourceUUID,
+                "--panelctl-hidden-mirror-source", Self.sourceUUID,
+                "--mode", "blocking", "--overlay-opacity", "100",
+                "--idle-after", "60", "--watch", "--timeout", "3600"
+            ]
+            service.run(arguments: overlayArguments)
+            try await waitUntil { service.state == .waiting }
+            var overlayCleanupSucceeded: Bool?
+            var overlayCleanupFailure: String?
+            service.disableForDisplayHide { succeeded, message in
+                overlayCleanupSucceeded = succeeded
+                overlayCleanupFailure = message
+            }
+            try await waitUntil { overlayCleanupSucceeded != nil }
+            XCTAssertFalse(try XCTUnwrap(overlayCleanupSucceeded))
+            XCTAssertTrue(overlayCleanupFailure?.localizedCaseInsensitiveContains("cleanup") == true,
+                          "a hardware-free overlay cannot clear a previous brightness cleanup failure")
+
             let defaults = try makeDefaults()
             defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
             var hideCalls = 0
@@ -890,8 +1201,10 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertTrue(hideText.contains("Target: Target"))
         XCTAssertTrue(hideText.contains("Explicit mirror source: Main OLED"))
         XCTAssertTrue(hideText.contains("Recovery journal: /tmp/synthetic/current.json"))
-        XCTAssertTrue(hideText.contains("While hidden, PanelCtl cannot black out Main OLED or any other display."))
-        XCTAssertTrue(hideText.contains("An OLED source stays lit until you Show or macOS display sleep turns it off."))
+        XCTAssertTrue(hideText.contains("overlay only to the selected mirror source Main OLED"))
+        XCTAssertTrue(hideText.contains("mirrored target is never an overlay target"))
+        XCTAssertTrue(hideText.contains("automatic follow-up Sleep"))
+        XCTAssertTrue(hideText.contains("hardware qualification is unperformed"))
 
         let showText = DisplayOperationConfirmation.showMessage(
             handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "journal", canShow: true)
@@ -899,6 +1212,7 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertTrue(showText.contains("Journaled target: Target"))
         XCTAssertTrue(showText.contains("Captured mirror source: Main OLED"))
         XCTAssertTrue(showText.contains("Restoring the layout may affect other captured displays"))
+        XCTAssertTrue(showText.contains("overlay is quiesced and verified stopped before Show"))
         XCTAssertTrue(showText.contains("Recovery journal:"))
 
         box.value = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "lifecycle-journal", canShow: true)
@@ -1332,7 +1646,7 @@ final class DisplayHideAppTests: XCTestCase {
         let titles = menu.items.map(\.title)
         XCTAssertTrue(titles.contains("Hide a desktop · Experimental"))
         XCTAssertTrue(titles.contains("Show Target…"))
-        XCTAssertTrue(titles.contains("Desktop hidden by PanelCtl · input unknown"))
+        XCTAssertTrue(titles.contains("Desktop hidden by PanelCtl · input unknown; target black on Mac input"))
         let settingsItem = try XCTUnwrap(menu.items.first { $0.title == "Settings…" })
         XCTAssertEqual(settingsItem.keyEquivalent, ",")
         XCTAssertEqual(menu.items.firstIndex { $0.title == "Hide a desktop · Experimental" }, menu.items.firstIndex { $0.title == "Show Target…" }.map { $0 - 1 })
@@ -1382,6 +1696,28 @@ final class DisplayHideAppTests: XCTestCase {
         let firstKeyView = window.firstResponder
         window.selectNextKeyView(nil)
         XCTAssertFalse(window.firstResponder === firstKeyView, "Tab advances through the Settings key-view loop")
+    }
+
+    private func writeHiddenOverlayHelper(in directory: URL, log: URL) throws -> URL {
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let script = """
+        #!/bin/bash
+        printf 'launch:%s\\n' "$*" >> "$PANELCTL_TEST_LOG"
+        printf '{"state":"blacked_out","blackedOutDisplayIDs":[303]}\\n'
+        trap 'printf "stop\\n" >> "$PANELCTL_TEST_LOG"; printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":true}\\n"; exit 0' TERM
+        while IFS= read -r command; do
+            printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
+            if [[ "$command" == "restore" ]]; then
+                printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
+            elif [[ "$command" == "blackout-now" ]]; then
+                printf '{"state":"blacked_out","blackedOutDisplayIDs":[303]}\\n'
+            fi
+        done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        return helper
     }
 
     private func writeRearmHelper(in directory: URL) throws -> URL {
@@ -1670,7 +2006,8 @@ final class DisplayHideAppTests: XCTestCase {
             canShow: canShow,
             recoveryCommand: state == .none ? nil : "panelctl recovery restore --journal '/tmp/panelctl-display-hide-fixture/current.json'",
             observations: observations,
-            inspectionFailure: inspectionFailure
+            inspectionFailure: inspectionFailure,
+            mirrorTopologyVerified: state == .hidden
         )
     }
 

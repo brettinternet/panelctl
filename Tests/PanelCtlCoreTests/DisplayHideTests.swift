@@ -85,6 +85,51 @@ final class DisplayHideTests: XCTestCase {
         XCTAssertEqual(writerCount, 2, "resolved Show must not write topology again")
     }
 
+    func testInspectedHiddenMirrorAuthorizationRefusesChangedMainDisplay() throws {
+        var journal = RecoveryJournal(snapshot: topology.snapshot)
+        journal.mirrorTargetID = targetID
+        journal.mirrorSourceID = sourceID
+        journal.state = .mirrored
+        try save(journal)
+
+        topology.snapshot = try snapshot { displays in
+            displays[1]["mirrorUUID"] = self.sourceUUID
+            displays[1]["active"] = false
+        }
+        var inspected = try controller().inspect()
+        XCTAssertEqual(inspected.journal?.state, RecoveryState.mirrored.rawValue)
+        XCTAssertTrue(inspected.showAvailable)
+        XCTAssertTrue(inspected.journal?.mirrorTopologyVerified == true)
+        var handoff = DisplayHandoff.handoffStatus(from: inspected)
+        XCTAssertNil(HiddenMirrorSourceOverlayAuthorization.refusal(
+            sourceUUID: sourceUUID,
+            sourceDisplayID: sourceID,
+            isMirrored: true,
+            status: handoff
+        ))
+
+        topology.snapshot = try snapshot { displays in
+            displays[0]["main"] = false
+            displays[1]["main"] = true
+            displays[1]["mirrorUUID"] = self.sourceUUID
+            displays[1]["active"] = false
+        }
+        inspected = try controller().inspect()
+        XCTAssertTrue(inspected.showAvailable, "Show can still restore a changed main-display setting")
+        XCTAssertFalse(inspected.journal?.mirrorTopologyVerified ?? true)
+        handoff = DisplayHandoff.handoffStatus(from: inspected)
+        XCTAssertEqual(handoff.state, .hidden, "the journaled target still mirrors its captured source")
+        let refusal = HiddenMirrorSourceOverlayAuthorization.refusal(
+            sourceUUID: sourceUUID,
+            sourceDisplayID: sourceID,
+            isMirrored: true,
+            status: handoff
+        )
+        XCTAssertTrue(refusal?.contains("main display") == true,
+                      "a changed main display fails the exact hidden-topology authorization")
+        XCTAssertEqual(writerCount, 0, "inspection and authorization never invoke the fake writer")
+    }
+
     func testImportedAwayJournalWithSuccessfulInputSwitchReportsUnknownAndManualFallback() throws {
         let mirrored = try snapshot { displays in
             displays[1]["mirrorUUID"] = self.sourceUUID

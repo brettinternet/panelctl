@@ -28,9 +28,11 @@ enum DisplayOperationConfirmation {
 
         Recovery journal: \(journalPath)
 
-        PanelCtl protection pauses while the journal is unresolved. External CLI watchers and other display apps do not honor PanelCtl's locks; stop them before proceeding.
+        While the shared journal and current topology verify Hidden by PanelCtl, app protection may apply an opaque overlay only to the selected mirror source \(sourceName). The mirrored target is never an overlay target, but it also shows black on the Mac input because it mirrors the source. If the source is not selected, protection is disabled/snoozed, or verification is busy, stale, or unknown, overlay protection stays paused.
 
-        While hidden, PanelCtl cannot black out \(sourceName) or any other display. An OLED source stays lit until you Show or macOS display sleep turns it off.
+        This hidden-state treatment is overlay-only: no brightness dimming, DDC, topology writes, or automatic follow-up Sleep. Activity and Restore affect only the overlay; they never Show the desktop. A finite Restore timeout clears the overlay (at most 24 hours); a configured Sleep follow-up becomes Restore instead. Show remains explicit and available from the menu or Displays recovery page, including while an overlay is active. Escape/Restore removes only the overlay.
+
+        Overlay coexistence has offline fake/native-fixture validation only; monitor hardware qualification is unperformed. External CLI watchers and other display apps do not honor PanelCtl's locks; stop them before proceeding.
         """
     }
 
@@ -58,7 +60,7 @@ enum DisplayOperationConfirmation {
 
         Recovery journal: \(status.journalPath)
 
-        PanelCtl protection remains paused until the shared journal is verified resolved. After a successful Show, enabled protection starts with a fresh idle countdown.
+        Any hidden-state overlay is quiesced and verified stopped before Show captures or verifies the layout. Overlay Restore or activity never Shows the desktop. Brightness dimming and automatic follow-up Sleep remain suspended until the shared journal is verified resolved; after Show, enabled protection starts with a fresh idle countdown.
         """
     }
 
@@ -77,7 +79,7 @@ enum DisplayOperationConfirmation {
         let acknowledgement: NSButton
         private let acknowledgementTarget: AcknowledgementTarget
 
-        func runModal() -> NSApplication.ModalResponse {
+        @MainActor func runModal() -> NSApplication.ModalResponse {
             // Cancel is the default (Return) button, so give Escape an explicit
             // scoped route too. NSAlert otherwise assigns it to the second button.
             let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in

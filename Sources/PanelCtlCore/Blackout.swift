@@ -26,6 +26,8 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
     case invalidHardwareBrightness
     case workingOverlayRequired
     case persistentDimming
+    case invalidHiddenMirrorSourceOverlay
+    case mirrorSourceNotAuthorized(String, String)
     public var description: String {
         switch self {
         case .noScreens: return "no drawable screens are available (headless or no WindowServer context)"
@@ -48,6 +50,10 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
             return "a partial or disabled overlay requires working mode"
         case .persistentDimming:
             return "refusing persistent blackout with --dim-to because DDC restore is not time-bounded"
+        case .invalidHiddenMirrorSourceOverlay:
+            return "invalid PanelCtl hidden-mirror overlay options; use one matching source UUID, an opaque watched overlay, and a finite Restore timeout without hardware dimming, sleep, or display-awake options"
+        case .mirrorSourceNotAuthorized(let selector, let reason):
+            return "refusing mirrored display target \(selector): \(reason)"
     }
     }
 }
@@ -436,6 +442,7 @@ public final class BlackoutController {
     private let playbackAssertionActive: () -> Bool
     private let cameraCaptureActive: () -> Bool
     private let statusHandler: ((BlackoutRuntimeStatus) -> Void)?
+    private let mirrorHandoffStatus: () -> DisplayHandoffStatus
 
     public convenience init() {
         self.init(
@@ -443,7 +450,8 @@ public final class BlackoutController {
             uptime: { ProcessInfo.processInfo.systemUptime },
             playbackAssertionActive: playbackAssertionIsActive,
             cameraCaptureActive: cameraCaptureIsActive,
-            statusHandler: nil
+            statusHandler: nil,
+            mirrorHandoffStatus: DisplayHandoff.inspect
         )
     }
 
@@ -455,7 +463,8 @@ public final class BlackoutController {
             uptime: { ProcessInfo.processInfo.systemUptime },
             playbackAssertionActive: playbackAssertionIsActive,
             cameraCaptureActive: cameraCaptureIsActive,
-            statusHandler: statusHandler
+            statusHandler: statusHandler,
+            mirrorHandoffStatus: DisplayHandoff.inspect
         )
     }
 
@@ -465,7 +474,8 @@ public final class BlackoutController {
         playbackAssertionActive: @escaping () -> Bool = playbackAssertionIsActive,
         cameraCaptureActive: @escaping () -> Bool = cameraCaptureIsActive,
         occupancySource: DisplayOccupancySource = CoreGraphicsDisplayOccupancySource(),
-        statusHandler: ((BlackoutRuntimeStatus) -> Void)? = nil
+        statusHandler: ((BlackoutRuntimeStatus) -> Void)? = nil,
+        mirrorHandoffStatus: @escaping () -> DisplayHandoffStatus = DisplayHandoff.inspect
     ) {
         self.idleSource = idleSource
         self.uptime = uptime
@@ -473,6 +483,7 @@ public final class BlackoutController {
         self.cameraCaptureActive = cameraCaptureActive
         self.occupancySource = occupancySource
         self.statusHandler = statusHandler
+        self.mirrorHandoffStatus = mirrorHandoffStatus
     }
 
     public func run(options: BlackoutOptions) throws {
@@ -577,7 +588,7 @@ public final class BlackoutController {
             } catch let error as BlackoutError {
                 switch error {
                 case .topologyChanged, .noScreens, .invalidScreenFrame, .coverageMismatch,
-                     .allScreensSafety, .mirroredDisplay:
+                     .allScreensSafety, .mirroredDisplay, .mirrorSourceNotAuthorized:
                     interruptCycle(.topologyChanged)
                 default:
                     throw error
@@ -684,6 +695,9 @@ public final class BlackoutController {
             if watch, cycleRestoreGeneration != restoreGeneration {
                 return
             }
+            if watch, options.hiddenMirrorSourceUUID != nil {
+                try revalidateCoveredHiddenMirrorSource(options: options)
+            }
             let sample = try idleSample()
             if consumeInputAction(sample) { return }
             if stopRequested { return }
@@ -780,7 +794,13 @@ public final class BlackoutController {
                   Self.isValidScreenFrame(frame) else {
                 throw BlackoutError.nonDrawable(selector)
             }
-            try Self.validateTarget(isMirrored: CGDisplayIsInMirrorSet(record.id) != 0, selector: selector)
+            try validateTarget(
+                isMirrored: CGDisplayIsInMirrorSet(record.id) != 0,
+                selector: selector,
+                uuid: record.uuid,
+                displayID: record.id,
+                options: options
+            )
             if options.watch, record.uuid == nil {
                 throw BlackoutError.watchRequiresStableUUID(selector)
             }
@@ -844,7 +864,13 @@ public final class BlackoutController {
                 throw BlackoutError.topologyChanged
             }
             guard let id = Self.screenID(screen) else { throw BlackoutError.topologyChanged }
-            try Self.validateTarget(isMirrored: CGDisplayIsInMirrorSet(id) != 0, selector: target.selector)
+            try validateTarget(
+                isMirrored: CGDisplayIsInMirrorSet(id) != 0,
+                selector: target.selector,
+                uuid: target.uuid,
+                displayID: id,
+                options: options
+            )
             return screen
         }
         guard !selected.isEmpty else { throw BlackoutError.noScreens }
@@ -1532,6 +1558,50 @@ public final class BlackoutController {
         }
     }
 
+    private func revalidateCoveredHiddenMirrorSource(options: BlackoutOptions) throws {
+        guard fullCycleActive,
+              let sourceUUID = options.hiddenMirrorSourceUUID,
+              let target = targets.first else { return }
+        let refusal = HiddenMirrorSourceOverlayAuthorization.revalidateWhileCovered(
+            sourceUUID: sourceUUID,
+            sourceDisplayID: target.id,
+            isMirrored: CGDisplayIsInMirrorSet(target.id) != 0,
+            status: mirrorHandoffStatus(),
+            removeCoverage: { [weak self] in
+                self?.fullCycleActive = false
+                self?.closeAllWindows()
+            }
+        )
+        if let refusal {
+            throw BlackoutError.mirrorSourceNotAuthorized(target.selector, refusal)
+        }
+    }
+
+    private func validateTarget(
+        isMirrored: Bool,
+        selector: String,
+        uuid: String?,
+        displayID: UInt32,
+        options: BlackoutOptions
+    ) throws {
+        guard let sourceUUID = options.hiddenMirrorSourceUUID else {
+            try Self.validateTarget(isMirrored: isMirrored, selector: selector)
+            return
+        }
+        guard let uuid,
+              uuid.caseInsensitiveCompare(sourceUUID) == .orderedSame else {
+            throw BlackoutError.mirrorSourceNotAuthorized(selector, "only the journaled mirror source may receive an overlay")
+        }
+        if let reason = HiddenMirrorSourceOverlayAuthorization.refusal(
+            sourceUUID: sourceUUID,
+            sourceDisplayID: displayID,
+            isMirrored: isMirrored,
+            status: mirrorHandoffStatus()
+        ) {
+            throw BlackoutError.mirrorSourceNotAuthorized(selector, reason)
+        }
+    }
+
     static func validateTarget(isMirrored: Bool, selector: String) throws {
         if isMirrored { throw BlackoutError.mirroredDisplay(selector) }
     }
@@ -1552,6 +1622,26 @@ public final class BlackoutController {
            options.keepBlackoutOnInput,
            options.hardwareBrightnessPercent != nil {
             throw BlackoutError.persistentDimming
+        }
+        if let sourceUUID = options.hiddenMirrorSourceUUID {
+            guard UUID(uuidString: sourceUUID) != nil,
+                  !options.all,
+                  options.selectors.count == 1,
+                  options.selectors[0].caseInsensitiveCompare(sourceUUID) == .orderedSame,
+                  options.watch,
+                  let idleAfter = options.idleAfter,
+                  idleAfter.isFinite, idleAfter > 0,
+                  let timeout = options.timeout,
+                  timeout.isFinite, timeout > 0,
+                  options.sleepAfter == nil,
+                  !options.caffeinate,
+                  !options.keepDisplaysAwake,
+                  !options.blackoutEmptyDisplays,
+                  options.mode == .blocking,
+                  options.overlayOpacityPercent == 100,
+                  options.hardwareBrightnessPercent == nil else {
+                throw BlackoutError.invalidHiddenMirrorSourceOverlay
+            }
         }
     }
 

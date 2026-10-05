@@ -87,6 +87,7 @@ public struct DisplayHandoffStatus: Equatable {
     public let recoveryCommand: String?
     public let observations: [DisplayHideObservation]
     public let inspectionFailure: String?
+    public let mirrorTopologyVerified: Bool
 
     public var hasUnresolvedJournal: Bool { state != .none }
 
@@ -100,7 +101,8 @@ public struct DisplayHandoffStatus: Equatable {
         canShow: Bool = false,
         recoveryCommand: String? = nil,
         observations: [DisplayHideObservation] = [],
-        inspectionFailure: String? = nil
+        inspectionFailure: String? = nil,
+        mirrorTopologyVerified: Bool = false
     ) {
         self.state = state
         self.target = target
@@ -113,10 +115,84 @@ public struct DisplayHandoffStatus: Equatable {
         self.recoveryCommand = recoveryCommand
         self.observations = observations
         self.inspectionFailure = inspectionFailure
+        self.mirrorTopologyVerified = mirrorTopologyVerified
     }
 
     fileprivate static func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
+
+enum HiddenMirrorSourceOverlayAuthorization {
+    static func refusal(
+        sourceUUID: String,
+        sourceDisplayID: UInt32,
+        isMirrored: Bool,
+        status: DisplayHandoffStatus
+    ) -> String? {
+        guard isMirrored else { return "the selected display is no longer in a mirror set" }
+        guard status.inspectionFailure == nil,
+              status.state == .hidden,
+              status.canShow,
+              status.journalID != nil,
+              let target = status.target,
+              let source = status.source,
+              source.uuid.caseInsensitiveCompare(sourceUUID) == .orderedSame,
+              source.id == sourceDisplayID else {
+            return status.reason ?? "the shared journal does not verify this selected source as Hidden by PanelCtl"
+        }
+        guard status.mirrorTopologyVerified else {
+            return "the current mirror topology, including the main display, differs from the journaled Hidden layout"
+        }
+        let hiddenTargets = status.observations.filter {
+            $0.isJournalTarget && $0.state == .hiddenByPanelCtl
+        }
+        guard hiddenTargets.count == 1,
+              let hiddenTarget = hiddenTargets.first,
+              hiddenTarget.identity.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame,
+              hiddenTarget.identity.displayID == target.id,
+              hiddenTarget.source?.uuid.caseInsensitiveCompare(source.uuid) == .orderedSame,
+              hiddenTarget.source?.displayID == source.id else {
+            return "the journaled target is not observed mirroring the selected source"
+        }
+        let sourceObservations = status.observations.filter {
+            $0.identity.uuid.caseInsensitiveCompare(source.uuid) == .orderedSame
+        }
+        guard sourceObservations.count == 1,
+              let sourceObservation = sourceObservations.first,
+              sourceObservation.state == .separate,
+              sourceObservation.identity.displayID == source.id,
+              sourceObservation.identity.vendor == source.vendor,
+              sourceObservation.identity.model == source.model,
+              sourceObservation.identity.serial == source.serial else {
+            return "the current selected source identity or topology does not match the journal"
+        }
+        guard status.observations.allSatisfy({ observation in
+            observation.state == .separate ||
+                (observation.isJournalTarget && observation.identity.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame && observation.state == .hiddenByPanelCtl)
+        }) else {
+            return "another display is externally mirrored or has unknown recovery state"
+        }
+        return nil
+    }
+
+    static func revalidateWhileCovered(
+        sourceUUID: String,
+        sourceDisplayID: UInt32,
+        isMirrored: Bool,
+        status: DisplayHandoffStatus,
+        removeCoverage: () -> Void
+    ) -> String? {
+        guard let reason = refusal(
+            sourceUUID: sourceUUID,
+            sourceDisplayID: sourceDisplayID,
+            isMirrored: isMirrored,
+            status: status
+        ) else {
+            return nil
+        }
+        removeCoverage()
+        return reason
     }
 }
 
@@ -154,6 +230,10 @@ public enum DisplayHandoff {
                 inspectionFailure: message
             )
         }
+        return handoffStatus(from: status)
+    }
+
+    static func handoffStatus(from status: DisplayHideStatus) -> DisplayHandoffStatus {
         guard let journal = status.journal, journal.isUnresolved else {
             return DisplayHandoffStatus(
                 state: .none,
@@ -191,7 +271,8 @@ public enum DisplayHandoff {
             canShow: journal.canShow,
             recoveryCommand: recoveryCommand,
             observations: status.observations,
-            inspectionFailure: status.inspectionFailure
+            inspectionFailure: status.inspectionFailure,
+            mirrorTopologyVerified: journal.mirrorTopologyVerified
         )
     }
 }

@@ -256,6 +256,131 @@ final class BlackoutPolicyTests: XCTestCase {
 
 
 
+    func testHiddenMirrorOverlayAuthorizationAllowsOnlyVerifiedMirrorSource() {
+        let hidden = hiddenMirrorStatus()
+        XCTAssertNil(HiddenMirrorSourceOverlayAuthorization.refusal(
+            sourceUUID: "00000000-0000-0000-0000-000000000003",
+            sourceDisplayID: 303,
+            isMirrored: true,
+            status: hidden
+        ))
+
+        let targetRefusal = HiddenMirrorSourceOverlayAuthorization.refusal(
+            sourceUUID: "00000000-0000-0000-0000-000000000002",
+            sourceDisplayID: 202,
+            isMirrored: true,
+            status: hidden
+        )
+        XCTAssertNotNil(targetRefusal, "the mirrored target is never authorized")
+
+        let external = hiddenMirrorStatus(extraObservation: DisplayHideObservation(
+            identity: DisplayHideIdentity(uuid: "00000000-0000-0000-0000-000000000004", displayID: 404, name: "External", vendor: 1, model: 4, serial: 44),
+            state: .mirroredExternally,
+            source: nil,
+            detail: "Mirrored outside PanelCtl",
+            isJournalTarget: false
+        ))
+        XCTAssertNotNil(HiddenMirrorSourceOverlayAuthorization.refusal(
+            sourceUUID: "00000000-0000-0000-0000-000000000003",
+            sourceDisplayID: 303,
+            isMirrored: true,
+            status: external
+        ))
+
+        for state in [DisplayHandoffStatus.State.recovery, .busy, .unsupported, .none] {
+            let status = hiddenMirrorStatus(state: state, canShow: false)
+            XCTAssertNotNil(HiddenMirrorSourceOverlayAuthorization.refusal(
+                sourceUUID: "00000000-0000-0000-0000-000000000003",
+                sourceDisplayID: 303,
+                isMirrored: true,
+                status: status
+            ), "\(state) must refuse the source overlay")
+        }
+
+        XCTAssertNotNil(HiddenMirrorSourceOverlayAuthorization.refusal(
+            sourceUUID: "00000000-0000-0000-0000-000000000003",
+            sourceDisplayID: 303,
+            isMirrored: false,
+            status: hidden
+        ), "a stale topology without a mirror set is refused")
+        XCTAssertNotNil(HiddenMirrorSourceOverlayAuthorization.refusal(
+            sourceUUID: "00000000-0000-0000-0000-000000000003",
+            sourceDisplayID: 304,
+            isMirrored: true,
+            status: hidden
+        ), "a changed source display ID is refused")
+    }
+
+    func testCoveredHiddenMirrorOverlayRevalidatesAndRemovesCoverageWithoutScreenEvents() {
+        let hidden = hiddenMirrorStatus()
+        var coveragePresent = true
+        let stillAuthorized = HiddenMirrorSourceOverlayAuthorization.revalidateWhileCovered(
+            sourceUUID: "00000000-0000-0000-0000-000000000003",
+            sourceDisplayID: 303,
+            isMirrored: true,
+            status: hidden,
+            removeCoverage: { coveragePresent = false }
+        )
+        XCTAssertNil(stillAuthorized)
+        XCTAssertTrue(coveragePresent)
+
+        for state in [DisplayHandoffStatus.State.recovery, .busy] {
+            coveragePresent = true
+            let refusal = HiddenMirrorSourceOverlayAuthorization.revalidateWhileCovered(
+                sourceUUID: "00000000-0000-0000-0000-000000000003",
+                sourceDisplayID: 303,
+                isMirrored: true,
+                status: hiddenMirrorStatus(state: state, canShow: false),
+                removeCoverage: { coveragePresent = false }
+            )
+            XCTAssertNotNil(refusal, "\(state) revokes authorization on the next watcher tick")
+            XCTAssertFalse(coveragePresent, "coverage must be removed without relying on a screen-change event")
+        }
+    }
+
+    func testHiddenMirrorOverlayOptionsKeepFiniteAllScreenSafetyAndHardwareOff() throws {
+        let options = BlackoutOptions(
+            selectors: ["00000000-0000-0000-0000-000000000003"],
+            all: false,
+            idleAfter: 10,
+            timeout: 60,
+            sleepAfter: nil,
+            caffeinate: false,
+            watch: true,
+            keepBlackoutOnInput: true,
+            mode: .blocking,
+            overlayOpacityPercent: 100,
+            hardwareBrightnessPercent: nil,
+            hiddenMirrorSourceUUID: "00000000-0000-0000-0000-000000000003"
+        )
+        XCTAssertNoThrow(try BlackoutController.validateOptions(options))
+        XCTAssertThrowsError(try BlackoutController.validateSelection(
+            selectedCount: 1, drawableCount: 1, hasSafetyLimit: false
+        )) {
+            XCTAssertEqual($0 as? BlackoutError, .allScreensSafety)
+        }
+        XCTAssertNoThrow(try BlackoutController.validateSelection(
+            selectedCount: 1, drawableCount: 1, hasSafetyLimit: true
+        ))
+
+        let unsafe = BlackoutOptions(
+            selectors: options.selectors,
+            all: false,
+            idleAfter: 10,
+            timeout: nil,
+            sleepAfter: nil,
+            caffeinate: false,
+            watch: true,
+            mode: .blocking,
+            overlayOpacityPercent: 100,
+            hardwareBrightnessPercent: 10,
+            hiddenMirrorSourceUUID: options.hiddenMirrorSourceUUID
+        )
+        XCTAssertThrowsError(try BlackoutController.validateOptions(unsafe)) {
+            XCTAssertEqual($0 as? BlackoutError, .invalidHiddenMirrorSourceOverlay)
+        }
+    }
+
     func testLimitActionsAreInclusive() {
         let timeout = BlackoutPolicy(idleAfter: nil, timeout: 10, sleepAfter: nil)
         XCTAssertEqual(timeout.limitAction(elapsed: 9.999), .none)
@@ -277,6 +402,49 @@ final class BlackoutPolicyTests: XCTestCase {
         let sample = try controller.idleSample()
 
         XCTAssertEqual(sample.lastInputUptime, 90, accuracy: 0.000_001)
+    }
+
+    private func hiddenMirrorStatus(
+        state: DisplayHandoffStatus.State = .hidden,
+        canShow: Bool = true,
+        extraObservation: DisplayHideObservation? = nil
+    ) -> DisplayHandoffStatus {
+        let targetIdentity = DisplayHideIdentity(
+            uuid: "00000000-0000-0000-0000-000000000002",
+            displayID: 202, name: "Target", vendor: 1, model: 2, serial: 22
+        )
+        let sourceIdentity = DisplayHideIdentity(
+            uuid: "00000000-0000-0000-0000-000000000003",
+            displayID: 303, name: "Source", vendor: 1, model: 3, serial: 33
+        )
+        let currentState: DisplayHideObservedState = state == .hidden ? .hiddenByPanelCtl : .recoveryNeeded
+        var observations = [
+            DisplayHideObservation(
+                identity: targetIdentity,
+                state: currentState,
+                source: sourceIdentity,
+                detail: nil,
+                isJournalTarget: state != .none
+            ),
+            DisplayHideObservation(
+                identity: sourceIdentity,
+                state: .separate,
+                source: nil,
+                detail: nil,
+                isJournalTarget: false
+            )
+        ]
+        if let extraObservation { observations.append(extraObservation) }
+        return DisplayHandoffStatus(
+            state: state,
+            target: DisplayHandoffIdentity(targetIdentity),
+            source: DisplayHandoffIdentity(sourceIdentity),
+            journalPath: "/tmp/panelctl-overlay-fixture/current.json",
+            journalID: state == .none ? nil : "hidden-overlay-fixture",
+            canShow: canShow,
+            observations: observations,
+            mirrorTopologyVerified: state == .hidden
+        )
     }
 
     func testSyntheticActivityRestartsTheIdleInterval() {

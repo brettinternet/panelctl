@@ -186,10 +186,12 @@ struct SettingsView: View {
                     .foregroundStyle(.orange)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Display recovery needs attention")
+                    Text(model.handoffStatus?.state == .hidden
+                        ? "Desktop hidden · Show remains explicit"
+                        : "Display recovery needs attention")
                         .font(.headline)
                     Text(model.handoffStatus?.hasUnresolvedJournal == true || model.handoffInspectionFailure != nil
-                        ? "App-managed protection is paused while the shared display journal is unresolved."
+                        ? model.hiddenMirrorProtectionSummary
                         : model.protectionQuiescenceFailure.map { "Protection cleanup needs attention: \($0)" }
                             ?? "App-managed protection is paused during the confirmed display operation.")
                         .font(.caption)
@@ -586,7 +588,7 @@ struct SettingsView: View {
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Idle and empty-display rules control blackout/dimming, not Hide or monitor inputs. Launch at login never hides or shows a desktop.")
+            Text("Idle and empty-display rules control blackout/dimming, not Hide or monitor inputs. While hidden, only the verified selected mirror source may receive an overlay; its target also appears black on the Mac input. Brightness dimming and automatic follow-up Sleep are suspended. Launch at login never hides or shows a desktop.")
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

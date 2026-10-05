@@ -249,6 +249,97 @@ final class AppModel: ObservableObject {
             protectionQuiescencePending || protectionQuiescenceFailure != nil || hideOperation.isBusy
     }
 
+    var verifiedHiddenMirrorSource: DisplayRecord? {
+        guard handoffInspectionFailure == nil,
+              !protectionQuiescencePending,
+              protectionQuiescenceFailure == nil,
+              !hideOperation.isBusy,
+              !displayLifecycleTransitioning,
+              let status = handoffStatus,
+              status.state == .hidden,
+              status.canShow,
+              status.mirrorTopologyVerified,
+              status.journalID != nil,
+              let source = status.source else { return nil }
+        let matches = activeDisplays.filter {
+            $0.uuid?.caseInsensitiveCompare(source.uuid) == .orderedSame
+        }
+        guard matches.count == 1, let display = matches.first,
+              display.id == source.id,
+              display.vendor == source.vendor,
+              display.model == source.model,
+              display.serial == source.serial,
+              display.online, display.active, !display.asleep else { return nil }
+        return display
+    }
+
+    var selectedHiddenMirrorSource: DisplayRecord? {
+        guard let source = verifiedHiddenMirrorSource,
+              let uuid = source.uuid,
+              preferences.allDisplays || preferences.selectedDisplayUUIDs.contains(where: {
+                  $0.caseInsensitiveCompare(uuid) == .orderedSame
+              }) else { return nil }
+        return source
+    }
+
+    var hiddenMirrorOverlayPolicyEligible: Bool {
+        protectionPausedForDisplayRecovery && preferences.isEnabled &&
+            snoozedUntil == nil && selectedHiddenMirrorSource != nil
+    }
+
+    var effectiveBlackoutMode: BlackoutMode {
+        hiddenMirrorOverlayPolicyEligible ? .blocking : preferences.mode
+    }
+
+    var hiddenMirrorProtectionSummary: String {
+        guard protectionPausedForDisplayRecovery else { return statusSummary }
+        if let failure = protectionQuiescenceFailure {
+            return "Protection paused while desktop is hidden · cleanup needs attention: \(failure)"
+        }
+        if protectionQuiescencePending {
+            return "Protection paused while desktop is hidden · waiting for cleanup to finish"
+        }
+        if displayLifecycleTransitioning {
+            return "Protection paused while desktop is hidden · display transition in progress"
+        }
+        if hiddenMirrorOverlayPolicyEligible, let source = selectedHiddenMirrorSource {
+            let name = source.name ?? "Display \(source.id)"
+            switch runtimeState {
+            case .blackedOut:
+                return "Desktop hidden · overlay blackout on \(name); mirrored target is black on the Mac input"
+            case .starting:
+                return "Desktop hidden · overlay protection is starting on \(name); brightness dimming and automatic Sleep are suspended"
+            case .waiting:
+                return "Desktop hidden · overlay protection watching \(name); brightness dimming and automatic Sleep are suspended"
+            case .waitingForInput:
+                return "Desktop hidden · overlay protection waiting for fresh activity on \(name)"
+            case .waitingForPlayback:
+                return "Desktop hidden · overlay protection paused while media or camera activity is detected on \(name)"
+            case .sleeping:
+                return "Desktop hidden · overlay protection paused while displays sleep"
+            case .stopping:
+                return "Desktop hidden · overlay protection is stopping on \(name)"
+            case .waitingForDisplays(let message):
+                return "Desktop hidden · overlay protection waiting for displays: \(message)"
+            case .failed(let message):
+                return "Desktop hidden · overlay protection failed on \(name): \(message)"
+            case .disabled:
+                return "Desktop hidden · overlay protection is disabled on \(name)"
+            case .snoozed:
+                return "Protection snoozed while desktop is hidden"
+            }
+        }
+        if let source = verifiedHiddenMirrorSource {
+            let name = source.name ?? "Display \(source.id)"
+            if preferences.isEnabled && snoozedUntil == nil {
+                return "Protection paused while hidden · \(name) is not selected for OLED protection"
+            }
+            if snoozedUntil != nil { return "Protection snoozed while desktop is hidden" }
+            return "Protection disabled while desktop is hidden"
+        }
+        return "Protection paused because the hidden desktop/recovery state is not eligible for an overlay"
+    }
+
     var hideConfigurationFrozen: Bool {
         handoffStatus?.hasUnresolvedJournal == true || handoffInspectionFailure != nil ||
             hideOperation.isBusy || displayLifecycleTransitioning
@@ -731,6 +822,14 @@ final class AppModel: ObservableObject {
     func setDisplayLifecycleTransitioning(_ transitioning: Bool) {
         guard displayLifecycleTransitioning != transitioning else { return }
         displayLifecycleTransitioning = transitioning
+        if handoffStatus?.hasUnresolvedJournal == true {
+            if transitioning {
+                protectionRearmRequired = true
+                service.disable()
+            } else {
+                reconcileProtection(restartWatcher: true)
+            }
+        }
         onStatusChange?()
     }
 
@@ -742,6 +841,13 @@ final class AppModel: ObservableObject {
         handoffStatus = inspectHandoff()
         handoffInspectionFailure = handoffStatus?.inspectionFailure
         let isUnresolved = handoffStatus?.hasUnresolvedJournal == true || handoffInspectionFailure != nil
+        let enteredHidden = handoffStatus?.state == .hidden &&
+            (previous?.state != .hidden || previous?.journalID != handoffStatus?.journalID ||
+             previous?.source?.uuid != handoffStatus?.source?.uuid)
+        if enteredHidden {
+            manualActivityDate = now()
+            protectionRearmRequired = true
+        }
         if isUnresolved && !wasUnresolved && !hideOperation.isBusy {
             quiesceForExternalRecovery()
         } else if !isUnresolved && wasUnresolved,
@@ -751,6 +857,9 @@ final class AppModel: ObservableObject {
         }
         if previous != handoffStatus || previousFailure != handoffInspectionFailure {
             onStatusChange?()
+            if !protectionQuiescencePending && isUnresolved {
+                reconcileProtection()
+            }
         }
     }
 
@@ -774,7 +883,7 @@ final class AppModel: ObservableObject {
 
     var statusSummary: String {
         if protectionPausedForDisplayRecovery {
-            return "Protection paused for hidden desktop/recovery"
+            return hiddenMirrorProtectionSummary
         }
         let label = runtimeState == .blackedOut && preferences.mode == .working
             ? "Dimming active"
@@ -811,16 +920,29 @@ final class AppModel: ObservableObject {
     }
 
     func blackoutNow() throws {
-        guard !protectionPausedForDisplayRecovery else {
-            throw DisplayHideError.recoveryBlocksAction(
-                "Blackout Now is paused while a desktop is hidden or display recovery is unresolved. Show or resolve display recovery first."
-            )
+        let hiddenOverlaySource: DisplayRecord?
+        if protectionPausedForDisplayRecovery {
+            hiddenOverlaySource = selectedHiddenMirrorSource
+            guard hiddenOverlaySource != nil else {
+                throw DisplayHideError.recoveryBlocksAction(
+                    "Blackout Now is unavailable during display recovery unless the shared journal verifies Hidden by PanelCtl and its exact mirror source is selected. Show or review recovery; no display change was requested."
+                )
+            }
+        } else {
+            hiddenOverlaySource = nil
         }
         let wasSnoozed = cancelSnooze()
         displays = displayProvider()
         let arguments: [String]
         do {
-            arguments = try preferences.commandArguments(for: displays)
+            if let hiddenOverlaySource {
+                guard let overlayArguments = try preferences.hiddenMirrorOverlayArguments(for: hiddenOverlaySource) else {
+                    throw DisplayHideError.recoveryBlocksAction("Select the journaled mirror source for OLED protection before requesting Blackout Now.")
+                }
+                arguments = overlayArguments
+            } else {
+                arguments = try preferences.commandArguments(for: displays)
+            }
         } catch {
             if wasSnoozed {
                 reconcileProtection()
@@ -836,7 +958,7 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func restoreBlackout() throws -> Bool {
-        guard !protectionPausedForDisplayRecovery else { return false }
+        if protectionPausedForDisplayRecovery && !hiddenMirrorOverlayPolicyEligible { return false }
         guard snoozedUntil == nil else { return false }
         guard preferences.isEnabled, service.canReceiveControl else {
             return false
@@ -958,6 +1080,7 @@ final class AppModel: ObservableObject {
         case .waiting:
             return preferences.mode == .working ? "dim" : "blackout"
         case .blackedOut:
+            if hiddenMirrorOverlayPolicyEligible { return "restore overlay" }
             switch preferences.followUpAction {
             case .restore: return "restore"
             case .sleepDisplays: return "sleep"
@@ -980,13 +1103,25 @@ final class AppModel: ObservableObject {
             }
             remaining = preferences.idleSeconds - idle
         case .blackedOut:
-            guard preferences.followUpAction != .untilActivity,
-                  let stateBeganAt else { return nil }
+            guard let stateBeganAt else { return nil }
             let elapsed = now().timeIntervalSince(stateBeganAt)
             let inputElapsed = idleSecondsProvider() ?? elapsed
-            remaining = preferences.followUpSeconds - (
-                resetsBlackoutLimitOnInput ? min(elapsed, inputElapsed) : elapsed
-            )
+            if hiddenMirrorOverlayPolicyEligible {
+                let timeout = min(
+                    preferences.followUpAction == .untilActivity
+                        ? 24 * 60 * 60
+                        : preferences.followUpSeconds,
+                    24 * 60 * 60
+                )
+                remaining = timeout - (
+                    hiddenMirrorOverlayResetsLimitOnInput ? min(elapsed, inputElapsed) : elapsed
+                )
+            } else {
+                guard preferences.followUpAction != .untilActivity else { return nil }
+                remaining = preferences.followUpSeconds - (
+                    resetsBlackoutLimitOnInput ? min(elapsed, inputElapsed) : elapsed
+                )
+            }
         default:
             return nil
         }
@@ -994,6 +1129,10 @@ final class AppModel: ObservableObject {
     }
 
     private var stateBeganAt: Date?
+
+    private var hiddenMirrorOverlayResetsLimitOnInput: Bool {
+        (preferences.mode == .working || preferences.keepBlackoutOnInput) && activeDisplays.count > 1
+    }
 
     private var resetsBlackoutLimitOnInput: Bool {
         guard (preferences.mode == .working || preferences.keepBlackoutOnInput),
@@ -1014,7 +1153,36 @@ final class AppModel: ObservableObject {
 
     private func reconcileProtection(restartWatcher: Bool = false) {
         if protectionPausedForDisplayRecovery {
-            service.disable()
+            guard !protectionQuiescencePending,
+                  protectionQuiescenceFailure == nil,
+                  !hideOperation.isBusy,
+                  !displayLifecycleTransitioning,
+                  preferences.isEnabled else {
+                service.disable()
+                return
+            }
+            if let until = snoozedUntil {
+                runtimeState = .snoozed(until)
+                service.disable()
+                return
+            }
+            guard let source = selectedHiddenMirrorSource else {
+                service.disable()
+                return
+            }
+            do {
+                guard let arguments = try preferences.hiddenMirrorOverlayArguments(for: source) else {
+                    service.disable()
+                    return
+                }
+                service.run(
+                    arguments: arguments,
+                    restartForDisplayChange: restartWatcher || protectionRearmRequired
+                )
+                if service.hasManagedProcess { protectionRearmRequired = false }
+            } catch {
+                service.fail(error.localizedDescription)
+            }
             return
         }
         if let until = snoozedUntil {
@@ -1051,7 +1219,7 @@ final class AppModel: ObservableObject {
     private func presentedRuntimeState(
         for serviceState: ProtectionRuntimeState
     ) -> ProtectionRuntimeState {
-        if protectionPausedForDisplayRecovery { return .disabled }
+        if protectionPausedForDisplayRecovery && !hiddenMirrorOverlayPolicyEligible { return .disabled }
         if let until = snoozedUntil {
             return .snoozed(until)
         }
@@ -1064,6 +1232,13 @@ final class AppModel: ObservableObject {
         }
 
         do {
+            if hiddenMirrorOverlayPolicyEligible {
+                guard let source = selectedHiddenMirrorSource,
+                      try preferences.hiddenMirrorOverlayArguments(for: source) != nil else {
+                    return .disabled
+                }
+                return serviceState
+            }
             _ = try preferences.commandArguments(for: displays)
             return serviceState
         } catch ProtectionConfigurationError.noDisplays {
@@ -1103,6 +1278,8 @@ final class AppModel: ObservableObject {
                    self.hideOperation == .idle,
                    self.protectionQuiescenceFailure == nil {
                     self.rearmProtectionAfterDisplayRecovery()
+                } else {
+                    self.reconcileProtection()
                 }
                 self.onStatusChange?()
             }
@@ -1274,7 +1451,7 @@ final class AppModel: ObservableObject {
             reconcileProtection()
             notice = AppNotice(
                 title: "Desktop hidden",
-                message: "Desktop: \(request.target.name ?? request.target.uuid) is hidden by mirroring \(request.source.name ?? request.source.uuid). The Mac signal remains on; modes/HDR may change. While recovery is unresolved, PanelCtl protection stays paused.\n\(inputSummary(inputOutcome, purpose: "Other computer", warning: request.awayInputWarning))",
+                message: "Desktop: \(request.target.name ?? request.target.uuid) is hidden by mirroring \(request.source.name ?? request.source.uuid). The Mac signal remains on; modes/HDR may change. While the journal and topology verify Hidden by PanelCtl, app protection may cover only the selected source with an overlay; the mirrored target also appears black on the Mac input. Brightness dimming and automatic follow-up Sleep stay suspended; activity/Restore affect only the overlay and Show remains explicit. Unknown, stale, busy, unselected, or recovery-needed state keeps protection paused.\n\(inputSummary(inputOutcome, purpose: "Other computer", warning: request.awayInputWarning))",
                 opensLoginItemSettings: false
             )
         } catch {
@@ -1307,6 +1484,15 @@ final class AppModel: ObservableObject {
             protectionQuiescenceFailure = nil
         } else {
             protectionQuiescenceFailure = cleanupFailure ?? "Protection cleanup could not be verified."
+            hideOperation = .idle
+            reconcileProtection()
+            onShowCompletion?(false)
+            presentDisplayError(
+                "Show not started",
+                message: "PanelCtl could not verify that the source overlay was quiesced: \(protectionQuiescenceFailure ?? "protection cleanup failed"). No topology or monitor-input action was attempted. Retry protection cleanup, then Refresh and confirm Show again."
+            )
+            onStatusChange?()
+            return
         }
         guard !displayLifecycleTransitioning else {
             hideOperation = .idle

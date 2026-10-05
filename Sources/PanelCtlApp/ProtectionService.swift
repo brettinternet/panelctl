@@ -405,7 +405,8 @@ final class ProtectionService {
                 continue
             }
             let runtimeState = status.state
-            if runtimeState == .stopped {
+            if runtimeState == .stopped,
+               !Self.isHardwareFreeHiddenMirrorOverlay(arguments: currentArguments) {
                 cleanupResultObserved = status.cleanupSucceeded
                 if status.cleanupSucceeded == true {
                     unresolvedCleanupFailure = nil
@@ -546,12 +547,15 @@ final class ProtectionService {
         currentArguments = nil
         statusBuffer.removeAll(keepingCapacity: true)
         blackedOutDisplayIDs = []
-        if cleanupResultObserved == true {
-            unresolvedCleanupFailure = nil
-        } else if cleanupResultObserved == false {
-            unresolvedCleanupFailure = "Hardware brightness cleanup failed; retry protection cleanup before hiding a display."
-        } else {
-            unresolvedCleanupFailure = "Protection cleanup could not be verified; retry protection cleanup before hiding a display."
+        let windowOnlyOverlay = Self.isHardwareFreeHiddenMirrorOverlay(arguments: terminatedArguments)
+        if !windowOnlyOverlay {
+            if cleanupResultObserved == true {
+                unresolvedCleanupFailure = nil
+            } else if cleanupResultObserved == false {
+                unresolvedCleanupFailure = "Hardware brightness cleanup failed; retry protection cleanup before hiding a display."
+            } else {
+                unresolvedCleanupFailure = "Protection cleanup could not be verified; retry protection cleanup before hiding a display."
+            }
         }
 
         if let pendingArguments {
@@ -564,7 +568,8 @@ final class ProtectionService {
             pendingControlSourceProcess = nil
             inFlightControlIntent = nil
             stateAfterTermination = nil
-            let processFailure: String? = finished.terminationReason != .exit || finished.terminationStatus != 0
+            let processFailure: String? = !windowOnlyOverlay &&
+                (finished.terminationReason != .exit || finished.terminationStatus != 0)
                 ? String(data: errorBuffer, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .nonEmpty ?? "The protection helper did not exit cleanly (status \(finished.terminationStatus))."
@@ -614,6 +619,28 @@ final class ProtectionService {
         } else {
             state = .failed("The watcher exited unexpectedly (status \(finished.terminationStatus)).")
         }
+    }
+
+    private static func isHardwareFreeHiddenMirrorOverlay(arguments: [String]?) -> Bool {
+        guard let arguments,
+              let command = try? CLIParser.parse(arguments),
+              case .blackout(let options) = command,
+              let sourceUUID = options.hiddenMirrorSourceUUID,
+              options.selectors.count == 1,
+              options.selectors[0].caseInsensitiveCompare(sourceUUID) == .orderedSame,
+              options.watch,
+              options.idleAfter?.isFinite == true,
+              options.timeout?.isFinite == true,
+              options.sleepAfter == nil,
+              !options.caffeinate,
+              !options.keepDisplaysAwake,
+              !options.blackoutEmptyDisplays,
+              options.mode == .blocking,
+              options.overlayOpacityPercent == 100,
+              options.hardwareBrightnessPercent == nil else {
+            return false
+        }
+        return true
     }
 
     private static func helperExecutableURL() throws -> URL {

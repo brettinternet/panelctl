@@ -173,7 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let model else { return }
         if Self.shouldEngageBlackoutFocus(
             runtimeState: model.runtimeState,
-            mode: model.preferences.mode,
+            mode: model.effectiveBlackoutMode,
             hasBlackedOutDisplays: !model.blackedOutDisplayIDs.isEmpty
         ) {
             if blackoutFocusTimer == nil {
@@ -319,7 +319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(restoreMenuItem())
         default:
             menu.addItem(item(
-                Self.blackoutActionTitle(for: model.preferences.mode),
+                Self.blackoutActionTitle(for: model.effectiveBlackoutMode),
                 action: #selector(blackoutNow)
             ))
             if !model.blackedOutDisplayIDs.isEmpty {
@@ -357,7 +357,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     show.toolTip = model.handoffStatus?.target?.identityDetail
                     show.isEnabled = !model.displayLifecycleTransitioning
                     menu.addItem(show)
-                    disabledMenuItem("Desktop hidden by PanelCtl · input unknown", in: menu)
+                    disabledMenuItem("Desktop hidden by PanelCtl · input unknown; target black on Mac input", in: menu)
                 } else {
                     menu.addItem(item("Review display recovery…", action: #selector(reviewDisplayRecovery)))
                 }

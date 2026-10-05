@@ -161,6 +161,47 @@ struct ProtectionPreferences: Codable, Equatable {
         try values.encode(deferBlackoutWhileCameraInUse, forKey: .deferBlackoutWhileCameraInUse)
     }
 
+    func hiddenMirrorOverlayArguments(for source: DisplayRecord) throws -> [String]? {
+        guard let uuid = source.uuid,
+              UUID(uuidString: uuid) != nil,
+              source.online, source.active, !source.asleep,
+              source.bounds.width > 0, source.bounds.height > 0 else {
+            throw ProtectionConfigurationError.selectedDisplayUnavailable(source.name ?? String(source.id))
+        }
+        let selected = allDisplays || selectedDisplayUUIDs.contains {
+            $0.caseInsensitiveCompare(uuid) == .orderedSame
+        }
+        guard selected else { return nil }
+        guard Self.isValidDuration(idleSeconds) else {
+            throw ProtectionConfigurationError.invalidIdleDuration
+        }
+        if followUpAction != .untilActivity, !Self.isValidDuration(followUpSeconds) {
+            throw ProtectionConfigurationError.invalidFollowUpDuration
+        }
+
+        let timeout = min(
+            followUpAction == .untilActivity ? Self.hiddenMirrorOverlayMaximumDuration : followUpSeconds,
+            Self.hiddenMirrorOverlayMaximumDuration
+        )
+        var arguments = [
+            "blackout", "--display", uuid,
+            "--panelctl-hidden-mirror-source", uuid,
+            "--mode", "blocking", "--overlay-opacity", "100",
+            "--idle-after", Self.durationArgument(idleSeconds), "--watch",
+            "--timeout", Self.durationArgument(timeout)
+        ]
+        if mode == .working || keepBlackoutOnInput {
+            arguments.append("--keep-blackout-on-input")
+        }
+        if !deferBlackoutDuringPlayback {
+            arguments.append("--ignore-playback")
+        }
+        if deferBlackoutWhileCameraInUse {
+            arguments.append("--defer-camera")
+        }
+        return arguments
+    }
+
     func commandArguments(for displays: [DisplayRecord]) throws -> [String] {
         guard Self.isValidDuration(idleSeconds) else {
             throw ProtectionConfigurationError.invalidIdleDuration
@@ -274,6 +315,8 @@ struct ProtectionPreferences: Codable, Equatable {
         }
         return arguments
     }
+
+    private static let hiddenMirrorOverlayMaximumDuration: TimeInterval = 24 * 60 * 60
 
     private static func durationArgument(_ seconds: TimeInterval) -> String {
         if seconds.rounded() == seconds {
