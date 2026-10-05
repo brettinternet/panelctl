@@ -169,6 +169,7 @@ never do. For a persistent CLI watcher, edit the
 | Command | What it does | Docs |
 | --- | --- | --- |
 | `ddc-input` | Read or switch a monitor's input over DDC | [DDC input](ddc-input.md) |
+| `ddc-power` | Explicit experimental monitor On/Off; manual recovery may be required | [Power semantics, consent and qualification](ddc-power.md) |
 | `mirror` / `unmirror` | Hide a desktop by public mirroring | [Mirroring](display-mirroring.md) |
 | `away` / `back` | Mirror plus optional input switch, as one command | [Handoff](display-handoff.md) |
 | `recovery …` | Journal, verify and restore display topology | [Recovery](display-recovery.md) |
@@ -176,6 +177,18 @@ never do. For a persistent CLI watcher, edit the
 
 Each live topology or DDC write needs a deliberate decision on untested
 hardware; consent flags acknowledge risk, they are not qualification.
+
+`ddc-power --display UUID --set off --accept-power-risk` acknowledges that
+software wake may fail, the physical button may not suffice, and unplugging
+monitor power may be required. `--set on` is best effort only; omit `--set` for
+one power-state read. Only named `on` (0x01) and `off` (0x04) are supported.
+At most one write and one readback; no retry or automatic restoration. Neither
+command delivery nor matching readback proves visible panel state. No monitor
+is power-qualified. Each live power read/write needs fresh scoped approval, a
+present user, accessible physical power and another usable display. See the
+[supervised protocol](ddc-power.md#supervised-qualification-protocol).
+App power support is [planned within existing Hide/Show](display-hide-ux.md#planned-ddc-power-hide-style),
+not a shipped app action or unattended automation feature.
 
 ## Limits
 
@@ -186,4 +199,7 @@ hardware; consent flags acknowledge risk, they are not qualification.
   calls private topology APIs. See [feasibility](feasibility.md).
 - DDC depends on monitor and connection. `ddc-luminance --set` persists and is
   not restored. `--dim-to` journals captured values, but restoration can be
-  delayed by a crash or disconnect. DDC power is not implemented.
+  delayed by a crash or disconnect. Explicit experimental DDC power is CLI-only,
+  may leave the desktop present and has no automatic restoration or guaranteed
+  physical recovery. It is never part of blackout, wake, input switching or
+  app Hide/Show.

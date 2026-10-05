@@ -92,6 +92,7 @@ public enum PanelCommand: Equatable {
     case blackout(BlackoutOptions)
     case ddcLuminance(selector: String, setValue: UInt16?, json: Bool)
     case ddcInput(selector: String, setValue: UInt8?, json: Bool)
+    case ddcPower(selector: String, value: DDCPowerValue?, acceptedRisk: Bool, json: Bool)
     case sleepDisplays(keepSystemAwake: Bool, timeout: TimeInterval?)
     case wakeDisplays
     case app(
@@ -123,6 +124,8 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case persistentDimming
     case invalidLuminance
     case invalidInputValue(String)
+    case invalidPowerValue(String)
+    case powerConsentRequired
     case missingAppCommand
     case missingRecoveryAction
     case invalidRecoveryTimeout
@@ -175,6 +178,8 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
         case .invalidLuminance: return "luminance must be an integer from 0 through 65535"
         case .invalidInputValue(let value):
             return "invalid input value: \(value) (expected dp1, dp2, hdmi1, hdmi2, or 1 through 255; hex with 0x)"
+        case .invalidPowerValue(let value): return "invalid power value: \(value) (expected on or off; no raw values)"
+        case .powerConsentRequired: return String(describing: DDCPowerError.consentRequired)
         case .missingAppCommand: return "missing app command (use 'panelctl help app' for usage)"
         case .missingRecoveryAction: return "missing recovery action (use 'panelctl help recovery' for usage)"
         case .invalidRecoveryTimeout: return "recovery watchdog timeout must be from 1 through 60 seconds"
@@ -190,7 +195,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
 
 public enum CLIParser {
     private static let maximumSnoozeDuration: TimeInterval = 30 * 24 * 60 * 60
-    private static let commands = ["list", "probe", "recovery", "mirror", "unmirror", "away", "back", "blackout", "ddc-luminance", "ddc-input", "sleep-displays", "wake-displays", "app"]
+    private static let commands = ["list", "probe", "recovery", "mirror", "unmirror", "away", "back", "blackout", "ddc-luminance", "ddc-input", "ddc-power", "sleep-displays", "wake-displays", "app"]
 
     public static func parse(_ args: [String]) throws -> PanelCommand {
         guard let command = args.first else { throw CLIParseError.missingCommand }
@@ -237,6 +242,8 @@ public enum CLIParser {
             return try parseDDCLuminance(rest)
         case "ddc-input":
             return try parseDDCInput(rest)
+        case "ddc-power":
+            return try parseDDCPower(rest)
         case "sleep-displays":
             return try parseSleepDisplays(rest)
         case "wake-displays":
@@ -692,6 +699,41 @@ public enum CLIParser {
         }
         guard let selector else { throw CLIParseError.missingValue("--display") }
         return .ddcInput(selector: selector, setValue: setValue, json: json)
+    }
+
+    private static func parseDDCPower(_ args: [String]) throws -> PanelCommand {
+        var selector: String?
+        var value: DDCPowerValue?
+        var acceptedRisk = false
+        var json = false
+        var i = 0
+        while i < args.count {
+            switch args[i] {
+            case "--display":
+                guard selector == nil else { throw CLIParseError.duplicateOption("--display") }
+                i += 1
+                guard i < args.count, !args[i].hasPrefix("--"), !args[i].isEmpty else { throw CLIParseError.missingValue("--display") }
+                selector = args[i]
+            case "--set":
+                guard value == nil else { throw CLIParseError.duplicateOption("--set") }
+                i += 1
+                guard i < args.count, !args[i].hasPrefix("--") else { throw CLIParseError.missingValue("--set") }
+                guard let parsed = DDCPowerValue(rawValue: args[i].lowercased()) else { throw CLIParseError.invalidPowerValue(args[i]) }
+                value = parsed
+            case "--accept-power-risk":
+                guard !acceptedRisk else { throw CLIParseError.duplicateOption("--accept-power-risk") }
+                acceptedRisk = true
+            case "--json":
+                guard !json else { throw CLIParseError.duplicateOption("--json") }
+                json = true
+            default:
+                throw CLIParseError.unknownOption(args[i])
+            }
+            i += 1
+        }
+        guard let selector else { throw CLIParseError.missingValue("--display") }
+        guard value != .off || acceptedRisk else { throw CLIParseError.powerConsentRequired }
+        return .ddcPower(selector: selector, value: value, acceptedRisk: acceptedRisk, json: json)
     }
 
     private static func parseSleepDisplays(_ args: [String]) throws -> PanelCommand {

@@ -173,10 +173,12 @@ enum DDC {
         #endif
     }
 
-    private static func resolveDisplay(selector: String) throws -> DisplayTarget {
-        let records = DisplayInventory.records()
+    static func resolveDisplay(selector: String, records: [DisplayRecord] = DisplayInventory.records()) throws -> DisplayTarget {
         guard let record = DisplaySelector.resolve(selector, in: records),
-              record.active, !record.builtin, let uuid = record.uuid else {
+              record.active, record.online, !record.builtin, let uuid = record.uuid,
+              UUID(uuidString: uuid) != nil,
+              records.filter({ $0.id == record.id }).count == 1,
+              records.filter({ $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame }).count == 1 else {
             throw DDCError.displayNotFound(selector)
         }
         return DisplayTarget(id: record.id, uuid: uuid)

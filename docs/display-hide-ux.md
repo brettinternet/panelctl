@@ -78,6 +78,66 @@ operation/cleanup is pending.
   and [handoff](display-handoff.md#observed-round-trip-2026-10-04) are tested.
   Consent and passing offline tests do not qualify other hardware.
 
+### Planned DDC power Hide style
+
+**Not shipped in the app.** The explicit [DDC power CLI](ddc-power.md) is
+implemented but has no hardware-qualified monitor. The design below extends
+this contract's current display tiles and per-display setup; it is not a
+standalone future Power UI.
+
+- Add **Monitor power · Experimental** as an opt-in choice within the selected
+  display's existing Hide-style setup, alongside Black out and Remove from
+  desktop. Evolve the current removal switch only as needed to express these
+  mutually exclusive styles; preserve Black out defaults and existing removal
+  configurations. No top-level Power buttons, parallel menu or settings page.
+- Availability requires a uniquely identified external monitor and reachable
+  DDC power support. Built-in, ambiguous, absent, unsupported and unreadable
+  targets show an inline reason and disabled power Hide, not an automatic
+  fallback. A readable value is not hardware qualification; show that status.
+  Choosing or inspecting setup must not silently issue a power command.
+- General **Experimental features** must be on to configure or initiate this
+  style. Require separate, display-specific power consent in this setup:
+  software wake may fail; the physical button may not suffice; unplugging
+  monitor power may be required; harmlessness and physical recovery are not
+  guaranteed. Mirror/input consent and the existing General prompt are not
+  power consent. Show the selected monitor, exact Off semantics and recovery
+  warning beside the opt-in; no consent inferred from existing preferences.
+- The same tile and menu **Hide** action requests one Off; **Show** requests
+  one best-effort On when that exact target and transport are available.
+  Power-only Hide never mirrors, switches inputs or privately disconnects.
+  The Mac desktop may remain and windows may stay on the dark screen.
+- Use existing inline results and recovery details to distinguish already
+  reported, matching readback, unverified transport loss and failure. Do not
+  label the physical panel Off/On as proven from DDC alone. A tile may report
+  “Power-off requested · check monitor”; uncertain output needs recovery, not
+  silent success. No automatic retry or alternate value.
+- Before attempting Off, retain the exact target and power-operation evidence
+  for the existing recovery presentation, including when it disappears from
+  enumeration. This is planned app persistence, **not** a CLI journal today.
+  Relaunch only reports outstanding evidence; it never powers on or off.
+  Keep the selected tile's Show/manual recovery details, shared recovery
+  banner and **Review Display Recovery…** route. Do not repurpose topology
+  restore as power recovery or bind a missing target to another monitor.
+- If DDC cannot reach the target, Show explains manual recovery using physical
+  controls and possibly power removal; it does not claim restoration. Keep
+  recovery visible until usable output is confirmed, independently of
+  readback. Changing Hide style or turning off Experimental features must
+  neither discard outstanding evidence nor change the pending Show operation
+  into a blackout/topology action. Best-effort Show and manual recovery remain
+  accessible with the gate off; configuration changes cannot strand recovery.
+- Count outstanding power-hidden or uncertain targets as unavailable for the
+  last-visible rule. Require another usable screen before Off. Quit/relaunch,
+  wake and hotplug never repeat power commands; quit warns about unresolved
+  power recovery in the existing recovery flow.
+- Preserve current automation behavior and default styles. Power is not an
+  idle/empty-display treatment or a fallback from input switching. App scripts
+  and unattended power automation remain deferred: selecting this style must
+  not silently make existing scripted Hide/Show emit power writes.
+
+This planned style needs its own implementation and supervised qualification;
+the [power protocol](ddc-power.md#supervised-qualification-protocol) separates
+software results, visible behavior, DDC wake and physical recovery.
+
 ### Private disconnect
 
 The separate **Private disconnect · Experimental** section in Displays does

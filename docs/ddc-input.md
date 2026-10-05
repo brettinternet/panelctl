@@ -49,7 +49,9 @@ read current ─┬─ unreadable / ambiguous ─→ refuse, no write
                    └─ reads other value ─→ error with a switch-back command
 ```
 
-No automatic switching, retries, input cycling, power (`0xD6`) or link control.
+Input selection never performs automatic switching, retries, input cycling,
+power (`0xD6`) or link control. [Experimental power](ddc-power.md) is a separate
+explicit CLI command, not a fallback or follow-up from input selection.
 The read-first and ambiguity refusals apply to `ddc-luminance` too. Use the
 monitor's input button as the fallback.
 

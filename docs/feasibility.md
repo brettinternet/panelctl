@@ -10,10 +10,12 @@ others stay awake.
 | DDC luminance | Yes | Hardware brightness lowered | Hardware-dependent |
 | Public mirroring | No (merged) | Separate desktop removed; signal stays | Tested on one setup |
 | Private topology disable | No | Signal may stop | Unqualified; recovery varies |
-| DDC power/DPMS | Usually | Firmware decides | Unsafe without an allowlist |
+| DDC power/DPMS | Usually | Firmware decides | Explicit opt-in CLI; no qualified hardware or guaranteed recovery |
 
 PanelCtl ships the overlay, all-display sleep and DDC luminance, plus
-experimental [mirroring](display-mirroring.md) and [DDC input](ddc-input.md).
+experimental [mirroring](display-mirroring.md), [DDC input](ddc-input.md) and
+CLI-only [DDC power](ddc-power.md). Power has only offline validation, not
+hardware qualification; app integration is [planned within Hide/Show](display-hide-ux.md#planned-ddc-power-hide-style).
 Private disable is [designed but unqualified](display-disable.md).
 
 For long unattended periods, sleep every display (`pmset displaysleepnow`) so
@@ -53,9 +55,17 @@ with no external-monitor contract.
 every Mac, port, adapter or monitor. VCP codes: luminance `0x10`, input `0x60`,
 power `0xD6`. A successful read doesn't make a write safe (see Microsoft's
 [`SetVCPFeature`](https://learn.microsoft.com/en-us/windows/win32/api/lowlevelmonitorconfigurationapi/nf-lowlevelmonitorconfigurationapi-setvcpfeature)
-warning). DDC power is excluded: [ddcctl #89](https://github.com/kfix/ddcctl/issues/89)
-reports broken physical controls and monitors needing power removal, and a
-powered-down monitor may not accept the wake command.
+warning). [DDC power](ddc-power.md) is now available only as an explicit,
+risk-acknowledged CLI operation, separate from private disconnect and input
+selection. [ddcctl #89](https://github.com/kfix/ddcctl/issues/89) reports physical
+control faults and an LG needing power removal. The original report mixed
+power and another command; causality and permanent damage are unproven.
+Software wake and physical recovery are not guaranteed. VESA MCCS 2.2a Table
+8-9 p70 defines the exposed On (0x01) and DPM/DPMS Off (0x04); no raw-value
+cycling or power-button Off (0x05) is exposed. No power requests come from
+startup, wake, probe, blackout, app Hide/Show or unattended automation. See the
+[separately approved qualification protocol](ddc-power.md#supervised-qualification-protocol);
+existing input/luminance results below do not qualify power.
 
 ## Candidate private methods
 
@@ -64,7 +74,7 @@ powered-down monitor may not accept the wake command.
 | `CGSConfigureDisplayEnabled` | Remove from topology; monitor may enter standby | Vanishes from enumeration; driver may reject enable | [Implemented, unqualified](display-disable.md) |
 | `IOAVServiceStopLink` / `StartLink` | Names suggest link control | Unverified signatures and WindowServer interaction | Don't invoke on names alone |
 | `DisplayServicesSetPowerMode` | Private power control | No external restore contract | Lower priority |
-| DDC `0xD6` | Firmware power | May stop accepting wake | Excluded |
+| DDC `0xD6` | Firmware power | May stop accepting wake; button may fail too | [Explicit opt-in CLI only; unqualified](ddc-power.md) |
 
 External evidence: [Lunar](https://lunar.fyi/faq) ships a hidden disconnect on
 Apple Silicon (implementation not verifiable).

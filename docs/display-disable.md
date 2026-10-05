@@ -309,7 +309,8 @@ successful cycle.
 
 ## Out of scope
 
-DDC power, link stop/start, permanent scope, blind ID sweeps, automatic
+DDC power (a [separate opt-in CLI scope](ddc-power.md), never a private-disconnect
+fallback), link stop/start, permanent scope, blind ID sweeps, automatic
 re-disconnect, gamma blackouts, and automatic logout/reboot. Full offline
 identity (fresh sink binding, identical monitors) is later hardening; the
 [feasibility research](feasibility.md#offline-identity-research) records why it

@@ -19,6 +19,7 @@ public enum CLIHelp {
               blackout         Black out selected displays
               ddc-luminance    Read or set luminance
               ddc-input        Read or switch the monitor input
+              ddc-power        Experimental monitor power (manual recovery may be required)
               sleep-displays   Sleep every display
               wake-displays    Wake every display
               app              Control the PanelCtl app
@@ -155,6 +156,24 @@ public enum CLIHelp {
             """
         case "ddc-luminance":
             return "Usage: panelctl ddc-luminance --display <selector> [--set <0..65535>] [--json]\nRead luminance, or set and verify it."
+        case "ddc-power":
+            return """
+            Usage: panelctl ddc-power --display <selector> [--set <on|off>] [--accept-power-risk] [--json]
+            Experimental DDC VCP 0xD6. No --set: read reported power state.
+            on = MCCS DPM/DPMS On (0x01); off = DPM/DPMS Off (0x04).
+            No standby, suspend, power-button-off (0x05), raw values or value cycling.
+            --set off requires --accept-power-risk, acknowledging:
+            \(DDCPower.risk)
+            Requires an unambiguous active external display and readable DDC power state.
+            At most one Set VCP, then one readback after 250 ms; no retry or restoration.
+            Outcomes: reported, alreadyReported (no write), matchingReadback, unverified
+            (readback transport lost). Delivery/readback is not proof of visible state.
+            \(DDCPower.manualRecovery)
+            No topology removal, input switching, automatic wake or app integration.
+            No hardware is power-qualified. Use only while present, with accessible
+            monitor power and another usable display. Exit 0 reports an outcome, not
+            visible success; refusal/error exits 1, invalid arguments exit 2.
+            """
         case "ddc-input":
             return """
             Usage: panelctl ddc-input --display <selector> [--set <dp1|dp2|hdmi1|hdmi2|1..255>] [--json]

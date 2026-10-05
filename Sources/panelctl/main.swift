@@ -78,6 +78,17 @@ struct PanelCtlMain {
                         print(String(format: "id=%u uuid=%@ input=0x%02X", reading.displayID, reading.uuid, reading.current))
                     }
                 }
+            case .ddcPower(let selector, let value, let acceptedRisk, let json):
+                let result = try DDCPower.run(selector: selector, value: value, acceptedRisk: acceptedRisk)
+                if json {
+                    try printJSON(result)
+                } else {
+                    var line = String(format: "id=%u uuid=%@ original=0x%02X", result.displayID, result.uuid, result.original)
+                    if let requested = result.requested { line += " requested=\(requested.rawValue)" }
+                    if let observed = result.observed { line += String(format: " observed=0x%02X", observed) }
+                    line += " outcome=\(result.outcome.rawValue) detail=\(quoted(result.detail))"
+                    print(line)
+                }
             case .sleepDisplays(let keepSystemAwake, let timeout):
                 let controller = DisplaySleepController()
                 try controller.start(keepSystemAwake: keepSystemAwake, timeout: timeout)
