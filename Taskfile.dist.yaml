@@ -6,6 +6,9 @@ vars:
   ARM64_BUILD_DIR: .build/task-release-arm64
   X86_64_BUILD_DIR: .build/task-release-x86_64
   APP_PATH: .build/PanelCtl.app
+  # Named for the link so the app records the SDK it uses; see scripts/package-release.sh.
+  SDK_PATH:
+    sh: xcrun --show-sdk-path
 
 tasks:
   default:
@@ -17,10 +20,10 @@ tasks:
   build:release:
     desc: Build the app (Release)
     cmds:
-      - swift build --disable-sandbox --configuration release --product PanelCtlApp --triple arm64-apple-macosx13.0 --scratch-path "{{.ARM64_BUILD_DIR}}"
-      - swift build --disable-sandbox --configuration release --product panelctl --triple arm64-apple-macosx13.0 --scratch-path "{{.ARM64_BUILD_DIR}}"
-      - swift build --disable-sandbox --configuration release --product PanelCtlApp --triple x86_64-apple-macosx13.0 --scratch-path "{{.X86_64_BUILD_DIR}}"
-      - swift build --disable-sandbox --configuration release --product panelctl --triple x86_64-apple-macosx13.0 --scratch-path "{{.X86_64_BUILD_DIR}}"
+      - swift build --disable-sandbox --configuration release --product PanelCtlApp --triple arm64-apple-macosx13.0 --scratch-path "{{.ARM64_BUILD_DIR}}" -Xswiftc -Xclang-linker -Xswiftc -isysroot -Xswiftc -Xclang-linker -Xswiftc "{{.SDK_PATH}}"
+      - swift build --disable-sandbox --configuration release --product panelctl --triple arm64-apple-macosx13.0 --scratch-path "{{.ARM64_BUILD_DIR}}" -Xswiftc -Xclang-linker -Xswiftc -isysroot -Xswiftc -Xclang-linker -Xswiftc "{{.SDK_PATH}}"
+      - swift build --disable-sandbox --configuration release --product PanelCtlApp --triple x86_64-apple-macosx13.0 --scratch-path "{{.X86_64_BUILD_DIR}}" -Xswiftc -Xclang-linker -Xswiftc -isysroot -Xswiftc -Xclang-linker -Xswiftc "{{.SDK_PATH}}"
+      - swift build --disable-sandbox --configuration release --product panelctl --triple x86_64-apple-macosx13.0 --scratch-path "{{.X86_64_BUILD_DIR}}" -Xswiftc -Xclang-linker -Xswiftc -isysroot -Xswiftc -Xclang-linker -Xswiftc "{{.SDK_PATH}}"
       - /bin/test ! -e "{{.APP_PATH}}" || /usr/bin/trash "{{.APP_PATH}}"
       - |
         version=$(/usr/bin/sed -n 's/.*public static let version = "panelctl \([^"]*\)".*/\1/p' Sources/PanelCtlCore/CLIHelp.swift)

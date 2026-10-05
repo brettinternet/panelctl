@@ -36,6 +36,17 @@ for binary in "$arm64_ui" "$x86_64_ui" "$arm64_cli" "$x86_64_cli"; do
 	fi
 done
 
+# macOS runs a binary with the behaviour of the SDK it records, so an older
+# record (see package-release.sh) changes how the app looks and works.
+sdk_version=$(xcrun --show-sdk-version)
+for binary in "$arm64_ui" "$x86_64_ui" "$arm64_cli" "$x86_64_cli"; do
+	linked_sdk=$(vtool -show-build "$binary" | awk '$1 == "sdk" { print $2; exit }')
+	if [[ "$linked_sdk" != "$sdk_version" ]]; then
+		echo "package-app.sh: $binary records SDK ${linked_sdk:-none}, not the $sdk_version SDK it was built with" >&2
+		exit 1
+	fi
+done
+
 if [[ -e "$output_app" ]]; then
 	echo "package-app.sh: refusing to overwrite existing output: $output_app" >&2
 	exit 1

@@ -54,6 +54,12 @@ scripts/package-release.sh v1.2.3
 Writes universal app and CLI archives plus SHA-256 files to `dist/`. Artifacts
 are ad-hoc signed, not Developer ID signed or notarized.
 
+Release builds pass the SDK to the link (`-Xclang-linker -isysroot`). Without
+it, SwiftPM can record macOS 13.0 as the SDK, and macOS then runs the app with
+macOS 13 behaviour, such as Settings rows that cut off their text.
+`scripts/package-app.sh` refuses binaries that don't record the SDK they were
+built with.
+
 Cross-building Intel: SwiftPM writes to `out/Products`, so use
 `swift build … --show-bin-path` rather than guessing a triple directory, and
 check with `xcrun lipo -archs`.

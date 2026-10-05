@@ -48,12 +48,18 @@ done
 arm64_scratch="$repo_root/.build/package-release-arm64"
 x86_64_scratch="$repo_root/.build/package-release-x86_64"
 
+# SwiftPM can link through clang without -isysroot. clang then records the
+# deployment target as the SDK version, and macOS gives the app macOS 13
+# behaviour, such as Settings rows that cut off their text.
+sdk_path=$(xcrun --show-sdk-path)
+
 build_product() {
 	local product=$1
 	local triple=$2
 	local scratch=$3
 	swift build --disable-sandbox --configuration release --product "$product" \
-		--triple "$triple" --scratch-path "$scratch"
+		--triple "$triple" --scratch-path "$scratch" \
+		-Xswiftc -Xclang-linker -Xswiftc -isysroot -Xswiftc -Xclang-linker -Xswiftc "$sdk_path"
 }
 
 build_product PanelCtlApp arm64-apple-macosx13.0 "$arm64_scratch"
