@@ -1,9 +1,11 @@
 ---
 id: TASK-31
 title: Remove the main display from the desktop
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - pi
 created_date: '2026-10-05 19:42'
+updated_date: '2026-10-05 22:27'
 labels:
   - app
   - cli
@@ -35,10 +37,26 @@ The user wants to remove whichever display is main from the desktop, for example
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 With Experimental features on, the current main display can use Remove from desktop from tiles, the menu and scripts when it's an otherwise eligible external display. Built-in displays and displays without a stable ID stay ineligible.
-- [ ] #2 A main display's setup never defaults to mirroring onto itself; Hide shows a reason until the user chooses a source. The setup explains that macOS decides where the menu bar, Dock, windows and Spaces go. Existing configurations and other displays' default source don't change.
-- [ ] #3 Hide succeeds when the target is verified mirrored onto its source and every other captured property still matches, whichever display macOS then reports as main. That layout counts as hidden by PanelCtl, not recovery-needed, in the app, scripts, CLI mirror and away, and recovery status.
-- [ ] #4 Show from the app, scripts, CLI back or unmirror, and recovery restore makes the original display main again with the captured arrangement and modes, and verifies it. On mismatch it keeps recovery and gives the manual steps (turn off mirroring, drag the menu bar back in System Settings → Displays) without reporting success.
-- [ ] #5 Fake-topology tests cover main moving to the source, staying on the removed display or moving elsewhere; main changing again while hidden (for example across sleep and wake); Show restoring main; verification mismatch; and refusals. Full offline suite and warnings-as-errors builds pass with no real topology writes.
-- [ ] #6 Docs describe the main-display behavior as observed and what's qualified. A supervised trial, each write separately approved by the user, removes the main AW3423DW onto a display the user chooses and shows it, recording where the menu bar, Dock and (0, 0) origin went and the verified restoration. Untested combinations stay unsupported.
+- [x] #1 With Experimental features on, the current main display can use Remove from desktop from tiles, the menu and scripts when it's an otherwise eligible external display. Built-in displays and displays without a stable ID stay ineligible.
+- [x] #2 A main display's setup never defaults to mirroring onto itself; Hide shows a reason until the user chooses a source. The setup explains that macOS decides where the menu bar, Dock, windows and Spaces go. Existing configurations and other displays' default source don't change.
+- [x] #3 Hide succeeds when the target is verified mirrored onto its source and every other captured property still matches, whichever display macOS then reports as main. That layout counts as hidden by PanelCtl, not recovery-needed, in the app, scripts, CLI mirror and away, and recovery status.
+- [x] #4 Show from the app, scripts, CLI back or unmirror, and recovery restore makes the original display main again with the captured arrangement and modes, and verifies it. On mismatch it keeps recovery and gives the manual steps (turn off mirroring, drag the menu bar back in System Settings → Displays) without reporting success.
+- [x] #5 Fake-topology tests cover main moving to the source, staying on the removed display or moving elsewhere; main changing again while hidden (for example across sleep and wake); Show restoring main; verification mismatch; and refusals. Full offline suite and warnings-as-errors builds pass with no real topology writes.
+- [x] #6 Docs describe the main-display behavior as observed and what's qualified. A supervised trial, each write separately approved by the user, removes the main AW3423DW onto a display the user chooses and shows it, recording where the menu bar, Dock and (0, 0) origin went and the verified restoration. Untested combinations stay unsupported.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Allow eligible main mirror targets without changing private-disable eligibility; share strict hidden-topology verification that tolerates main reassignment only for a captured main target. Preserve exact restore verification and manual recovery guidance. 2. Remove app main-target refusal, require an explicit distinct source for new main-target setup, explain macOS placement behavior, and cover app/menu/script paths with fakes. 3. Add fake topology and restoration regressions, update qualification docs, run full offline suite and warnings-as-errors builds, then one independent safety review. 4. Request separately scoped human approval for the required live trial; never perform hardware writes from test success. Commit, integrate into main, record evidence/blocker, and clean up the owned worktree.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Offline implementation committed fa26adf in session-owned .worktrees/main-display-removal. Full serialized warnings-as-errors suite passed: 245 core + 148 app tests (4 opt-in skips); both panelctl and PanelCtlApp warnings-as-errors builds passed; native main-target setup fixture inspected. Independent reviewer found no validated defects. LSP diagnostics unknown (bounded report timeout), compiler/tests provide validation. User elected supervised trial, chose AW3425DW as source, and confirmed presence, usable survivor, paused competing topology automation and manual System Settings fallback. Fresh read-only inventory: Mac17,14 / 26A434; target main AW3423DW UUID 1FC57E99-DE7C-4DAF-B896-3B512CEE064F (ID 5), source AW3425DW UUID A8D3635B-35EC-4171-BBE2-95FB8CF76111 (ID 2); all four displays awake. Default journal currently restored. No hardware write performed or authorized yet. Next: explicit approval for one public mirror write without DDC, inspect, then separate approval for restore. Preserve unrelated primary experimental-disconnect edits.
+
+User approved one mirror attempt AW3423DW -> AW3425DW. Command refused before capture/transaction: recovery is busy or lock permissions are unsafe. lsof identified unrelated primary-checkout RecoveryLeaseTests helper PID 27759 holding operation.lock under core suite PID 86135. Read-only inventory unchanged; no display write occurred. User chose to wait for those tests to finish, then receive a fresh write-approval request. Watch c8b416c5 resumes on both processes exiting; no lock bypass or process termination. Trial/merge/cleanup remain pending.
+
+Supervised cycle passed on fa26adf: fresh separately approved mirror AW3423DW -> AW3425DW returned mirrored, journal F768EE67-6C81-46C9-93B7-3336E743D67D. Source became main at (0,0); target inactive/non-main; S2721DGF y moved -4 -> 0. User confirmed menu bar/Dock moved to AW3425DW and usable. Separately approved unmirror restored all exact captured modes/origins and AW3423DW main; separate recovery verify passed (restored), user confirmed menu bar/Dock back and usable. No DDC/private writes. Docs/help and updated qualification assertions committed 55da411; final focused 39 tests and both warnings-as-errors builds passed. Only this CLI cycle is qualified; other combinations/live app paths/input switching remain unqualified. Implementation/review and all acceptance criteria complete; delivery pending merge because unrelated ongoing main edits overlap AppModel/DisplaySettingsView/SettingsWindowTests. User explicitly chose to wait for their commit, not stash. Next: refresh clean main, merge branch preserving concurrent committed changes, run integration checks, finalize task and clean owned worktree. Ownership receipt .git/worktrees/main-display-removal/agent-creation.json belongs to session 01a10e04-e742-7226-b088-b7e4930485d2; created at e7a9d5d863af4294ef60d09c5a42297efb1e648e. Prior recovery-enable worktree is unrelated and must remain untouched.
+<!-- SECTION:NOTES:END -->
