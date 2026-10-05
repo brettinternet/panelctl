@@ -45,8 +45,8 @@ public enum DDCError: Error, Equatable, CustomStringConvertible, LocalizedError 
     case valueOutOfRange(value: UInt16, maximum: UInt16)
     case verificationFailed(original: UInt16, expected: UInt16, actual: UInt16, uuid: String)
     case writeStateUnknown(original: UInt16, uuid: String, detail: String)
-    case inputNotVerified(original: UInt8, requested: UInt8, observed: UInt8, uuid: String)
-    case inputWriteStateUnknown(original: UInt8, uuid: String, detail: String)
+    case inputNotVerified(original: UInt8?, requested: UInt8, observed: UInt8, uuid: String)
+    case inputWriteStateUnknown(original: UInt8?, uuid: String, detail: String)
 
     public var description: String {
         switch self {
@@ -67,8 +67,14 @@ public enum DDCError: Error, Equatable, CustomStringConvertible, LocalizedError 
         case .writeStateUnknown(let original, let uuid, let detail):
             return "DDC luminance state is unknown after the write attempt (\(detail)); restore \(uuid) with: panelctl ddc-luminance --display \(uuid) --set \(original)"
         case .inputNotVerified(let original, let requested, let observed, let uuid):
+            guard let original else {
+                return String(format: "monitor reports input 0x%02X after selecting 0x%02X; previous input unknown. Use the monitor's input button", observed, requested)
+            }
             return String(format: "monitor reports input 0x%02X after selecting 0x%02X; switch back with: panelctl ddc-input --display %@ --set 0x%02X, or use the monitor's input button", observed, requested, uuid, original)
         case .inputWriteStateUnknown(let original, let uuid, let detail):
+            guard let original else {
+                return "monitor input is unknown after the write attempt (\(detail)); previous input unknown. Use the monitor's input button"
+            }
             return String(format: "monitor input is unknown after the write attempt (%@); switch back with: panelctl ddc-input --display %@ --set 0x%02X, or use the monitor's input button", detail, uuid, original)
         }
     }
@@ -281,7 +287,8 @@ public struct DDCInputSelection: Equatable, Codable {
 
     public let displayID: UInt32
     public let uuid: String
-    public let original: UInt8
+    /// Nil when an explicit return proceeded without a readable previous input.
+    public let original: UInt8?
     public let requested: UInt8
     public let observed: UInt8?
     public let outcome: Outcome
@@ -319,19 +326,21 @@ public enum DDCInput {
     }
 
     /// Use the caller's pre-read or read first (refusing if unreadable), write at most once, then poll
-    /// read-only for up to `polls` × `interval` microseconds.
+    /// read-only for up to `polls` × `interval` microseconds. Only journal-validated
+    /// Show/back may set `readOriginal` false with an unknown original input.
     static func select(
         _ value: UInt8,
         channel: DDCChannel,
         displayID: UInt32,
         uuid: String,
         original preRead: UInt8? = nil,
+        readOriginal: Bool = true,
         polls: Int = 12,
         interval: useconds_t = 250_000,
         pause: (useconds_t) -> Void = { usleep($0) }
     ) throws -> DDCInputSelection {
         precondition(polls > 0)
-        let original = try preRead ?? current(channel)
+        let original = try preRead ?? (readOriginal ? current(channel) : nil)
         func result(_ observed: UInt8?, _ outcome: DDCInputSelection.Outcome, _ detail: String? = nil) -> DDCInputSelection {
             DDCInputSelection(displayID: displayID, uuid: uuid, original: original, requested: value, observed: observed, outcome: outcome, detail: detail)
         }

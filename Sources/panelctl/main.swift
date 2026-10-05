@@ -64,7 +64,8 @@ struct PanelCtlMain {
                     if json {
                         try printJSON(result)
                     } else {
-                        var line = String(format: "id=%u uuid=%@ original=0x%02X requested=0x%02X", result.displayID, result.uuid, result.original, result.requested)
+                        let original = result.original.map { String(format: "0x%02X", $0) } ?? "unknown"
+                        var line = String(format: "id=%u uuid=%@ original=%@ requested=0x%02X", result.displayID, result.uuid, original, result.requested)
                         if let observed = result.observed { line += String(format: " observed=0x%02X", observed) }
                         line += " outcome=\(result.outcome.rawValue)"
                         if let detail = result.detail { line += " detail=\(quoted(detail))" }

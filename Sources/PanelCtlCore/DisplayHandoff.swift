@@ -280,8 +280,8 @@ public enum DisplayHandoff {
 struct HandoffController {
     var mirror = MirrorController()
     var open: (String) throws -> (display: DDC.DisplayTarget, channel: DDCChannel) = { try DDC.open(selector: $0) }
-    var select: (UInt8, DDCChannel, UInt32, String, UInt8) throws -> DDCInputSelection = {
-        try DDCInput.select($0, channel: $1, displayID: $2, uuid: $3, original: $4)
+    var select: (UInt8, DDCChannel, UInt32, String, UInt8?) throws -> DDCInputSelection = {
+        try DDCInput.select($0, channel: $1, displayID: $2, uuid: $3, original: $4, readOriginal: false)
     }
     var report: (String) -> Void = { print($0) }
 
@@ -327,7 +327,7 @@ struct HandoffController {
             ) { target in
                 afterRestoreRan = true
                 guard input != nil else { return }
-                inputOutcome = selectInput(input, target: target)
+                inputOutcome = selectInput(input, target: target, returning: true)
             }
             if let input, !afterRestoreRan {
                 inputOutcome = DisplayInputOutcome(
@@ -362,11 +362,11 @@ struct HandoffController {
         // No DDC open/read/write can prevent the topology restoration.
         _ = try mirror.unmirror(store: store, selector: selector) { target in
             report("Back: captured topology restored and verified. Journal: \(store.url.path)")
-            try switchInput(input, target: target) { report("Input recovery: \($0)") }
+            try switchInput(input, target: target, returning: true) { report("Input recovery: \($0)") }
         }
     }
 
-    func selectInput(_ input: UInt8?, target: RecoveryDisplay,
+    func selectInput(_ input: UInt8?, target: RecoveryDisplay, returning: Bool = false,
                      willSelect: (String) -> Void = { _ in }) -> DisplayInputOutcome {
         guard let input else { return .notRequested }
         guard input > 0 else {
@@ -411,19 +411,28 @@ struct HandoffController {
                                        detail: "Could not revalidate the captured DDC target identity: \(error.localizedDescription)")
         }
 
-        let original: UInt8
+        let original: UInt8?
         do {
-            original = try DDCInput.current(session.channel)
+            let reading = try DDCInput.current(session.channel)
+            guard reading != 0 else {
+                return DisplayInputOutcome(state: .skipped, requestedInput: input,
+                                           detail: "DDC returned unknown input 0. Use the monitor's input button.")
+            }
+            original = reading
         } catch {
-            return DisplayInputOutcome(state: .skipped, requestedInput: input,
-                                       detail: "DDC input could not be read: \(error.localizedDescription). Use the monitor's input button.")
+            guard returning else {
+                return DisplayInputOutcome(state: .skipped, requestedInput: input,
+                                           detail: "DDC input could not be read: \(error.localizedDescription). Use the monitor's input button.")
+            }
+            // A monitor on an inactive input may stop answering Get VCP while
+            // still accepting Set VCP. Return to the known Mac input once;
+            // never invent a previous input or a switch-back command.
+            original = nil
         }
-        guard original != 0 else {
-            return DisplayInputOutcome(state: .skipped, requestedInput: input,
-                                       detail: "DDC returned unknown input 0. Use the monitor's input button.")
+        let command = original.map {
+            "panelctl ddc-input --display \(shellQuote(target.uuid)) --set \(String(format: "0x%02X", $0))"
         }
-        let command = "panelctl ddc-input --display \(shellQuote(target.uuid)) --set \(String(format: "0x%02X", original))"
-        willSelect(command)
+        if let command { willSelect(command) }
         do {
             let result = try select(input, session.channel, target.id, target.uuid, original)
             switch result.outcome {
@@ -460,9 +469,9 @@ struct HandoffController {
         )
     }
 
-    private func switchInput(_ input: UInt8?, target: RecoveryDisplay,
+    private func switchInput(_ input: UInt8?, target: RecoveryDisplay, returning: Bool = false,
                              recovery: (String) -> Void) throws {
-        let outcome = selectInput(input, target: target, willSelect: { command in
+        let outcome = selectInput(input, target: target, returning: returning, willSelect: { command in
             recovery(command + ", or use the monitor's input button")
             report("To reverse input selection: \(command), or use the monitor's input button.")
         })

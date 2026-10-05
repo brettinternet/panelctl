@@ -33,7 +33,8 @@ back: bind to journal target → restore + verify topology → [select input]
 | Situation | Result |
 | --- | --- |
 | Capture/journal fails | No input or topology write |
-| DDC channel can't open, or input unreadable/zero | Input skipped with a monitor-button hint; hide continues |
+| DDC channel can't open, or reports input zero | Input skipped with a monitor-button hint; hide continues |
+| Current input unreadable | Hide/away skips input selection; Show/back still attempts the configured return input once |
 | DDC target identity changed | Hard refusal, not a skip |
 | Input write `unverified` | Away continues; check visually |
 | Input write error or readback mismatch | Away stops before mirroring |
@@ -41,7 +42,9 @@ back: bind to journal target → restore + verify topology → [select input]
 | Topology restore fails on back | No input write; journal kept; restore command printed |
 | Input fails on back | Desktop already restored; input recovery printed |
 
-Before switching, output prints the command that restores the previous input.
+When the previous input is readable, output prints its switch-back command.
+Show/back can proceed without that read after verifying topology restoration and
+DDC target identity; it does not invent a previous input or recovery command.
 That command is not persisted; keep the output, or use the monitor's input
 button after an abrupt exit. One input write, bounded readback, no retries,
 no automatic rollback, no watchdog.
@@ -49,6 +52,21 @@ no automatic rollback, no watchdog.
 Operation and journal locks cover the whole sequence. Recovery has the same
 limits as mirroring: HDR, color profiles, rotation, windows and Spaces aren't
 restored.
+
+## Returning from an inactive input
+
+An empty HDMI input can leave the monitor black or in standby. Some monitors
+stop answering DDC reads on the Mac connection in that state; this does not
+establish whether they will accept an input-selection write. Show/back attempts
+the known return input once even if its preliminary read fails. Failed readback
+is reported as unverified, not success. If the monitor no longer accepts DDC,
+use its input button to select the Mac input; PanelCtl does not wake it with
+power commands or retry writes.
+
+The reported S2721DGF empty-HDMI case (2026-10-05) failed with
+`invalid payload length` before any input-selection write. The return fallback
+is covered by fake-channel tests only, not a fresh hardware qualification.
+Standalone `ddc-input --set` and Hide/away retain their read-first requirement.
 
 ## Observed round trip, 2026-10-04
 

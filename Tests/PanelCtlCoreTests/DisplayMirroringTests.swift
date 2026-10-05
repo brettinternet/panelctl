@@ -473,7 +473,7 @@ final class DisplayMirroringTests: XCTestCase {
                     return DDCInputSelection(displayID: id, uuid: uuid, original: originalInput,
                                              requested: value, observed: nil, outcome: .unverified, detail: "readback lost")
                 }
-                return try DDCInput.select(value, channel: channel, displayID: id, uuid: uuid, original: originalInput, polls: 1, pause: { _ in })
+                return try DDCInput.select(value, channel: channel, displayID: id, uuid: uuid, original: originalInput, readOriginal: false, polls: 1, pause: { _ in })
             }
             if scenario == "journal-failure" {
                 try FileManager.default.createDirectory(at: store.url, withIntermediateDirectories: false,
@@ -671,6 +671,44 @@ final class DisplayMirroringTests: XCTestCase {
         XCTAssertEqual(events.values.filter { $0 == "open" }.count, opensBeforeDuplicateShow,
                        "resolved-journal app Show must not reopen DDC after an earlier input failure")
         XCTAssertEqual(try scenarioStore.load().state, .restored)
+    }
+
+    func testShowAttemptsKnownReturnInputWhenPreReadIsMalformed() throws {
+        let original = try snapshot()
+        let mirrored = try snapshot { $0[1]["mirrorUUID"] = self.sourceUUID; $0[1]["active"] = false }
+        var current = original
+        var events: [String] = []
+        var sut = HandoffController(mirror: controller(original), report: { _ in })
+        sut.mirror.records = { self.records(current) }
+        sut.mirror.engine.capture = { current }
+        sut.mirror.engine.apply = { current = $0; events.append("restore") }
+        sut.mirror.transaction = MirrorTransaction(
+            begin: { OpaquePointer(bitPattern: 1)! }, stage: { _, _, _ in },
+            complete: { _, _ in current = mirrored }, cancel: { _ in })
+        try sut.away(selector: "8", source: "7", input: nil, store: store)
+        let id = try store.load().id
+        sut.open = { uuid in
+            (DDC.DisplayTarget(id: 8, uuid: uuid), DDCChannel(
+                getVCP: { _ in
+                    events.append("read")
+                    if !events.contains("write") { throw DDCError.invalidReply("invalid payload length") }
+                    return (15, 0)
+                },
+                setVCP: { code, value in
+                    XCTAssertEqual(code, 0x60)
+                    XCTAssertEqual(value, 15)
+                    events.append("write")
+                }))
+        }
+        let result = try sut.guardedBack(expectedJournalID: id, input: 15, store: store)
+        XCTAssertEqual(result.state, .verified)
+        XCTAssertEqual(result.observedInput, 15)
+        XCTAssertNil(result.recoveryCommand, "the previous input is unknown, not guessed")
+        XCTAssertEqual(events, ["restore", "read", "write", "read"])
+        XCTAssertEqual(try store.load().state, .restored)
+        let duplicate = try sut.guardedBack(expectedJournalID: id, input: 15, store: store)
+        XCTAssertEqual(duplicate.state, .notAttempted)
+        XCTAssertEqual(events.filter { $0 == "write" }.count, 1)
     }
 
     func testBackRefusesDifferentTargetBeforeRestoreOrDDC() throws {
