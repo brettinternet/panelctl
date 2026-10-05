@@ -67,6 +67,49 @@ panelctl recovery panic
   `CGRestorePermanentDisplayConfiguration()` as a separate, unverified manual
   step.
 
+## App controls
+
+**Settings → Displays → Private disconnect · Experimental** is a separate manual
+operation, not a Hide style or a fallback from Hide. Turn off automation, show
+blacked-out/hidden displays, and finish any unresolved recovery first. Turn on
+Experimental features in General, then **Check selected display and review
+consent**. That check is read-only: it never starts a display transaction.
+
+The app permits only the recorded physical DELL S2721DGF unit (UUID
+`09084682-3c42-4455-aab8-126a7431125b`, vendor 4268, model 16857, serial
+1094800204), on `Mac17,14` / `26A434` at the recorded USB-C@3/DisplayPort
+connector. Other targets, hosts, builds and connections report unavailable;
+normal private identity, native-driver, physical-survivor and lifecycle checks
+still apply. No historical numeric display ID is used for selection.
+
+Each operation requires fresh confirmation of firmware **M3T101** (not readable
+by the provider), physical presence, the named usable surviving screen, no
+concurrent display/input changes, and the manual-DP-selection/stop fallback.
+Consent is one-use, expires after 30 seconds, and covers only a fixed **15-second
+lease**. A refusal consumes it too. The helper owns the same session-scoped
+transaction, journal and bounded recovery engine as the CLI. No automatic DDC
+input return, lease extension or repeated disconnect is offered.
+
+The app inspects the shared `Recovery/current.json` on launch and during the
+lease, without invoking recovery writes. Status and **Reconnect recorded
+display** remain available after restart, when the target is absent, and with
+Experimental features off. Reconnect closes an owned lease to request early
+helper recovery, or explicitly runs guarded journal recovery after relaunch.
+An active helper may report busy; wait and inspect again. Expiry is not proof
+of recovery. `needsAttention`, helper failure and unreadable journals remain
+visible; no evidence is deleted and no ID is guessed. A helper preparation
+failure without staged target evidence may require `recovery status` followed
+by read-only `recovery verify`; it never authorizes a private enable.
+
+Private disconnect is excluded from scripting, idle/empty-display automation,
+startup, wake and automatic re-disconnect. Global reset, logout, reboot and
+physical-replug trials are separate manual decisions, not app fallback actions.
+
+App integration is validated with fake writers and synthetic native UI only.
+The historical CLI cycle below is **not** a live qualification of the new app
+path, repeated reliability, electrical signal loss, or automatic input return.
+Any new live cycle needs fresh scoped approval.
+
 ## Preflight
 
 Every check reruns on fresh observations before intent is saved, before begin,

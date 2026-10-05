@@ -37,6 +37,7 @@ struct DisplaySettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                ExperimentalDisconnectControls(model: model, targetUUID: selected?.uuid)
             }
             .formStyle(.grouped)
             // Another display is another page: replace its controls instead of

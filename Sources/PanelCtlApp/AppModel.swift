@@ -94,6 +94,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var launchAtLoginEnabled: Bool
     @Published var notice: AppNotice?
     @Published var experimentalConsentPending = false
+    @Published var disconnectConsentPending = false
+    @Published private(set) var disconnectRequest: DisplayDisconnectRequest?
+    @Published private(set) var disconnectStatus: DisplayDisconnectStatus?
+    @Published private(set) var disconnectFailure: String?
+    private var disconnectLease: DisplayDisconnectLease?
+    private let disconnectController: DisplayDisconnectController
+    private let disconnectExecutable: @MainActor () throws -> URL
     @Published private(set) var countdownDate = Date()
 
     var onStatusChange: (() -> Void)?
@@ -145,9 +152,13 @@ final class AppModel: ObservableObject {
             try DisplayHideController().checkInputAvailability(target: $0)
         },
         coverDisplays: (@MainActor (Set<UInt32>) -> Set<UInt32>)? = nil,
-        quiesceProtection: ProtectionQuiesce? = nil
+        quiesceProtection: ProtectionQuiesce? = nil,
+        disconnectController: DisplayDisconnectController = DisplayDisconnectController(),
+        disconnectExecutable: @escaping @MainActor () throws -> URL = ProtectionService.helperExecutableURL
     ) {
         self.defaults = defaults
+        self.disconnectController = disconnectController
+        self.disconnectExecutable = disconnectExecutable
         self.displayProvider = displayProvider
         self.now = now
         self.idleSecondsProvider = idleSecondsProvider
@@ -210,6 +221,7 @@ final class AppModel: ObservableObject {
         savePreferences()
         defaults.set(showMenuBarIcon, forKey: Self.showMenuBarIconKey)
         refreshHandoffStatus()
+        refreshDisconnectStatus()
         reconcileProtection()
         startCountdownTimer()
     }
@@ -363,6 +375,7 @@ final class AppModel: ObservableObject {
     }
 
     var hideConfigurationFrozen: Bool {
+        disconnectLease != nil || disconnectStatus?.resolved == false ||
         handoffStatus?.hasUnresolvedJournal == true || handoffInspectionFailure != nil ||
             hideOperation.isBusy || displayLifecycleTransitioning
     }
@@ -1536,6 +1549,10 @@ final class AppModel: ObservableObject {
     }
 
     private func reconcileProtection(restartWatcher: Bool = false) {
+        if disconnectLease != nil || disconnectStatus?.resolved == false {
+            service.disable()
+            return
+        }
         if protectionPausedForDisplayRecovery {
             guard !protectionQuiescencePending,
                   protectionQuiescenceFailure == nil,
@@ -1975,9 +1992,85 @@ final class AppModel: ObservableObject {
 
     func refreshCountdown() {
         countdownDate = now()
+        refreshDisconnectStatus()
         if defaults.object(forKey: Self.snoozedUntilKey) != nil,
            snoozedUntil == nil {
             resumeProtection()
+        }
+    }
+
+    // Private disconnect is a separate, manual operation, never a Hide style or
+    // app-control command. Startup and timer refreshes inspect only; no recovery
+    // writer runs without a user action (the independent lease helper is separate).
+    var disconnectBlocker: String? {
+        if !experimentalFeaturesEnabled { return "Turn on Experimental features in General first. That consent does not authorize disconnect." }
+        if disconnectLease != nil || disconnectStatus?.resolved == false { return "Finish the retained disconnect lease or recovery first." }
+        if preferences.isEnabled || service.hasManagedProcess || protectionQuiescencePending {
+            return "Turn off automation and wait for its helper to stop before disconnecting."
+        }
+        if !blackoutHiddenDisplays.isEmpty || hideConfigurationFrozen || protectionQuiescenceFailure != nil {
+            return "Show hidden displays and finish other display operations or recovery first."
+        }
+        return nil
+    }
+
+    func prepareDisconnect(_ uuid: String) {
+        disconnectRequest = nil
+        disconnectFailure = nil
+        do {
+            if let blocker = disconnectBlocker { throw RecoveryError.unsafe(blocker) }
+            _ = try disconnectExecutable()
+            disconnectRequest = try disconnectController.prepare(targetUUID: uuid)
+            disconnectConsentPending = true
+        } catch { disconnectFailure = error.localizedDescription }
+    }
+
+    func cancelDisconnect() {
+        disconnectConsentPending = false
+        disconnectRequest = nil
+    }
+
+    func confirmDisconnect() {
+        disconnectConsentPending = false
+        guard let request = disconnectRequest else { return }
+        disconnectRequest = nil // Never persist or reuse consent, even on refusal.
+        do {
+            if let blocker = disconnectBlocker { throw RecoveryError.unsafe(blocker) }
+            disconnectLease = try disconnectController.disconnect(request, consent: true, executable: disconnectExecutable())
+        } catch { disconnectFailure = error.localizedDescription }
+        refreshDisconnectStatus()
+        refreshHandoffStatus()
+        reconcileProtection()
+    }
+
+    func reconnectDisconnect(expectedJournalID: String? = nil) {
+        disconnectFailure = nil
+        do {
+            if let expectedJournalID, expectedJournalID != disconnectStatus?.journalID {
+                throw RecoveryError.unsafe("journal changed during confirmation; inspect and confirm again")
+            }
+            if let lease = disconnectLease {
+                // EOF requests guarded recovery; journal polling establishes its
+                // result. Do not race a second engine against the live helper.
+                disconnectLease = nil
+                try lease.reconnect()
+            } else if let status = disconnectStatus, status.canReconnect {
+                try disconnectController.reconnect(expectedJournalID: status.journalID)
+            }
+        } catch { disconnectFailure = error.localizedDescription }
+        refreshDisconnectStatus()
+        refreshHandoffStatus()
+    }
+
+    func refreshDisconnectStatus() {
+        let previous = disconnectStatus
+        do {
+            disconnectStatus = try disconnectController.inspect()
+            if disconnectStatus?.resolved == true { disconnectLease = nil }
+        } catch { disconnectFailure = error.localizedDescription }
+        if previous != disconnectStatus {
+            refreshHandoffStatus()
+            reconcileProtection()
         }
     }
 

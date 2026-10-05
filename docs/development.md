@@ -20,6 +20,7 @@ displays. Opt-in environment variables:
 | `PANELCTL_TEST_LIVE_BLACKOUT=1` | Run the connected-screen geometry test, which briefly covers external screens with black windows |
 | `PANELCTL_ICC_EVIDENCE_DIR=<dir>` | Replay retained ICC profile artifacts (read-only); unset is a reported skip |
 | `PANELCTL_SETTINGS_FIXTURE_OUTPUT=<dir>` | Write Settings PNGs (below) |
+| `PANELCTL_DISCONNECT_FIXTURE_OUTPUT=<dir>` | Write synthetic disconnect cards and fake-backed production-control PNGs with `--filter 'DisplayDisconnectIntegrationTests\|ExperimentalDisconnectTests'` |
 | `PANELCTL_SETTINGS_FIXTURE_WIDTH=<pt>` | Settings fixture window width; the window resizes from 440 to 680 |
 | `PANELCTL_SETTINGS_FIXTURE_HEIGHT=<pt>` | Settings fixture window height |
 
