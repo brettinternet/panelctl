@@ -1637,6 +1637,73 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertNil(model.displayRecoveryProblem, "no banner for a healthy hidden display")
     }
 
+    func testQuitWhileHiddenWarnsAndKeepsRunningWhenShowFails() throws {
+        let defaults = try makeDefaults()
+        defer {
+            defaults.removePersistentDomain(forName: suiteName(defaults))
+            closeSettingsWindows()
+        }
+        let hidden = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "quit-journal", canShow: true)
+        var showCalls = 0
+        let model = makeModel(defaults: defaults, displays: displays, status: { hidden }, showDisplay: { _, _ in
+            showCalls += 1
+            throw NSError(domain: "FakeMirrorWriter", code: 1, userInfo: [NSLocalizedDescriptionKey: "fake restore failure"])
+        })
+        spin { !model.protectionQuiescencePending }
+        let delegate = AppDelegate()
+        delegate.model = model
+        try withExtendedLifetime(delegate) {
+            // Cancel keeps PanelCtl running and the display hidden.
+            let cancelled = answerModalAlert("Cancel") { delegate.applicationShouldTerminate(.shared) }
+            XCTAssertEqual(cancelled.reply, .terminateCancel)
+            XCTAssertTrue(cancelled.texts.contains("Target is still hidden"), "\(cancelled.texts)")
+            XCTAssertEqual(Set(cancelled.buttons), ["Cancel", "Show and Quit", "Quit Anyway"])
+            XCTAssertEqual(showCalls, 0)
+
+            // Show and Quit shows without asking again; a failed Show keeps
+            // PanelCtl running and opens the display with the result.
+            let showing = answerModalAlert("Show and Quit") { delegate.applicationShouldTerminate(.shared) }
+            XCTAssertEqual(showing.reply, .terminateCancel)
+            spin { model.displayResults[Self.targetKey] != nil }
+            XCTAssertEqual(showCalls, 1)
+            XCTAssertEqual(model.displayResults[Self.targetKey]?.succeeded, false)
+            let window = try XCTUnwrap(NSApp.windows.first {
+                $0.identifier == SettingsWindowController.windowIdentifier && $0.isVisible
+            })
+            let controller = try XCTUnwrap(window.windowController as? SettingsWindowController)
+            XCTAssertEqual(controller.selectedTab, .displays)
+            XCTAssertEqual(controller.selectedDisplayID, Self.targetKey)
+        }
+    }
+
+    /// Runs `body`, clicking the button titled `answer` in the app-modal alert it shows.
+    private func answerModalAlert<Reply>(
+        _ answer: String, _ body: () -> Reply
+    ) -> (reply: Reply, texts: [String], buttons: [String]) {
+        var texts: [String] = []
+        var buttons: [String] = []
+        let timer = Timer(timeInterval: 0.05, repeats: true) { timer in
+            guard let window = NSApplication.shared.modalWindow, let content = window.contentView else { return }
+            timer.invalidate()
+            func views(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(views) }
+            let all = views(content)
+            texts = all.compactMap { ($0 as? NSTextField)?.stringValue }.filter { !$0.isEmpty }
+            let controls = all.compactMap { $0 as? NSButton }.filter { !$0.title.isEmpty }
+            buttons = controls.map(\.title)
+            guard let button = controls.first(where: { $0.title == answer }) else {
+                XCTFail("No \(answer) button in \(buttons)")
+                NSApplication.shared.abortModal()
+                return
+            }
+            button.performClick(nil)
+        }
+        RunLoop.main.add(timer, forMode: .modalPanel)
+        defer { timer.invalidate() }
+        let reply = body()
+        XCTAssertFalse(buttons.isEmpty, "an alert was shown")
+        return (reply, texts, buttons)
+    }
+
     func testRecoveryProblemOpensItsDisplayFromReopenAndMenu() throws {
         let defaults = try makeDefaults()
         defer {
