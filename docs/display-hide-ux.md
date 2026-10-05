@@ -275,6 +275,34 @@ Under the operation and journal locks, the overlay requires a journal in
 source, and Show still possible. Otherwise it is removed. Standalone
 `panelctl blackout` still refuses mirrored displays.
 
+### Supervised source Black out check (2026-10-05)
+
+On Mac17,14 / macOS build 26A434, app commit `a3fa961` was checked with
+S2721DGF (`09084682-3c42-4455-aab8-126a7431125b`) removed onto main
+AW3423DW (`1fc57e99-de7c-4daf-b896-3b512cee064f`). Each Hide/Show was
+separately approved. K272HUL and AW3425DW remained usable throughout.
+
+The initial removal used the installed app and verified the configured HDMI 1
+input switch (`0x11`). An initial source Hide reached that older app and was
+refused without covering anything. After explicitly quitting it without Show,
+the exact worktree executable was launched and its process path verified; it
+recognized the existing removal journal.
+
+In the new build, source Black out returned `done` / `Hidden.` for AW3423DW,
+with both source and target reported `hidden-by-panelctl` and automation
+suspended. The user confirmed the source was black and the independent screens
+usable. Show of S2721DGF returned `done`, verified DisplayPort 1 (`0x0F`), and
+restored its desktop while the user confirmed AW3423DW stayed black. Source
+Show then returned `done`; the user confirmed all four displays usable again.
+Journal `E9181195-A9AE-4181-A992-C74CE9E7A5E4` ended `restored` (`unmirror`).
+The test app was quit without changing saved preferences or the installed app.
+
+This qualifies that source-cover and target-then-source Show sequence only.
+Source-first Show, lifecycle cases and last-visible refusals have fake-backed
+coverage, not additional live trials. The target was on HDMI during the cover,
+so copying the cover onto a target still on the Mac input was not visually
+checked. No private setter, monitor-power write or disruptive recovery was used.
+
 ## Keyboard and accessibility
 
 Cmd-comma opens Settings; Cmd-1, Cmd-2 and Cmd-3 select Displays, Automation and
