@@ -723,7 +723,8 @@ final class DisplayMirroringTests: XCTestCase {
         }
         for command in ["mirror", "unmirror"] {
             XCTAssertEqual(try CLIParser.parse([command, "--help"]), .help(command: command))
-            XCTAssertTrue(CLIHelp.text(for: command).contains("not hardware-qualified"))
+            XCTAssertTrue(CLIHelp.text(for: command).contains("only documented cycles are qualified"))
+            XCTAssertTrue(CLIHelp.text(for: command).contains("untested combinations remain unsupported"))
         }
     }
 }

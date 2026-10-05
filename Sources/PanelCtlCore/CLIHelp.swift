@@ -81,12 +81,13 @@ public enum CLIHelp {
             Usage: panelctl mirror --display <selector> --source <selector> --consent-mirror [--journal <path>]
             Usage: panelctl unmirror --consent-unmirror [--journal <path>]
 
-            Experimental public, session-scoped mirroring; not hardware-qualified.
+            Experimental public, session-scoped mirroring; only documented cycles are qualified.
             Both selectors are explicit UUIDs, decimal/hex IDs or index:<n> from list.
             Refuses built-in targets, inactive/asleep displays, existing mirrors,
             ambiguous identities and unresolved journals. A main external target is
-            accepted offline; macOS may keep it main, move main to the source or report
-            another display as main. No main-target/source combination is hardware-qualified.
+            accepted; macOS may keep it main, move main to the source or report another
+            display as main. Only the documented AW3423DW-to-AW3425DW main-target
+            mirror/unmirror cycle is qualified; untested combinations remain unsupported.
             Captures topology before writes.
             Mirroring removes a separate desktop, NOT the signal; modes/HDR/refresh,
             windows and Spaces may change. No gamma, DDC or private display setters.
@@ -98,7 +99,7 @@ public enum CLIHelp {
             Each real mirror/unmirror requires fresh scoped human approval for each write.
             Consent flags acknowledge writes; tests and prior trials do not supply approval.
             Uses the recovery default journal unless --journal is supplied. See
-            docs/display-mirroring.md for restrictions and the pending trial protocol.
+            docs/display-mirroring.md for restrictions, observed cycles and trial protocol.
             """
         case "away", "back":
             return """
@@ -119,7 +120,8 @@ public enum CLIHelp {
             retry, watchdog or disruptive fallback. Stop on unexpected behavior.
             Each hardware handoff requires fresh scoped approval for each write. Consent
             flags do not replace approval. Only the documented non-main S2721DGF round trip
-            is hardware-qualified; main-target combinations are offline-tested only.
+            is hardware-qualified for input switching; the main-target mirror/unmirror
+            cycle did not qualify main-target input switching.
             See docs/display-handoff.md.
             """
         case "blackout":

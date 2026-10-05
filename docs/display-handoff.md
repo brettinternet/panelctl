@@ -11,9 +11,10 @@ panelctl back --display TARGET_UUID --input dp1 --consent-back
 ```
 
 - Target and source follow the [mirroring rules](display-mirroring.md). A main
-  external target is accepted by offline code but has no hardware-qualified
-  source combination; macOS decides where the menu bar, Dock, windows and Spaces
-  go. The observed round trip used a non-main target and main source.
+  external target is accepted; macOS decides where the menu bar, Dock, windows
+  and Spaces go. One main-target CLI mirror/unmirror cycle used AW3423DW onto
+  AW3425DW without DDC. The handoff round trip below used a non-main target and
+  main source; main-target input switching remains unqualified.
 - Both accept `--journal <path>` and must use the same journal. `back` refuses a
   target that differs from the journal (including a changed ID or UUID) and can
   also restore a `mirror` journal.
@@ -61,8 +62,9 @@ Apple M5 Max, macOS 27.0.1 `26A434`. One approved `away` and one `back`.
 | Back | Topology verified → selected DP1 (verified). All four original modes, no mirrors, same main display; `recovery verify` passed |
 
 Qualifies that tuple only. Firmware and cabling weren't recorded. Non-DDC
-handoff and main-target handoff are offline-tested only; no main-target/source
-combination is qualified. A live main-target trial requires separate scoped
+handoff and main-target input switching are offline-tested only. The later
+[main-target mirror/unmirror cycle](display-mirroring.md#observed-main-target-cycle-2026-10-05)
+did not exercise away/back or input switching. A live main-target trial requires separate scoped
 approval for each mirror/restore write, recording menu bar, Dock and (0, 0)
 origin behavior plus exact restoration verification.
 

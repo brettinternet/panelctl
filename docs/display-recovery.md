@@ -45,8 +45,9 @@ target/source relationship and other captured checks match. Restoration still
 requires the exact captured main flag, arrangement and modes. If a main-target
 restore does not verify, keep the journal, turn off mirroring and drag the menu
 bar back to the original display in System Settings → Displays; do not report
-success or discard evidence. Main-target behavior is offline-tested only and
-has no hardware-qualified source combination.
+success or discard evidence. One [main-target CLI cycle](display-mirroring.md#observed-main-target-cycle-2026-10-05)
+restored AW3423DW from mirroring onto AW3425DW and passed exact verification;
+other combinations remain unqualified.
 
 Restore refuses, without writing, on any of:
 

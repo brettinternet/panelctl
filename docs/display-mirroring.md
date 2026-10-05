@@ -12,7 +12,7 @@ panelctl unmirror --consent-unmirror
 
 | Role | Requirements |
 | --- | --- |
-| Target | External, not built-in, online, active, awake, with a stable identity (main is permitted offline) |
+| Target | External, not built-in, online, active, awake, with a stable identity (main is permitted) |
 | Source | Explicit, distinct, online, active, awake |
 | Refused | Existing mirror group, ambiguous identity, changed inventory, unavailable original mode, unresolved journal |
 
@@ -95,11 +95,43 @@ unmirror; no retries or fallback.
 | Source usable, Spaces usable | User confirmed |
 | Unmirror restored arrangement, modes, main | Snapshot verification passed; separate `recovery verify` passed |
 
-Qualifies that cycle only, not main-target mirroring, other sources, HDR on,
-crash/hotplug recovery or DDC handoff. Main-target code paths are offline-tested
-only; no main-target/source combination is hardware-qualified. Any live main
-target trial requires fresh approval for each write and must record where the
-menu bar, Dock and (0, 0) origin go and the verified original-main restoration.
+Qualifies that cycle only, not other sources, HDR on, crash/hotplug recovery or
+DDC handoff.
+
+### Observed main-target cycle, 2026-10-05
+
+Commit `fa26adf`, Mac17,14 / macOS 27.0.1 `26A434`. User chose AW3425DW as
+source, confirmed a usable survivor and manual recovery readiness, and approved
+each write separately. An initial command refused at the operation lock held by
+an unrelated test; no display write occurred. After that test exited, fresh
+approval authorized one mirror, followed by separately approved unmirror. No
+DDC, gamma, private setter, automatic retry or fallback writes occurred.
+
+| | Target | Source |
+| --- | --- | --- |
+| Display | Dell AW3423DW (original main) | AW3425DW |
+| UUID | `1FC57E99-DE7C-4DAF-B896-3B512CEE064F` | `A8D3635B-35EC-4171-BBE2-95FB8CF76111` |
+| Before | 3440×1440 @ 175 Hz, origin (0, 0) | 3440×1440 @ 240 Hz, origin (0, 1440) |
+| Transport | USB-C port 2 / DisplayPort | HDMI port 1 / DisplayPort transport |
+| Mirrored | Online, inactive, not main, origin (0, 0) | Active, main, origin (0, 0) |
+
+The mirror relationship and captured identity/rotation/color checks passed.
+The user confirmed the menu bar and Dock moved to AW3425DW and it was usable
+(also visible on the mirrored AW3423DW). The S2721DGF origin shifted from
+(3440, −4) to (3440, 0); K272HUL stayed at (−1440, 0).
+
+Unmirror and a separate read-only `recovery verify` passed: AW3423DW became
+main again and every captured mode and origin matched, including AW3425DW at
+(0, 1440) and S2721DGF at (3440, −4). The user confirmed usable output and the
+menu bar/Dock back on AW3423DW. Journal
+`F768EE67-6C81-46C9-93B7-3336E743D67D` remains at the default recovery path,
+state `restored`.
+
+This qualifies only this CLI mirror/unmirror cycle and observed setup, not
+repeated reliability, other source combinations, app/script live paths, DDC
+handoff, HDR changes, sleep or crash recovery. HDR and mirrored refresh rates
+were not separately measured in this trial. Untested combinations remain
+unsupported. Every future topology write still requires fresh scoped approval.
 
 ## Tests
 
