@@ -12,7 +12,7 @@ panelctl unmirror --consent-unmirror
 
 | Role | Requirements |
 | --- | --- |
-| Target | Non-main, not built-in, online, active, awake |
+| Target | External, not built-in, online, active, awake, with a stable identity (main is permitted offline) |
 | Source | Explicit, distinct, online, active, awake |
 | Refused | Existing mirror group, ambiguous identity, changed inventory, unavailable original mode, unresolved journal |
 
@@ -35,8 +35,12 @@ unmirror: lock → restore captured modes, origins, mirroring, main display
   they cannot reconnect an absent display.
 - A failed validation before completion cancels. Completion consumes the
   transaction even on error and is never followed by cancel.
-- Mirror success means the relationship, main display, source activity and
-  identity/rotation/color evidence verified. Modes and origins may change.
+- Mirror success means the relationship, source activity, identity/rotation/color
+  evidence and one reported main display verify. For a non-main captured target,
+  the captured main flag must remain unchanged. If the captured target was main,
+  macOS may keep it main, move main to the source or report another display as
+  main; that flag is exempted while the target/source relationship and all other
+  existing checks remain strict. Modes and origins may change.
 - The journal stays unresolved while mirrored and blocks a new capture.
   Resolved journals are archived by the next capture.
 
@@ -50,9 +54,11 @@ panelctl recovery restore [--journal <path>]   # restore with the same checks
 
 Errors print the restore command with the actual journal path. Changed or
 missing identities, rotation, color profile or unavailable modes need manual
-correction first. Keep the journal. There is no restore on exit, no watchdog for
-an indefinite mirror, no global reset, and no protection from WindowServer or
-driver failure.
+correction first. Keep the journal. If restoration cannot be verified, turn off
+mirroring and drag the menu bar back to the original display in System Settings
+→ Displays, then verify the captured layout. There is no restore on exit, no
+watchdog for an indefinite mirror, no global reset, and no protection from
+WindowServer or driver failure.
 
 ## Side effects
 
@@ -89,8 +95,11 @@ unmirror; no retries or fallback.
 | Source usable, Spaces usable | User confirmed |
 | Unmirror restored arrangement, modes, main | Snapshot verification passed; separate `recovery verify` passed |
 
-Qualifies that cycle only, not other sources, HDR on, crash/hotplug recovery or
-DDC handoff.
+Qualifies that cycle only, not main-target mirroring, other sources, HDR on,
+crash/hotplug recovery or DDC handoff. Main-target code paths are offline-tested
+only; no main-target/source combination is hardware-qualified. Any live main
+target trial requires fresh approval for each write and must record where the
+menu bar, Dock and (0, 0) origin go and the verified original-main restoration.
 
 ## Tests
 

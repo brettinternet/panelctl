@@ -38,6 +38,16 @@ already matches ──→ no-op
 otherwise ────────→ one session-scoped write → up to 6 reads, 200 ms apart → verified | needsAttention
 ```
 
+Restore restores and verifies the captured main display as well as modes,
+origins and mirroring. A main-target mirror may be reported with a different
+main display while hidden; that is not by itself recovery-needed when the exact
+target/source relationship and other captured checks match. Restoration still
+requires the exact captured main flag, arrangement and modes. If a main-target
+restore does not verify, keep the journal, turn off mirroring and drag the menu
+bar back to the original display in System Settings → Displays; do not report
+success or discard evidence. Main-target behavior is offline-tested only and
+has no hardware-qualified source combination.
+
 Restore refuses, without writing, on any of:
 
 - missing, extra or ambiguous displays, or a changed numeric ID
@@ -104,6 +114,9 @@ helper: lock journal → verify baseline, modes → arm deadline + parent pipe �
 `swift test --filter DisplayRecoveryTests` covers locking, archives,
 permissions, corruption, identity rejection, write-ahead ordering, failed
 writes, verification failure, idempotence and CLI parsing with fake displays.
+Public mirror tests also exercise main-target main reassignment and exact-main
+restoration using fake topologies and writers; no live main-target trial is
+qualified by offline tests.
 
 Opt-in **no-write** subprocess checks against a built CLI (GUI session
 required):

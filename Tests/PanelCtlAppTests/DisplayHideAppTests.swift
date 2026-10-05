@@ -594,7 +594,7 @@ final class DisplayHideAppTests: XCTestCase {
         let model = makeModel(defaults: defaults, displays: displays)
 
         XCTAssertNil(model.removalIneligibleReason(for: displays[1]))
-        XCTAssertTrue(model.removalIneligibleReason(for: displays[0])?.contains("main display") == true)
+        XCTAssertNil(model.removalIneligibleReason(for: displays[0]), "an external main display can be a removal target")
         model.setHideEnabled(true, for: displays[1])
         XCTAssertEqual(model.hidePreferences[Self.targetUUID]?.source?.uuid, Self.mainUUID)
         XCTAssertEqual(try model.makeHideRequest(targetUUID: Self.targetUUID).source.uuid, Self.mainUUID)
@@ -606,6 +606,52 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(model.hidePreferences[Self.targetUUID]?.source?.uuid, Self.sourceUUID)
         XCTAssertEqual(model.sourceChoices(for: try XCTUnwrap(model.hideConfiguration(for: Self.targetUUID))).compactMap(\.uuid),
                        [Self.mainUUID, Self.sourceUUID], "the target is never its own source")
+
+        model.setHideEnabled(true, for: displays[0])
+        let mainConfiguration = try XCTUnwrap(model.hideConfiguration(for: Self.mainUUID))
+        XCTAssertNil(mainConfiguration.source, "a new main-target setup requires an explicit source")
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.mainUUID }?.actionBlocker,
+                       "Choose a display to mirror onto.")
+        XCTAssertThrowsError(try model.makeHideRequest(targetUUID: Self.mainUUID)) {
+            XCTAssertTrue($0.localizedDescription.contains("Choose a display to mirror onto"))
+        }
+        XCTAssertEqual(model.sourceChoices(for: mainConfiguration).compactMap(\.uuid),
+                       [Self.targetUUID, Self.sourceUUID], "the main target is never its own source")
+        model.setHideSource(Self.targetUUID, for: Self.mainUUID)
+        XCTAssertEqual(try model.makeHideRequest(targetUUID: Self.mainUUID).source.uuid, Self.targetUUID)
+        XCTAssertEqual(model.hideConfiguration(for: Self.targetUUID)?.source?.uuid, Self.sourceUUID,
+                       "enabling a main target leaves the other target's saved source unchanged")
+    }
+
+    func testNativeMainTargetSetupRequiresSourceAndUsesTheSharedHideControls() throws {
+        let defaults = try makeDefaults()
+        defer {
+            defaults.removePersistentDomain(forName: suiteName(defaults))
+            closeSettingsWindows()
+        }
+        let model = makeModel(defaults: defaults, displays: displays)
+        let controller = SettingsWindowController(model: model)
+        controller.present()
+        controller.selectDisplay(uuid: Self.mainUUID)
+        let window = try XCTUnwrap(controller.window)
+        window.setContentSize(NSSize(width: 680, height: 1200))
+        settle(window)
+
+        let toggle = try XCTUnwrap(removalSwitch(in: window), controlSummary(window))
+        XCTAssertEqual(toggle.state, .off)
+        XCTAssertTrue(toggle.isEnabled, "an external main display can be configured for removal")
+        toggle.performClick(nil)
+        settle(window)
+
+        let configuration = try XCTUnwrap(model.hideConfiguration(for: Self.mainUUID))
+        XCTAssertTrue(configuration.enabled)
+        XCTAssertNil(configuration.source)
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.mainUUID }?.actionBlocker,
+                       "Choose a display to mirror onto.")
+        XCTAssertThrowsError(try model.makeHideRequest(targetUUID: Self.mainUUID))
+        XCTAssertEqual(model.sourceChoices(for: configuration).compactMap(\.uuid),
+                       [Self.targetUUID, Self.sourceUUID])
+        XCTAssertNil(window.attachedSheet, "main-target setup needs no confirmation dialog")
     }
 
     func testMacInputIsDetectedReadOnlyAndBecomesTheReturnInput() throws {

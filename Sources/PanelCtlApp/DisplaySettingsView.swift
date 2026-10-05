@@ -200,7 +200,7 @@ struct DisplaySettingsView: View {
                         set: { model.setHideEnabled($0, for: display) }
                     )) {
                         Text("Remove from desktop")
-                        Text("Experimental. Hide mirrors this display onto another so windows move off it, instead of blacking it out.")
+                        Text("Experimental. Hide mirrors this display onto another display, changing the desktop instead of blacking it out.")
                     }
                     .disabled(reason != nil || frozen)
                     .accessibilityLabel("Remove \(tile.name) from desktop")
@@ -220,7 +220,7 @@ struct DisplaySettingsView: View {
                 } header: {
                     Text("Hide")
                 } footer: {
-                    if let footer = hideFooter(configuration, reason: reason, tileID: tile.id) {
+                    if let footer = hideFooter(configuration, reason: reason, tileID: tile.id, isMain: display.main) {
                         SectionFooter(footer)
                     }
                 }
@@ -335,12 +335,14 @@ struct DisplaySettingsView: View {
         }
     }
 
-    private func hideFooter(_ configuration: DisplayHideConfiguration?, reason: String?, tileID: String) -> String? {
+    private func hideFooter(_ configuration: DisplayHideConfiguration?, reason: String?, tileID: String,
+                            isMain: Bool) -> String? {
         if let reason { return reason }
         if model.hideConfigurationFrozen, model.handoffStatus?.hasUnresolvedJournal == true {
             return "Show the hidden display to change these settings."
         }
-        guard let configuration, configuration.enabled else { return nil }
+        let mainDisplayNote = "macOS decides where the menu bar, Dock, windows and Spaces go when the main display is mirrored; the main display may stay, move to the source or move elsewhere. Observe the result."
+        guard let configuration, configuration.enabled else { return isMain ? mainDisplayNote : nil }
         var lines: [String] = []
         if let away = configuration.awayInput {
             let awayName = MonitorInput.name(away)
@@ -360,7 +362,11 @@ struct DisplaySettingsView: View {
                 }
             }
         }
-        lines.append("Windows move to the other display, and resolution or refresh rate can change until you show it again.")
+        if isMain {
+            lines.append(mainDisplayNote)
+        } else {
+            lines.append("Windows move to the other display, and resolution or refresh rate can change until you show it again.")
+        }
         return lines.joined(separator: " ")
     }
 

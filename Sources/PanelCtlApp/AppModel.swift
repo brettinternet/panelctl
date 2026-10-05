@@ -509,9 +509,6 @@ final class AppModel: ObservableObject {
         if display.builtin {
             return "Built-in displays can\u{2019}t be removed from the desktop."
         }
-        if display.main {
-            return "The main display can\u{2019}t be removed from the desktop. To remove it, make another display the main display in System Settings \u{2192} Displays."
-        }
         guard display.uuid.flatMap(UUID.init(uuidString:)) != nil else {
             return "This display has no stable ID, so PanelCtl can\u{2019}t remove it from the desktop."
         }
@@ -923,8 +920,8 @@ final class AppModel: ObservableObject {
         var configuration = updated[uuid] ?? DisplayHideConfiguration(target: DisplayIdentitySnapshot(display))
         guard matches(configuration.target, display) else { return }
         configuration.enabled = enabled
-        // The main display is the default and the only hardware-qualified source.
-        if enabled, configuration.source == nil,
+        // Preserve the existing main-source default for non-main targets; a main target requires an explicit source.
+        if enabled, !display.main, configuration.source == nil,
            let main = sourceChoices(for: configuration).first(where: \.main) {
             configuration.source = DisplayIdentitySnapshot(main)
         }
@@ -1807,7 +1804,7 @@ final class AppModel: ObservableObject {
 
     private func isEligibleHideTarget(_ display: DisplayRecord) -> Bool {
         display.active && display.online && !display.asleep &&
-            !display.main && !display.builtin &&
+            !display.builtin &&
             display.uuid.flatMap(UUID.init(uuidString:)) != nil &&
             display.bounds.width > 0 && display.bounds.height > 0
     }

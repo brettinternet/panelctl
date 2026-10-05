@@ -57,6 +57,46 @@ struct MirrorTransaction {
     }
 }
 
+enum HiddenMirrorTopology {
+    static func verify(snapshot: RecoverySnapshot, targetID: UInt32, sourceID: UInt32,
+                       current: RecoverySnapshot) throws {
+        try snapshot.validateRestoration(to: current)
+        guard let target = snapshot.displays.first(where: { $0.id == targetID }),
+              let source = snapshot.displays.first(where: { $0.id == sourceID }),
+              target.id != source.id,
+              current.displays.filter(\.main).count == 1 else {
+            throw RecoveryError.unsafe("mirror topology verification mismatch")
+        }
+        let originalByID = Dictionary(uniqueKeysWithValues: snapshot.displays.map { ($0.id, $0) })
+        for display in current.displays {
+            guard let original = originalByID[display.id] else {
+                throw RecoveryError.unsafe("mirror topology verification mismatch")
+            }
+            let expectedMirror = display.id == targetID ? source.uuid : nil
+            let mirrorMatches: Bool
+            if let expectedMirror, let observedMirror = display.mirrorUUID {
+                mirrorMatches = expectedMirror.caseInsensitiveCompare(observedMirror) == .orderedSame
+            } else {
+                mirrorMatches = expectedMirror == nil && display.mirrorUUID == nil
+            }
+            guard mirrorMatches,
+                  (target.main || display.main == original.main),
+                  (display.id != sourceID || display.active) else {
+                throw RecoveryError.unsafe("mirror topology verification mismatch")
+            }
+        }
+    }
+
+    static func matches(snapshot: RecoverySnapshot, targetID: UInt32, sourceID: UInt32,
+                        current: RecoverySnapshot) -> Bool {
+        (try? verify(snapshot: snapshot, targetID: targetID, sourceID: sourceID, current: current)) != nil
+    }
+}
+
+enum MirrorRecoveryGuidance {
+    static let manualSteps = "Manual recovery: keep the journal; in System Settings → Displays, turn off mirroring and drag the menu bar back to the original display. After correcting the layout, inspect recovery status and run recovery verify."
+}
+
 struct MirrorController {
     var records: () throws -> [DisplayRecord] = { DisplayInventory.records() }
     var operationLock: () -> RecoveryStore = { RecoveryStore.operationLock() }
@@ -78,9 +118,9 @@ struct MirrorController {
               Set(available.compactMap { $0.uuid?.lowercased() }).count == available.count,
               let target = DisplaySelector.resolve(selector, in: available),
               let source = DisplaySelector.resolve(source, in: available), target.id != source.id,
-              target.online, target.active, !target.asleep, !target.main, !target.builtin,
+              target.online, target.active, !target.asleep, !target.builtin,
               source.online, source.active, !source.asleep else {
-            throw RecoveryError.unsafe("mirror requires one non-main external active target and a distinct active source; missing/ambiguous selectors refused; use panelctl list")
+            throw RecoveryError.unsafe("mirror requires one stable-identity external active target (built-in displays are refused) and a distinct active source; missing/ambiguous selectors refused; use panelctl list")
         }
         if let expectedTarget, !matches(expectedTarget, record: target) {
             throw RecoveryError.unsafe("target identity changed after confirmation; refresh Displays and confirm Hide again")
@@ -116,15 +156,8 @@ struct MirrorController {
             }
             try engine.converge {
                 let current = try engine.capture()
-                try snapshot.validateRestoration(to: current)
-                for display in current.displays {
-                    let original = snapshot.displays.first { $0.id == display.id }!
-                    let expectedMirror = display.id == target.id ? source.uuid?.lowercased() : nil
-                    guard display.mirrorUUID == expectedMirror, display.main == original.main,
-                          display.id != source.id || display.active else {
-                        throw RecoveryError.unsafe("mirror topology verification mismatch")
-                    }
-                }
+                try HiddenMirrorTopology.verify(snapshot: snapshot, targetID: target.id,
+                                                sourceID: source.id, current: current)
             }
             journal.state = .mirrored
             try store.save(journal)
@@ -196,6 +229,9 @@ struct MirrorController {
 
     private func fallback(_ error: Error, store: RecoveryStore) -> RecoveryError {
         let path = "'" + store.url.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        return .unsafe("\(error). Journal kept. After inspecting recovery status and with explicit approval, fallback: panelctl recovery restore --journal \(path). Changed identity/rotation/color may require manual correction first; no automatic retry.")
+        let failure = String(describing: error)
+        let guidance = failure.contains(MirrorRecoveryGuidance.manualSteps)
+            ? "" : " \(MirrorRecoveryGuidance.manualSteps)"
+        return .unsafe("\(failure). Journal kept. After inspecting recovery status and with explicit approval, fallback: panelctl recovery restore --journal \(path). Changed identity/rotation/color may require manual correction first; no automatic retry.\(guidance)")
     }
 }

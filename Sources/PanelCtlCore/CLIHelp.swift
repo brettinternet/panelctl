@@ -44,7 +44,9 @@ public enum CLIHelp {
             capture journals the current display identities, modes, rotation, origins,
             mirroring, main display, and available color-space/ICC profile identity. status prints the journal;
             verify compares without display writes. restore explicitly restores public
-            modes, origins, and mirroring for the same online displays, then verifies.
+            modes, origins, mirroring and the captured main display for the same online
+            displays, then verifies. If a main-target restore mismatches, keep the journal;
+            turn off mirroring and drag the menu bar back in System Settings → Displays.
             Missing/ambiguous displays or changed rotation/color space require manual
             intervention. HDR/profile restoration is NOT implemented.
 
@@ -81,8 +83,11 @@ public enum CLIHelp {
 
             Experimental public, session-scoped mirroring; not hardware-qualified.
             Both selectors are explicit UUIDs, decimal/hex IDs or index:<n> from list.
-            Refuses main/built-in targets, inactive/asleep displays, existing mirrors,
-            ambiguous identities and unresolved journals. Captures topology before writes.
+            Refuses built-in targets, inactive/asleep displays, existing mirrors,
+            ambiguous identities and unresolved journals. A main external target is
+            accepted offline; macOS may keep it main, move main to the source or report
+            another display as main. No main-target/source combination is hardware-qualified.
+            Captures topology before writes.
             Mirroring removes a separate desktop, NOT the signal; modes/HDR/refresh,
             windows and Spaces may change. No gamma, DDC or private display setters.
             unmirror restores captured modes, origins, mirroring and main display,
@@ -90,8 +95,8 @@ public enum CLIHelp {
             Failures keep the journal. Explicit fallback: panelctl recovery restore
             [--journal <path>]; changed identity/rotation/color requires manual action.
             No automatic restore on exit, watchdog, or promise of crash recovery.
-            Each real mirror/unmirror requires fresh scoped human approval. Consent
-            flags acknowledge writes; tests and prior trials do not supply approval.
+            Each real mirror/unmirror requires fresh scoped human approval for each write.
+            Consent flags acknowledge writes; tests and prior trials do not supply approval.
             Uses the recovery default journal unless --journal is supplied. See
             docs/display-mirroring.md for restrictions and the pending trial protocol.
             """
@@ -112,8 +117,9 @@ public enum CLIHelp {
             Defaults to the shared recovery journal; use the same --journal for back.
             Errors retain evidence and print recovery commands; no automatic rollback,
             retry, watchdog or disruptive fallback. Stop on unexpected behavior.
-            Each hardware handoff requires fresh scoped approval. Consent flags do not
-            replace approval. Only the documented S2721DGF round trip is hardware-qualified.
+            Each hardware handoff requires fresh scoped approval for each write. Consent
+            flags do not replace approval. Only the documented non-main S2721DGF round trip
+            is hardware-qualified; main-target combinations are offline-tested only.
             See docs/display-handoff.md.
             """
         case "blackout":

@@ -118,16 +118,85 @@ final class DisplayHideTests: XCTestCase {
         XCTAssertTrue(inspected.showAvailable, "Show can still restore a changed main-display setting")
         XCTAssertFalse(inspected.journal?.mirrorTopologyVerified ?? true)
         handoff = DisplayHandoff.handoffStatus(from: inspected)
-        XCTAssertEqual(handoff.state, .hidden, "the journaled target still mirrors its captured source")
+        XCTAssertEqual(handoff.state, .recovery, "a non-main target keeps the captured main-display check strict")
         let refusal = HiddenMirrorSourceOverlayAuthorization.refusal(
             sourceUUID: sourceUUID,
             sourceDisplayID: sourceID,
             isMirrored: true,
             status: handoff
         )
-        XCTAssertTrue(refusal?.contains("main display") == true,
+        XCTAssertTrue(refusal?.contains("mirror topology") == true,
                       "a changed main display fails the exact hidden-topology authorization")
         XCTAssertEqual(writerCount, 0, "inspection and authorization never invoke the fake writer")
+    }
+
+    func testMainTargetStaysHiddenAcrossMainChangesAndShowRestoresOriginalMain() throws {
+        let original = try snapshot { displays in
+            displays[0]["main"] = false
+            displays[1]["main"] = true
+        }
+        topology.snapshot = original
+        var journal = RecoveryJournal(snapshot: original)
+        journal.mirrorTargetID = targetID
+        journal.mirrorSourceID = sourceID
+        journal.state = .mirrored
+        try save(journal)
+
+        let sut = controller()
+        for currentMainID in [sourceID, targetID, UInt32(9), sourceID] {
+            topology.snapshot = try snapshot { displays in
+                displays[0]["main"] = currentMainID == self.sourceID
+                displays[1]["main"] = currentMainID == self.targetID
+                displays[2]["main"] = currentMainID == 9
+                displays[1]["mirrorUUID"] = self.sourceUUID
+                displays[1]["active"] = false
+            }
+            let inspected = try sut.inspect()
+            XCTAssertTrue(inspected.showAvailable)
+            XCTAssertTrue(inspected.journal?.mirrorTopologyVerified == true, "main ID \(currentMainID)")
+            XCTAssertEqual(inspected.observations.first(where: { $0.isJournalTarget })?.state, .hiddenByPanelCtl)
+            let handoff = DisplayHandoff.handoffStatus(from: inspected)
+            XCTAssertEqual(handoff.state, .hidden)
+            XCTAssertNil(HiddenMirrorSourceOverlayAuthorization.refusal(
+                sourceUUID: sourceUUID, sourceDisplayID: sourceID, isMirrored: true, status: handoff
+            ))
+        }
+
+        XCTAssertNoThrow(try sut.show(expectedJournalID: journal.id.uuidString))
+        XCTAssertEqual(try store.load().state, .restored)
+        XCTAssertNoThrow(try original.verify(topology.snapshot))
+        XCTAssertEqual(topology.snapshot.displays.first(where: { $0.id == targetID })?.main, true)
+        XCTAssertEqual(writerCount, 1)
+    }
+
+    func testMainTargetShowMismatchKeepsRecoveryAndManualGuidance() throws {
+        let original = try snapshot { displays in
+            displays[0]["main"] = false
+            displays[1]["main"] = true
+        }
+        topology.snapshot = try snapshot { displays in
+            displays[0]["main"] = true
+            displays[1]["main"] = false
+            displays[1]["mirrorUUID"] = self.sourceUUID
+            displays[1]["active"] = false
+        }
+        var journal = RecoveryJournal(snapshot: original)
+        journal.mirrorTargetID = targetID
+        journal.mirrorSourceID = sourceID
+        journal.state = .mirrored
+        try save(journal)
+
+        let sut = controller(restore: { _ in })
+        XCTAssertThrowsError(try sut.show(expectedJournalID: journal.id.uuidString)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("turn off mirroring"), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.contains("drag the menu bar"), error.localizedDescription)
+        }
+        let failed = try store.load()
+        XCTAssertEqual(failed.state, .needsAttention)
+        XCTAssertEqual(failed.snapshot, original)
+        XCTAssertTrue(failed.failure?.contains("turn off mirroring") == true)
+        XCTAssertTrue(failed.failure?.contains("drag the menu bar") == true)
+        XCTAssertEqual(writerCount, 1, "a failed restore is not reported as success or retried")
     }
 
     func testImportedAwayJournalWithSuccessfulInputSwitchReportsUnknownAndManualFallback() throws {
@@ -332,7 +401,8 @@ final class DisplayHideTests: XCTestCase {
         XCTAssertEqual(writerCount, 0)
     }
 
-    private func controller(transaction: MirrorTransaction = MirrorTransaction()) -> DisplayHideController {
+    private func controller(transaction: MirrorTransaction = MirrorTransaction(),
+                             restore: ((RecoverySnapshot) throws -> Void)? = nil) -> DisplayHideController {
         let mirror = MirrorController(
             records: { self.topology.records },
             operationLock: { self.operationStore },
@@ -340,7 +410,8 @@ final class DisplayHideTests: XCTestCase {
                 capture: { self.topology.snapshot },
                 apply: { snapshot in
                     self.writerCount += 1
-                    self.topology.snapshot = snapshot
+                    if let restore { try restore(snapshot) }
+                    else { self.topology.snapshot = snapshot }
                 },
                 convergencePause: {}
             ),
