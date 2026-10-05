@@ -9,14 +9,15 @@ others stay awake.
 | Translucent overlay | Yes | Output reduced; pixels may stay lit | High |
 | DDC luminance | Yes | Hardware brightness lowered | Hardware-dependent |
 | Public mirroring | No (merged) | Separate desktop removed; signal stays | Tested on one setup |
-| Private topology disable | No | Signal may stop | Unqualified; recovery varies |
+| Private topology disable | No | Monitor auto-selected HDMI in one trial | [One supervised tuple](display-disable-trial.md); DP return manual |
 | DDC power/DPMS | Usually | Firmware decides | Explicit opt-in CLI; no qualified hardware or guaranteed recovery |
 
 PanelCtl ships the overlay, all-display sleep and DDC luminance, plus
 experimental [mirroring](display-mirroring.md), [DDC input](ddc-input.md) and
 CLI-only [DDC power](ddc-power.md). Power has only offline validation, not
 hardware qualification; app integration is [planned within Hide/Show](display-hide-ux.md#planned-ddc-power-hide-style).
-Private disable is [designed but unqualified](display-disable.md).
+Private disable is [qualified only for one supervised cycle](display-disable-trial.md)
+on one Dell/firmware/host/connection tuple; see [limits](display-disable.md).
 
 For long unattended periods, sleep every display (`pmset displaysleepnow`) so
 monitors enter standby and their compensation cycles. Dell documents Pixel
@@ -71,7 +72,7 @@ existing input/luminance results below do not qualify power.
 
 | Method | Expected effect | Concern | Disposition |
 | --- | --- | --- | --- |
-| `CGSConfigureDisplayEnabled` | Remove from topology; monitor may enter standby | Vanishes from enumeration; driver may reject enable | [Implemented, unqualified](display-disable.md) |
+| `CGSConfigureDisplayEnabled` | Remove from topology; monitor may enter standby | Vanishes from enumeration; driver may reject enable | [Implemented; one supervised tuple qualified](display-disable.md) |
 | `IOAVServiceStopLink` / `StartLink` | Names suggest link control | Unverified signatures and WindowServer interaction | Don't invoke on names alone |
 | `DisplayServicesSetPowerMode` | Private power control | No external restore contract | Lower priority |
 | DDC `0xD6` | Firmware power | May stop accepting wake; button may fail too | [Explicit opt-in CLI only; unqualified](ddc-power.md) |
