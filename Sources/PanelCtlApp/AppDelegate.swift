@@ -42,8 +42,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if model.protectionPausedForDisplayRecovery {
             displayHideLogger.error("Startup found unresolved display recovery: \(self.model.handoffStatus?.inspectionCommand ?? "inspect shared display journal", privacy: .public)")
         }
-        let controlServer = AppControlServer { [weak self] request in
-            await self?.handleControlRequest(request) ?? .unavailable()
+        let controlServer = AppControlServer { [weak self] request, receivedAt in
+            await self?.handleControlRequest(request, receivedAt: receivedAt) ?? .unavailable()
         }
         do {
             try controlServer.start()
@@ -574,7 +574,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func handleControlRequest(
-        _ request: AppControlRequest
+        _ request: AppControlRequest,
+        receivedAt: ContinuousClock.Instant
     ) async -> AppControlResponse {
         guard request.protocolVersion == AppControlRequest.currentProtocol else {
             return controlResponse(
@@ -585,7 +586,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         switch request.command {
         case .hide, .show, .toggleHide:
-            return await model.handleDisplayControlRequest(request)
+            return await model.handleDisplayControlRequest(request, receivedAt: receivedAt)
         case .enable:
             model.setProtectionEnabled(true)
         case .disable:

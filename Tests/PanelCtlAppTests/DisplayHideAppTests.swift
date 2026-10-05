@@ -1949,7 +1949,7 @@ final class DisplayHideAppTests: XCTestCase {
         let delegate = AppDelegate()
         delegate.model = model
         let path = "\(try AppControlSocket.userTemporaryDirectory())/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
-        let server = AppControlServer(socketPath: path) { await delegate.handleControlRequest($0) }
+        let server = AppControlServer(socketPath: path) { await delegate.handleControlRequest($0, receivedAt: $1) }
         try server.start()
         defer { server.stop() }
         let target = Self.targetUUID
@@ -2042,6 +2042,77 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(showCalls, 1, "recovery never writes")
     }
 
+    func testScriptToggleThatWaitedBehindAHideIsBusy() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let path = "\(try AppControlSocket.userTemporaryDirectory())/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
+        @Sendable func toggle() throws -> AppControlResponse {
+            try AppControlClient(socketPath: path, launch: { XCTFail("must not launch") })
+                .execute(.toggleHide, targetUUID: Self.targetUUID)
+        }
+        let box = StatusBox(handoffStatus(.none, target: nil, source: nil))
+        var hideCalls = 0
+        var showCalls = 0
+        var waited: Task<AppControlResponse, Error>?
+        let model = makeModel(
+            defaults: defaults, displays: displays, status: { box.value },
+            hideDisplay: { _, _, _ in
+                hideCalls += 1
+                // Hide holds the main thread, as DDC readback does, while a second toggle arrives.
+                waited = Task.detached { try toggle() }
+                Thread.sleep(forTimeInterval: 0.5)
+                box.value = self.handoffStatus(.hidden, target: self.displays[1], source: self.displays[0], journalID: "held", canShow: true)
+                return .notRequested
+            },
+            showDisplay: { _, _ in
+                showCalls += 1
+                box.value = self.handoffStatus(.none, target: nil, source: nil)
+                return .notRequested
+            }
+        )
+        model.setHideEnabled(true, for: displays[1])
+        let delegate = AppDelegate()
+        delegate.model = model
+        let server = AppControlServer(socketPath: path) { await delegate.handleControlRequest($0, receivedAt: $1) }
+        try server.start()
+        defer { server.stop() }
+        let first = try await Task.detached { try toggle() }.value
+        XCTAssertEqual(first.outcome, .done)
+        let second = try await XCTUnwrap(waited).value
+        XCTAssertEqual(second.outcome, .busy, "a toggle that waited doesn\u{2019}t undo the first")
+        XCTAssertEqual(second.exitCode, 1)
+        XCTAssertEqual([hideCalls, showCalls], [1, 0])
+        XCTAssertEqual(model.displayTiles.first { $0.uuid == Self.targetUUID }?.status, .hidden)
+        let next = try await Task.detached { try toggle() }.value
+        XCTAssertEqual(next.outcome, .done, "a request sent after the Hide runs")
+        XCTAssertEqual(showCalls, 1)
+    }
+
+    func testScriptsCanOnlyShowDuringRecovery() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        defaults.set(false, forKey: "experimentalFeaturesEnabled")
+        let box = StatusBox(handoffStatus(.none, target: nil, source: nil))
+        let model = makeModel(defaults: defaults, displays: displays, status: { box.value })
+        let recovery = handoffStatus(.recovery, target: displays[1], source: displays[0], journalID: "unresolved", reason: "target unavailable")
+        func send(_ command: AppControlCommand) async -> AppControlResponse {
+            await model.handleDisplayControlRequest(AppControlRequest(command: command, targetUUID: Self.sourceUUID))
+        }
+        for command in [AppControlCommand.show, .toggleHide] {
+            box.value = handoffStatus(.none, target: nil, source: nil)
+            let hidden = await send(.hide)
+            XCTAssertEqual(hidden.outcome, .done)
+            box.value = recovery
+            let hideAgain = await send(.hide)
+            XCTAssertEqual(hideAgain.outcome, .recoveryNeeded, "even a Hide that changes nothing")
+            XCTAssertEqual(hideAgain.exitCode, 6)
+            let shown = await send(command)
+            XCTAssertEqual(shown.outcome, .done)
+            XCTAssertEqual(shown.summary, "Shown.")
+            XCTAssertFalse(model.isBlackoutHidden(Self.sourceUUID))
+        }
+    }
+
     func testScriptsBlackOutByDefaultAndNeverRestartAHide() async throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
@@ -2107,9 +2178,9 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertFalse(model.preferences.isEnabled)
         let path = "\(try AppControlSocket.userTemporaryDirectory())/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
         var toggleCount = 0
-        let server = AppControlServer(socketPath: path) { request in
+        let server = AppControlServer(socketPath: path) { request, receivedAt in
             if request.command == .toggle { toggleCount += 1 }
-            return await delegate.handleControlRequest(request)
+            return await delegate.handleControlRequest(request, receivedAt: receivedAt)
         }
         try server.start()
         defer { server.stop() }

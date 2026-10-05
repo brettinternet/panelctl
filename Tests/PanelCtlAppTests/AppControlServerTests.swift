@@ -9,7 +9,7 @@ final class AppControlServerTests: XCTestCase {
         let directory = try AppControlSocket.userTemporaryDirectory()
         let path = "\(directory)/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
         var receivedCommand: AppControlCommand?
-        let server = AppControlServer(socketPath: path) { request in
+        let server = AppControlServer(socketPath: path) { request, _ in
             receivedCommand = request.command
             return AppControlResponse(
                 ok: true,
@@ -47,7 +47,7 @@ final class AppControlServerTests: XCTestCase {
     func testStatusRejectsAnUnsupportedResponseFromALiveServer() async throws {
         let directory = try AppControlSocket.userTemporaryDirectory()
         let path = "\(directory)/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
-        let server = AppControlServer(socketPath: path) { _ in
+        let server = AppControlServer(socketPath: path) { _, _ in
             AppControlResponse(
                 protocolVersion: AppControlRequest.currentProtocol + 1,
                 ok: true,
@@ -81,7 +81,7 @@ final class AppControlServerTests: XCTestCase {
     func testStatusRejectsUnavailableResponseFromALiveServer() async throws {
         let directory = try AppControlSocket.userTemporaryDirectory()
         let path = "\(directory)/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
-        let server = AppControlServer(socketPath: path) { _ in
+        let server = AppControlServer(socketPath: path) { _, _ in
             .unavailable()
         }
         try server.start()
@@ -107,7 +107,7 @@ final class AppControlServerTests: XCTestCase {
     @MainActor
     func testDisplayCommandWaitsForItsOperationToFinish() async throws {
         let path = "\(try AppControlSocket.userTemporaryDirectory())/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
-        let server = AppControlServer(socketPath: path) { _ in
+        let server = AppControlServer(socketPath: path) { _, _ in
             // Longer than the one second other commands wait.
             try? await Task.sleep(nanoseconds: 1_300_000_000)
             return AppControlResponse(ok: true, running: true, enabled: false, state: "disabled",
@@ -176,7 +176,7 @@ final class AppControlServerTests: XCTestCase {
     @MainActor
     func testOversizedDisplayStatusDoesNotSilentlyReportSuccess() async throws {
         let path = "\(try AppControlSocket.userTemporaryDirectory())/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
-        let server = AppControlServer(socketPath: path) { _ in
+        let server = AppControlServer(socketPath: path) { _, _ in
             AppControlResponse(ok: true, running: true, enabled: false, state: "disabled", summary: "fixture",
                 displays: [AppControlDisplayStatus(targetUUID: "target", observedState: "separate", operation: "idle",
                     recoveryNeeded: false, lastInputOutcome: DisplayInputOutcome(state: .failed, detail: String(repeating: "x", count: 8192)))])
@@ -189,6 +189,31 @@ final class AppControlServerTests: XCTestCase {
         XCTAssertFalse(response.ok)
         XCTAssertEqual(response.outcome, .refused)
         XCTAssertEqual(response.exitCode, 1)
+    }
+
+    @MainActor
+    func testOversizedOperationResponseKeepsItsResult() async throws {
+        // The display already changed, so dropping detail must not turn the result into a refusal.
+        let long = String(repeating: "x", count: 8192)
+        for (outcome, exitCode) in [(AppControlOutcome.done, Int32(0)), (.partial, 5)] {
+            let path = "\(try AppControlSocket.userTemporaryDirectory())/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
+            let server = AppControlServer(socketPath: path) { _, _ in
+                AppControlResponse(ok: outcome == .done, running: true, enabled: false, state: "disabled",
+                                   summary: "Shown.", detail: long, error: outcome == .done ? nil : long, outcome: outcome,
+                                   displays: [AppControlDisplayStatus(targetUUID: "target", observedState: "separate", operation: "idle",
+                                       recoveryNeeded: false, lastInputOutcome: DisplayInputOutcome(state: .failed, detail: long))])
+            }
+            try server.start()
+            defer { server.stop() }
+            let response = try await Task.detached {
+                try AppControlClient(socketPath: path, launch: {})
+                    .execute(.toggleHide, targetUUID: "00000000-0000-0000-0000-000000000002")
+            }.value
+            XCTAssertEqual(response.outcome, outcome)
+            XCTAssertEqual(response.exitCode, exitCode)
+            XCTAssertEqual(response.summary, "Shown.")
+            XCTAssertNil(response.displays)
+        }
     }
 
     private func connectAndClose(_ path: String) throws {

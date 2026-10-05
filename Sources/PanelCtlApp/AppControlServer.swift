@@ -3,8 +3,9 @@ import Foundation
 import PanelCtlCore
 
 final class AppControlServer {
-    /// Answers one request; a display command answers when its operation finishes.
-    typealias Handler = @MainActor (AppControlRequest) async -> AppControlResponse
+    /// Answers one request, given when it was received; a display command
+    /// answers when its operation finishes.
+    typealias Handler = @MainActor (AppControlRequest, ContinuousClock.Instant) async -> AppControlResponse
 
     private let handler: Handler
     private let configuredSocketPath: String?
@@ -69,12 +70,14 @@ final class AppControlServer {
 
             listener = socket
 
+            // Requests are received off the main thread, so their arrival is
+            // known even while the app is busy.
             let source = DispatchSource.makeReadSource(
                 fileDescriptor: socket,
-                queue: .main
+                queue: clientQueue
             )
             source.setEventHandler { [weak self] in
-                self?.acceptClient()
+                self?.acceptClient(from: socket)
             }
             source.setCancelHandler {
                 Darwin.close(socket)
@@ -95,8 +98,7 @@ final class AppControlServer {
         removeOwnedSocket()
     }
 
-    private func acceptClient() {
-        guard listener >= 0 else { return }
+    private func acceptClient(from listener: Int32) {
         let client = Darwin.accept(listener, nil, nil)
         guard client >= 0 else { return }
 
@@ -148,14 +150,15 @@ final class AppControlServer {
                 return
             }
             let decoded = try JSONDecoder().decode(AppControlRequest.self, from: request)
+            let receivedAt = ContinuousClock.now
             Task { @MainActor [weak self] in
                 guard let self else {
                     Darwin.close(client)
                     return
                 }
-                let response = await handler(decoded)
+                let response = await handler(decoded, receivedAt)
                 clientQueue.async {
-                    Self.write(response, to: client)
+                    Self.write(response, for: decoded.command, to: client)
                 }
             }
         } catch {
@@ -167,7 +170,7 @@ final class AppControlServer {
                 summary: "Invalid control request",
                 error: error.localizedDescription
             )
-            Self.write(response, to: client)
+            Self.write(response, for: nil, to: client)
         }
     }
 
@@ -196,9 +199,9 @@ final class AppControlServer {
         throw AppControlError.messageTooLarge
     }
 
-    private static func write(_ response: AppControlResponse, to client: Int32) {
+    private static func write(_ response: AppControlResponse, for command: AppControlCommand?, to client: Int32) {
         defer { Darwin.close(client) }
-        guard var data = encodedResponse(response) else { return }
+        guard var data = encodedResponse(response, for: command) else { return }
         data.append(0x0A)
 
         var written = 0
@@ -221,7 +224,8 @@ final class AppControlServer {
     }
 
     private static func encodedResponse(
-        _ response: AppControlResponse
+        _ response: AppControlResponse,
+        for command: AppControlCommand?
     ) -> Data? {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -230,18 +234,21 @@ final class AppControlServer {
             return data
         }
 
+        // Status can't drop its display evidence, so an oversized status
+        // fails. Any other response, such as a Hide's, keeps its result.
+        let failsStatus = command == .status && response.displays != nil
         let requiredFieldsOnly = AppControlResponse(
             protocolVersion: response.protocolVersion,
-            ok: response.displays == nil ? response.ok : false,
+            ok: failsStatus ? false : response.ok,
             running: response.running,
             enabled: response.enabled,
             state: String(response.state.prefix(64)),
-            summary: response.displays == nil
-                ? String(response.summary.prefix(512))
-                : "Response exceeded the control message limit; no complete status is available.",
-            error: response.displays == nil ? response.error.map { String($0.prefix(512)) }
-                : "Check PanelCtl Settings \u{2192} Displays; do not infer an operation result.",
-            outcome: response.displays == nil ? response.outcome : .refused
+            summary: failsStatus
+                ? "Response exceeded the control message limit; no complete status is available."
+                : String(response.summary.prefix(512)),
+            error: failsStatus ? "Check PanelCtl Settings \u{2192} Displays; do not infer an operation result."
+                : response.error.map { String($0.prefix(512)) },
+            outcome: failsStatus ? .refused : response.outcome
         )
         guard let data = try? encoder.encode(requiredFieldsOnly),
               data.count + 1 <= AppControlSocket.messageLimit else {

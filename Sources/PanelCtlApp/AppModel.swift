@@ -64,6 +64,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var protectionQuiescencePending = false
     @Published private(set) var protectionQuiescenceFailure: String?
     @Published private(set) var displayLifecycleTransitioning = false
+    /// When a display was last hidden or shown. A script request received
+    /// before then waited behind that change, such as while the main thread
+    /// switched displays.
+    private var lastHideOrShowFinished: ContinuousClock.Instant?
     @Published private(set) var runtimeState: ProtectionRuntimeState = .disabled {
         didSet {
             if runtimeState != oldValue {
@@ -593,6 +597,7 @@ final class AppModel: ObservableObject {
 
     /// Automation restarts without the hidden displays and counts idle time anew.
     private func hiddenDisplaysChanged() {
+        lastHideOrShowFinished = .now
         manualActivityDate = now()
         reconcileProtection(restartWatcher: true)
         onStatusChange?()
@@ -982,8 +987,11 @@ final class AppModel: ObservableObject {
     /// Runs Hide, Show or Toggle Hide for a script, like the display's Hide or
     /// Show button, and answers when it finishes. A request that can't run now
     /// is refused, never queued for later. The response includes only the
-    /// requested display, which keeps it well inside the message limit.
-    func handleDisplayControlRequest(_ request: AppControlRequest) async -> AppControlResponse {
+    /// requested display.
+    func handleDisplayControlRequest(
+        _ request: AppControlRequest,
+        receivedAt: ContinuousClock.Instant = .now
+    ) async -> AppControlResponse {
         func response(_ outcome: AppControlOutcome, _ summary: String,
                       detail: String? = nil, error: String? = nil) -> AppControlResponse {
             let ok = outcome == .done || outcome == .noOp
@@ -1004,6 +1012,11 @@ final class AppModel: ObservableObject {
         guard !hideOperation.isBusy else {
             return response(.busy, DisplayHideError.actionInProgress.localizedDescription)
         }
+        // Acting on a request that waited would act on a state its sender
+        // didn't see; a second Toggle Hide would undo the first.
+        if let finished = lastHideOrShowFinished, receivedAt < finished {
+            return response(.busy, "Another Hide or Show finished while this request waited. Check the display, then try again.")
+        }
         refreshDisplays()
         guard handoffStatus?.state != .busy else {
             return response(.busy, "Another display operation is running. Try again when it finishes.")
@@ -1019,10 +1032,8 @@ final class AppModel: ObservableObject {
         case .show: action = .show
         default: action = hidden ? .show : .hide
         }
-        // While recovery is unresolved, scripts can only show the hidden display,
-        // which is the way out, or change a display that PanelCtl blacked out.
-        if let problem = displayRecoveryProblem, !isBlackoutHidden(uuid),
-           !(action == .show && tile?.action == .show) {
+        // While recovery is unresolved, scripts can only show a hidden display.
+        if let problem = displayRecoveryProblem, !(action == .show && tile?.action == .show) {
             return response(.recoveryNeeded, problem)
         }
         guard let tile else {
@@ -1865,6 +1876,7 @@ final class AppModel: ObservableObject {
             inputNeedsAttention: line?.needsAttention ?? false
         )
         displayResults[targetUUID.lowercased()] = result
+        lastHideOrShowFinished = .now
         onStatusChange?()
         completion?(result)
     }

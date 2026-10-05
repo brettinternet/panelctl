@@ -151,11 +151,11 @@ single Stream Deck button; `hide` and `show` set one state. A display already
 in the requested state returns `no-op`, with no repeated input switch. The
 command waits up to 30 seconds for the Hide or Show to finish and reports the
 result. A request that can't run now is refused, never queued: another Hide or
-Show is running, displays are asleep or changing, no connected display has the
-UUID, the display can't be hidden, or it is the last visible display. While
-display recovery is unresolved, scripts can only show hidden displays; other
-requests return `recovery-needed`. Only these commands hide a display; idle,
-startup, wake and reconnection never do.
+Show is running or finished while the request waited, displays are asleep or
+changing, no connected display has the UUID, the display can't be hidden, or it
+is the last visible display. While display recovery is unresolved, scripts can
+only show hidden displays; other requests return `recovery-needed`. Only these
+commands hide a display; idle, startup, wake and reconnection never do.
 
 For a Shortcut, use **Run Shell Script** with the bundled CLI and capture the
 JSON even on a nonzero result:
@@ -194,7 +194,8 @@ A partial input result can coexist with a restored desktop; repeated Show is
 still a successful no-op, while status retains the warning. Status `ok: true`
 means inspection answered, not that every display/input operation succeeded:
 check `outcome` and the exit code. Oversized status fails explicitly rather than
-silently dropping recovery/input evidence.
+silently dropping recovery/input evidence; an oversized Hide or Show reply keeps
+its `outcome` and `summary` but omits `displays` and `detail`.
 
 Existing enable/disable/toggle, blackout-now, restore, snooze/resume and sleep-now
 retain their meanings. Restore only removes protection; it never Shows or
