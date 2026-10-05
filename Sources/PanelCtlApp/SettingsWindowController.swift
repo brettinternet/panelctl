@@ -1,9 +1,50 @@
 import AppKit
+import Combine
 import SwiftUI
+
+enum SettingsTab: String, CaseIterable {
+    case displays
+    case automation
+    case general
+
+    var title: String {
+        switch self {
+        case .displays: return "Displays"
+        case .automation: return "Automation"
+        case .general: return "General"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .displays: return "display.2"
+        case .automation: return "timer"
+        case .general: return "gearshape"
+        }
+    }
+
+    var toolbarIdentifier: NSToolbarItem.Identifier {
+        NSToolbarItem.Identifier("PanelCtlSettings.\(rawValue)")
+    }
+
+    init?(toolbarIdentifier: NSToolbarItem.Identifier) {
+        guard let tab = Self.allCases.first(where: { $0.toolbarIdentifier == toolbarIdentifier }) else {
+            return nil
+        }
+        self = tab
+    }
+}
+
+/// Selected Settings tab, shared by the AppKit toolbar and the SwiftUI content.
+@MainActor
+final class SettingsNavigation: ObservableObject {
+    @Published var tab: SettingsTab = .displays
+}
 
 private final class SettingsWindow: NSWindow {
     private var enforcedMinSize: NSSize?
     private var enforcedMaxSize: NSSize?
+    var onSelectTab: ((SettingsTab) -> Void)?
 
     override var minSize: NSSize {
         get { enforcedMinSize ?? super.minSize }
@@ -21,36 +62,67 @@ private final class SettingsWindow: NSWindow {
         super.minSize = minSize
         super.maxSize = maxSize
     }
+
+    /// Command-1 through Command-3 select tabs, so the keyboard reaches every
+    /// tab without Full Keyboard Access.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.type == .keyDown,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           let number = event.charactersIgnoringModifiers.flatMap({ Int($0) }),
+           SettingsTab.allCases.indices.contains(number - 1) {
+            onSelectTab?(SettingsTab.allCases[number - 1])
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
 }
 
 @MainActor
-final class SettingsWindowController: NSWindowController, NSWindowDelegate {
+final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
+    static let windowIdentifier = NSUserInterfaceItemIdentifier("PanelCtlSettingsWindow")
+
+    private let navigation: SettingsNavigation
+    private var tabSubscription: AnyCancellable?
+
     init(model: AppModel) {
-        let hostingView = NSHostingView(rootView: SettingsView(model: model))
+        let navigation = SettingsNavigation()
+        self.navigation = navigation
+        let hostingView = NSHostingView(rootView: SettingsView(model: model, navigation: navigation))
         let window = SettingsWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 590),
-            styleMask: [
-                .titled,
-                .closable,
-                .miniaturizable,
-                .resizable,
-                .fullSizeContentView
-            ],
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 600),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "PanelCtl Settings"
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
+        window.identifier = Self.windowIdentifier
         window.contentView = hostingView
         window.autorecalculatesKeyViewLoop = true
         window.standardWindowButton(.zoomButton)?.isEnabled = false
         window.isReleasedWhenClosed = false
-        window.setFrameAutosaveName("PanelCtlSettingsWindow")
-        window.center()
         super.init(window: window)
         window.delegate = self
+
+        let toolbar = NSToolbar(identifier: "PanelCtlSettingsToolbar")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconAndLabel
+        toolbar.allowsUserCustomization = false
+        window.toolbar = toolbar
+        window.toolbarStyle = .preference
+        window.onSelectTab = { [weak self] in self?.select($0) }
+        tabSubscription = navigation.$tab.sink { [weak window] tab in
+            window?.toolbar?.selectedItemIdentifier = tab.toolbarIdentifier
+            window?.title = tab.title
+        }
+
+        window.setFrameAutosaveName("PanelCtlSettingsWindow")
+        window.center()
         applySizeConstraints(to: window)
+    }
+
+    var selectedTab: SettingsTab { navigation.tab }
+
+    func select(_ tab: SettingsTab) {
+        navigation.tab = tab
     }
 
     private func applySizeConstraints(to window: SettingsWindow) {
@@ -99,5 +171,40 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         showWindow(nil)
         window.makeKeyAndOrderFront(nil)
         applySizeConstraints(to: window)
+    }
+
+    // MARK: NSToolbarDelegate
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        SettingsTab.allCases.map(\.toolbarIdentifier)
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarDefaultItemIdentifiers(toolbar)
+    }
+
+    func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarDefaultItemIdentifiers(toolbar)
+    }
+
+    func toolbar(
+        _ toolbar: NSToolbar,
+        itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+        willBeInsertedIntoToolbar flag: Bool
+    ) -> NSToolbarItem? {
+        guard let tab = SettingsTab(toolbarIdentifier: itemIdentifier) else { return nil }
+        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+        item.label = tab.title
+        item.paletteLabel = tab.title
+        item.toolTip = tab.title
+        item.image = NSImage(systemSymbolName: tab.systemImage, accessibilityDescription: tab.title)
+        item.target = self
+        item.action = #selector(toolbarItemSelected(_:))
+        return item
+    }
+
+    @objc private func toolbarItemSelected(_ sender: NSToolbarItem) {
+        guard let tab = SettingsTab(toolbarIdentifier: sender.itemIdentifier) else { return }
+        select(tab)
     }
 }

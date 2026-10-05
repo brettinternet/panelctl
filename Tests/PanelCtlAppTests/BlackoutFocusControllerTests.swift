@@ -77,7 +77,7 @@ final class BlackoutFocusControllerTests: XCTestCase {
     }
 
     func testModeAwareActionAndRequestSummaries() {
-        XCTAssertEqual(AppDelegate.blackoutActionTitle(for: .blocking), "Blackout Now")
+        XCTAssertEqual(AppDelegate.blackoutActionTitle(for: .blocking), "Black Out Now")
         XCTAssertEqual(AppDelegate.blackoutActionTitle(for: .working), "Dim Now")
         XCTAssertEqual(
             AppDelegate.blackoutRequestSummary(for: .blocking, succeeded: true),

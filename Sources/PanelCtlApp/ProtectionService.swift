@@ -25,8 +25,8 @@ enum ProtectionRuntimeState: Equatable {
 
     var label: String {
         switch self {
-        case .disabled: return "Disabled"
-        case .snoozed: return "Protection snoozed"
+        case .disabled: return "Automation off"
+        case .snoozed: return "Automation paused"
         case .starting: return "Starting…"
         case .waiting: return "Watching for inactivity"
         case .waitingForInput: return "Waiting for activity"
@@ -411,9 +411,9 @@ final class ProtectionService {
                 if status.cleanupSucceeded == true {
                     unresolvedCleanupFailure = nil
                 } else if status.cleanupSucceeded == false {
-                    unresolvedCleanupFailure = "Hardware brightness cleanup failed; retry protection cleanup before hiding a display."
+                    unresolvedCleanupFailure = "Hardware brightness cleanup failed; retry automation cleanup before hiding a display."
                 } else {
-                    unresolvedCleanupFailure = "Protection cleanup could not be verified; retry protection cleanup before hiding a display."
+                    unresolvedCleanupFailure = "Automation cleanup could not be verified; retry automation cleanup before hiding a display."
                 }
             }
             if state == .stopping {
@@ -552,9 +552,9 @@ final class ProtectionService {
             if cleanupResultObserved == true {
                 unresolvedCleanupFailure = nil
             } else if cleanupResultObserved == false {
-                unresolvedCleanupFailure = "Hardware brightness cleanup failed; retry protection cleanup before hiding a display."
+                unresolvedCleanupFailure = "Hardware brightness cleanup failed; retry automation cleanup before hiding a display."
             } else {
-                unresolvedCleanupFailure = "Protection cleanup could not be verified; retry protection cleanup before hiding a display."
+                unresolvedCleanupFailure = "Automation cleanup could not be verified; retry automation cleanup before hiding a display."
             }
         }
 
@@ -572,7 +572,7 @@ final class ProtectionService {
                 (finished.terminationReason != .exit || finished.terminationStatus != 0)
                 ? String(data: errorBuffer, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .nonEmpty ?? "The protection helper did not exit cleanly (status \(finished.terminationStatus))."
+                    .nonEmpty ?? "The automation helper did not exit cleanly (status \(finished.terminationStatus))."
                 : nil
             let stopFailure = unresolvedCleanupFailure ?? (stopCompletions.isEmpty ? nil : processFailure)
             cleanupResultObserved = nil

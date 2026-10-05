@@ -14,6 +14,7 @@ typealias ProtectionQuiesce = (@escaping (Bool, String?) -> Void) -> Void
 @MainActor
 final class AppModel: ObservableObject {
     static let githubURL = URL(string: "https://github.com/brettinternet/panelctl")!
+    static let experimentalDocsURL = URL(string: "https://github.com/brettinternet/panelctl/blob/main/docs/display-hide-ux.md")!
 
     @Published var preferences: ProtectionPreferences {
         didSet {
@@ -27,6 +28,14 @@ final class AppModel: ObservableObject {
         didSet {
             guard showMenuBarIcon != oldValue else { return }
             defaults.set(showMenuBarIcon, forKey: Self.showMenuBarIconKey)
+            onStatusChange?()
+        }
+    }
+    /// Gates experimental display features. Show and recovery never depend on it.
+    @Published private(set) var experimentalFeaturesEnabled: Bool {
+        didSet {
+            guard experimentalFeaturesEnabled != oldValue else { return }
+            defaults.set(experimentalFeaturesEnabled, forKey: Self.experimentalFeaturesKey)
             onStatusChange?()
         }
     }
@@ -71,6 +80,7 @@ final class AppModel: ObservableObject {
     }
     @Published private(set) var launchAtLoginEnabled: Bool
     @Published var notice: AppNotice?
+    @Published var experimentalConsentPending = false
     @Published private(set) var countdownDate = Date()
 
     var onStatusChange: (() -> Void)?
@@ -93,6 +103,7 @@ final class AppModel: ObservableObject {
     private static let preferencesKey = "blackoutPreferences"
     private static let hidePreferencesKey = "displayHidePreferences"
     private static let showMenuBarIconKey = "showMenuBarIcon"
+    private static let experimentalFeaturesKey = "experimentalFeaturesEnabled"
     private static let snoozedUntilKey = "snoozedUntil"
     static let maximumSnoozeDuration: TimeInterval = 30 * 24 * 60 * 60
 
@@ -133,6 +144,7 @@ final class AppModel: ObservableObject {
         self.checkDDCInput = checkDDCInput
         self.quiesceProtection = quiesceProtection
         self.showMenuBarIcon = defaults.object(forKey: Self.showMenuBarIconKey) as? Bool ?? true
+        self.experimentalFeaturesEnabled = defaults.bool(forKey: Self.experimentalFeaturesKey)
         let loadedHidePreferences = defaults.data(forKey: Self.hidePreferencesKey)
             .flatMap { try? JSONDecoder().decode(DisplayHidePreferences.self, from: $0) }
         self.hidePreferences = loadedHidePreferences ?? DisplayHidePreferences()
@@ -196,7 +208,7 @@ final class AppModel: ObservableObject {
     }
 
     var menuHideConfigurations: [DisplayHideConfiguration] {
-        guard !protectionPausedForDisplayRecovery else { return [] }
+        guard experimentalFeaturesEnabled, !protectionPausedForDisplayRecovery else { return [] }
         return hideDisplayConfigurations.filter {
             $0.enabled && hideReadinessMessage(for: $0) == nil
         }
@@ -294,13 +306,13 @@ final class AppModel: ObservableObject {
     var hiddenMirrorProtectionSummary: String {
         guard protectionPausedForDisplayRecovery else { return statusSummary }
         if let failure = protectionQuiescenceFailure {
-            return "Protection paused while desktop is hidden · cleanup needs attention: \(failure)"
+            return "Automation suspended while desktop is hidden · cleanup needs attention: \(failure)"
         }
         if protectionQuiescencePending {
-            return "Protection paused while desktop is hidden · waiting for cleanup to finish"
+            return "Automation suspended while desktop is hidden · waiting for cleanup to finish"
         }
         if displayLifecycleTransitioning {
-            return "Protection paused while desktop is hidden · display transition in progress"
+            return "Automation suspended while desktop is hidden · display transition in progress"
         }
         if hiddenMirrorOverlayPolicyEligible, let source = selectedHiddenMirrorSource {
             let name = source.name ?? "Display \(source.id)"
@@ -308,36 +320,36 @@ final class AppModel: ObservableObject {
             case .blackedOut:
                 return "Desktop hidden · overlay blackout on \(name); mirrored target is black on the Mac input"
             case .starting:
-                return "Desktop hidden · overlay protection is starting on \(name); brightness dimming and automatic Sleep are suspended"
+                return "Desktop hidden · automation is starting on \(name); brightness dimming and automatic Sleep are suspended"
             case .waiting:
-                return "Desktop hidden · overlay protection watching \(name); brightness dimming and automatic Sleep are suspended"
+                return "Desktop hidden · automation watching \(name); brightness dimming and automatic Sleep are suspended"
             case .waitingForInput:
-                return "Desktop hidden · overlay protection waiting for fresh activity on \(name)"
+                return "Desktop hidden · automation waiting for fresh activity on \(name)"
             case .waitingForPlayback:
-                return "Desktop hidden · overlay protection paused while media or camera activity is detected on \(name)"
+                return "Desktop hidden · automation paused while media or camera activity is detected on \(name)"
             case .sleeping:
-                return "Desktop hidden · overlay protection paused while displays sleep"
+                return "Desktop hidden · automation paused while displays sleep"
             case .stopping:
-                return "Desktop hidden · overlay protection is stopping on \(name)"
+                return "Desktop hidden · automation is stopping on \(name)"
             case .waitingForDisplays(let message):
-                return "Desktop hidden · overlay protection waiting for displays: \(message)"
+                return "Desktop hidden · automation waiting for displays: \(message)"
             case .failed(let message):
-                return "Desktop hidden · overlay protection failed on \(name): \(message)"
+                return "Desktop hidden · automation failed on \(name): \(message)"
             case .disabled:
-                return "Desktop hidden · overlay protection is disabled on \(name)"
+                return "Desktop hidden · automation is off on \(name)"
             case .snoozed:
-                return "Protection snoozed while desktop is hidden"
+                return "Automation paused while desktop is hidden"
             }
         }
         if let source = verifiedHiddenMirrorSource {
             let name = source.name ?? "Display \(source.id)"
             if preferences.isEnabled && snoozedUntil == nil {
-                return "Protection paused while hidden · \(name) is not selected for OLED protection"
+                return "Automation suspended while hidden · \(name) is not in the idle display list"
             }
-            if snoozedUntil != nil { return "Protection snoozed while desktop is hidden" }
-            return "Protection disabled while desktop is hidden"
+            if snoozedUntil != nil { return "Automation paused while desktop is hidden" }
+            return "Automation off while desktop is hidden"
         }
-        return "Protection paused because the hidden desktop/recovery state is not eligible for an overlay"
+        return "Automation suspended until display recovery finishes"
     }
 
     var hideConfigurationFrozen: Bool {
@@ -438,12 +450,12 @@ final class AppModel: ObservableObject {
         return isDisplayMirrored(display.id) ? "Mirrored outside PanelCtl" : "Separate"
     }
 
-    func protectionSelectionState(for configuration: DisplayHideConfiguration) -> String {
-        if preferences.allDisplays { return "Selected by OLED protection" }
+    func automationSelectionState(for configuration: DisplayHideConfiguration) -> String {
+        if preferences.allDisplays { return "Included (all displays)" }
         let selected = preferences.selectedDisplayUUIDs.contains {
             $0.caseInsensitiveCompare(configuration.target.uuid) == .orderedSame
         }
-        return selected ? "Selected for OLED protection" : "Not selected for OLED protection"
+        return selected ? "Included" : "Not included"
     }
 
     func setHideEnabled(_ enabled: Bool, for display: DisplayRecord) {
@@ -629,7 +641,7 @@ final class AppModel: ObservableObject {
             }
             do {
                 _ = try makeShowRequest()
-                return response(.confirmationRequired, "Show requires confirmation of the journaled layout and saved Mac input. Open PanelCtl Settings → Displays and choose Show. Protection may remain disabled or snoozed.")
+                return response(.confirmationRequired, "Show requires confirmation of the journaled layout and saved Mac input. Open PanelCtl Settings → Displays and choose Show. Automation may remain off or paused.")
             } catch {
                 return response(.recoveryNeeded, error.localizedDescription)
             }
@@ -646,7 +658,7 @@ final class AppModel: ObservableObject {
         }
         do {
             _ = try makeHideRequest(targetUUID: uuid)
-            return response(.confirmationRequired, "Hide requires confirmation of the saved source, optional inputs, protection suspension and manual fallback. Open PanelCtl Settings → Displays and choose Hide.")
+            return response(.confirmationRequired, "Hide requires confirmation of the saved source, optional inputs, automation suspension and manual fallback. Open PanelCtl Settings → Displays and choose Hide.")
         } catch {
             return response(.refused, error.localizedDescription)
         }
@@ -654,9 +666,12 @@ final class AppModel: ObservableObject {
 
     func makeHideRequest(targetUUID: String) throws -> DisplayHideRequest {
         guard !hideOperation.isBusy else { throw DisplayHideError.actionInProgress }
+        guard experimentalFeaturesEnabled else {
+            throw DisplayHideError.unavailable("Turn on Experimental features in Settings → General to remove a display from the desktop.")
+        }
         guard !displayLifecycleTransitioning else { throw DisplayHideError.sleeping }
         guard protectionQuiescenceFailure == nil else {
-            throw DisplayHideError.protectionCleanup(protectionQuiescenceFailure ?? "Protection cleanup needs attention.")
+            throw DisplayHideError.protectionCleanup(protectionQuiescenceFailure ?? "Automation cleanup needs attention.")
         }
         guard handoffInspectionFailure == nil,
               handoffStatus?.state == DisplayHandoffStatus.State.none else {
@@ -736,7 +751,7 @@ final class AppModel: ObservableObject {
         guard !hideOperation.isBusy else { throw DisplayHideError.actionInProgress }
         guard !displayLifecycleTransitioning else { throw DisplayHideError.sleeping }
         guard !protectionQuiescencePending else {
-            throw DisplayHideError.recoveryBlocksAction("PanelCtl is still stopping protection before display recovery. Wait, then Refresh.")
+            throw DisplayHideError.recoveryBlocksAction("PanelCtl is still stopping automation before display recovery. Wait, then Refresh.")
         }
         refreshHandoffStatus()
         guard handoffInspectionFailure == nil,
@@ -925,7 +940,7 @@ final class AppModel: ObservableObject {
             hiddenOverlaySource = selectedHiddenMirrorSource
             guard hiddenOverlaySource != nil else {
                 throw DisplayHideError.recoveryBlocksAction(
-                    "Blackout Now is unavailable during display recovery unless the shared journal verifies Hidden by PanelCtl and its exact mirror source is selected. Show or review recovery; no display change was requested."
+                    "Black Out Now is unavailable during display recovery unless the shared journal verifies Hidden by PanelCtl and its exact mirror source is in the idle display list. Show or review recovery; no display change was requested."
                 )
             }
         } else {
@@ -937,7 +952,7 @@ final class AppModel: ObservableObject {
         do {
             if let hiddenOverlaySource {
                 guard let overlayArguments = try preferences.hiddenMirrorOverlayArguments(for: hiddenOverlaySource) else {
-                    throw DisplayHideError.recoveryBlocksAction("Select the journaled mirror source for OLED protection before requesting Blackout Now.")
+                    throw DisplayHideError.recoveryBlocksAction("Add the journaled mirror source to the idle display list before using Black Out Now.")
                 }
                 arguments = overlayArguments
             } else {
@@ -1046,6 +1061,22 @@ final class AppModel: ObservableObject {
 
     func setShowMenuBarIcon(_ enabled: Bool) {
         showMenuBarIcon = enabled
+    }
+
+    /// Turning Experimental features on only asks for consent; Settings
+    /// presents it and calls `acceptExperimentalConsent()`.
+    func setExperimentalFeaturesEnabled(_ enabled: Bool) {
+        if enabled {
+            experimentalConsentPending = !experimentalFeaturesEnabled
+        } else {
+            experimentalConsentPending = false
+            experimentalFeaturesEnabled = false
+        }
+    }
+
+    func acceptExperimentalConsent() {
+        experimentalConsentPending = false
+        experimentalFeaturesEnabled = true
     }
 
     func refreshLaunchAtLoginStatus() {
@@ -1272,7 +1303,7 @@ final class AppModel: ObservableObject {
                 self.protectionQuiescencePending = false
                 self.protectionQuiescenceFailure = succeeded
                     ? nil
-                    : (message ?? "Protection cleanup could not be verified.")
+                    : (message ?? "Automation cleanup could not be verified.")
                 if self.handoffStatus?.hasUnresolvedJournal != true,
                    self.handoffInspectionFailure == nil,
                    self.hideOperation == .idle,
@@ -1413,14 +1444,14 @@ final class AppModel: ObservableObject {
     ) {
         guard hideOperation == .hiding(request.target.uuid) else { return }
         if !cleanupSucceeded {
-            let failure = cleanupFailure ?? "Protection cleanup could not be verified."
+            let failure = cleanupFailure ?? "Automation cleanup could not be verified."
             protectionQuiescenceFailure = failure
             hideOperation = .idle
             refreshHandoffStatus()
             reconcileProtection()
             presentDisplayError(
                 "Hide not started",
-                error: DisplayHideError.protectionCleanup("PanelCtl could not confirm that blackout/dimming cleanup finished: \(failure) No desktop change was attempted; inspect protection status and try again only after it is clear.")
+                error: DisplayHideError.protectionCleanup("PanelCtl could not confirm that blackout/dimming cleanup finished: \(failure) No desktop change was attempted; inspect automation status and try again only after it is clear.")
             )
             onStatusChange?()
             return
@@ -1451,7 +1482,7 @@ final class AppModel: ObservableObject {
             reconcileProtection()
             notice = AppNotice(
                 title: "Desktop hidden",
-                message: "Desktop: \(request.target.name ?? request.target.uuid) is hidden by mirroring \(request.source.name ?? request.source.uuid). The Mac signal remains on; modes/HDR may change. While the journal and topology verify Hidden by PanelCtl, app protection may cover only the selected source with an overlay; the mirrored target also appears black on the Mac input. Brightness dimming and automatic follow-up Sleep stay suspended; activity/Restore affect only the overlay and Show remains explicit. Unknown, stale, busy, unselected, or recovery-needed state keeps protection paused.\n\(inputSummary(inputOutcome, purpose: "Other computer", warning: request.awayInputWarning))",
+                message: "Desktop: \(request.target.name ?? request.target.uuid) is hidden by mirroring \(request.source.name ?? request.source.uuid). The Mac signal remains on; modes/HDR may change. While the journal and topology verify Hidden by PanelCtl, automation may cover only the selected source with an overlay; the mirrored target also appears black on the Mac input. Brightness dimming and automatic follow-up Sleep stay suspended; activity/Restore affect only the overlay and Show remains explicit. Unknown, stale, busy, unselected, or recovery-needed state keeps automation suspended.\n\(inputSummary(inputOutcome, purpose: "Other computer", warning: request.awayInputWarning))",
                 opensLoginItemSettings: false
             )
         } catch {
@@ -1483,13 +1514,13 @@ final class AppModel: ObservableObject {
         if cleanupSucceeded {
             protectionQuiescenceFailure = nil
         } else {
-            protectionQuiescenceFailure = cleanupFailure ?? "Protection cleanup could not be verified."
+            protectionQuiescenceFailure = cleanupFailure ?? "Automation cleanup could not be verified."
             hideOperation = .idle
             reconcileProtection()
             onShowCompletion?(false)
             presentDisplayError(
                 "Show not started",
-                message: "PanelCtl could not verify that the source overlay was quiesced: \(protectionQuiescenceFailure ?? "protection cleanup failed"). No topology or monitor-input action was attempted. Retry protection cleanup, then Refresh and confirm Show again."
+                message: "PanelCtl could not verify that the source overlay was quiesced: \(protectionQuiescenceFailure ?? "automation cleanup failed"). No topology or monitor-input action was attempted. Retry automation cleanup, then Refresh and confirm Show again."
             )
             onStatusChange?()
             return
@@ -1539,7 +1570,7 @@ final class AppModel: ObservableObject {
             hideOperation = .idle
             rearmProtectionAfterDisplayRecovery()
             let protectionStatus = protectionQuiescenceFailure.map {
-                "Protection cleanup still needs attention: \($0) PanelCtl protection remains paused."
+                "Automation cleanup still needs attention: \($0) Automation remains suspended."
             } ?? ""
             notice = AppNotice(
                 title: "Desktop restored",

@@ -215,7 +215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             (runtimeState == .blackedOut || hasBlackedOutDisplays)
     }
     static func blackoutActionTitle(for mode: BlackoutMode) -> String {
-        mode == .working ? "Dim Now" : "Blackout Now"
+        mode == .working ? "Dim Now" : "Black Out Now"
     }
 
     static func blackoutRequestSummary(
@@ -306,14 +306,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        let toggleTitle = model.preferences.isEnabled
-            ? "Disable Protection"
-            : "Enable Protection"
-        menu.addItem(item(toggleTitle, action: #selector(toggleProtection)))
-        if model.snoozedUntil != nil {
-            menu.addItem(item("Resume Protection", action: #selector(resumeProtection)))
-        }
-
         switch model.runtimeState {
         case .blackedOut, .sleeping:
             menu.addItem(restoreMenuItem())
@@ -326,19 +318,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.addItem(restoreMenuItem())
             }
         }
-        menu.addItem(item("Sleep All Now", action: #selector(sleepAllNow)))
-
-        if model.preferences.isEnabled, model.snoozedUntil == nil {
-            let snoozeMenuItem = NSMenuItem(title: "Snooze", action: nil, keyEquivalent: "")
+        menu.addItem(item("Sleep Displays", action: #selector(sleepAllNow)))
+        if !model.preferences.isEnabled {
+            menu.addItem(item("Turn On Automation", action: #selector(toggleProtection)))
+        } else if model.snoozedUntil != nil {
+            menu.addItem(item("Resume Automation", action: #selector(resumeProtection)))
+            menu.addItem(item("Turn Off Automation", action: #selector(toggleProtection)))
+        } else {
+            let pauseMenuItem = NSMenuItem(title: "Pause Automation", action: nil, keyEquivalent: "")
             let submenu = NSMenu()
             submenu.autoenablesItems = false
-            submenu.addItem(snoozeItem("30 Minutes", duration: 30 * 60))
-            submenu.addItem(snoozeItem("1 Hour", duration: 60 * 60))
+            submenu.addItem(snoozeItem("For 30 Minutes", duration: 30 * 60))
+            submenu.addItem(snoozeItem("For 1 Hour", duration: 60 * 60))
             submenu.addItem(item("Until Tomorrow", action: #selector(snoozeUntilTomorrow)))
-            snoozeMenuItem.submenu = submenu
-            menu.addItem(snoozeMenuItem)
+            submenu.addItem(.separator())
+            submenu.addItem(item("Turn Off Automation", action: #selector(toggleProtection)))
+            pauseMenuItem.submenu = submenu
+            menu.addItem(pauseMenuItem)
         }
 
+        if showsHideMenuSection {
+            addHideMenuSection(to: menu)
+        }
+        menu.addItem(.separator())
+
+        if model.runtimeState.errorMessage != nil, model.preferences.isEnabled {
+            menu.addItem(item("Retry Automation", action: #selector(retryProtection)))
+        }
+
+        menu.addItem(item("Settings…", action: #selector(openSettings), key: ","))
+        menu.addItem(.separator())
+        menu.addItem(item("Quit PanelCtl", action: #selector(quit), key: "q"))
+        return menu
+    }
+
+    /// Hide controls follow the Experimental flag; recovery stays reachable without it.
+    private var showsHideMenuSection: Bool {
+        model.experimentalFeaturesEnabled || model.handoffStatus?.hasUnresolvedJournal == true ||
+            model.handoffInspectionFailure != nil || model.hideOperation.isBusy
+    }
+
+    private func addHideMenuSection(to menu: NSMenu) {
         menu.addItem(.separator())
         let hideHeading = NSMenuItem(title: "Hide a desktop · Experimental", action: nil, keyEquivalent: "")
         hideHeading.isEnabled = false
@@ -361,6 +381,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 } else {
                     menu.addItem(item("Review display recovery…", action: #selector(reviewDisplayRecovery)))
                 }
+            } else if model.handoffInspectionFailure != nil {
+                menu.addItem(item("Review display recovery…", action: #selector(reviewDisplayRecovery)))
             } else if model.displayLifecycleTransitioning {
                 disabledMenuItem("Display transition in progress · Refresh after wake", in: menu)
             } else if model.menuHideConfigurations.isEmpty {
@@ -376,17 +398,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }
-        menu.addItem(.separator())
-
-        if model.runtimeState.errorMessage != nil, model.preferences.isEnabled {
-            menu.addItem(item("Retry Watcher", action: #selector(retryProtection)))
-        }
-
-        menu.addItem(item("Settings…", action: #selector(openSettings), key: ","))
-        menu.addItem(item("View on GitHub", action: #selector(openGitHub)))
-        menu.addItem(.separator())
-        menu.addItem(item("Quit PanelCtl", action: #selector(quit), key: "q"))
-        return menu
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -432,7 +443,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleProtection() {
         model.setProtectionEnabled(!model.preferences.isEnabled)
         if model.preferences.isEnabled, model.validationMessage != nil {
-            showSettings()
+            showSettings(tab: .automation)
         }
     }
 
@@ -533,14 +544,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func showSettings(focusRecovery: Bool = false) {
+    private func showSettings(tab: SettingsTab? = nil, focusRecovery: Bool = false) {
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(model: model)
         }
         model.refreshLaunchAtLoginStatus()
         model.refreshDisplays()
         settingsWindowController?.present()
-        if focusRecovery || model.protectionPausedForDisplayRecovery {
+        if let tab {
+            settingsWindowController?.select(tab)
+        } else if focusRecovery || model.protectionPausedForDisplayRecovery {
             model.requestDisplayRecoveryFocus()
         }
     }

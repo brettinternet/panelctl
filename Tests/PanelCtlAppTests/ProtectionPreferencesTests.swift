@@ -1119,8 +1119,9 @@ final class ProtectionPreferencesTests: XCTestCase {
         let delegate = AppDelegate()
         delegate.model = model
         let menuTitles = delegate.makeMenu().items.map(\.title)
-        XCTAssertTrue(menuTitles.contains("Disable Protection"))
-        XCTAssertTrue(menuTitles.contains("Resume Protection"))
+        XCTAssertTrue(menuTitles.contains("Turn Off Automation"))
+        XCTAssertTrue(menuTitles.contains("Resume Automation"))
+        XCTAssertFalse(menuTitles.contains("Pause Automation"))
 
         let restarted = AppModel(
             defaults: defaults,
@@ -1172,7 +1173,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         model.snoozeUntilTomorrow(calendar: calendar)
 
         XCTAssertEqual(model.snoozedUntil, expected)
-        XCTAssertTrue(model.statusSummary.contains("Protection snoozed until"))
+        XCTAssertTrue(model.statusSummary.contains("Automation paused until"))
     }
 
     @MainActor

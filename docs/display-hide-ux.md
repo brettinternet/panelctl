@@ -325,3 +325,37 @@ Amendment, 2026-10-04 (user-approved): the Hide confirmation must name the loss
 of blackout on the OLED source while hidden; the coexistence section records the
 existing mirror-set refusal and TASK-21 follow-up; per-operation confirmation is
 kept and revisited only after wider qualification. Decisions are unchanged.
+
+Amendment, 2026-10-05 (user-approved Settings redesign, TASK-24 to TASK-28).
+These decisions supersede the sections above where they conflict; TASK-28
+rewrites this contract once they ship.
+
+1. Settings uses toolbar tabs **Displays**, **Automation** and **General**
+   instead of Automation / Displays / Startup. “OLED Protection” is renamed
+   **Automation**, and its display checklist moves from Displays to the
+   Automation tab. Persisted keys and CLI commands keep their names.
+2. One **Experimental features** toggle in General, off by default, gates
+   mirror hide. Turning it on asks for consent once. With it off, hide
+   configuration and Hide actions are hidden and refused; hidden-desktop
+   status, Show and recovery stay available whenever a journal or inspection
+   failure exists.
+3. Hide and Show no longer ask for per-operation confirmation; the consent
+   at the Experimental toggle replaces it (TASK-25). This replaces “no Don’t
+   ask again” in First use, repeat use and consent.
+4. Scripts may hide and show through the running app
+   (`panelctl app hide|show|toggle-hide`, TASK-27). They still act only when
+   the user triggers them, never on idle, startup, wake or reconnection.
+5. The mirror source defaults to the main display, the only
+   hardware-qualified source. PanelCtl reads the Mac input over DDC
+   automatically (read-only) to fill the return input (TASK-25).
+6. **Black out** becomes a per-display Hide style and the default without
+   Experimental features; it never blacks out the last usable display
+   (TASK-26). Idle and empty-display automation still only black out or dim.
+7. The always-disabled private-disconnect section leaves Settings; TASK-20
+   keeps its presentation types and tests for later.
+
+Backend safety is unchanged: one mirror-hidden display at a time, identity
+and topology checks, journal capture before writes, unresolved journals
+blocking new Hide, and Show/recovery independent of Experimental features
+and automation state. Approval covers the interaction design only, not live
+operations or new hardware qualification.

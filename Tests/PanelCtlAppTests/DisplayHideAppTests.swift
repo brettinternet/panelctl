@@ -216,7 +216,7 @@ final class DisplayHideAppTests: XCTestCase {
             return false
         }
 
-        XCTAssertTrue(model.hiddenMirrorProtectionSummary.contains("overlay protection failed"))
+        XCTAssertTrue(model.hiddenMirrorProtectionSummary.contains("automation failed"))
         XCTAssertTrue(model.hiddenMirrorProtectionSummary.contains("synthetic overlay startup failure"))
         XCTAssertFalse(model.hiddenMirrorProtectionSummary.contains("watching"))
 
@@ -260,7 +260,7 @@ final class DisplayHideAppTests: XCTestCase {
             useManagedProtectionService: true
         )
         try await waitUntil { model.runtimeState == .waitingForPlayback }
-        XCTAssertTrue(model.hiddenMirrorProtectionSummary.contains("overlay protection paused"))
+        XCTAssertTrue(model.hiddenMirrorProtectionSummary.contains("automation paused"))
         XCTAssertTrue(model.hiddenMirrorProtectionSummary.contains("media or camera activity"))
 
         let stopped = expectation(description: "paused overlay service shut down")
@@ -358,7 +358,7 @@ final class DisplayHideAppTests: XCTestCase {
         try await waitUntil { !unselected.protectionQuiescencePending }
         XCTAssertNil(unselected.selectedHiddenMirrorSource)
         XCTAssertFalse(unselected.hiddenMirrorOverlayPolicyEligible)
-        XCTAssertTrue(unselected.hiddenMirrorProtectionSummary.contains("not selected"))
+        XCTAssertTrue(unselected.hiddenMirrorProtectionSummary.contains("not in the idle display list"))
 
         for state in [DisplayHandoffStatus.State.recovery, .busy, .unsupported, .none] {
             let status = handoffStatus(
@@ -1228,7 +1228,7 @@ final class DisplayHideAppTests: XCTestCase {
         let defaults = try makeDefaults()
         defer {
             defaults.removePersistentDomain(forName: suiteName(defaults))
-            NSApp.windows.filter { $0.title == "PanelCtl Settings" }.forEach { $0.close() }
+            NSApp.windows.filter { $0.identifier == SettingsWindowController.windowIdentifier }.forEach { $0.close() }
         }
         var ddcChecks = 0
         let model = makeModel(
@@ -1284,7 +1284,7 @@ final class DisplayHideAppTests: XCTestCase {
         let defaults = try makeDefaults()
         defer {
             defaults.removePersistentDomain(forName: suiteName(defaults))
-            NSApp.windows.filter { $0.title == "PanelCtl Settings" }.forEach { $0.close() }
+            NSApp.windows.filter { $0.identifier == SettingsWindowController.windowIdentifier }.forEach { $0.close() }
         }
         let recovery = handoffStatus(
             .recovery,
@@ -1482,7 +1482,7 @@ final class DisplayHideAppTests: XCTestCase {
             let defaults = try makeDefaults()
             defer {
                 defaults.removePersistentDomain(forName: suiteName(defaults))
-                NSApp.windows.filter { $0.title == "PanelCtl Settings" }.forEach { $0.close() }
+                NSApp.windows.filter { $0.identifier == SettingsWindowController.windowIdentifier }.forEach { $0.close() }
             }
             let hidden = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "focus-journal", canShow: true)
             let box = StatusBox(hidden)
@@ -1573,7 +1573,7 @@ final class DisplayHideAppTests: XCTestCase {
         let defaults = try makeDefaults()
         defer {
             defaults.removePersistentDomain(forName: suiteName(defaults))
-            NSApp.windows.filter { $0.title == "PanelCtl Settings" }.forEach { $0.close() }
+            NSApp.windows.filter { $0.identifier == SettingsWindowController.windowIdentifier }.forEach { $0.close() }
         }
         let longName = String(repeating: "VeryLongMonitorName-", count: 8)
         let target = Self.display(index: 2, id: 202, uuid: Self.targetUUID, name: longName, main: false)
@@ -1630,7 +1630,7 @@ final class DisplayHideAppTests: XCTestCase {
         let defaults = try makeDefaults()
         defer {
             defaults.removePersistentDomain(forName: suiteName(defaults))
-            NSApp.windows.filter { $0.title == "PanelCtl Settings" }.forEach { $0.close() }
+            NSApp.windows.filter { $0.identifier == SettingsWindowController.windowIdentifier }.forEach { $0.close() }
         }
         let hidden = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "fixture-journal", canShow: true)
         let model = makeModel(
@@ -1670,7 +1670,7 @@ final class DisplayHideAppTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         XCTAssertGreaterThan(model.displayRecoveryFocusRequest, focusRequest)
         let recoveryWindow = try XCTUnwrap(NSApp.windows.first {
-            $0.title == "PanelCtl Settings" && $0 !== controller.window
+            $0.identifier == SettingsWindowController.windowIdentifier && $0 !== controller.window
         })
         window = recoveryWindow
         XCTAssertTrue(window.isVisible)
@@ -1692,10 +1692,8 @@ final class DisplayHideAppTests: XCTestCase {
         let nextKeyView = try XCTUnwrap(sourcePicker.nextKeyView)
         XCTAssertFalse(previousKeyView === sourcePicker)
         XCTAssertFalse(nextKeyView === sourcePicker)
-        XCTAssertTrue(window.makeFirstResponder(sourcePicker))
-        let firstKeyView = window.firstResponder
-        window.selectNextKeyView(nil)
-        XCTAssertFalse(window.firstResponder === firstKeyView, "Tab advances through the Settings key-view loop")
+        // Tab only reaches this frozen picker with Full Keyboard Access; tab
+        // switching by keyboard is covered in SettingsWindowTests.
     }
 
     private func writeHiddenOverlayHelper(in directory: URL, log: URL) throws -> URL {
@@ -2026,6 +2024,8 @@ final class DisplayHideAppTests: XCTestCase {
         let name = suiteName(nil)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         defaults.removePersistentDomain(forName: name)
+        // Hide fixtures exercise the experimental path; gating has its own tests.
+        defaults.set(true, forKey: "experimentalFeaturesEnabled")
         return defaults
     }
 

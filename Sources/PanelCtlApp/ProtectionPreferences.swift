@@ -38,11 +38,11 @@ enum ProtectionConfigurationError: Error, Equatable, LocalizedError {
         case .selectedDisplayUnavailable(let identifier):
             return "Selected display \(identifier) is not currently available."
         case .allDisplaysRequireLimit:
-            return "When every display is selected, choose Restore or Sleep as a safety limit."
+            return "With All displays on, choose Restore or Sleep under Afterward as a safety limit."
         case .selectionWouldCoverAllDisplays:
-            return "To protect every display, choose All connected displays and a safety limit."
+            return "To cover every display, turn on All displays and choose Restore or Sleep under Afterward."
         case .persistentDimming:
-            return "Use Working dimming or turn off hardware brightness to keep a blocking blackout active during input."
+            return "Use Dim, or turn off hardware brightness, to keep displays black during activity."
         case .invalidOverlayOpacityPercent:
             return "Choose an overlay darkness from 1% through 100%."
         case .invalidHardwareBrightnessPercent:
