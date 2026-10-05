@@ -67,19 +67,23 @@ build_product panelctl arm64-apple-macosx13.0 "$arm64_scratch"
 build_product PanelCtlApp x86_64-apple-macosx13.0 "$x86_64_scratch"
 build_product panelctl x86_64-apple-macosx13.0 "$x86_64_scratch"
 
-find_binary() {
-	local scratch=$1
-	local product=$2
-	find "$scratch" -type f -path "*/release/$product" -perm -111 -print -quit
+# Where SwiftPM writes products depends on its build system, so ask it.
+bin_path() {
+	local triple=$1
+	local scratch=$2
+	swift build --disable-sandbox --configuration release \
+		--triple "$triple" --scratch-path "$scratch" --show-bin-path
 }
 
-arm64_ui=$(find_binary "$arm64_scratch" PanelCtlApp)
-x86_64_ui=$(find_binary "$x86_64_scratch" PanelCtlApp)
-arm64_cli=$(find_binary "$arm64_scratch" panelctl)
-x86_64_cli=$(find_binary "$x86_64_scratch" panelctl)
+arm64_bin=$(bin_path arm64-apple-macosx13.0 "$arm64_scratch")
+x86_64_bin=$(bin_path x86_64-apple-macosx13.0 "$x86_64_scratch")
+arm64_ui="$arm64_bin/PanelCtlApp"
+x86_64_ui="$x86_64_bin/PanelCtlApp"
+arm64_cli="$arm64_bin/panelctl"
+x86_64_cli="$x86_64_bin/panelctl"
 for binary in "$arm64_ui" "$x86_64_ui" "$arm64_cli" "$x86_64_cli"; do
-	if [[ -z "$binary" ]]; then
-		echo "package-release.sh: failed to locate a release executable" >&2
+	if [[ ! -f "$binary" || ! -x "$binary" ]]; then
+		echo "package-release.sh: release executable not found: $binary" >&2
 		exit 1
 	fi
 done
