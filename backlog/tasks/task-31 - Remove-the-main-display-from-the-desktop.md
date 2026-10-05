@@ -1,11 +1,10 @@
 ---
 id: TASK-31
 title: Remove the main display from the desktop
-status: In Progress
-assignee:
-  - pi
+status: Done
+assignee: []
 created_date: '2026-10-05 19:42'
-updated_date: '2026-10-05 22:27'
+updated_date: '2026-10-05 22:29'
 labels:
   - app
   - cli
@@ -59,4 +58,12 @@ Offline implementation committed fa26adf in session-owned .worktrees/main-displa
 User approved one mirror attempt AW3423DW -> AW3425DW. Command refused before capture/transaction: recovery is busy or lock permissions are unsafe. lsof identified unrelated primary-checkout RecoveryLeaseTests helper PID 27759 holding operation.lock under core suite PID 86135. Read-only inventory unchanged; no display write occurred. User chose to wait for those tests to finish, then receive a fresh write-approval request. Watch c8b416c5 resumes on both processes exiting; no lock bypass or process termination. Trial/merge/cleanup remain pending.
 
 Supervised cycle passed on fa26adf: fresh separately approved mirror AW3423DW -> AW3425DW returned mirrored, journal F768EE67-6C81-46C9-93B7-3336E743D67D. Source became main at (0,0); target inactive/non-main; S2721DGF y moved -4 -> 0. User confirmed menu bar/Dock moved to AW3425DW and usable. Separately approved unmirror restored all exact captured modes/origins and AW3423DW main; separate recovery verify passed (restored), user confirmed menu bar/Dock back and usable. No DDC/private writes. Docs/help and updated qualification assertions committed 55da411; final focused 39 tests and both warnings-as-errors builds passed. Only this CLI cycle is qualified; other combinations/live app paths/input switching remain unqualified. Implementation/review and all acceptance criteria complete; delivery pending merge because unrelated ongoing main edits overlap AppModel/DisplaySettingsView/SettingsWindowTests. User explicitly chose to wait for their commit, not stash. Next: refresh clean main, merge branch preserving concurrent committed changes, run integration checks, finalize task and clean owned worktree. Ownership receipt .git/worktrees/main-display-removal/agent-creation.json belongs to session 01a10e04-e742-7226-b088-b7e4930485d2; created at e7a9d5d863af4294ef60d09c5a42297efb1e648e. Prior recovery-enable worktree is unrelated and must remain untouched.
+
+Delivered: merged into main as 19d39b3 after concurrent work committed. Resolved only DisplaySettingsView copy conflict, preserving concise non-main wording and main-target placement explanation. Final integrated full suite passed: 245 core + 150 app tests, 4 opt-in skips, no failures; panelctl and PanelCtlApp warnings-as-errors builds passed. Removed session-owned main-display-removal worktree and branch via Worktrunk after receipt/list verification; no matching Herdr workspace or panes existed before cleanup, post-remove hook succeeded. Unrelated recovery-enable checkout retained untouched. No remaining blocker or resumable work for this item; no push performed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Main external displays now support guarded Remove from desktop with explicit source selection, main-aware hidden-state verification, and exact original-main restoration. Integrated in 19d39b3 (implementation fa26adf, trial evidence 55da411). Independent safety review found no defects; merged full offline suite and warnings-as-errors builds passed. Separately approved AW3423DW -> AW3425DW mirror/unmirror cycle passed with user-confirmed menu bar/Dock movement and restoration plus exact recovery verification; only that documented setup is qualified. Worktree/branch cleaned up; claim released.
+<!-- SECTION:FINAL_SUMMARY:END -->
