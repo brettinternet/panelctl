@@ -78,8 +78,16 @@ struct DisplaySettingsView: View {
                 if !result.succeeded {
                     resultLabel(result.message, attention: true)
                 }
-                if let input = result.inputMessage {
-                    resultLabel(input, attention: result.inputNeedsAttention)
+                if let input = result.inputMessage, !result.inputWarningDismissed {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        resultLabel(input, attention: result.inputNeedsAttention)
+                        if model.canDismissInputWarning(for: tile.id) {
+                            Spacer(minLength: 0)
+                            Button("Dismiss") { model.dismissInputWarning(for: tile.id) }
+                                .accessibilityLabel("Dismiss input warning for \(tile.name)")
+                                .help("Hide this warning without changing the monitor input.")
+                        }
+                    }
                 }
                 if let command = result.undoInputCommand {
                     copyRow("Undo input switch", command, monospaced: true)
@@ -551,9 +559,10 @@ private struct DisplayTileButton: View {
             .overlay(alignment: .topTrailing) {
                 if attention, tile.status != .needsRecovery {
                     Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 12))
                         .foregroundStyle(Color.orange)
                         .background(Circle().fill(Color.white).padding(2))
-                        .offset(x: 5, y: -5)
+                        .padding(4)
                 }
             }
             .overlay(

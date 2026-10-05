@@ -138,11 +138,13 @@ struct DisplayOperationResult: Equatable {
     /// Input evidence, also reported to scripts.
     let inputOutcome: DisplayInputOutcome?
     let inputNeedsAttention: Bool
+    /// Acknowledges presentation only; input evidence remains available to scripts.
+    var inputWarningDismissed = false
 
-    var needsAttention: Bool { !succeeded || inputNeedsAttention }
+    var needsAttention: Bool { !succeeded || (inputNeedsAttention && !inputWarningDismissed) }
 
-    /// A short line for the menu: the failure, or else the input outcome.
-    var menuLine: String? { succeeded ? inputMessage : message }
+    /// A short line for the menu: the failure, or else the unacknowledged input outcome.
+    var menuLine: String? { succeeded ? (inputWarningDismissed ? nil : inputMessage) : message }
 
     /// The command that puts the monitor back on the input it had before
     /// PanelCtl switched it, offered when the result needs attention.

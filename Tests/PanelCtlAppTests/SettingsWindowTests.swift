@@ -401,6 +401,56 @@ final class SettingsWindowTests: XCTestCase {
         }
     }
 
+    func testDismissInputWarningFixtureSnapshots() throws {
+        for portrait in [false, true] {
+            let records = [displays[0], Self.display(
+                index: 2, id: displays[1].id, uuid: Self.sideUUID, name: "DELL S2721DGF",
+                main: false, portrait: portrait)]
+            var status: DisplayHandoffStatus? = hiddenStatus()
+            var writes = 0
+            let (model, defaults) = try makeModel(
+                displays: records,
+                status: { status },
+                showDisplay: { _, _ in
+                    writes += 1
+                    status = nil
+                    return DisplayInputOutcome(state: .skipped, requestedInput: 15,
+                                               detail: "DDC input could not be read: invalid payload length.")
+                },
+                configure: { defaults in
+                    defaults.set(true, forKey: "experimentalFeaturesEnabled")
+                    var preferences = DisplayHidePreferences()
+                    preferences[Self.sideUUID] = DisplayHideConfiguration(
+                        target: DisplayIdentitySnapshot(records[1]), enabled: true,
+                        source: DisplayIdentitySnapshot(records[0]), awayInput: 17, returnInput: 15)
+                    defaults.set(try JSONEncoder().encode(preferences), forKey: "displayHidePreferences")
+                })
+            defer { defaults.removePersistentDomain(forName: Self.suiteName) }
+            spin { !model.protectionQuiescencePending }
+            model.show(targetUUID: Self.sideUUID)
+            spin { !model.hideOperation.isBusy }
+            XCTAssertTrue(model.canDismissInputWarning(for: Self.sideUUID))
+            let controller = SettingsWindowController(model: model)
+            controller.present()
+            controller.selectDisplay(uuid: Self.sideUUID)
+            let window = try XCTUnwrap(controller.window)
+            defer { window.close() }
+            window.setContentSize(fixtureSize)
+            let orientation = portrait ? "portrait" : "landscape"
+            if let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] {
+                try writeSnapshot(of: window, to: output, name: "input-warning-\(orientation)")
+            }
+            model.dismissInputWarning(for: Self.sideUUID)
+            XCTAssertFalse(model.canDismissInputWarning(for: Self.sideUUID))
+            XCTAssertFalse(try XCTUnwrap(model.displayResults[Self.sideUUID.lowercased()]).needsAttention)
+            XCTAssertEqual(model.controlDisplayOutcome, .partial)
+            XCTAssertEqual(writes, 1, "dismissal does not run Show again")
+            if let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] {
+                try writeSnapshot(of: window, to: output, name: "input-dismissed-\(orientation)")
+            }
+        }
+    }
+
     /// The fixture window's content size; the environment can override either side.
     private var fixtureSize: NSSize {
         let environment = ProcessInfo.processInfo.environment
@@ -479,6 +529,10 @@ final class SettingsWindowTests: XCTestCase {
             XCTFail("Settings fixtures never hide a display")
             return .notRequested
         },
+        showDisplay: @escaping (String, UInt8?) throws -> DisplayInputOutcome = { _, _ in
+            XCTFail("Settings fixtures never show a display")
+            return .notRequested
+        },
         // Showing the removal setup reads this Mac's input; it never writes.
         checkDDCInput: @escaping (DisplayHideIdentity) throws -> DDCInputReading = {
             DDCInputReading(displayID: $0.displayID, uuid: $0.uuid, current: 0x0F)
@@ -500,10 +554,7 @@ final class SettingsWindowTests: XCTestCase {
                 status() ?? DisplayHandoffStatus(state: .none, journalPath: Self.journalPath)
             },
             hideDisplay: hideDisplay,
-            showDisplay: { _, _ in
-                XCTFail("Settings fixtures never show a display")
-                return .notRequested
-            },
+            showDisplay: showDisplay,
             checkDDCInput: checkDDCInput,
             // Black out never draws over a real screen in tests.
             coverDisplays: { _ in [] },
@@ -513,7 +564,8 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     private static func display(
-        index: Int, id: UInt32, uuid: String, name: String, main: Bool, builtin: Bool = false
+        index: Int, id: UInt32, uuid: String, name: String, main: Bool, builtin: Bool = false,
+        portrait: Bool = false
     ) -> DisplayRecord {
         DisplayRecord(
             index: index,
@@ -528,9 +580,10 @@ final class SettingsWindowTests: XCTestCase {
             vendor: UInt32(index),
             model: UInt32(index * 10),
             serial: UInt32(index * 100),
-            bounds: DisplayBounds(CGRect(x: (index - 1) * 1920, y: 0, width: 1920, height: 1080)),
-            pixelWidth: 1920,
-            pixelHeight: 1080
+            bounds: DisplayBounds(CGRect(x: (index - 1) * 1920, y: 0,
+                                         width: portrait ? 1080 : 1920, height: portrait ? 1920 : 1080)),
+            pixelWidth: portrait ? 1080 : 1920,
+            pixelHeight: portrait ? 1920 : 1080
         )
     }
 }
