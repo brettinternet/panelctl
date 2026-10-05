@@ -597,6 +597,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// A recovery problem that no display shows, such as an inspection failure
+    /// or a journal without a target display; Displays shows it above the displays.
+    var pageRecoveryProblem: String? {
+        guard let problem = displayRecoveryProblem,
+              !displayTiles.contains(where: { $0.status == .needsRecovery }) else { return nil }
+        return problem
+    }
+
     /// What Show will do with the monitor input of the journaled display.
     var showReturnInputNote: String? {
         guard let status = handoffStatus, status.hasUnresolvedJournal else { return nil }
@@ -687,18 +695,18 @@ final class AppModel: ObservableObject {
         clearFailedResult(uuid)
     }
 
-    /// The input Show switches back to: the detected Mac input, unless it is
-    /// the input Hide switches to. Then the monitor may be showing the other
-    /// computer, so the reading proves nothing and the saved input stays.
+    /// The input Show switches back to: the detected Mac input, else the saved
+    /// one, but never the input Hide switches to. It is kept while switching is
+    /// off because Show uses it only when Hide switched.
     private static func returnInput(saved: UInt8?, detected: UInt8?, away: UInt8?) -> UInt8? {
-        guard let away else { return nil }
         if let detected, detected != away { return detected }
         return saved == away ? nil : saved
     }
 
     /// A failed result describes settings that just changed, so it no longer applies.
     private func clearFailedResult(_ uuid: String) {
-        if displayResults[uuid.lowercased()]?.succeeded == false {
+        // A switched monitor stays switched whatever the settings, so its undo command stays.
+        if let result = displayResults[uuid.lowercased()], !result.succeeded, result.undoInputCommand == nil {
             displayResults[uuid.lowercased()] = nil
         }
     }
@@ -711,28 +719,37 @@ final class AppModel: ObservableObject {
               let configuration = hidePreferences[targetUUID], configuration.enabled,
               let display = matchingDisplay(configuration.target),
               isEligibleHideTarget(display), !isDisplayMirrored(display.id) else { return }
+        defer { onStatusChange?() }
+        let reading: DDCInputReading
         do {
-            let reading = try checkDDCInput(coreIdentity(configuration.target))
-            guard reading.displayID == configuration.target.id,
-                  reading.uuid.caseInsensitiveCompare(configuration.target.uuid) == .orderedSame,
-                  matches(configuration.target, display) else {
-                throw DisplayHideError.identityChanged("The monitor answered as a different display. Reconnect it, then try again.")
-            }
-            macInputDetections[key] = .detected(reading.current)
-            let returnInput = Self.returnInput(
-                saved: configuration.returnInput, detected: reading.current, away: configuration.awayInput
-            )
-            if configuration.returnInput != returnInput {
-                var updated = hidePreferences
-                var saved = configuration
-                saved.returnInput = returnInput
-                updated[targetUUID] = saved
-                hidePreferences = updated
-            }
+            reading = try checkDDCInput(coreIdentity(configuration.target))
         } catch {
             macInputDetections[key] = .unavailable(Self.sentence(error.localizedDescription))
+            return
         }
-        onStatusChange?()
+        guard reading.displayID == configuration.target.id,
+              reading.uuid.caseInsensitiveCompare(configuration.target.uuid) == .orderedSame,
+              matches(configuration.target, display) else {
+            macInputDetections[key] = .unavailable("The monitor answered as a different display. Reconnect it, then try again.")
+            return
+        }
+        // Input 0 means the monitor doesn't know; Show would refuse it anyway.
+        guard reading.current != 0 else {
+            macInputDetections[key] = .unavailable("The monitor didn\u{2019}t report its current input.")
+            return
+        }
+        guard reading.current != configuration.awayInput else {
+            macInputDetections[key] = .onSwitchInput(reading.current)
+            return
+        }
+        macInputDetections[key] = .detected(reading.current)
+        if configuration.returnInput != reading.current {
+            var updated = hidePreferences
+            var saved = configuration
+            saved.returnInput = reading.current
+            updated[targetUUID] = saved
+            hidePreferences = updated
+        }
     }
 
     var controlDisplayOutcome: AppControlOutcome? {

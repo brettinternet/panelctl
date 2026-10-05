@@ -239,20 +239,45 @@ final class SettingsWindowTests: XCTestCase {
             reason: "The display\u{2019}s mode changed since it was hidden. Reconnect it as it was, then try again.",
             recoveryCommand: "panelctl recovery enable --journal \(Self.journalPath)"
         )
+        // A `recovery capture` journal names no display, so Displays shows it above them.
+        let targetless = DisplayHandoffStatus(
+            state: .unsupported,
+            journalPath: Self.journalPath,
+            journalID: "settings-capture-fixture",
+            reason: "An unfinished recovery journal needs review."
+        )
         let scenarios: [(name: String, experimental: Bool, status: DisplayHandoffStatus?, tab: SettingsTab)] = [
             ("off", false, nil, .displays),
             ("setup", true, nil, .displays),
             ("unreadable", true, nil, .displays),
             ("refused", true, nil, .displays),
+            ("partial", true, nil, .displays),
             ("hidden", true, hiddenStatus(), .displays),
             ("recovery", true, recovery, .displays),
-            ("recovery-banner", true, recovery, .automation)
+            ("recovery-banner", true, recovery, .automation),
+            ("recovery-journal", false, targetless, .displays)
         ]
         for scenario in scenarios {
             // "unreadable" uses a custom input code and a monitor that doesn't answer over DDC.
             let unreadable = scenario.name == "unreadable"
+            // "partial" switched the monitor input, then couldn't hide the display.
+            let partial = scenario.name == "partial"
             let (model, defaults) = try makeModel(
                 status: { scenario.status },
+                hideDisplay: { _, _, input in
+                    guard partial else {
+                        XCTFail("Settings fixtures never hide a display")
+                        return .notRequested
+                    }
+                    throw DisplayHandoffOperationFailure(
+                        action: "hide",
+                        inputOutcome: DisplayInputOutcome(
+                            state: .verified, requestedInput: input, observedInput: input,
+                            recoveryCommand: "panelctl ddc-input --display '\(Self.sideUUID)' --set 0x0F"
+                        ),
+                        message: "Mirroring failed, so the display layout wasn\u{2019}t changed."
+                    )
+                },
                 checkDDCInput: {
                     if unreadable { throw DDCError.requestFailed(-536870212) }
                     return DDCInputReading(displayID: $0.displayID, uuid: $0.uuid, current: 0x0F)
@@ -276,6 +301,10 @@ final class SettingsWindowTests: XCTestCase {
                 model.setDisplayLifecycleTransitioning(true)
                 model.hide(targetUUID: Self.sideUUID)
                 model.setDisplayLifecycleTransitioning(false)
+            }
+            if partial {
+                model.hide(targetUUID: Self.sideUUID)
+                spin { !model.hideOperation.isBusy }
             }
             let controller = SettingsWindowController(model: model)
             controller.present()
@@ -353,6 +382,10 @@ final class SettingsWindowTests: XCTestCase {
         displays: [DisplayRecord]? = nil,
         keepingDefaults: Bool = false,
         status: @escaping () -> DisplayHandoffStatus? = { nil },
+        hideDisplay: @escaping (DisplayHideIdentity, DisplayHideIdentity, UInt8?) throws -> DisplayInputOutcome = { _, _, _ in
+            XCTFail("Settings fixtures never hide a display")
+            return .notRequested
+        },
         checkDDCInput: @escaping (DisplayHideIdentity) throws -> DDCInputReading = { _ in
             XCTFail("Settings fixtures never query DDC")
             return DDCInputReading(displayID: 0, uuid: "", current: 1)
@@ -373,10 +406,7 @@ final class SettingsWindowTests: XCTestCase {
             inspectHandoff: {
                 status() ?? DisplayHandoffStatus(state: .none, journalPath: Self.journalPath)
             },
-            hideDisplay: { _, _, _ in
-                XCTFail("Settings fixtures never hide a display")
-                return .notRequested
-            },
+            hideDisplay: hideDisplay,
             showDisplay: { _, _ in
                 XCTFail("Settings fixtures never show a display")
                 return .notRequested

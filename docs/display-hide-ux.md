@@ -347,7 +347,8 @@ rewrites this contract once they ship.
    the user triggers them, never on idle, startup, wake or reconnection.
 5. The mirror source defaults to the main display, the only
    hardware-qualified source. PanelCtl reads the Mac input over DDC
-   automatically (read-only) to fill the return input (TASK-25).
+   automatically (read-only) to fill the return input (TASK-25). A reading
+   of unknown input 0, or of the input Hide switches to, never replaces it.
 6. **Black out** becomes a per-display Hide style and the default without
    Experimental features; it never blacks out the last usable display
    (TASK-26). Idle and empty-display automation still only black out or dim.

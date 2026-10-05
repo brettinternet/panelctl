@@ -3,7 +3,11 @@ import PanelCtlCore
 
 /// Session result of reading, read-only over DDC, the input this Mac uses.
 enum MacInputDetection: Equatable {
+    /// The monitor's input when read, taken as this Mac's.
     case detected(UInt8)
+    /// The monitor was on the input Hide switches to, so it may have been
+    /// showing the other computer; the reading says nothing about this Mac.
+    case onSwitchInput(UInt8)
     case unavailable(String)
 }
 
@@ -139,6 +143,10 @@ struct DisplayOperationResult: Equatable {
 
     /// A short line for the menu: the failure, or else the input outcome.
     var menuLine: String? { succeeded ? inputMessage : message }
+
+    /// The command that puts the monitor back on the input it had before
+    /// PanelCtl switched it, offered when the result needs attention.
+    var undoInputCommand: String? { needsAttention ? inputOutcome?.recoveryCommand : nil }
 }
 
 /// One display in the Displays tab, in arrangement order.

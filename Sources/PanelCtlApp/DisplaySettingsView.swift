@@ -18,13 +18,14 @@ struct DisplaySettingsView: View {
                 attentionIDs: Set(model.displayResults.filter(\.value.needsAttention).keys)
             ) { navigation.selectedDisplayID = $0 }
             Form {
-                if let failure = model.handoffInspectionFailure {
-                    inspectionFailureSection(failure)
+                let pageProblem = model.pageRecoveryProblem
+                if let pageProblem {
+                    pageRecoverySection(pageProblem)
                 }
                 if let selected {
                     summarySection(selected)
                     hideSection(selected, tiles: tiles)
-                    if isJournalTarget(selected), let status = model.handoffStatus {
+                    if pageProblem == nil, isJournalTarget(selected), let status = model.handoffStatus {
                         Section {
                             recoveryDetails(status)
                         }
@@ -65,6 +66,9 @@ struct DisplaySettingsView: View {
                 }
                 if let input = result.inputMessage {
                     resultLabel(input, attention: result.inputNeedsAttention)
+                }
+                if let command = result.undoInputCommand {
+                    copyRow("Undo input switch", command, monospaced: true)
                 }
             }
             if let note = actionNote(tile) {
@@ -269,15 +273,14 @@ struct DisplaySettingsView: View {
                 get: { text },
                 set: { newValue in
                     customInputs[tileID] = newValue
-                    if let value = DDCInput.parseValue(newValue.trimmingCharacters(in: .whitespaces)) {
-                        model.setHideSwitchInput(value, for: uuid)
-                    }
+                    // Text that isn't a code turns switching off instead of keeping the last code.
+                    model.setHideSwitchInput(DDCInput.parseValue(newValue.trimmingCharacters(in: .whitespaces)), for: uuid)
                 }
             ), prompt: Text("0x1B"))
-            if !text.isEmpty, DDCInput.parseValue(text.trimmingCharacters(in: .whitespaces)) == nil {
-                Text("Enter a code from 1 to 255, like 27 or 0x1B.")
+            if DDCInput.parseValue(text.trimmingCharacters(in: .whitespaces)) == nil {
+                Text("Enter a code from 1 to 255, like 27 or 0x1B. Until then, Hide doesn\u{2019}t switch the input.")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(text.isEmpty ? Color.secondary : Color.orange)
             }
         }
     }
@@ -292,9 +295,12 @@ struct DisplaySettingsView: View {
         LabeledContent("This Mac’s input") {
             HStack(spacing: 8) {
                 Text(configuration.returnInput.map(MonitorInput.name) ?? "Unknown")
-                if case .unavailable = model.macInputDetections[tileID] {
+                switch model.macInputDetections[tileID] {
+                case .unavailable?, .onSwitchInput?:
                     Button("Detect Again") { model.detectMacInput(for: uuid) }
                         .disabled(frozen)
+                case .detected?, nil:
+                    EmptyView()
                 }
             }
         }
@@ -315,7 +321,7 @@ struct DisplaySettingsView: View {
         if let away = configuration.awayInput {
             let awayName = MonitorInput.name(away)
             switch model.macInputDetections[tileID] {
-            case .detected(let mac) where mac == away:
+            case .detected(let current) where current == away, .onSwitchInput(let current) where current == away:
                 lines.append("The monitor is on \(awayName) now, the input Hide switches to. If that’s this Mac’s input, choose the input your other computer uses.")
             case .unavailable(let why):
                 lines.append("Couldn’t read this Mac’s input: \(why)")
@@ -334,17 +340,18 @@ struct DisplaySettingsView: View {
 
     // MARK: Recovery
 
-    private func inspectionFailureSection(_ failure: String) -> some View {
+    /// A recovery problem that no display tile shows.
+    private func pageRecoverySection(_ problem: String) -> some View {
         Section {
             Label {
-                Text("Couldn’t check display recovery")
-                Text(failure)
+                Text("Display recovery needs attention")
+                Text(problem)
                     .textSelection(.enabled)
             } icon: {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
             }
-            Button("Try Again") { model.refreshDisplays() }
+            Button("Check Again") { model.refreshDisplays() }
             if let status = model.handoffStatus {
                 recoveryDetails(status)
             }
