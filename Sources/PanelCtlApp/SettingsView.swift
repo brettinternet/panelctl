@@ -496,6 +496,8 @@ struct SettingsView: View {
             }
             Divider()
             hideDisplaySection
+            Divider()
+            ExperimentalDisconnectView(presentation: .production)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
