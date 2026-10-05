@@ -10,8 +10,10 @@ typealias ConfigureDisplayEnabled = @convention(c)
 /// Explicitly resolved, internal capability; never an identity/consent grant.
 /// Holding this object keeps the selected library alive through staging.
 final class RecoveryDisplayBinding {
-    static let coreGraphics = "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
-    static let skyLight = "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight"
+    // Use the exact install names reported by dyld/dladdr for the verified
+    // images, not the unversioned framework aliases accepted by dlopen.
+    static let coreGraphics = "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics"
+    static let skyLight = "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight"
     static let coreGraphicsUUID = "B0FB9AC2-E3CC-31C2-A90E-0D38A776BAE2"
     static let skyLightUUID = "8A3B348E-4637-3685-92D0-6CBC2F36A234"
 
@@ -88,7 +90,7 @@ final class RecoveryDisplayBinding {
     }
 
     /// Construction does not begin a transaction. Private CLI sessions reach
-    /// this only after preflight; current production providers cannot qualify.
+    /// this only after identity and eligibility preflight.
     func transaction() -> RecoveryEnableTransaction {
         RecoveryEnableTransaction(begin: {
             var config: CGDisplayConfigRef?

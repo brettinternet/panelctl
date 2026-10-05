@@ -102,6 +102,43 @@ final class RecoveryDisplayBindingTests: XCTestCase {
         }
     }
 
+    func testOnlyExactVerifiedVersionedSymbolOriginIsAccepted() throws {
+        XCTAssertEqual(Binding.coreGraphics,
+            "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics")
+        XCTAssertEqual(Binding.skyLight,
+            "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight")
+        for fallback in [false, true] {
+            for origin in [Binding.skyLight,
+                           "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight",
+                           "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/B/SkyLight",
+                           "/tmp/SkyLight.framework/Versions/A/SkyLight"] {
+                let fixture = Fixture()
+                if fallback { fixture.missingSymbols = ["CGSConfigureDisplayEnabled"] }
+                fixture.origin = origin
+                if origin == Binding.skyLight {
+                    XCTAssertNoThrow(try fixture.resolve())
+                } else {
+                    XCTAssertThrowsError(try fixture.resolve())
+                    XCTAssertEqual(fixture.opens.count, fallback ? 2 : 1)
+                }
+                XCTAssertEqual(fixture.closes, fixture.opens.count)
+            }
+        }
+    }
+
+    func testCurrentVerifiedBuildResolvesWithoutConstructingTransaction() throws {
+        #if arch(arm64)
+        guard try systemString("kern.osversion") == "26A434" else {
+            throw XCTSkip("read-only binding check requires verified build 26A434")
+        }
+        // Resolve symbols and inspect loaded images only: no transaction is
+        // constructed, and neither public nor private display APIs are called.
+        XCTAssertNoThrow(try Binding.resolve())
+        #else
+        throw XCTSkip("read-only binding check requires arm64")
+        #endif
+    }
+
     func testExactCBindingWithFakeSetterOnlyAndErrorPropagation() throws {
         XCTAssertEqual(MemoryLayout<CGDirectDisplayID>.size, 4)
         XCTAssertEqual(MemoryLayout<CGError>.size, 4)
