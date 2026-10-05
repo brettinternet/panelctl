@@ -178,7 +178,12 @@ struct ProtectionPreferences: Codable, Equatable {
         try values.encode(deferBlackoutWhileCameraInUse, forKey: .deferBlackoutWhileCameraInUse)
     }
 
-    func hiddenMirrorOverlayArguments(for source: DisplayRecord) throws -> [String]? {
+    /// Hidden displays count as covered, so input can't extend the timeout
+    /// once the source and every hidden display are black.
+    func hiddenMirrorOverlayArguments(
+        for source: DisplayRecord,
+        hiddenDisplays: [DisplayRecord] = []
+    ) throws -> [String]? {
         guard let uuid = source.uuid,
               UUID(uuidString: uuid) != nil,
               source.online, source.active, !source.asleep,
@@ -202,7 +207,13 @@ struct ProtectionPreferences: Codable, Equatable {
         )
         var arguments = [
             "blackout", "--display", uuid,
-            "--panelctl-hidden-mirror-source", uuid,
+            "--panelctl-hidden-mirror-source", uuid
+        ]
+        let hidden = hiddenDisplays.compactMap(\.uuid).filter { $0.caseInsensitiveCompare(uuid) != .orderedSame }
+        for hiddenUUID in hidden.sorted() {
+            arguments += ["--panelctl-hidden-display", hiddenUUID]
+        }
+        arguments += [
             "--mode", "blocking", "--overlay-opacity", "100",
             "--idle-after", Self.durationArgument(idleSeconds), "--watch",
             "--timeout", Self.durationArgument(timeout)

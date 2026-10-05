@@ -59,6 +59,41 @@ final class EmptyDisplayMonitorTests: XCTestCase {
         ), [1])
     }
 
+    func testPointerOnAHiddenDisplayCoversNothing() {
+        var policy = EmptyDisplayPolicy()
+        let activeBounds = [left.bounds, right.bounds]
+        let onHiddenLeft = sample(pointer: CGPoint(x: -50, y: 50))
+        let onRight = sample(pointer: CGPoint(x: 50, y: 50))
+
+        // Covering the empty right display would leave no usable display.
+        for uptime in [10.0, 11, 20] {
+            XCTAssertEqual(policy.desiredDisplayIDs(
+                targets: [right], activeDisplayBounds: activeBounds, hiddenDisplayBounds: [left.bounds],
+                sample: onHiddenLeft, uptime: uptime
+            ), [])
+        }
+
+        // With a third, usable display holding the pointer, the empty one is covered as before.
+        let third = CGRect(x: 100, y: 0, width: 100, height: 100)
+        let onThird = sample(pointer: CGPoint(x: 150, y: 50))
+        _ = policy.desiredDisplayIDs(
+            targets: [right], activeDisplayBounds: activeBounds + [third], hiddenDisplayBounds: [left.bounds],
+            sample: onThird, uptime: 21
+        )
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [right], activeDisplayBounds: activeBounds + [third], hiddenDisplayBounds: [left.bounds],
+            sample: onThird, uptime: 22
+        ), [2])
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [right], activeDisplayBounds: activeBounds + [third], hiddenDisplayBounds: [left.bounds],
+            sample: onHiddenLeft, uptime: 22.5
+        ), [], "moving onto the hidden display uncovers it again")
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [right], activeDisplayBounds: activeBounds, hiddenDisplayBounds: [],
+            sample: onRight, uptime: 23
+        ), [])
+    }
+
     func testWindowIntersectionOccupiesEveryTouchedTarget() {
         var policy = EmptyDisplayPolicy()
         let targets = [left, right]

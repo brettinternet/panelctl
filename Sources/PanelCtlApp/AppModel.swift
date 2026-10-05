@@ -386,6 +386,14 @@ final class AppModel: ObservableObject {
         try preferences.commandArguments(for: displays, hiddenDisplayUUIDs: Set(blackoutHiddenDisplays.keys))
     }
 
+    /// The source-only overlay counts displays Hide blacked out as covered.
+    private func hiddenMirrorArguments(for source: DisplayRecord) throws -> [String]? {
+        try preferences.hiddenMirrorOverlayArguments(
+            for: source,
+            hiddenDisplays: activeDisplays.filter { isBlackoutHidden($0.uuid) }
+        )
+    }
+
     func identityIsCurrent(_ identity: DisplayIdentitySnapshot) -> Bool {
         matchingDisplay(identity) != nil
     }
@@ -556,24 +564,31 @@ final class AppModel: ObservableObject {
         })
     }
 
-    /// Re-covers hidden displays after a display change, and shows them all
-    /// once no other display is connected.
+    /// Re-covers hidden displays after a display change. A hidden display
+    /// macOS now mirrors is shown, since its mirror would show the cover too,
+    /// and once no other display is connected, every hidden display is shown.
     private func reconcileHiddenDisplays() {
-        if !blackoutHiddenDisplays.isEmpty, !displayLifecycleTransitioning,
-           !displays.contains(where: { $0.online && !isBlackoutHidden($0.uuid) }) {
-            for key in blackoutHiddenDisplays.keys {
-                displayResults[key] = DisplayOperationResult(
-                    action: .hide, succeeded: false,
-                    message: "Shown because no other display was connected.",
-                    inputMessage: nil, inputOutcome: nil, inputNeedsAttention: false
-                )
+        var shown: [String: String] = [:]
+        if !blackoutHiddenDisplays.isEmpty, !displayLifecycleTransitioning {
+            for (id, key) in connectedHiddenDisplays where isDisplayMirrored(id) {
+                shown[key] = "Shown because macOS started mirroring it."
             }
-            blackoutHiddenDisplays = [:]
-            coverHiddenDisplays()
-            hiddenDisplaysChanged()
-            return
+            let stillHidden = Set(blackoutHiddenDisplays.keys).subtracting(shown.keys)
+            if !stillHidden.isEmpty, !displays.contains(where: {
+                $0.online && !stillHidden.contains($0.uuid?.lowercased() ?? "")
+            }) {
+                for key in stillHidden { shown[key] = "Shown because no other display was connected." }
+            }
+        }
+        for (key, message) in shown {
+            blackoutHiddenDisplays[key] = nil
+            displayResults[key] = DisplayOperationResult(
+                action: .hide, succeeded: false, message: message,
+                inputMessage: nil, inputOutcome: nil, inputNeedsAttention: false
+            )
         }
         coverHiddenDisplays()
+        if !shown.isEmpty { hiddenDisplaysChanged() }
     }
 
     /// Automation restarts without the hidden displays and counts idle time anew.
@@ -1275,7 +1290,7 @@ final class AppModel: ObservableObject {
         let arguments: [String]
         do {
             if let hiddenOverlaySource {
-                guard let overlayArguments = try preferences.hiddenMirrorOverlayArguments(for: hiddenOverlaySource) else {
+                guard let overlayArguments = try hiddenMirrorArguments(for: hiddenOverlaySource) else {
                     throw DisplayHideError.recoveryBlocksAction("Add the journaled mirror source to the idle display list before using Black Out Now.")
                 }
                 arguments = overlayArguments
@@ -1486,8 +1501,12 @@ final class AppModel: ObservableObject {
 
     private var stateBeganAt: Date?
 
-    private var hiddenMirrorOverlayResetsLimitOnInput: Bool {
-        (preferences.mode == .working || preferences.keepBlackoutOnInput) && activeDisplays.count > 1
+    /// Matches the helper: input extends the limit only while another
+    /// display, neither the source nor hidden, stays usable.
+    var hiddenMirrorOverlayResetsLimitOnInput: Bool {
+        guard preferences.mode == .working || preferences.keepBlackoutOnInput,
+              let source = selectedHiddenMirrorSource else { return false }
+        return activeDisplays.contains { $0.id != source.id && !isBlackoutHidden($0.uuid) }
     }
 
     /// Matches the helper, which counts hidden displays as covered.
@@ -1528,7 +1547,7 @@ final class AppModel: ObservableObject {
                 return
             }
             do {
-                guard let arguments = try preferences.hiddenMirrorOverlayArguments(for: source) else {
+                guard let arguments = try hiddenMirrorArguments(for: source) else {
                     service.disable()
                     return
                 }
@@ -1585,7 +1604,7 @@ final class AppModel: ObservableObject {
         do {
             if hiddenMirrorOverlayPolicyEligible {
                 guard let source = selectedHiddenMirrorSource,
-                      try preferences.hiddenMirrorOverlayArguments(for: source) != nil else {
+                      try hiddenMirrorArguments(for: source) != nil else {
                     return .disabled
                 }
                 return serviceState

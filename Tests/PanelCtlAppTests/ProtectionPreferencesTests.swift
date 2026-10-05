@@ -229,6 +229,16 @@ final class ProtectionPreferencesTests: XCTestCase {
 
         preferences.selectedDisplayUUIDs = ["00000000-0000-0000-0000-000000000002"]
         XCTAssertNil(try preferences.hiddenMirrorOverlayArguments(for: source), "an unselected mirror source receives no overlay")
+
+        // Hidden displays other than the source are counted as covered.
+        preferences.selectedDisplayUUIDs = [sourceUUID]
+        let hidden = try XCTUnwrap(preferences.hiddenMirrorOverlayArguments(
+            for: source, hiddenDisplays: [displays[2], source, displays[1]]
+        ))
+        XCTAssertEqual(Array(hidden.prefix(9)), [
+            "blackout", "--display", sourceUUID, "--panelctl-hidden-mirror-source", sourceUUID,
+            "--panelctl-hidden-display", "BBBB-UUID", "--panelctl-hidden-display", "CCCC-UUID"
+        ])
     }
 
     func testPlaybackDeferralOptOutEmitsIgnoreFlag() throws {

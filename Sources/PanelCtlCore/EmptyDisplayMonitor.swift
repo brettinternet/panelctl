@@ -102,9 +102,12 @@ struct EmptyDisplayPolicy {
         emptySince.removeAll(keepingCapacity: true)
     }
 
+    /// With the pointer on a display PanelCtl hides, nothing is covered:
+    /// covering the others could leave no usable display.
     mutating func desiredDisplayIDs(
         targets: [EmptyDisplayTarget],
         activeDisplayBounds: [CGRect],
+        hiddenDisplayBounds: [CGRect] = [],
         sample: DisplayOccupancySample?,
         uptime: TimeInterval
     ) -> Set<CGDirectDisplayID> {
@@ -116,7 +119,8 @@ struct EmptyDisplayPolicy {
               activeDisplayBounds.allSatisfy(Self.isValid),
               targets.allSatisfy({ Self.isValid($0.bounds) }),
               Set(targets.map(\.id)).count == targets.count,
-              activeDisplayBounds.contains(where: { $0.contains(sample.pointerLocation) }) else {
+              activeDisplayBounds.contains(where: { $0.contains(sample.pointerLocation) }),
+              !hiddenDisplayBounds.contains(where: { $0.contains(sample.pointerLocation) }) else {
             reset()
             return []
         }

@@ -30,12 +30,11 @@ public struct BlackoutOptions: Equatable {
         mode == .working || keepBlackoutOnInput
     }
 
-    /// Hidden displays need --watch and distinct UUIDs that aren't selected
-    /// and aren't combined with a hidden-mirror overlay.
+    /// Hidden displays need --watch and distinct UUIDs that aren't selected.
     var hiddenDisplaysAreValid: Bool {
         guard !hiddenDisplayUUIDs.isEmpty else { return true }
         let keys = hiddenDisplayUUIDs.map { $0.uppercased() }
-        return watch && hiddenMirrorSourceUUID == nil &&
+        return watch &&
             keys.allSatisfy { UUID(uuidString: $0) != nil } &&
             Set(keys).count == keys.count &&
             !selectors.contains { keys.contains($0.uppercased()) }
@@ -172,7 +171,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
         case .invalidHiddenMirrorSourceOverlay:
             return "--panelctl-hidden-mirror-source requires a single matching UUID target, --watch, --idle-after, and a finite --timeout; it cannot be combined with all-screen, sleep, dimming, or display-awake options"
         case .invalidHiddenDisplay:
-            return "--panelctl-hidden-display requires --watch and a distinct UUID that isn't a --display target; it cannot be combined with --panelctl-hidden-mirror-source"
+            return "--panelctl-hidden-display requires --watch and a distinct UUID that isn't a --display target"
         case .invalidLuminance: return "luminance must be an integer from 0 through 65535"
         case .invalidInputValue(let value):
             return "invalid input value: \(value) (expected dp1, dp2, hdmi1, hdmi2, or 1 through 255; hex with 0x)"

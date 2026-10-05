@@ -133,6 +133,13 @@ final class CLIParserTests: XCTestCase {
         XCTAssertNoThrow(try CLIParser.parse(
             ["blackout", "--display", selected, "--panelctl-hidden-display", hidden] + watched
         ))
+        // The source-only overlay counts hidden displays as covered too.
+        guard case .blackout(let overlay) = try CLIParser.parse([
+            "blackout", "--display", selected, "--panelctl-hidden-mirror-source", selected,
+            "--panelctl-hidden-display", hidden
+        ] + watched) else { return XCTFail("expected blackout") }
+        XCTAssertEqual(overlay.hiddenDisplayUUIDs, [hidden])
+        XCTAssertNoThrow(try BlackoutController.validateOptions(overlay))
 
         let rejected: [[String]] = [
             ["--display", selected, "--panelctl-hidden-display", hidden, "--timeout", "60"],
@@ -141,7 +148,7 @@ final class CLIParserTests: XCTestCase {
              "--panelctl-hidden-display", hidden.lowercased()] + watched,
             ["--display", selected, "--panelctl-hidden-display", selected.lowercased()] + watched,
             ["--display", selected, "--panelctl-hidden-mirror-source", selected,
-             "--panelctl-hidden-display", hidden] + watched
+             "--panelctl-hidden-display", selected] + watched
         ]
         for arguments in rejected {
             XCTAssertThrowsError(try CLIParser.parse(["blackout"] + arguments), "\(arguments)") {

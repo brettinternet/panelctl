@@ -54,7 +54,7 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
         case .invalidHiddenMirrorSourceOverlay:
             return "invalid PanelCtl hidden-mirror overlay options; use one matching source UUID, an opaque watched overlay, and a finite Restore timeout without hardware dimming, sleep, or display-awake options"
         case .invalidHiddenDisplay:
-            return "invalid PanelCtl hidden display; use --watch and distinct UUIDs that aren't blackout targets, without a hidden-mirror overlay"
+            return "invalid PanelCtl hidden display; use --watch and distinct UUIDs that aren't blackout targets"
         case .mirrorSourceNotAuthorized(let selector, let reason):
             return "refusing mirrored display target \(selector): \(reason)"
     }
@@ -400,6 +400,7 @@ public final class BlackoutController {
         let screensByID: [CGDirectDisplayID: NSScreen]
         let targets: [EmptyDisplayTarget]
         let activeDisplayBounds: [CGRect]
+        let hiddenDisplayBounds: [CGRect]
     }
 
     private static let manualBlackoutInputSettlingDuration: TimeInterval = 0.25
@@ -1089,6 +1090,7 @@ public final class BlackoutController {
             let desiredIDs = emptyDisplayPolicy.desiredDisplayIDs(
                 targets: context.targets,
                 activeDisplayBounds: context.activeDisplayBounds,
+                hiddenDisplayBounds: context.hiddenDisplayBounds,
                 sample: occupancySource.sample(),
                 uptime: now
             )
@@ -1133,8 +1135,11 @@ public final class BlackoutController {
             screensByID[id] = screen
             selectedTargets.append(EmptyDisplayTarget(id: id, bounds: bounds))
         }
+        let screens = NSScreen.screens
+        let hidden = Self.hiddenScreenIDs(options: options, drawable: screens)
         var activeBounds: [CGRect] = []
-        for screen in NSScreen.screens {
+        var hiddenBounds: [CGRect] = []
+        for screen in screens {
             guard Self.isValidScreenFrame(screen.frame),
                   let id = Self.screenID(screen) else {
                 throw BlackoutError.topologyChanged
@@ -1144,12 +1149,14 @@ public final class BlackoutController {
                 throw BlackoutError.topologyChanged
             }
             activeBounds.append(bounds)
+            if hidden.contains(id) { hiddenBounds.append(bounds) }
         }
         guard !activeBounds.isEmpty else { throw BlackoutError.noScreens }
         let context = EmptyDisplayContext(
             screensByID: screensByID,
             targets: selectedTargets,
-            activeDisplayBounds: activeBounds
+            activeDisplayBounds: activeBounds,
+            hiddenDisplayBounds: hiddenBounds
         )
         cachedEmptyDisplayContext = (screenConfigurationGeneration, context)
         emptyResolutionRetryAfter = 0

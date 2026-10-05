@@ -155,6 +155,21 @@ final class BlackoutHideTests: XCTestCase {
                        "Shown because no other display was connected.")
     }
 
+    func testHiddenDisplayIsShownWhenMacOSMirrorsIt() throws {
+        var mirrored: Set<UInt32> = []
+        let model = try makeModel(mirrored: { mirrored.contains($0) })
+        XCTAssertEqual(hide(Self.sideUUID, model)?.succeeded, true)
+
+        // Another display now mirrors the hidden one, so it would show the cover too.
+        mirrored = [202, 303]
+        model.refreshDisplays()
+        XCTAssertFalse(model.isBlackoutHidden(Self.sideUUID))
+        XCTAssertEqual(coverRequests.last, [])
+        XCTAssertEqual(tile(Self.sideUUID, model).status, .mirrored)
+        XCTAssertEqual(model.displayResults[Self.sideUUID.lowercased()]?.message,
+                       "Shown because macOS started mirroring it.")
+    }
+
     func testAutomationSkipsHiddenDisplaysAndRestoreNeverShowsThem() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("panelctl-blackout-hide-\(UUID().uuidString)", isDirectory: true)

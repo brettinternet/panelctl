@@ -113,6 +113,53 @@ final class DisplayHideAppTests: XCTestCase {
         await fulfillment(of: [stopped], timeout: 3)
     }
 
+    func testSourceOverlayCountsBlackedOutDisplaysAsCovered() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panelctl-hidden-overlay-blackout-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("helper.log")
+        let helper = try writeHiddenOverlayHelper(in: directory, log: log)
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var preferences = ProtectionPreferences()
+        preferences.isEnabled = true
+        preferences.didChooseDisplays = true
+        preferences.selectedDisplayUUIDs = [Self.sourceUUID]
+        preferences.keepBlackoutOnInput = true
+        defaults.set(try JSONEncoder().encode(preferences), forKey: "blackoutPreferences")
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        defer {
+            unsetenv("PANELCTL_HELPER")
+            unsetenv("PANELCTL_TEST_LOG")
+        }
+        let hidden = handoffStatus(.hidden, target: displays[1], source: displays[2], journalID: "overlay-journal", canShow: true)
+        // macOS doesn't list a hardware mirror target as active.
+        let mirroredTarget = Self.display(index: 2, id: 202, uuid: Self.targetUUID, name: "Target", main: false, active: false)
+        let current = [displays[0], mirroredTarget, displays[2]]
+        let model = makeModel(defaults: defaults, displays: current, status: { hidden }, useManagedProtectionService: true)
+        try await waitUntil { model.runtimeState == .blackedOut }
+        var lines = try await waitForLogLines(1, at: log)
+        XCTAssertFalse(lines[0].contains("--panelctl-hidden-display"))
+        XCTAssertTrue(model.hiddenMirrorOverlayResetsLimitOnInput, "input extends the limit while Main OLED stays usable")
+
+        // Blacking out the last other display makes the source overlay's limit absolute.
+        model.hide(targetUUID: Self.mainUUID)
+        XCTAssertTrue(model.isBlackoutHidden(Self.mainUUID))
+        XCTAssertFalse(model.hiddenMirrorOverlayResetsLimitOnInput)
+        try await waitUntil {
+            (try? String(contentsOf: log, encoding: .utf8))?.contains("--panelctl-hidden-display \(Self.mainUUID)") == true
+        }
+        lines = try String(contentsOf: log, encoding: .utf8).split(separator: "\n").map(String.init)
+        let relaunch = try XCTUnwrap(lines.last { $0.hasPrefix("launch:") })
+        XCTAssertTrue(relaunch.contains("--display \(Self.sourceUUID) --panelctl-hidden-mirror-source \(Self.sourceUUID) --panelctl-hidden-display \(Self.mainUUID)"), relaunch)
+        XCTAssertTrue(relaunch.contains("--keep-blackout-on-input"))
+
+        let stopped = expectation(description: "overlay watcher stopped")
+        model.shutdown { stopped.fulfill() }
+        await fulfillment(of: [stopped], timeout: 3)
+    }
+
     func testHiddenOverlaySummaryReportsFailedHelperWithHealthyHiddenJournal() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("panelctl-hidden-overlay-failure-\(UUID().uuidString)", isDirectory: true)
@@ -2233,13 +2280,13 @@ final class DisplayHideAppTests: XCTestCase {
 
     private static func display(index: Int, id: UInt32, uuid: String, name: String, main: Bool,
                                 serial: UInt32? = nil, x: Int? = nil, asleep: Bool = false,
-                                online: Bool = true) -> DisplayRecord {
+                                online: Bool = true, active: Bool? = nil) -> DisplayRecord {
         DisplayRecord(
             index: index,
             id: id,
             uuid: uuid,
             name: name,
-            active: online,
+            active: active ?? online,
             online: online,
             asleep: asleep,
             builtin: false,
