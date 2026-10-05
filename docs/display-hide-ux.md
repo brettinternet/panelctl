@@ -41,6 +41,16 @@ Turning Experimental features off hides this configuration and refuses new
 Remove-from-desktop Hides. Show and recovery stay available whenever a journal
 exists.
 
+## Private disconnect
+
+The separate **Private disconnect · Experimental** section in Displays does not
+change either Hide style. It supports only the recorded Dell/firmware/host/build/
+connection, requires fresh per-operation consent, and holds a fixed 15-second
+watchdog lease. General experimental consent is insufficient. Turn off automation
+and show hidden displays first. Journal-driven reconnect stays available without
+an enumerable target or the experimental gate. No script, idle, startup or wake
+path disconnects a display. See [qualification and recovery limits](display-disable.md#app-controls).
+
 ## Rules
 
 - One display can be removed from the desktop at a time; an unresolved

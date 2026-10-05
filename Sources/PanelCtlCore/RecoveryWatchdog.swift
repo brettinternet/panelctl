@@ -121,14 +121,19 @@ final class RecoveryWatchdog {
         try lease.write(contentsOf: Data("DISABLE \(id.uuidString) \(targetID)\n".utf8))
     }
 
+    // The app must keep its run loop responsive while the independent helper
+    // recovers. Closing the pipe requests recovery, not proof of completion.
+    func releaseLease() throws { try lease.close() }
+
     func shutdown() throws {
         // EOF invokes the same recovery engine as deadline/startup/manual use.
-        try lease.close()
+        try releaseLease()
         wait()
     }
 
     static func start(store: RecoveryStore, executable: URL, timeout: TimeInterval, verifyOnly: Bool,
-                      expectedSnapshot: RecoverySnapshot? = nil, privateLease: Bool = false) throws -> RecoveryWatchdog {
+                      expectedSnapshot: RecoverySnapshot? = nil, privateLease: Bool = false,
+                      capture: () throws -> RecoverySnapshot = { try .capture() }) throws -> RecoveryWatchdog {
         guard timeout.isFinite, (1...60).contains(timeout) else {
             throw RecoveryError.unsafe("watchdog timeout must be 1–60 seconds")
         }
@@ -138,10 +143,13 @@ final class RecoveryWatchdog {
         try store.lock()
         var journal: RecoveryJournal
         do {
-            let snapshot = try RecoverySnapshot.capture()
+            let snapshot = try capture()
             try expectedSnapshot?.verify(snapshot)
-            try snapshot.verify(.capture())
-            journal = RecoveryJournal(snapshot: snapshot, verifyOnly: verifyOnly, timeout: timeout)
+            try snapshot.verify(capture())
+            // Public topology verification does not compare private transport
+            // evidence. Keep the selected baseline so the helper's private
+            // identity checks refuse a changed connection rather than adopt it.
+            journal = RecoveryJournal(snapshot: expectedSnapshot ?? snapshot, verifyOnly: verifyOnly, timeout: timeout)
             journal.privateLease = privateLease ? true : nil
             try store.create(journal)
         } catch {

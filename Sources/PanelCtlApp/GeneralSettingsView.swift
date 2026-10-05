@@ -28,7 +28,7 @@ struct GeneralSettingsView: View {
                     set: model.setExperimentalFeaturesEnabled
                 )) {
                     Text("Experimental features")
-                    Text("Remove a display from the desktop by mirroring it, with optional monitor input switching.")
+                    Text("Remove a display from the desktop by mirroring it, with optional monitor input switching. Qualified private disconnect requires separate consent for every session.")
                 }
                 Link("Learn more about experimental features", destination: AppModel.experimentalDocsURL)
             }
