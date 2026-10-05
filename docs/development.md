@@ -1,22 +1,6 @@
 # Development
 
-PanelCtl requires macOS 13 or newer and Swift 5.9 or newer.
-
-## Backlog
-
-Backlog.md is pinned in `mise.toml`. With mise installed:
-
-```sh
-mise install
-mise exec -- backlog task list --plain
-mise exec -- backlog task TASK-1 --plain
-```
-
-`backlog/` is the authoritative execution tracker. Update tasks through the CLI,
-not by editing generated Markdown. Read `AGENTS.md` for claims and worktree rules.
-The [display-disable plan](display-disable-implementation-plan.md) is the canonical
-direction; TASK-1 is the recommended first bounded, offline investigation.
-Hardware trials are separately approval-gated, not implied by ready dependencies.
+Requires macOS 13+ and Swift 5.9+.
 
 ## Build and test
 
@@ -25,37 +9,28 @@ swift test --disable-sandbox
 swift build --product panelctl
 swift build --product PanelCtlApp
 scripts/test-release-version.sh
+task build:release            # universal .build/PanelCtl.app (needs https://taskfile.dev)
 ```
 
-Routine tests use fake display writers. The connected-screen geometry test can
-briefly cover external screens with opaque blackout windows; it is skipped unless
-`PANELCTL_TEST_LIVE_BLACKOUT=1` is explicitly set. Leave it unset for offline
-recovery acceptance. `PANELCTL_ICC_EVIDENCE_DIR` optionally enables read-only replay
-of retained ICC artifacts; an unset variable is a reported skip, not qualification.
-Neither opt-in authorizes private display setters or restoration trials.
+Tests use fake display writers and DDC channels; they never change real
+displays. Opt-in environment variables:
 
-For fresh offline recovery results, failure-matrix coverage and the remaining
-live-trial gates, see [TASK-8 acceptance](display-disable-offline-acceptance.md).
+| Variable | Effect |
+| --- | --- |
+| `PANELCTL_TEST_LIVE_BLACKOUT=1` | Run the connected-screen geometry test, which briefly covers external screens with black windows |
+| `PANELCTL_ICC_EVIDENCE_DIR=<dir>` | Replay retained ICC profile artifacts (read-only); unset is a reported skip |
+| `PANELCTL_SETTINGS_FIXTURE_OUTPUT=<dir>` | Write Settings PNGs (below) |
+| `PANELCTL_SETTINGS_FIXTURE_HEIGHT=<pt>` | Settings fixture window height |
 
-To build a universal `PanelCtl.app` at `.build/PanelCtl.app`, install
-[Task](https://taskfile.dev/) and run:
+None of these authorize private display calls or restoration trials. Recovery
+no-write subprocess checks are in [display recovery](display-recovery.md#testing).
 
-```sh
-task build:release
-```
+## Settings fixtures
 
-## Native Settings fixtures
-
-The regular test suite uses fake display backends and DDC channels. App tests
-cover display tiles, Hide and Show actions, inline results, recovery focus,
-input detection and menu keyboard navigation offline with synthetic state. Hide
-setup load and save make no DDC calls; the Mac input read is tested with a fake.
-Black out Hide uses a fake overlay manager, so tests never cover a real screen.
-
-SwiftUI draws Settings buttons and pickers itself and builds its accessibility
-tree only for a connected assistive client, so native tests reach the AppKit
-switches and text fields it renders; everything else is checked through the
-model. To review the rendered states, write Settings PNGs:
+SwiftUI builds its accessibility tree only for a connected assistive client, so
+native tests reach AppKit switches and text fields; everything else is checked
+through the model. Hide setup, input detection and Black out Hide all run
+against fakes. To review rendered states:
 
 ```sh
 mkdir -p /tmp/panelctl-settings
@@ -63,19 +38,21 @@ PANELCTL_SETTINGS_FIXTURE_OUTPUT=/tmp/panelctl-settings swift test --disable-san
   --filter 'SettingsWindowTests.test(Settings|Displays)FixtureSnapshots'
 ```
 
-Set `PANELCTL_SETTINGS_FIXTURE_HEIGHT` to change the window height. Do not
-launch the real PanelCtl app or enable live blackout tests for this validation.
-Human VoiceOver qualification and live monitor trials remain separate and
-unclaimed.
+Don't launch the real app or enable live blackout tests for this. VoiceOver and
+live monitor checks are separate, manual work.
 
-## Package a release
+## Release
 
 The version in `Sources/PanelCtlCore/CLIHelp.swift` must match the tag's base
-version (for example, `1.2.3` for `v1.2.3-beta.1`).
+version (`1.2.3` for `v1.2.3-beta.1`).
 
 ```sh
-scripts/package-release.sh vMAJOR.MINOR.PATCH
+scripts/package-release.sh v1.2.3
 ```
 
-This creates universal app and CLI archives with SHA-256 checksum files in
-`dist/`. Artifacts are ad-hoc signed, not Developer ID signed or notarized.
+Writes universal app and CLI archives plus SHA-256 files to `dist/`. Artifacts
+are ad-hoc signed, not Developer ID signed or notarized.
+
+Cross-building Intel: SwiftPM writes to `out/Products`, so use
+`swift build … --show-bin-path` rather than guessing a triple directory, and
+check with `xcrun lipo -archs`.

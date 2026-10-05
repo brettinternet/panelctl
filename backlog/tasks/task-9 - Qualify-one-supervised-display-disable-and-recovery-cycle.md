@@ -4,7 +4,7 @@ title: Qualify one supervised display-disable and recovery cycle
 status: To Do
 assignee: []
 created_date: '2026-10-04 05:03'
-updated_date: '2026-10-05 05:30'
+updated_date: '2026-10-05 17:03'
 labels:
   - display-disable
   - human-gated
@@ -14,12 +14,10 @@ dependencies:
   - TASK-12
   - TASK-23
 references:
-  - docs/display-disable-implementation-plan.md
+  - docs/display-disable.md
   - docs/display-disable-tool-survey.md
-  - docs/recovery-validation.md
-  - docs/display-disable-trial.md
 documentation:
-  - docs/display-disable-implementation-plan.md
+  - docs/display-disable.md
   - docs/display-disable-tool-survey.md
 priority: high
 type: task

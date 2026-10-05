@@ -20,7 +20,7 @@ without explicit permission.
 
 ## Display-disable work
 
-Read `docs/display-disable-implementation-plan.md` for canonical direction and
+Read `docs/display-disable.md` for canonical direction and
 `docs/display-disable-tool-survey.md` for evidence. Start with TASK-1, bounded
 offline ABI verification. TASK-2 reconciles existing `recovery-enable` work;
 do not duplicate its journal/helper or assume ownership of its worktree.

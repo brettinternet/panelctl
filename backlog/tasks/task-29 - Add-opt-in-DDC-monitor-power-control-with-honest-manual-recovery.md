@@ -4,7 +4,7 @@ title: Add opt-in DDC monitor power control with honest manual recovery
 status: To Do
 assignee: []
 created_date: '2026-10-05 16:36'
-updated_date: '2026-10-05 16:38'
+updated_date: '2026-10-05 17:03'
 labels:
   - ddc
   - power
@@ -17,7 +17,7 @@ references:
 documentation:
   - docs/feasibility.md
   - docs/ddc-input.md
-  - docs/display-disable-implementation-plan.md
+  - docs/display-disable.md
   - docs/display-hide-ux.md
   - docs/usage.md
 priority: medium

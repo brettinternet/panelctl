@@ -60,9 +60,10 @@ automatic deferrals, and manual blackout, restore, sleep, and wake controls.
 ## Documentation
 
 - [Usage, behavior, and automation](docs/usage.md)
-- [Limits and safety](docs/usage.md#limits-and-safety)
-- [Development and release packaging](docs/development.md)
+- [Limits and safety](docs/usage.md#limits)
+- [Hide and Show](docs/display-hide-ux.md)
+- [DDC input select](docs/ddc-input.md), [mirroring](docs/display-mirroring.md), and [away/back handoff](docs/display-handoff.md)
+- [Display recovery](docs/display-recovery.md)
+- [Private display disable](docs/display-disable.md)
 - [Selected-display feasibility research](docs/feasibility.md)
-- [Recovery tooling and future experiment safety](docs/display-recovery.md)
-- [Display-disable direction and gated implementation](docs/display-disable-implementation-plan.md)
-- [Backlog setup and task workflow](docs/development.md#backlog)
+- [Development and release packaging](docs/development.md)

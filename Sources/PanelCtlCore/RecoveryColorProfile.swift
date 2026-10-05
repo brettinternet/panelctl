@@ -3,7 +3,7 @@ import CryptoKit
 
 /// ICC header creation time is metadata, not a color transform. The observed
 /// macOS regeneration changed only bytes 24...35 (historical evidence summarized
-/// in docs/recovery-reconciliation.md).
+/// in docs/display-recovery.md).
 /// This is not a general semantic ICC comparison: every other byte stays hashed.
 enum RecoveryColorProfile {
     static func digest(_ data: Data) -> String {

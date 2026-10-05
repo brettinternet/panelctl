@@ -4,7 +4,7 @@ title: Gate experimental private disconnect controls on qualified recovery
 status: To Do
 assignee: []
 created_date: '2026-10-04 17:13'
-updated_date: '2026-10-05 05:30'
+updated_date: '2026-10-05 17:03'
 labels:
   - display-hide
   - app
@@ -14,11 +14,10 @@ dependencies:
   - TASK-17
   - TASK-22
 references:
-  - docs/display-disable-implementation-plan.md
-  - docs/display-disable-trial.md
   - docs/display-recovery.md
   - Sources/PanelCtlApp/SettingsView.swift
   - Sources/PanelCtlCore/DisplayRecovery.swift
+  - docs/display-disable.md
 priority: medium
 type: feature
 ordinal: 10010
