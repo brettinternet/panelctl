@@ -89,6 +89,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
@@ -278,7 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.statusItem = statusItem
     }
 
-    private func configureMainMenu() {
+    func configureMainMenu() {
         let mainMenu = NSMenu()
         let appMenuItem = NSMenuItem(
             title: "PanelCtl",
@@ -292,6 +296,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appMenu.addItem(item("Quit PanelCtl", action: #selector(quit), key: "q"))
         appMenuItem.submenu = appMenu
         mainMenu.addItem(appMenuItem)
+
+        let fileMenuItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+        let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(NSMenuItem(
+            title: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"
+        ))
+        fileMenuItem.submenu = fileMenu
+        mainMenu.addItem(fileMenuItem)
         NSApp.mainMenu = mainMenu
     }
 

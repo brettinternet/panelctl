@@ -24,6 +24,57 @@ final class SettingsWindowTests: XCTestCase {
         super.tearDown()
     }
 
+    func testDockPresenceFollowsSettingsLifetime() throws {
+        let app = NSApplication.shared
+        let originalPolicy = app.activationPolicy()
+        let originalMenu = app.mainMenu
+        defer {
+            app.mainMenu = originalMenu
+            app.setActivationPolicy(originalPolicy)
+        }
+        app.setActivationPolicy(.accessory)
+        let (model, defaults) = try makeModel()
+        defer { defaults.removePersistentDomain(forName: Self.suiteName) }
+        let delegate = AppDelegate()
+        delegate.model = model
+        delegate.configureMainMenu()
+        let controller = SettingsWindowController(model: model)
+        let window = try XCTUnwrap(controller.window)
+
+        XCTAssertEqual(app.activationPolicy(), .accessory)
+        controller.present()
+        XCTAssertEqual(app.activationPolicy(), .regular)
+        XCTAssertTrue(window.isVisible)
+        window.miniaturize(nil)
+        XCTAssertEqual(app.activationPolicy(), .regular, "minimizing is not closing")
+        controller.present()
+        XCTAssertFalse(window.isMiniaturized)
+
+        window.performClose(nil)
+        XCTAssertFalse(window.isVisible)
+        XCTAssertEqual(app.activationPolicy(), .accessory)
+        XCTAssertFalse(delegate.applicationShouldTerminateAfterLastWindowClosed(app))
+
+        controller.present()
+        XCTAssertEqual(app.activationPolicy(), .regular)
+        XCTAssertTrue(window.isVisible)
+        let closeItem = try XCTUnwrap(app.mainMenu?.items
+            .first { $0.title == "File" }?.submenu?.items.first)
+        XCTAssertEqual(closeItem.keyEquivalent, "w")
+        XCTAssertEqual(closeItem.keyEquivalentModifierMask, .command)
+        XCTAssertEqual(closeItem.action, #selector(NSWindow.performClose(_:)))
+        // Exercise the same responder action as Command-W.
+        XCTAssertTrue(app.sendAction(try XCTUnwrap(closeItem.action), to: window, from: closeItem))
+        XCTAssertFalse(window.isVisible)
+        XCTAssertEqual(app.activationPolicy(), .accessory)
+
+        let quitItem = try XCTUnwrap(app.mainMenu?.items.first?.submenu?.items
+            .first { $0.title == "Quit PanelCtl" })
+        XCTAssertEqual(quitItem.keyEquivalent, "q")
+        XCTAssertEqual(quitItem.keyEquivalentModifierMask, .command)
+        XCTAssertTrue(quitItem.target === delegate)
+    }
+
     func testToolbarTabsAndKeyboardShortcutsReachEveryTab() throws {
         let (model, defaults) = try makeModel()
         defer { defaults.removePersistentDomain(forName: Self.suiteName) }

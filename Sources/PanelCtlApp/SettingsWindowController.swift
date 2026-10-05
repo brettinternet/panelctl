@@ -180,8 +180,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTo
         }
     }
 
+    func windowWillClose(_ notification: Notification) {
+        // Closing Settings returns to menu-bar-only operation, not termination.
+        NSApp.setActivationPolicy(.accessory)
+    }
+
     func present() {
         guard let window = window as? SettingsWindow else { return }
+        NSApp.setActivationPolicy(.regular)
+        if window.isMiniaturized { window.deminiaturize(nil) }
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window.makeKeyAndOrderFront(nil)
