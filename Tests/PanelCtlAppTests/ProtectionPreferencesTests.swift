@@ -393,7 +393,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let onlyDisplay = try XCTUnwrap(displays.first)
-        let model = AppModel(
+        let model = isolatedModel(
             defaults: defaults,
             displayProvider: { [onlyDisplay] }
         )
@@ -412,7 +412,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        let model = AppModel(defaults: defaults, displayProvider: { [] })
+        let model = isolatedModel(defaults: defaults, displayProvider: { [] })
         XCTAssertTrue(model.showMenuBarIcon)
         XCTAssertEqual(defaults.object(forKey: "showMenuBarIcon") as? Bool, true)
         let protectionData = defaults.data(forKey: "blackoutPreferences")
@@ -473,7 +473,7 @@ final class ProtectionPreferencesTests: XCTestCase {
             unsetenv("PANELCTL_TEST_LOG")
         }
 
-        let model = AppModel(
+        let model = isolatedModel(
             defaults: defaults,
             displayProvider: { [self.displays[0], self.displays[1]] }
         )
@@ -541,7 +541,7 @@ final class ProtectionPreferencesTests: XCTestCase {
             try JSONEncoder().encode(preferences),
             forKey: "blackoutPreferences"
         )
-        let model = AppModel(defaults: defaults, displayProvider: { self.displays })
+        let model = isolatedModel(defaults: defaults, displayProvider: { self.displays })
 
         XCTAssertThrowsError(try model.blackoutNow()) {
             XCTAssertEqual(
@@ -998,7 +998,7 @@ final class ProtectionPreferencesTests: XCTestCase {
             unsetenv("PANELCTL_TEST_LOG")
         }
 
-        let model = AppModel(
+        let model = isolatedModel(
             defaults: defaults,
             displayProvider: { currentDisplays }
         )
@@ -1145,7 +1145,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         var current = Date(timeIntervalSince1970: 1_800_000_000)
 
-        let model = AppModel(
+        let model = isolatedModel(
             defaults: defaults,
             displayProvider: { [] },
             now: { current }
@@ -1167,7 +1167,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertTrue(menuTitles.contains("Resume Automation"))
         XCTAssertFalse(menuTitles.contains("Pause Automation"))
 
-        let restarted = AppModel(
+        let restarted = isolatedModel(
             defaults: defaults,
             displayProvider: { [] },
             now: { current }
@@ -1208,7 +1208,7 @@ final class ProtectionPreferencesTests: XCTestCase {
                 hour: 8
             ))
         )
-        let model = AppModel(
+        let model = isolatedModel(
             defaults: defaults,
             displayProvider: { [] },
             now: { current }
@@ -1226,7 +1226,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         var sleepRequests = 0
-        let model = AppModel(
+        let model = isolatedModel(
             defaults: defaults,
             displayProvider: { [] },
             sleepDisplays: { sleepRequests += 1 }
@@ -1288,7 +1288,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         setenv("PANELCTL_HELPER", helper.path, 1)
         defer { unsetenv("PANELCTL_HELPER") }
 
-        let model = AppModel(
+        let model = isolatedModel(
             defaults: defaults,
             displayProvider: { [self.displays[0], self.displays[1]] },
             now: { current },
@@ -1330,7 +1330,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         )
         var fullCurrent = Date(timeIntervalSince1970: 1_800_000_000)
         var fullIdle: TimeInterval = 100
-        let fullModel = AppModel(
+        let fullModel = isolatedModel(
             defaults: fullDefaults,
             displayProvider: { [self.displays[0], self.displays[1]] },
             now: { fullCurrent },
@@ -1405,7 +1405,7 @@ final class ProtectionPreferencesTests: XCTestCase {
             unsetenv("PANELCTL_TEST_ALLOW_REBLACKOUT")
         }
 
-        let model = AppModel(
+        let model = isolatedModel(
             defaults: defaults,
             displayProvider: { [self.displays[0], self.displays[1]] },
             idleSecondsProvider: { 0 }
@@ -1473,6 +1473,29 @@ final class ProtectionPreferencesTests: XCTestCase {
         }
         XCTFail("Timed out waiting for \(count) log lines")
         return []
+    }
+
+    /// An app model that never reads this Mac's recovery journals, so the
+    /// suite doesn't depend on display operations outside the test.
+    @MainActor
+    private func isolatedModel(
+        defaults: UserDefaults,
+        displayProvider: @escaping () -> [DisplayRecord],
+        now: @escaping () -> Date = Date.init,
+        idleSecondsProvider: @escaping () -> TimeInterval? = { nil },
+        sleepDisplays: @escaping () throws -> Void = { XCTFail("unexpected display sleep") }
+    ) -> AppModel {
+        AppModel(
+            defaults: defaults,
+            displayProvider: displayProvider,
+            now: now,
+            idleSecondsProvider: idleSecondsProvider,
+            sleepDisplays: sleepDisplays,
+            inspectHandoff: { DisplayHandoffStatus(state: .none, journalPath: "/nonexistent/panelctl-protection-tests.json") },
+            disconnectController: DisplayDisconnectController(
+                store: RecoveryStore(url: URL(fileURLWithPath: "/nonexistent/panelctl-protection-tests-recovery.json"))
+            )
+        )
     }
 
     @MainActor
