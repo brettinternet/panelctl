@@ -130,15 +130,128 @@ final class DisplayMirroringTests: XCTestCase {
         XCTAssertThrowsError(try sut.mirror(selector: "8", source: "7", store: store))
     }
 
-    func testRefusesMainBuiltinInactiveSameMissingAndAmbiguousTargets() throws {
+    func testMainTargetMirrorsWhenTargetSourceOrAnotherDisplayRemainsMain() throws {
+        let original = try snapshot { displays in
+            displays[0]["main"] = true
+            displays[1]["main"] = false
+        }
+        let targetUUID = snapshotUUID(1)
+        let sourceUUID = snapshotUUID(2)
+        for currentMainID in [UInt32(7), UInt32(8), UInt32(9)] {
+            let hidden = try snapshot { displays in
+                displays[0]["main"] = currentMainID == 7
+                displays[1]["main"] = currentMainID == 8
+                displays[2]["main"] = currentMainID == 9
+                displays[0]["mirrorUUID"] = sourceUUID
+                displays[0]["active"] = false
+            }
+            let scenarioStore = RecoveryStore(url: directory.appendingPathComponent("main-\(currentMainID).json"))
+            var current = original
+            var sut = controller(original)
+            sut.engine.capture = { current }
+            sut.transaction = MirrorTransaction(
+                begin: { OpaquePointer(bitPattern: 1)! },
+                stage: { _, target, source in
+                    XCTAssertEqual(target, 7)
+                    XCTAssertEqual(source, 8)
+                },
+                complete: { _, _ in current = hidden },
+                cancel: { _ in XCTFail("successful mirror must consume the fake transaction") }
+            )
+            let result = try sut.mirror(selector: targetUUID, source: sourceUUID, store: scenarioStore)
+            XCTAssertEqual(result.state, .mirrored, "CGMainDisplayID result ID \(currentMainID)")
+            XCTAssertTrue(HiddenMirrorTopology.matches(
+                snapshot: original, targetID: 7, sourceID: 8, current: current
+            ))
+        }
+    }
+
+    func testRecoveryRestoreRestoresOriginalMainAndMismatchKeepsManualGuidance() throws {
+        let original = try snapshot { displays in
+            displays[0]["main"] = false
+            displays[1]["main"] = true
+        }
+        let hidden = try snapshot { displays in
+            displays[0]["main"] = false
+            displays[1]["main"] = false
+            displays[2]["main"] = true
+            displays[1]["mirrorUUID"] = snapshotUUID(1)
+            displays[1]["active"] = false
+        }
+
+        func makeJournal(_ path: String) throws -> (RecoveryStore, RecoveryJournal) {
+            let store = RecoveryStore(url: directory.appendingPathComponent(path))
+            try store.lock()
+            var journal = RecoveryJournal(snapshot: original)
+            journal.mirrorTargetID = 8
+            journal.mirrorSourceID = 7
+            journal.state = .mirrored
+            try store.create(journal)
+            journal = try store.load()
+            return (store, journal)
+        }
+
+        let (restoreStore, restoreJournal) = try makeJournal("recovery-main-restore.json")
+        defer { restoreStore.unlock() }
+        var restoredTopology = hidden
+        var writes = 0
+        let restoreEngine = RecoveryEngine(
+            capture: { restoredTopology },
+            apply: { captured in writes += 1; restoredTopology = captured },
+            convergencePause: {}
+        )
+        var journalToRestore = restoreJournal
+        try restoreEngine.finish(&journalToRestore, store: restoreStore, verifyOnly: false, trigger: "manual-restore")
+        XCTAssertEqual(try restoreStore.load().state, .restored)
+        XCTAssertEqual(writes, 1)
+        XCTAssertNoThrow(try original.verify(restoredTopology))
+        XCTAssertEqual(restoredTopology.displays.first(where: { $0.id == 8 })?.main, true)
+
+        let (mismatchStore, mismatchJournal) = try makeJournal("recovery-main-mismatch.json")
+        defer { mismatchStore.unlock() }
+        let mismatchedTopology = hidden
+        let mismatchEngine = RecoveryEngine(
+            capture: { mismatchedTopology },
+            apply: { _ in writes += 1 },
+            convergencePause: {}
+        )
+        var journalToMismatch = mismatchJournal
+        XCTAssertThrowsError(try mismatchEngine.finish(
+            &journalToMismatch, store: mismatchStore, verifyOnly: false, trigger: "manual-restore"
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("turn off mirroring"), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.contains("drag the menu bar"), error.localizedDescription)
+        }
+        let failed = try mismatchStore.load()
+        XCTAssertEqual(failed.state, .needsAttention)
+        XCTAssertEqual(failed.snapshot, original)
+        XCTAssertTrue(failed.failure?.contains("turn off mirroring") == true)
+        XCTAssertTrue(failed.failure?.contains("drag the menu bar") == true)
+        XCTAssertEqual(writes, 2)
+        XCTAssertNotEqual(mismatchedTopology, original)
+    }
+
+    func testRefusesBuiltinInactiveSameMissingAndAmbiguousTargets() throws {
         let original = try snapshot()
-        for (target, source) in [("7", "8"), ("8", "8"), ("missing", "7"), ("8", "missing")] {
+        for (target, source) in [("8", "8"), ("missing", "7"), ("8", "missing")] {
             XCTAssertThrowsError(try controller(original).mirror(selector: target, source: source, store: store))
         }
         for (key, value): (String, Any) in [("builtin", true), ("active", false)] {
             let bad = try snapshot { $0[1][key] = value }
             XCTAssertThrowsError(try controller(bad).mirror(selector: "8", source: "7", store: store))
         }
+        var missingIdentity = controller(original)
+        missingIdentity.records = {
+            self.records(original).map { record in
+                guard record.id == self.targetID else { return record }
+                return DisplayRecord(index: record.index, id: record.id, uuid: nil, name: record.name,
+                    active: record.active, online: record.online, asleep: record.asleep,
+                    builtin: record.builtin, main: record.main, vendor: record.vendor,
+                    model: record.model, serial: record.serial, bounds: record.bounds,
+                    pixelWidth: record.pixelWidth, pixelHeight: record.pixelHeight)
+            }
+        }
+        XCTAssertThrowsError(try missingIdentity.mirror(selector: "8", source: "7", store: store))
         var ambiguous = controller(original)
         ambiguous.records = { self.records(original) + self.records(original).suffix(1) }
         XCTAssertThrowsError(try ambiguous.mirror(selector: "8", source: "7", store: store))
@@ -287,7 +400,10 @@ final class DisplayMirroringTests: XCTestCase {
         try store.create(unrelated); store.unlock()
         XCTAssertThrowsError(try controller(original).unmirror(store: store))
         XCTAssertEqual(try store.load().state, .captured)
-        for ids: (UInt32?, UInt32?) in [(8, nil), (nil, 7), (7, 8), (8, 8), (8, 99)] {
+        var mainTarget = unrelated
+        mainTarget.mirrorTargetID = 7; mainTarget.mirrorSourceID = 8
+        XCTAssertNoThrow(try mainTarget.validate(), "an external main target is valid public mirror intent")
+        for ids: (UInt32?, UInt32?) in [(8, nil), (nil, 7), (8, 8), (8, 99)] {
             var invalid = unrelated
             invalid.mirrorTargetID = ids.0; invalid.mirrorSourceID = ids.1
             XCTAssertThrowsError(try invalid.validate())
@@ -607,7 +723,8 @@ final class DisplayMirroringTests: XCTestCase {
         }
         for command in ["mirror", "unmirror"] {
             XCTAssertEqual(try CLIParser.parse([command, "--help"]), .help(command: command))
-            XCTAssertTrue(CLIHelp.text(for: command).contains("not hardware-qualified"))
+            XCTAssertTrue(CLIHelp.text(for: command).contains("only documented cycles are qualified"))
+            XCTAssertTrue(CLIHelp.text(for: command).contains("untested combinations remain unsupported"))
         }
     }
 }

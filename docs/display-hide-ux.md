@@ -54,15 +54,21 @@ The setup then shows:
 
 | Control | Meaning |
 | --- | --- |
-| **Mirror onto** | The source display; defaults to the main display |
+| **Mirror onto** | Defaults to main for other targets; a main target requires an explicit source |
 | **This Mac's input** | Read-only DDC detection; Detect Again appears when detection needs attention |
 | **Switch monitor to** | Don't switch, a named input, or Other… with a decimal/hex input code |
 
-Only awake, active external non-main displays with a stable ID are eligible
-for removal. To remove the current main display, first make another display
-main in System Settings → Displays. The source must be available and not
-blacked out. Setup is frozen while a removal journal is unresolved or an
-operation/cleanup is pending.
+Only awake, active external displays with a stable ID are eligible for removal;
+built-in displays remain ineligible, including when main. A main display has no
+default mirror source: choose another available, awake source before Hide. Other
+displays retain their existing default source, and saved configurations are not
+rewritten. When mirroring the main display, macOS decides where the menu bar,
+Dock, windows and Spaces go; the main display may stay, move to the source or
+move elsewhere. Observe the result rather than assuming which display becomes
+main. One [main-target CLI cycle](display-mirroring.md#observed-main-target-cycle-2026-10-05)
+qualified AW3423DW onto AW3425DW and exact restoration; other combinations
+and live app/script paths remain unqualified. Setup is frozen while
+a removal journal is unresolved or an operation/cleanup is pending.
 
 - Hide captures recovery, switches the input if requested, then mirrors. Show
   restores and verifies the saved layout first, then switches back when a valid
@@ -74,9 +80,11 @@ operation/cleanup is pending.
   requests. Use the monitor's input button if needed.
 - Show restores public layout and modes, not HDR, color profiles, rotation,
   windows or Spaces. Resolution, refresh rate or HDR can change while hidden.
-- Only the setups recorded in [mirroring](display-mirroring.md#observed-cycle-2026-10-04)
-  and [handoff](display-handoff.md#observed-round-trip-2026-10-04) are tested.
-  Consent and passing offline tests do not qualify other hardware.
+- The recorded [mirroring](display-mirroring.md#observed-cycle-2026-10-04)
+  and [handoff](display-handoff.md#observed-round-trip-2026-10-04) cycles used a
+  non-main target and main source. The later main-target CLI mirror/unmirror
+  cycle used AW3423DW onto AW3425DW; it did not qualify input switching.
+  Each live mirror and restore write requires separate scoped human approval.
 
 ### Planned DDC power Hide style
 

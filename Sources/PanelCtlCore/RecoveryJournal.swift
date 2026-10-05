@@ -63,7 +63,7 @@ struct RecoveryJournal: Codable {
         if mirrorTargetID != nil || mirrorSourceID != nil || state == .mirrored {
             guard let target = displays.first(where: { $0.id == mirrorTargetID }),
                   let source = displays.first(where: { $0.id == mirrorSourceID }),
-                  target.id != source.id, !target.main, !target.builtin, target.active, source.active,
+                  target.id != source.id, !target.builtin, target.active, source.active,
                   displays.allSatisfy({ $0.mirrorUUID == nil }),
                   disabledByUsID == nil, privateLease != true, !verifyOnly, deadline == nil else {
                 throw RecoveryError.unsafe("invalid public mirror journal")

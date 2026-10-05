@@ -264,6 +264,7 @@ final class SettingsWindowTests: XCTestCase {
             ("off", false, nil, .displays),
             ("blacked-out", false, nil, .displays),
             ("setup", true, nil, .displays),
+            ("main-target-setup", true, nil, .displays),
             ("no-switch", true, nil, .displays),
             ("mac-input", true, nil, .displays),
             ("unreadable", true, nil, .displays),
@@ -322,6 +323,9 @@ final class SettingsWindowTests: XCTestCase {
             )
             defer { defaults.removePersistentDomain(forName: Self.suiteName) }
             spin { !model.protectionQuiescencePending }
+            if scenario.name == "main-target-setup" {
+                model.setHideEnabled(true, for: displays[0])
+            }
             if scenario.name == "refused" {
                 model.setDisplayLifecycleTransitioning(true)
                 model.hide(targetUUID: Self.sideUUID)
@@ -340,7 +344,7 @@ final class SettingsWindowTests: XCTestCase {
             let window = try XCTUnwrap(controller.window)
             defer { window.close() }
             window.setContentSize(fixtureSize)
-            controller.selectDisplay(uuid: Self.sideUUID)
+            controller.selectDisplay(uuid: scenario.name == "main-target-setup" ? Self.mainUUID : Self.sideUUID)
             controller.select(scenario.tab)
             try writeSnapshot(of: window, to: output, name: "displays-\(scenario.name)")
         }

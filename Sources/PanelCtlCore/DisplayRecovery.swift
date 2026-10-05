@@ -382,12 +382,18 @@ struct RecoveryEngine {
             journal.privateRecoveryClosed = true
             try store.save(journal)
         } catch {
+            let message = journal.mirrorTargetID == nil
+                ? String(describing: error)
+                : "\(error). \(MirrorRecoveryGuidance.manualSteps)"
             journal.state = .needsAttention
             journal.trigger = trigger
-            journal.failure = String(describing: error)
+            journal.failure = message
             // Never discard the original snapshot if either recovery or its
             // final journal write fails.
             try? store.save(journal)
+            if journal.mirrorTargetID != nil {
+                throw RecoveryError.unsafe(message)
+            }
             throw error
         }
     }

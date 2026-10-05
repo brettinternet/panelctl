@@ -223,6 +223,15 @@ public struct DisplayHideController {
         let currentRecords = Dictionary(uniqueKeysWithValues: records.compactMap { record in
             record.uuid.map { ($0.lowercased(), record) }
         })
+        let mirrorTopologyVerified: Bool
+        if unresolved, journal.state == .mirrored,
+           let targetID = journal.mirrorTargetID, let sourceID = journal.mirrorSourceID {
+            mirrorTopologyVerified = HiddenMirrorTopology.matches(
+                snapshot: journal.snapshot, targetID: targetID, sourceID: sourceID, current: current
+            )
+        } else {
+            mirrorTopologyVerified = false
+        }
 
         var refusal: String?
         var canShow = false
@@ -252,6 +261,9 @@ public struct DisplayHideController {
                 refusal = "The journaled mirror source is asleep, inactive, or unavailable. Wake or reconnect the exact display, then Refresh before Show."
                 canShow = false
             }
+            if journal.state == .mirrored, !mirrorTopologyVerified, refusal == nil {
+                refusal = "The current mirror topology does not match the journaled Hidden layout; review recovery before Show."
+            }
         }
 
         let observations = currentRecords.map { uuid, record -> DisplayHideObservation in
@@ -259,7 +271,7 @@ public struct DisplayHideController {
             let displayIdentity = saved.map(identity) ?? identity(record)
             let isTarget = target?.uuid.caseInsensitiveCompare(uuid) == .orderedSame
             let externallyMirrored = saved?.mirrorUUID != nil
-            let hidden = unresolved && journal.state == .mirrored && isTarget &&
+            let hidden = mirrorTopologyVerified && isTarget &&
                 saved?.mirrorUUID?.caseInsensitiveCompare(source?.uuid ?? "") == .orderedSame
             let state: DisplayHideObservedState = hidden
                 ? .hiddenByPanelCtl
@@ -302,8 +314,7 @@ public struct DisplayHideController {
             canShow: canShow,
             showRefusal: unresolved ? refusal : nil,
             failure: journal.failure,
-            mirrorTopologyVerified: unresolved && journal.state == .mirrored &&
-                Self.matchesHiddenMirrorTopology(journal, current: current)
+            mirrorTopologyVerified: mirrorTopologyVerified
         )
         return DisplayHideStatus(
             journalPath: store.url.path,
@@ -311,31 +322,6 @@ public struct DisplayHideController {
             journal: summary,
             inspectionFailure: nil
         )
-    }
-
-    private static func matchesHiddenMirrorTopology(
-        _ journal: RecoveryJournal,
-        current: RecoverySnapshot
-    ) -> Bool {
-        guard let targetID = journal.mirrorTargetID,
-              let sourceID = journal.mirrorSourceID,
-              let source = journal.snapshot.displays.first(where: { $0.id == sourceID }) else {
-            return false
-        }
-        let originalByID = Dictionary(uniqueKeysWithValues: journal.snapshot.displays.map { ($0.id, $0) })
-        guard current.displays.count == originalByID.count else { return false }
-        return current.displays.allSatisfy { display in
-            guard let original = originalByID[display.id] else { return false }
-            let expectedMirror = display.id == targetID ? source.uuid : nil
-            let mirrorMatches: Bool
-            if let expectedMirror, let observedMirror = display.mirrorUUID {
-                mirrorMatches = expectedMirror.caseInsensitiveCompare(observedMirror) == .orderedSame
-            } else {
-                mirrorMatches = expectedMirror == nil && display.mirrorUUID == nil
-            }
-            return mirrorMatches && display.main == original.main &&
-                (display.id != sourceID || display.active)
-        }
     }
 
     private func statusForUnsupportedJournal(_ journal: RecoveryJournal, records: [DisplayRecord],
