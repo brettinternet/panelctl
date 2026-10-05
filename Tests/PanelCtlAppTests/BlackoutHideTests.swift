@@ -427,6 +427,47 @@ final class BlackoutHideTests: XCTestCase {
         await fulfillment(of: [stopped], timeout: 3)
     }
 
+    func testBlackedOutRemovalSourceExplainsSuspendedAutomation() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panelctl-blackout-hide-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let script = """
+        #!/bin/bash
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
+        trap 'printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":true}\\n"; exit 0' TERM
+        while IFS= read -r command; do :; done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        defer { unsetenv("PANELCTL_HELPER") }
+
+        let handoff = Self.handoffStatus(target: displays[1], source: displays[0])
+        let model = try makeModel(
+            mirrored: { [101, 202].contains($0) },
+            handoff: { handoff },
+            configure: { defaults in
+                var preferences = ProtectionPreferences()
+                preferences.isEnabled = true
+                preferences.allDisplays = true
+                defaults.set(try JSONEncoder().encode(preferences), forKey: "blackoutPreferences")
+            }
+        )
+        try await waitUntil("verified removal status is quiesced") { !model.protectionQuiescencePending }
+        var result: DisplayOperationResult?
+        model.hide(targetUUID: Self.mainUUID) { result = $0 }
+        try await waitUntil("source Hide finished") { result != nil && !model.protectionQuiescencePending }
+        XCTAssertEqual(result?.succeeded, true, result?.message ?? "")
+        XCTAssertEqual(model.hiddenMirrorProtectionSummary,
+                       "Automation suspended while hidden \u{00B7} Main is blacked out by Hide",
+                       "a selected source that Hide covers isn't reported as unselected")
+
+        let stopped = expectation(description: "watcher stopped")
+        model.shutdown { stopped.fulfill() }
+        await fulfillment(of: [stopped], timeout: 3)
+    }
+
     // MARK: Helpers
 
     private func makeModel(

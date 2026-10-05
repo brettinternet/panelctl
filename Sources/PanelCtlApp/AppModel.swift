@@ -386,6 +386,9 @@ final class AppModel: ObservableObject {
         }
         if let source = verifiedHiddenMirrorSource {
             let name = source.name ?? "Display \(source.id)"
+            if isBlackoutHidden(source.uuid) {
+                return "Automation suspended while hidden · \(name) is blacked out by Hide"
+            }
             if preferences.isEnabled && snoozedUntil == nil {
                 return "Automation suspended while hidden · \(name) is not in the idle display list"
             }
@@ -537,6 +540,10 @@ final class AppModel: ObservableObject {
     /// Why Hide can't black out this display right now, or nil when it can.
     func blackoutReadiness(for display: DisplayRecord) -> DisplayHideError? {
         if hideOperation.isBusy { return .actionInProgress }
+        // Disconnect consent excludes other display changes during its lease.
+        if disconnectLease != nil || disconnectStatus?.resolved == false {
+            return .unavailable("Finish the current disconnect first.")
+        }
         if displayLifecycleTransitioning { return .sleeping }
         guard let uuid = display.uuid, UUID(uuidString: uuid) != nil,
               displays.filter({ $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame }).count == 1 else {

@@ -125,8 +125,9 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         try Fixture(url: directory.appendingPathComponent("\(name).json"))
     }
 
-    private func model(_ f: Fixture) -> AppModel {
-        AppModel(defaults: defaults, displayProvider: { f.records }, idleSecondsProvider: { 0 },
+    private func model(_ f: Fixture, extraDisplays: [DisplayRecord] = [],
+                       cover: @escaping (Set<UInt32>) -> Set<UInt32> = { _ in [] }) -> AppModel {
+        AppModel(defaults: defaults, displayProvider: { f.records + extraDisplays }, idleSecondsProvider: { 0 },
             sleepDisplays: { XCTFail("sleep must not run") }, isDisplayMirrored: { _ in false },
             inspectHandoff: {
                 let status = try? f.controller.inspect()
@@ -135,8 +136,27 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
             },
             hideDisplay: { _, _, _ in throw RecoveryError.unsafe("no mirror writes") },
             showDisplay: { _, _ in throw RecoveryError.unsafe("no mirror writes") },
-            checkDDCInput: { _ in throw RecoveryError.unsafe("no DDC") }, coverDisplays: { _ in [] },
+            checkDDCInput: { _ in throw RecoveryError.unsafe("no DDC") }, coverDisplays: cover,
             disconnectController: f.controller, disconnectExecutable: { URL(fileURLWithPath: "/unused") })
+    }
+
+    func testBlackOutRefusesDuringDisconnectLease() throws {
+        let f = try fixture()
+        let third = DisplayRecord(index: 3, id: 3, uuid: "00000000-0000-0000-0000-000000000003", name: "Synthetic third",
+            active: true, online: true, asleep: false, builtin: false, main: false, vendor: 3, model: 3, serial: 3,
+            bounds: DisplayBounds(CGRect(x: 3840, y: 0, width: 1920, height: 1080)), pixelWidth: 1920, pixelHeight: 1080)
+        var covers: [Set<UInt32>] = []
+        let app = model(f, extraDisplays: [third]) { ids in covers.append(ids); return [] }
+        app.prepareDisconnect(f.uuid); app.confirmDisconnect()
+        XCTAssertEqual(f.arms, 1)
+        app.refreshDisplays()
+        let survivor = try XCTUnwrap(app.displays.first { $0.main })
+        XCTAssertEqual(app.blackoutReadiness(for: survivor)?.localizedDescription, "Finish the current disconnect first.")
+        var result: DisplayOperationResult?
+        app.hide(targetUUID: try XCTUnwrap(survivor.uuid)) { result = $0 }
+        XCTAssertEqual(result?.succeeded, false)
+        XCTAssertTrue(covers.allSatisfy(\.isEmpty), "no cover is installed during the lease")
+        try f.finish?()
     }
 
     func testConsentCancelExpiryReplayAndQualificationRefusals() throws {
