@@ -67,6 +67,25 @@ struct SettingsView: View {
     }
 }
 
+/// A note under a Settings section. Built with an SDK before macOS 26, a plain
+/// footer is right-aligned body text, so it gets the newer left-aligned style
+/// explicitly.
+struct SectionFooter: View {
+    let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 extension DisplayRecord {
     var settingsName: String { name ?? "Display \(index)" }
 

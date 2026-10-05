@@ -208,7 +208,6 @@ final class SettingsWindowTests: XCTestCase {
         guard let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] else {
             throw XCTSkip("Set PANELCTL_SETTINGS_FIXTURE_OUTPUT to a directory to write Settings PNGs.")
         }
-        let height = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_HEIGHT"].flatMap(Double.init) ?? 640
         // Automation stays off: an enabled model would launch the blackout helper.
         var variant = ProtectionPreferences()
         variant.didChooseDisplays = true
@@ -232,7 +231,7 @@ final class SettingsWindowTests: XCTestCase {
             controller.present()
             let window = try XCTUnwrap(controller.window)
             defer { window.close() }
-            window.setContentSize(NSSize(width: 680, height: height))
+            window.setContentSize(fixtureSize)
             for tab in SettingsTab.allCases {
                 controller.select(tab)
                 try writeSnapshot(of: window, to: output, name: "settings-\(scenario.name)-\(tab.rawValue)")
@@ -245,7 +244,6 @@ final class SettingsWindowTests: XCTestCase {
         guard let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] else {
             throw XCTSkip("Set PANELCTL_SETTINGS_FIXTURE_OUTPUT to a directory to write Settings PNGs.")
         }
-        let height = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_HEIGHT"].flatMap(Double.init) ?? 640
         let recovery = DisplayHandoffStatus(
             state: .recovery,
             target: hiddenStatus().target,
@@ -266,6 +264,8 @@ final class SettingsWindowTests: XCTestCase {
             ("off", false, nil, .displays),
             ("blacked-out", false, nil, .displays),
             ("setup", true, nil, .displays),
+            ("no-switch", true, nil, .displays),
+            ("mac-input", true, nil, .displays),
             ("unreadable", true, nil, .displays),
             ("refused", true, nil, .displays),
             ("partial", true, nil, .displays),
@@ -279,6 +279,8 @@ final class SettingsWindowTests: XCTestCase {
             let unreadable = scenario.name == "unreadable"
             // "partial" switched the monitor input, then couldn't hide the display.
             let partial = scenario.name == "partial"
+            // "no-switch" doesn't switch inputs; "mac-input" then chooses this Mac's own input.
+            let switches = !["no-switch", "mac-input"].contains(scenario.name)
             let (model, defaults) = try makeModel(
                 status: { scenario.status },
                 hideDisplay: { _, _, input in
@@ -306,8 +308,8 @@ final class SettingsWindowTests: XCTestCase {
                         target: DisplayIdentitySnapshot(self.displays[1]),
                         enabled: true,
                         source: DisplayIdentitySnapshot(self.displays[0]),
-                        awayInput: unreadable ? 0x1B : 0x11,
-                        returnInput: unreadable ? nil : 0x0F
+                        awayInput: unreadable ? 0x1B : switches ? 0x11 : nil,
+                        returnInput: unreadable || !switches ? nil : 0x0F
                     )
                     defaults.set(try JSONEncoder().encode(hidePreferences), forKey: "displayHidePreferences")
                 }
@@ -323,15 +325,28 @@ final class SettingsWindowTests: XCTestCase {
                 model.hide(targetUUID: Self.sideUUID)
                 spin { !model.hideOperation.isBusy }
             }
+            if scenario.name == "mac-input" {
+                model.detectMacInput(for: Self.sideUUID)
+                model.setHideSwitchInput(0x0F, for: Self.sideUUID)
+            }
             let controller = SettingsWindowController(model: model)
             controller.present()
             let window = try XCTUnwrap(controller.window)
             defer { window.close() }
-            window.setContentSize(NSSize(width: 680, height: height))
+            window.setContentSize(fixtureSize)
             controller.selectDisplay(uuid: Self.sideUUID)
             controller.select(scenario.tab)
             try writeSnapshot(of: window, to: output, name: "displays-\(scenario.name)")
         }
+    }
+
+    /// The fixture window's content size; the environment can override either side.
+    private var fixtureSize: NSSize {
+        let environment = ProcessInfo.processInfo.environment
+        return NSSize(
+            width: environment["PANELCTL_SETTINGS_FIXTURE_WIDTH"].flatMap(Double.init) ?? 680,
+            height: environment["PANELCTL_SETTINGS_FIXTURE_HEIGHT"].flatMap(Double.init) ?? 640
+        )
     }
 
     private func writeSnapshot(of window: NSWindow, to directory: String, name: String) throws {
@@ -403,9 +418,9 @@ final class SettingsWindowTests: XCTestCase {
             XCTFail("Settings fixtures never hide a display")
             return .notRequested
         },
-        checkDDCInput: @escaping (DisplayHideIdentity) throws -> DDCInputReading = { _ in
-            XCTFail("Settings fixtures never query DDC")
-            return DDCInputReading(displayID: 0, uuid: "", current: 1)
+        // Showing the removal setup reads this Mac's input; it never writes.
+        checkDDCInput: @escaping (DisplayHideIdentity) throws -> DDCInputReading = {
+            DDCInputReading(displayID: $0.displayID, uuid: $0.uuid, current: 0x0F)
         },
         configure: (UserDefaults) throws -> Void = { _ in }
     ) throws -> (AppModel, UserDefaults) {

@@ -901,6 +901,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// This Mac's input on a display, as Settings shows it: the input read this
+    /// session, else the one saved from an earlier reading. Unlike the input
+    /// Show switches back to, it stays known when Hide is set to switch to it.
+    func macInput(for targetUUID: String) -> UInt8? {
+        if case .detected(let input)? = macInputDetections[targetUUID.lowercased()] { return input }
+        return hidePreferences[targetUUID]?.returnInput
+    }
+
     /// Reads, read-only over DDC, the input this Mac uses on the display and
     /// keeps it as the input Show switches back to.
     func detectMacInput(for targetUUID: String) {

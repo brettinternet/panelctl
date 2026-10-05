@@ -58,7 +58,7 @@ struct AutomationSettingsView: View {
                 Text("When idle")
             } footer: {
                 if model.preferences.mode == .working {
-                    Text("Dimmed displays stay usable: clicks pass through, the pointer stays visible and your current app keeps focus.")
+                    SectionFooter("Dimmed displays stay usable: clicks pass through, the pointer stays visible and your current app keeps focus.")
                 }
             }
 
@@ -74,9 +74,9 @@ struct AutomationSettingsView: View {
                 Text("Displays")
             } footer: {
                 if model.preferences.allDisplays {
-                    Text("Includes displays you connect later.")
+                    SectionFooter("Includes displays you connect later.")
                 } else if model.activeDisplays.isEmpty {
-                    Text("No active displays found.")
+                    SectionFooter("No active displays found.")
                 }
             }
 

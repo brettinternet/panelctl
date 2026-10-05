@@ -624,6 +624,32 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(checkCalls, 2)
     }
 
+    func testTheMacInputStaysKnownWhenHideIsSetToSwitchToIt() throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var checkCalls = 0
+        let model = makeModel(defaults: defaults, displays: displays, checkDDCInput: { identity in
+            checkCalls += 1
+            return DDCInputReading(displayID: identity.displayID, uuid: identity.uuid, current: 0x0F)
+        })
+        model.setHideEnabled(true, for: displays[1])
+        XCTAssertNil(model.macInput(for: Self.targetUUID))
+
+        // Read before an input is chosen, so the other computer's input is easy to pick.
+        model.detectMacInput(for: Self.targetUUID)
+        XCTAssertEqual(model.macInputDetections[Self.targetKey], .detected(0x0F))
+        XCTAssertEqual(model.macInput(for: Self.targetUUID), 0x0F)
+
+        // Choosing the Mac's own input keeps it known, but Show never switches to it.
+        model.setHideSwitchInput(0x0F, for: Self.targetUUID)
+        XCTAssertEqual(model.macInput(for: Self.targetUUID), 0x0F)
+        XCTAssertNil(model.hidePreferences[Self.targetUUID]?.returnInput)
+
+        model.setHideSwitchInput(0x11, for: Self.targetUUID)
+        XCTAssertEqual(model.hidePreferences[Self.targetUUID]?.returnInput, 0x0F)
+        XCTAssertEqual(checkCalls, 1, "choosing inputs never reads DDC")
+    }
+
     func testMacInputIsNotReadWhileTheDisplayIsHidden() async throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
@@ -1379,7 +1405,7 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(model.displayRecoveryProblem, "Couldn\u{2019}t check display recovery: unreadable journal")
     }
 
-    func testNativeHideSetupDefaultsSourceAndDetectsTheMacInputWhenSwitching() throws {
+    func testNativeHideSetupDefaultsSourceAndDetectsTheMacInput() throws {
         let defaults = try makeDefaults()
         defer {
             defaults.removePersistentDomain(forName: suiteName(defaults))
@@ -1411,20 +1437,20 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.action, .hide)
         XCTAssertNil(model.displayTiles.first { $0.id == Self.targetKey }?.actionBlocker)
         XCTAssertTrue(model.hideRemovesFromDesktop(displays[1]))
-        XCTAssertEqual(ddcChecks, 0, "nothing is read until the monitor input switches")
+
+        // The setup shows the Mac's input before an input is chosen, read once when shown.
+        spin { ddcChecks > 0 }
+        XCTAssertEqual(ddcChecks, 1, "showing the setup reads the Mac input")
+        XCTAssertEqual(model.macInputDetections[Self.targetKey], .detected(0x0F))
+        XCTAssertEqual(model.hidePreferences[Self.targetUUID]?.returnInput, 0x0F)
 
         model.setHideSource(Self.sourceUUID, for: Self.targetUUID)
         XCTAssertEqual(model.hideConfiguration(for: Self.targetUUID)?.source?.uuid, Self.sourceUUID)
 
-        // Choosing an input shows the Mac's input, read once when shown.
         model.setHideSwitchInput(0x11, for: Self.targetUUID)
         settle(window)
-        spin { ddcChecks > 0 }
-        XCTAssertEqual(ddcChecks, 1, "showing the input setup reads the Mac input")
-        XCTAssertEqual(model.macInputDetections[Self.targetKey], .detected(0x0F))
         XCTAssertEqual(model.hidePreferences[Self.targetUUID]?.returnInput, 0x0F)
-        settle(window)
-        XCTAssertEqual(ddcChecks, 1, "redrawing doesn't read again")
+        XCTAssertEqual(ddcChecks, 1, "choosing an input or redrawing doesn't read again")
         XCTAssertNil(controls(in: window).compactMap { $0 as? NSTextField }.first { $0.isEditable },
                      "a named input needs no code field")
 

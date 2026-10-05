@@ -197,23 +197,23 @@ struct DisplaySettingsView: View {
                     .disabled(reason != nil || frozen)
                     .accessibilityLabel("Remove \(tile.name) from desktop")
                     if reason == nil, let configuration, configuration.enabled, let uuid = tile.uuid {
+                        sourcePicker(configuration, uuid: uuid, tiles: tiles)
+                            .disabled(frozen)
+                        // Before the input choice, so the other computer's input is easy to pick.
+                        macInputRow(tileID: tile.id, uuid: uuid, frozen: frozen)
                         Group {
-                            sourcePicker(configuration, uuid: uuid, tiles: tiles)
                             inputPicker(configuration, tileID: tile.id, uuid: uuid)
                             if inputChoice(configuration, tileID: tile.id) == .other {
                                 customInputField(configuration, tileID: tile.id, uuid: uuid)
                             }
                         }
                         .disabled(frozen)
-                        if configuration.awayInput != nil {
-                            macInputRow(configuration, tileID: tile.id, uuid: uuid, frozen: frozen)
-                        }
                     }
                 } header: {
                     Text("Hide")
                 } footer: {
                     if let footer = hideFooter(configuration, reason: reason, tileID: tile.id) {
-                        Text(footer)
+                        SectionFooter(footer)
                     }
                 }
             }
@@ -305,16 +305,12 @@ struct DisplaySettingsView: View {
         }
     }
 
-    /// Reads the Mac's input once per session when shown; never writes.
-    private func macInputRow(
-        _ configuration: DisplayHideConfiguration,
-        tileID: String,
-        uuid: String,
-        frozen: Bool
-    ) -> some View {
+    /// Reads the Mac's input once per session when shown, even when Hide
+    /// doesn't switch inputs; never writes.
+    private func macInputRow(tileID: String, uuid: String, frozen: Bool) -> some View {
         LabeledContent("This Mac’s input") {
             HStack(spacing: 8) {
-                Text(configuration.returnInput.map(MonitorInput.name) ?? "Unknown")
+                Text(model.macInput(for: uuid).map(MonitorInput.name) ?? "Unknown")
                 switch model.macInputDetections[tileID] {
                 case .unavailable?, .onSwitchInput?:
                     Button("Detect Again") { model.detectMacInput(for: uuid) }
@@ -340,18 +336,20 @@ struct DisplaySettingsView: View {
         var lines: [String] = []
         if let away = configuration.awayInput {
             let awayName = MonitorInput.name(away)
-            switch model.macInputDetections[tileID] {
-            case .detected(let current) where current == away, .onSwitchInput(let current) where current == away:
-                lines.append("The monitor is on \(awayName) now, the input Hide switches to. If that’s this Mac’s input, choose the input your other computer uses.")
-            case .unavailable(let why):
-                lines.append("Couldn’t read this Mac’s input: \(why)")
-            default:
-                break
-            }
-            if let back = configuration.returnInput {
-                lines.append("Hide switches the monitor to \(awayName), and Show switches it back to \(MonitorInput.name(back)).")
+            let detection = model.macInputDetections[tileID]
+            if detection == .detected(away) {
+                lines.append("\(awayName) is this Mac’s input, so the monitor stays on this Mac. Choose the input your other computer uses.")
             } else {
-                lines.append("Hide switches the monitor to \(awayName). After Show, switch it back with the monitor’s buttons.")
+                if detection == .onSwitchInput(away) {
+                    lines.append("The monitor is on \(awayName) now, the input Hide switches to. If that’s this Mac’s input, choose the input your other computer uses.")
+                } else if case .unavailable(let why)? = detection {
+                    lines.append("Couldn’t read this Mac’s input: \(why)")
+                }
+                if let back = configuration.returnInput {
+                    lines.append("Hide switches the monitor to \(awayName), and Show switches it back to \(MonitorInput.name(back)).")
+                } else {
+                    lines.append("Hide switches the monitor to \(awayName). After Show, switch it back with the monitor’s buttons.")
+                }
             }
         }
         lines.append("Windows move to the other display, and resolution or refresh rate can change until you show it again.")
@@ -371,7 +369,7 @@ struct DisplaySettingsView: View {
             } header: {
                 Text("Scripts")
             } footer: {
-                Text("Hides or shows this display, like its Hide or Show button. Use it in a Stream Deck or Shortcuts action that runs a shell command. To set one state, replace toggle-hide with hide or show.")
+                SectionFooter("Hides or shows this display, like its Hide or Show button. Use it in a Stream Deck or Shortcuts action that runs a shell command. To set one state, replace toggle-hide with hide or show.")
             }
         }
     }

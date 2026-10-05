@@ -19,16 +19,17 @@ Then, on the display's tile:
 ```text
 Hide                  [Black out | Remove from desktop]
 Mirror onto           [main display ▾]          default: the only tested source
-Switch monitor to     [Don't switch | HDMI 1 | … | Other…]
 This Mac's input      DisplayPort 1             read once over DDC (read-only)
+Switch monitor to     [Don't switch | HDMI 1 | … | Other…]
 ```
 
 - Hide mirrors the display and, if an input is chosen, switches the monitor to
   it first. Show restores the saved layout, then switches back to the Mac's
   input.
-- "This Mac's input" is read automatically. A reading of 0, or of the input Hide
-  switches to, never replaces it.
-- With **Don't switch**, PanelCtl makes no DDC requests; use the monitor's
+- "This Mac's input" is read automatically, even with **Don't switch**, so you
+  can tell which input is the other computer's. A reading of 0, or of the input
+  Hide switches to, never replaces it.
+- With **Don't switch**, Hide and Show make no DDC requests; use the monitor's
   input button.
 - Show restores public layout and modes only, not HDR, color profiles,
   rotation, windows or Spaces. Resolution, refresh rate or HDR can change while

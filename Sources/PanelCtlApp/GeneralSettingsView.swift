@@ -19,7 +19,7 @@ struct GeneralSettingsView: View {
                     set: model.setShowMenuBarIcon
                 ))
             } footer: {
-                Text("Closing Settings doesn’t stop automation. If the menu bar icon is hidden, open PanelCtl again to return here. Launching at login never hides or shows a display.")
+                SectionFooter("Closing Settings doesn’t stop automation. If the menu bar icon is hidden, open PanelCtl again to return here. Launching at login never hides or shows a display.")
             }
 
             Section {
