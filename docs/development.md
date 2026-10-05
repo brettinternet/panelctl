@@ -50,6 +50,7 @@ The regular test suite uses fake display backends and DDC channels. App tests
 cover display tiles, Hide and Show actions, inline results, recovery focus,
 input detection and menu keyboard navigation offline with synthetic state. Hide
 setup load and save make no DDC calls; the Mac input read is tested with a fake.
+Black out Hide uses a fake overlay manager, so tests never cover a real screen.
 
 SwiftUI draws Settings buttons and pickers itself and builds its accessibility
 tree only for a connected assistive client, so native tests reach the AppKit

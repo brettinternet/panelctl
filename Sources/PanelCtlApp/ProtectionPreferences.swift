@@ -23,6 +23,8 @@ enum ProtectionConfigurationError: Error, Equatable, LocalizedError {
     case selectedDisplayUnavailable(String)
     case allDisplaysRequireLimit
     case selectionWouldCoverAllDisplays
+    case selectedDisplaysHidden
+    case selectionWouldCoverEveryShownDisplay
     case persistentDimming
     case invalidOverlayOpacityPercent
     case invalidHardwareBrightnessPercent
@@ -41,6 +43,10 @@ enum ProtectionConfigurationError: Error, Equatable, LocalizedError {
             return "With All displays on, choose Restore or Sleep under Afterward as a safety limit."
         case .selectionWouldCoverAllDisplays:
             return "To cover every display, turn on All displays and choose Restore or Sleep under Afterward."
+        case .selectedDisplaysHidden:
+            return "The displays automation covers are hidden. Show one to resume."
+        case .selectionWouldCoverEveryShownDisplay:
+            return "Automation would cover every display that isn\u{2019}t hidden. Show a display, or choose Restore or Sleep under Afterward."
         case .persistentDimming:
             return "Use Dim, or turn off hardware brightness, to keep displays black during activity."
         case .invalidOverlayOpacityPercent:
@@ -51,6 +57,17 @@ enum ProtectionConfigurationError: Error, Equatable, LocalizedError {
             return "Choose a valid inactivity delay."
         case .invalidFollowUpDuration:
             return "Choose a valid Restore or Sleep delay."
+        }
+    }
+
+    /// Automation waits instead of failing while displays are missing or hidden.
+    var waitsForDisplays: Bool {
+        switch self {
+        case .noDisplays, .selectedDisplayUnavailable, .selectedDisplaysHidden,
+             .selectionWouldCoverEveryShownDisplay:
+            return true
+        default:
+            return false
         }
     }
 }
@@ -202,7 +219,12 @@ struct ProtectionPreferences: Codable, Equatable {
         return arguments
     }
 
-    func commandArguments(for displays: [DisplayRecord]) throws -> [String] {
+    /// Hidden displays are skipped but count as covered, so the safety
+    /// rules treat them as already black.
+    func commandArguments(
+        for displays: [DisplayRecord],
+        hiddenDisplayUUIDs: Set<String> = []
+    ) throws -> [String] {
         guard Self.isValidDuration(idleSeconds) else {
             throw ProtectionConfigurationError.invalidIdleDuration
         }
@@ -228,23 +250,27 @@ struct ProtectionPreferences: Codable, Equatable {
             $0.bounds.height > 0
         }
         guard !drawable.isEmpty else { throw ProtectionConfigurationError.noDisplays }
+        func matches(_ record: DisplayRecord, _ uuids: Set<String>) -> Bool {
+            guard let uuid = record.uuid else { return false }
+            return uuids.contains { $0.caseInsensitiveCompare(uuid) == .orderedSame }
+        }
+        let hidden = drawable.filter { matches($0, hiddenDisplayUUIDs) }
+        let shown = drawable.filter { !matches($0, hiddenDisplayUUIDs) }
 
         let selected: [DisplayRecord]
         if allDisplays {
-            selected = drawable
+            if followUpAction == .untilActivity {
+                throw ProtectionConfigurationError.allDisplaysRequireLimit
+            }
+            selected = shown
         } else {
             guard !selectedDisplayUUIDs.isEmpty else {
                 throw ProtectionConfigurationError.noSelection
             }
-            selected = drawable.filter { record in
-                guard let uuid = record.uuid else { return false }
-                return selectedDisplayUUIDs.contains {
-                    $0.caseInsensitiveCompare(uuid) == .orderedSame
-                }
-            }
-            guard !selected.isEmpty else {
+            selected = shown.filter { matches($0, selectedDisplayUUIDs) }
+            if selected.isEmpty, !hidden.contains(where: { matches($0, selectedDisplayUUIDs) }) {
                 let missing = selectedDisplayUUIDs.first { uuid in
-                    !selected.contains {
+                    !drawable.contains {
                         $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame
                     }
                 } ?? "unknown"
@@ -253,14 +279,13 @@ struct ProtectionPreferences: Codable, Equatable {
                 )
             }
         }
-
-        if allDisplays && followUpAction == .untilActivity {
-            throw ProtectionConfigurationError.allDisplaysRequireLimit
-        }
+        guard !selected.isEmpty else { throw ProtectionConfigurationError.selectedDisplaysHidden }
         if !allDisplays,
            followUpAction == .untilActivity,
-           Set(selected.map(\.id)) == Set(drawable.map(\.id)) {
-            throw ProtectionConfigurationError.selectionWouldCoverAllDisplays
+           Set(selected.map(\.id)) == Set(shown.map(\.id)) {
+            throw hidden.isEmpty
+                ? ProtectionConfigurationError.selectionWouldCoverAllDisplays
+                : ProtectionConfigurationError.selectionWouldCoverEveryShownDisplay
         }
 
         var arguments = ["blackout"]
@@ -275,6 +300,9 @@ struct ProtectionPreferences: Codable, Equatable {
                 }
                 arguments += ["--display", uuid]
             }
+        }
+        for uuid in hidden.compactMap(\.uuid).sorted() {
+            arguments += ["--panelctl-hidden-display", uuid]
         }
         arguments += ["--mode", mode.rawValue]
         if mode == .working {

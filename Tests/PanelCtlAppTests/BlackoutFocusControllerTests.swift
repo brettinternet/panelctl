@@ -427,6 +427,32 @@ final class BlackoutFocusControllerTests: XCTestCase {
         XCTAssertEqual(restoreAttempts, 2)
     }
 
+    func testEscapeThatLeavesAtOnceKeepsEscapeForTheNextEngagement() {
+        var escape: (() -> Void)?
+        var restoreAttempts = 0
+        let operations = makeOperations(makeProxyWindow: { callback in
+            escape = callback
+            return BlackoutFocusWindow(show: {}, close: {})
+        })
+        var controller: BlackoutFocusController?
+        controller = BlackoutFocusController(operations: operations) {
+            restoreAttempts += 1
+            // Showing a hidden display uncovers it, so focus leaves right away.
+            controller?.leave()
+            return true
+        }
+        let target = [CGRect(x: 0, y: 0, width: 10, height: 10)]
+
+        controller?.enter(targetFrames: target)
+        escape?()
+        XCTAssertEqual(restoreAttempts, 1)
+        XCTAssertEqual(controller?.isEngaged, false)
+
+        controller?.enter(targetFrames: target)
+        escape?()
+        XCTAssertEqual(restoreAttempts, 2, "Escape works on the next hidden display")
+    }
+
     private func makeOperations(
         frontmost: @escaping () -> BlackoutPreviousApplication? = { nil },
         makeProxyWindow: @escaping (@escaping () -> Void) -> BlackoutFocusWindow = { _ in

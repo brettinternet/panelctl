@@ -67,7 +67,7 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(controller.selectedDisplayID, Self.sideUUID.lowercased())
     }
 
-    func testExperimentalFlagDefaultsOffPersistsAndGatesHideButNotShow() throws {
+    func testExperimentalFlagDefaultsOffPersistsAndGatesRemovalButNotShow() throws {
         var hidden: DisplayHandoffStatus?
         let (model, defaults) = try makeModel(status: { hidden }, configure: { defaults in
             var hidePreferences = DisplayHidePreferences()
@@ -83,17 +83,19 @@ final class SettingsWindowTests: XCTestCase {
         delegate.model = model
 
         XCTAssertFalse(model.experimentalFeaturesEnabled)
-        XCTAssertNil(try sideTile(model).action, "Hide needs the Experimental flag")
+        XCTAssertEqual(try sideTile(model).action, .hide, "Hide blacks out without the Experimental flag")
+        XCTAssertFalse(model.hideRemovesFromDesktop(displays[1]), "removal needs the Experimental flag")
         XCTAssertThrowsError(try model.makeHideRequest(targetUUID: Self.sideUUID)) { error in
             XCTAssertTrue(error.localizedDescription.contains("Turn on Experimental features"))
         }
         XCTAssertEqual(model.handleDisplayControlRequest(AppControlRequest(command: .hide, targetUUID: Self.sideUUID)).outcome, .refused)
-        XCTAssertFalse(delegate.makeMenu().items.contains { $0.title.hasPrefix("Hide ") })
+        XCTAssertTrue(delegate.makeMenu().items.contains { $0.title == "Hide DELL S2721DGF" })
         XCTAssertNil(try removalSwitch(in: model), "removal setup stays out of Settings")
 
         model.acceptExperimentalConsent()
         XCTAssertTrue(defaults.bool(forKey: "experimentalFeaturesEnabled"))
         XCTAssertEqual(try sideTile(model).action, .hide)
+        XCTAssertTrue(model.hideRemovesFromDesktop(displays[1]))
         XCTAssertNil(try sideTile(model).actionBlocker)
         XCTAssertNoThrow(try model.makeHideRequest(targetUUID: Self.sideUUID))
         XCTAssertTrue(delegate.makeMenu().items.contains { $0.title == "Hide DELL S2721DGF" })
@@ -248,6 +250,7 @@ final class SettingsWindowTests: XCTestCase {
         )
         let scenarios: [(name: String, experimental: Bool, status: DisplayHandoffStatus?, tab: SettingsTab)] = [
             ("off", false, nil, .displays),
+            ("blacked-out", false, nil, .displays),
             ("setup", true, nil, .displays),
             ("unreadable", true, nil, .displays),
             ("refused", true, nil, .displays),
@@ -302,7 +305,7 @@ final class SettingsWindowTests: XCTestCase {
                 model.hide(targetUUID: Self.sideUUID)
                 model.setDisplayLifecycleTransitioning(false)
             }
-            if partial {
+            if partial || scenario.name == "blacked-out" {
                 model.hide(targetUUID: Self.sideUUID)
                 spin { !model.hideOperation.isBusy }
             }
@@ -412,6 +415,8 @@ final class SettingsWindowTests: XCTestCase {
                 return .notRequested
             },
             checkDDCInput: checkDDCInput,
+            // Black out never draws over a real screen in tests.
+            coverDisplays: { _ in [] },
             quiesceProtection: { $0(true, nil) }
         )
         return (model, defaults)

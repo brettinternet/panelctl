@@ -55,6 +55,12 @@ final class AppModel: ObservableObject {
     /// Input outcomes are session evidence, not a claim about the monitor's current input.
     @Published private(set) var displayResults: [String: DisplayOperationResult] = [:]
     @Published private(set) var hideOperation: DisplayHideOperation = .idle
+    /// Displays Hide blacked out, keyed by lowercased UUID. They stay hidden
+    /// through display changes until Show; quitting shows them.
+    @Published private(set) var blackoutHiddenDisplays: [String: DisplayIdentitySnapshot] = [:]
+    /// Hidden displays that are on but couldn't be covered; the next display
+    /// change tries again.
+    @Published private(set) var uncoveredHiddenDisplays: Set<String> = []
     @Published private(set) var protectionQuiescencePending = false
     @Published private(set) var protectionQuiescenceFailure: String?
     @Published private(set) var displayLifecycleTransitioning = false
@@ -98,6 +104,7 @@ final class AppModel: ObservableObject {
     private let hideDisplay: (DisplayHideIdentity, DisplayHideIdentity, UInt8?) throws -> DisplayInputOutcome
     private let showDisplay: (String, UInt8?) throws -> DisplayInputOutcome
     private let checkDDCInput: (DisplayHideIdentity) throws -> DDCInputReading
+    private let coverDisplays: @MainActor (Set<UInt32>) -> Set<UInt32>
     private let quiesceProtection: ProtectionQuiesce?
     private let service: ProtectionService
     private var snoozeTimer: Timer?
@@ -133,6 +140,7 @@ final class AppModel: ObservableObject {
         checkDDCInput: @escaping (DisplayHideIdentity) throws -> DDCInputReading = {
             try DisplayHideController().checkInputAvailability(target: $0)
         },
+        coverDisplays: (@MainActor (Set<UInt32>) -> Set<UInt32>)? = nil,
         quiesceProtection: ProtectionQuiesce? = nil
     ) {
         self.defaults = defaults
@@ -145,6 +153,7 @@ final class AppModel: ObservableObject {
         self.hideDisplay = hideDisplay
         self.showDisplay = showDisplay
         self.checkDDCInput = checkDDCInput
+        self.coverDisplays = coverDisplays ?? HiddenDisplayOverlays().cover
         self.quiesceProtection = quiesceProtection
         self.showMenuBarIcon = defaults.object(forKey: Self.showMenuBarIconKey) as? Bool ?? true
         self.experimentalFeaturesEnabled = defaults.bool(forKey: Self.experimentalFeaturesKey)
@@ -284,6 +293,7 @@ final class AppModel: ObservableObject {
     var selectedHiddenMirrorSource: DisplayRecord? {
         guard let source = verifiedHiddenMirrorSource,
               let uuid = source.uuid,
+              !isBlackoutHidden(uuid),
               preferences.allDisplays || preferences.selectedDisplayUUIDs.contains(where: {
                   $0.caseInsensitiveCompare(uuid) == .orderedSame
               }) else { return nil }
@@ -364,11 +374,16 @@ final class AppModel: ObservableObject {
 
     var validationMessage: String? {
         do {
-            _ = try preferences.commandArguments(for: displays)
+            _ = try protectionArguments()
             return nil
         } catch {
             return error.localizedDescription
         }
+    }
+
+    /// Automation skips displays Hide blacked out.
+    private func protectionArguments() throws -> [String] {
+        try preferences.commandArguments(for: displays, hiddenDisplayUUIDs: Set(blackoutHiddenDisplays.keys))
     }
 
     func identityIsCurrent(_ identity: DisplayIdentitySnapshot) -> Bool {
@@ -412,6 +427,9 @@ final class AppModel: ObservableObject {
         guard let target = matchingDisplay(configuration.target) else {
             return .identityChanged("This display is disconnected or changed. Reconnect it, then try again; PanelCtl won\u{2019}t apply its settings to a different display.")
         }
+        if isBlackoutHidden(target.uuid) {
+            return .unavailable("This display is hidden. Show it first.")
+        }
         if let reason = removalIneligibleReason(for: target) {
             return .unavailable(reason)
         }
@@ -426,6 +444,9 @@ final class AppModel: ObservableObject {
         }
         guard source.online, source.active, !source.asleep else {
             return .unavailable("The display it mirrors onto must be on and awake.")
+        }
+        guard !isBlackoutHidden(source.uuid) else {
+            return .unavailable("The display it mirrors onto is hidden. Show it first.")
         }
         guard target.id != source.id else {
             return .unavailable("Choose a different display to mirror onto.")
@@ -453,6 +474,158 @@ final class AppModel: ObservableObject {
             return "Wake this display to remove it from the desktop."
         }
         return nil
+    }
+
+    /// Hide removes a display from the desktop when Experimental features and
+    /// its Remove from desktop switch are on; otherwise Hide blacks it out.
+    func hideRemovesFromDesktop(_ display: DisplayRecord) -> Bool {
+        guard experimentalFeaturesEnabled, let uuid = display.uuid,
+              hidePreferences[uuid]?.enabled == true else { return false }
+        return removalIneligibleReason(for: display) == nil
+    }
+
+    func isBlackoutHidden(_ uuid: String?) -> Bool {
+        uuid.map { blackoutHiddenDisplays[$0.lowercased()] != nil } ?? false
+    }
+
+    /// Why Hide can't black out this display right now, or nil when it can.
+    func blackoutReadiness(for display: DisplayRecord) -> DisplayHideError? {
+        if hideOperation.isBusy { return .actionInProgress }
+        if displayLifecycleTransitioning { return .sleeping }
+        guard let uuid = display.uuid, UUID(uuidString: uuid) != nil,
+              displays.filter({ $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame }).count == 1 else {
+            return .unavailable("This display has no stable ID, so PanelCtl can\u{2019}t hide it.")
+        }
+        guard display.active, display.online, !display.asleep,
+              display.bounds.width > 0, display.bounds.height > 0 else {
+            return .unavailable("Wake this display to hide it.")
+        }
+        let journal = handoffStatus?.hasUnresolvedJournal == true ? handoffStatus : nil
+        if journal?.target?.uuid.caseInsensitiveCompare(uuid) == .orderedSame {
+            return .unavailable("PanelCtl removed this display from the desktop. Show it first.")
+        }
+        if isDisplayMirrored(display.id) {
+            if journal?.source?.uuid.caseInsensitiveCompare(uuid) == .orderedSame {
+                return .unavailable("PanelCtl is mirroring \(journal?.target?.name ?? "another display") onto this display. Show it first.")
+            }
+            return .unavailable("macOS is mirroring this display. Turn off mirroring in System Settings \u{2192} Displays first.")
+        }
+        let anotherStaysVisible = displays.contains { other in
+            guard other.id != display.id, other.active, other.online, !other.asleep,
+                  other.bounds.width > 0, other.bounds.height > 0,
+                  !isBlackoutHidden(other.uuid) else { return false }
+            // A display removed from the desktop shows the other computer.
+            guard let target = journal?.target else { return true }
+            return other.uuid?.caseInsensitiveCompare(target.uuid) != .orderedSame
+        }
+        guard anotherStaysVisible else {
+            return .unavailable("PanelCtl keeps at least one display visible, so it won\u{2019}t hide this one.")
+        }
+        return nil
+    }
+
+    /// Current IDs of the hidden displays that are covered now.
+    var coveredHiddenDisplayIDs: Set<UInt32> {
+        Set(connectedHiddenDisplays.filter { !uncoveredHiddenDisplays.contains($0.value) }.keys)
+    }
+
+    /// Escape on a hidden display shows it; false when Hide didn't black it out.
+    func showHiddenDisplay(at displayID: UInt32) -> Bool {
+        guard let key = connectedHiddenDisplays[displayID] else { return false }
+        show(targetUUID: key)
+        return true
+    }
+
+    /// Connected hidden displays by current display ID. Sleeping displays stay
+    /// covered, so they don't flash the desktop when they wake.
+    private var connectedHiddenDisplays: [UInt32: String] {
+        var connected: [UInt32: String] = [:]
+        for key in blackoutHiddenDisplays.keys {
+            let matches = displays.filter { $0.online && $0.uuid?.lowercased() == key }
+            if matches.count == 1, let display = matches.first { connected[display.id] = key }
+        }
+        return connected
+    }
+
+    /// Covers each connected hidden display at its current frame.
+    private func coverHiddenDisplays() {
+        let connected = connectedHiddenDisplays
+        let failed = coverDisplays(Set(connected.keys))
+        uncoveredHiddenDisplays = Set(failed.compactMap { id in
+            displays.contains { $0.id == id && $0.active && !$0.asleep } ? connected[id] : nil
+        })
+    }
+
+    /// Re-covers hidden displays after a display change, and shows them all
+    /// once no other display is connected.
+    private func reconcileHiddenDisplays() {
+        if !blackoutHiddenDisplays.isEmpty, !displayLifecycleTransitioning,
+           !displays.contains(where: { $0.online && !isBlackoutHidden($0.uuid) }) {
+            for key in blackoutHiddenDisplays.keys {
+                displayResults[key] = DisplayOperationResult(
+                    action: .hide, succeeded: false,
+                    message: "Shown because no other display was connected.",
+                    inputMessage: nil, inputOutcome: nil, inputNeedsAttention: false
+                )
+            }
+            blackoutHiddenDisplays = [:]
+            coverHiddenDisplays()
+            hiddenDisplaysChanged()
+            return
+        }
+        coverHiddenDisplays()
+    }
+
+    /// Automation restarts without the hidden displays and counts idle time anew.
+    private func hiddenDisplaysChanged() {
+        manualActivityDate = now()
+        reconcileProtection(restartWatcher: true)
+        onStatusChange?()
+    }
+
+    private func blackOut(targetUUID: String, completion: ((DisplayOperationResult) -> Void)?) {
+        let matches = displays.filter { $0.uuid?.caseInsensitiveCompare(targetUUID) == .orderedSame }
+        guard matches.count == 1, let display = matches.first else {
+            refuse(.hide, targetUUID: targetUUID, error: DisplayHideError.unavailable(
+                "This display is disconnected. Reconnect it, then try again."
+            ), completion: completion)
+            return
+        }
+        if let refusal = blackoutReadiness(for: display) {
+            refuse(.hide, targetUUID: targetUUID, error: refusal, completion: completion)
+            return
+        }
+        let key = targetUUID.lowercased()
+        blackoutHiddenDisplays[key] = DisplayIdentitySnapshot(display)
+        coverHiddenDisplays()
+        guard !uncoveredHiddenDisplays.contains(key) else {
+            blackoutHiddenDisplays[key] = nil
+            coverHiddenDisplays()
+            refuse(.hide, targetUUID: targetUUID, error: DisplayHideError.unavailable(
+                "The display wasn\u{2019}t fully covered. Try again."
+            ), completion: completion)
+            return
+        }
+        let result = DisplayOperationResult(
+            action: .hide, succeeded: true, message: "Hidden.",
+            inputMessage: nil, inputOutcome: nil, inputNeedsAttention: false
+        )
+        displayResults[key] = result
+        hiddenDisplaysChanged()
+        completion?(result)
+    }
+
+    private func showBlackedOut(targetUUID: String, completion: ((DisplayOperationResult) -> Void)?) {
+        let key = targetUUID.lowercased()
+        blackoutHiddenDisplays[key] = nil
+        coverHiddenDisplays()
+        let result = DisplayOperationResult(
+            action: .show, succeeded: true, message: "Shown.",
+            inputMessage: nil, inputOutcome: nil, inputNeedsAttention: false
+        )
+        displayResults[key] = result
+        hiddenDisplaysChanged()
+        completion?(result)
     }
 
     /// Saved Hide settings for a display, or defaults for an eligible one.
@@ -494,6 +667,14 @@ final class AppModel: ObservableObject {
                 name: journalTarget.name,
                 status: tileStatus(for: nil, isJournalTarget: true),
                 display: nil
+            ))
+        }
+        // A hidden display that's away stays hidden until Show.
+        for (key, identity) in blackoutHiddenDisplays.sorted(by: { $0.key < $1.key })
+        where !tiles.contains(where: { $0.id == key }) {
+            tiles.append(DisplayTile(
+                id: key, uuid: identity.uuid, name: identity.name ?? "Display \(identity.id)",
+                status: .hidden, display: nil
             ))
         }
         // Number identical names in order, as macOS does.
@@ -543,14 +724,22 @@ final class AppModel: ObservableObject {
         case .hiding, .showing, .busy:
             return
         case .hidden, .needsRecovery:
+            if isBlackoutHidden(tile.uuid) {
+                tile.action = .show
+                return
+            }
             guard canShowHiddenDisplay else { return }
             tile.action = .show
             tile.actionBlocker = showWait?.localizedDescription
         case .on, .blackedOut, .asleep, .mirrored, .unavailable:
-            guard experimentalFeaturesEnabled, let uuid = tile.uuid,
-                  let configuration = hideConfiguration(for: uuid), configuration.enabled else { return }
+            guard let display = tile.display else { return }
             tile.action = .hide
-            tile.actionBlocker = hideReadinessMessage(for: configuration)
+            if hideRemovesFromDesktop(display), let uuid = tile.uuid,
+               let configuration = hideConfiguration(for: uuid) {
+                tile.actionBlocker = hideReadinessMessage(for: configuration)
+            } else {
+                tile.actionBlocker = blackoutReadiness(for: display)?.localizedDescription
+            }
         }
     }
 
@@ -564,6 +753,7 @@ final class AppModel: ObservableObject {
         default:
             break
         }
+        if isBlackoutHidden(uuid) { return .hidden }
         if isJournalTarget, let status = handoffStatus {
             switch status.state {
             case .busy: return .busy
@@ -877,9 +1067,20 @@ final class AppModel: ObservableObject {
         return hideRequest(target: configuration.target, source: source, configuration: configuration)
     }
 
-    /// Removes a display from the desktop right away. The outcome is kept in
-    /// `displayResults` and passed to `completion`.
+    /// Hides a display right away in its style: blacked out, or removed from
+    /// the desktop. The outcome is kept in `displayResults` and passed to `completion`.
     func hide(targetUUID: String, completion: ((DisplayOperationResult) -> Void)? = nil) {
+        if isBlackoutHidden(targetUUID) {
+            refuse(.hide, targetUUID: targetUUID, error: DisplayHideError.unavailable(
+                "This display is already hidden."
+            ), completion: completion)
+            return
+        }
+        guard let display = displays.first(where: { $0.uuid?.caseInsensitiveCompare(targetUUID) == .orderedSame }),
+              hideRemovesFromDesktop(display) else {
+            blackOut(targetUUID: targetUUID, completion: completion)
+            return
+        }
         let request: DisplayHideRequest
         do {
             request = try makeHideRequest(targetUUID: targetUUID)
@@ -922,9 +1123,13 @@ final class AppModel: ObservableObject {
         return DisplayShowRequest(status: handoffStatus, returnInput: input.value, returnInputWarning: input.warning)
     }
 
-    /// Shows the display hidden by PanelCtl right away. Refuses when the journal
-    /// belongs to a different display, so a stale action never shows another one.
+    /// Shows a hidden display right away. Refuses when the journal belongs to
+    /// a different display, so a stale action never shows another one.
     func show(targetUUID: String, completion: ((DisplayOperationResult) -> Void)? = nil) {
+        if isBlackoutHidden(targetUUID) {
+            showBlackedOut(targetUUID: targetUUID, completion: completion)
+            return
+        }
         let request: DisplayShowRequest
         do {
             request = try makeShowRequest()
@@ -960,6 +1165,9 @@ final class AppModel: ObservableObject {
             } else {
                 reconcileProtection(restartWatcher: true)
             }
+        }
+        if !transitioning {
+            reconcileHiddenDisplays()
         }
         onStatusChange?()
     }
@@ -1072,7 +1280,7 @@ final class AppModel: ObservableObject {
                 }
                 arguments = overlayArguments
             } else {
-                arguments = try preferences.commandArguments(for: displays)
+                arguments = try protectionArguments()
             }
         } catch {
             if wasSnoozed {
@@ -1145,6 +1353,7 @@ final class AppModel: ObservableObject {
     func refreshDisplays(restartWatcher: Bool = false) {
         displays = displayProvider()
         refreshHandoffStatus()
+        reconcileHiddenDisplays()
         if preferences.isEnabled {
             reconcileProtection(restartWatcher: restartWatcher)
         }
@@ -1281,21 +1490,22 @@ final class AppModel: ObservableObject {
         (preferences.mode == .working || preferences.keepBlackoutOnInput) && activeDisplays.count > 1
     }
 
+    /// Matches the helper, which counts hidden displays as covered.
     private var resetsBlackoutLimitOnInput: Bool {
         guard (preferences.mode == .working || preferences.keepBlackoutOnInput),
               !preferences.allDisplays else {
             return false
         }
-        let selectedDisplayIDs = Set(activeDisplays.compactMap { display -> UInt32? in
+        let coveredDisplayIDs = Set(activeDisplays.compactMap { display -> UInt32? in
             guard let uuid = display.uuid,
-                  preferences.selectedDisplayUUIDs.contains(where: {
+                  isBlackoutHidden(uuid) || preferences.selectedDisplayUUIDs.contains(where: {
                       $0.caseInsensitiveCompare(uuid) == .orderedSame
                   }) else {
                 return nil
             }
             return display.id
         })
-        return selectedDisplayIDs.count < activeDisplays.count
+        return coveredDisplayIDs.count < activeDisplays.count
     }
 
     private func reconcileProtection(restartWatcher: Bool = false) {
@@ -1344,20 +1554,14 @@ final class AppModel: ObservableObject {
         do {
             let rearm = restartWatcher || protectionRearmRequired
             service.run(
-                arguments: try preferences.commandArguments(for: displays),
+                arguments: try protectionArguments(),
                 restartForDisplayChange: rearm
             )
             if service.hasManagedProcess {
                 protectionRearmRequired = false
             }
-        } catch ProtectionConfigurationError.noDisplays {
-            service.waitForDisplays(ProtectionConfigurationError.noDisplays.localizedDescription)
-        } catch let error as ProtectionConfigurationError {
-            if case .selectedDisplayUnavailable = error {
-                service.waitForDisplays(error.localizedDescription)
-            } else {
-                service.fail(error.localizedDescription)
-            }
+        } catch let error as ProtectionConfigurationError where error.waitsForDisplays {
+            service.waitForDisplays(error.localizedDescription)
         } catch {
             service.fail(error.localizedDescription)
         }
@@ -1386,17 +1590,10 @@ final class AppModel: ObservableObject {
                 }
                 return serviceState
             }
-            _ = try preferences.commandArguments(for: displays)
+            _ = try protectionArguments()
             return serviceState
-        } catch ProtectionConfigurationError.noDisplays {
-            return .waitingForDisplays(
-                ProtectionConfigurationError.noDisplays.localizedDescription
-            )
-        } catch let error as ProtectionConfigurationError {
-            if case .selectedDisplayUnavailable = error {
-                return .waitingForDisplays(error.localizedDescription)
-            }
-            return serviceState
+        } catch let error as ProtectionConfigurationError where error.waitsForDisplays {
+            return .waitingForDisplays(error.localizedDescription)
         } catch {
             return serviceState
         }

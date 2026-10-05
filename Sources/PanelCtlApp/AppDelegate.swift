@@ -24,7 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var terminationPending = false
     private var systemSleeping = false
     private lazy var blackoutFocusController = BlackoutFocusController { [weak self] in
-        self?.requestBlackoutRestore() ?? false
+        self?.handleBlackoutEscape() ?? false
     }
     private var blackoutFocusTimer: Timer?
 
@@ -57,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             self.updateStatusItem()
             self.updateBlackoutFocus()
+            self.moveSettingsOffHiddenDisplays()
         }
         noticeCancellable = model.$notice.sink { [weak self] notice in
             guard let self, let notice else { return }
@@ -169,13 +170,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
+    /// Focus follows the pointer onto hidden displays and, in blocking mode,
+    /// onto displays automation blacked out, so Escape reaches PanelCtl.
     private func updateBlackoutFocus() {
         guard let model else { return }
+        var focusDisplayIDs = model.coveredHiddenDisplayIDs
         if Self.shouldEngageBlackoutFocus(
             runtimeState: model.runtimeState,
             mode: model.effectiveBlackoutMode,
             hasBlackedOutDisplays: !model.blackedOutDisplayIDs.isEmpty
         ) {
+            focusDisplayIDs.formUnion(model.blackedOutDisplayIDs)
+        }
+        if !focusDisplayIDs.isEmpty {
             if blackoutFocusTimer == nil {
                 let timer = Timer(
                     timeInterval: 0.05,
@@ -188,8 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 blackoutFocusTimer = timer
             }
             let frames = NSScreen.screens.compactMap { screen -> CGRect? in
-                guard let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
-                      model.blackedOutDisplayIDs.contains(id) else { return nil }
+                guard let id = Self.displayID(of: screen), focusDisplayIDs.contains(id) else { return nil }
                 return screen.frame
             }
             blackoutFocusController.enter(targetFrames: frames)
@@ -198,6 +204,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             blackoutFocusTimer = nil
             blackoutFocusController.leave()
         }
+    }
+
+    /// Escape on a hidden display shows it; elsewhere it restores automation.
+    private func handleBlackoutEscape() -> Bool {
+        let pointer = NSEvent.mouseLocation
+        if let id = NSScreen.screens.first(where: { $0.frame.contains(pointer) }).flatMap(Self.displayID(of:)),
+           model.showHiddenDisplay(at: id) {
+            return true
+        }
+        return requestBlackoutRestore()
+    }
+
+    /// Settings on a hidden display would sit under its cover; center it on a visible one.
+    private func moveSettingsOffHiddenDisplays() {
+        let hidden = model.coveredHiddenDisplayIDs
+        guard let window = settingsWindowController?.window, window.isVisible,
+              let id = window.screen.flatMap(Self.displayID(of:)), hidden.contains(id),
+              let visible = NSScreen.screens.first(where: {
+                  Self.displayID(of: $0).map { !hidden.contains($0) } ?? false
+              }) else { return }
+        let area = visible.visibleFrame
+        window.setFrameOrigin(NSPoint(
+            x: area.midX - window.frame.width / 2,
+            y: area.midY - window.frame.height / 2
+        ))
+    }
+
+    private static func displayID(of screen: NSScreen) -> UInt32? {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
     }
 
     static func shouldRestartWatcher(after notification: Notification.Name) -> Bool {
@@ -350,9 +385,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return menu
     }
 
-    /// Hide items follow each display's action, so they need the Experimental
-    /// flag; Show and recovery stay reachable without it. A Hide that can't run
-    /// is left out, and Settings explains why.
+    /// Hide and Show items follow each display's action. A Hide that can't
+    /// run is left out, and Settings explains why.
     private func addDisplayMenuSection(to menu: NSMenu) {
         var items: [NSMenuItem] = []
         if model.displayRecoveryProblem != nil {
@@ -522,6 +556,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.refreshLaunchAtLoginStatus()
         model.refreshDisplays()
         settingsWindowController?.present()
+        moveSettingsOffHiddenDisplays()
         if let displayUUID {
             settingsWindowController?.selectDisplay(uuid: displayUUID)
         } else if let tab {

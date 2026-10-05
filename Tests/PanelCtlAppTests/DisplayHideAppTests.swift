@@ -442,7 +442,9 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertFalse(model.preferences.allDisplays)
         XCTAssertTrue(model.hidePreferences.configurations.isEmpty)
         XCTAssertNil(defaults.data(forKey: "displayHidePreferences"))
-        XCTAssertTrue(model.displayTiles.allSatisfy { $0.action == nil }, "no display offers Hide until it is set up")
+        XCTAssertTrue(model.displayTiles.allSatisfy { $0.action == .hide && $0.actionBlocker == nil },
+                      "every display offers Hide")
+        XCTAssertFalse(displays.contains(where: model.hideRemovesFromDesktop), "Hide blacks out until removal is set up")
     }
 
     func testPerDisplayHideConfigurationPersistsIndependently() throws {
@@ -1173,8 +1175,39 @@ final class DisplayHideAppTests: XCTestCase {
                       other.actionBlocker ?? "no blocker")
         let delegate = AppDelegate()
         delegate.model = model
-        XCTAssertFalse(delegate.makeMenu().items.contains { $0.title.hasPrefix("Hide ") },
-                       "the menu leaves out a Hide that can't run")
+        let titles = delegate.makeMenu().items.map(\.title)
+        XCTAssertFalse(titles.contains("Hide Mirror source"), "the menu leaves out a Hide that can't run")
+        XCTAssertFalse(titles.contains("Hide Target"))
+    }
+
+    func testBlackOutAndRemovalStayOffEachOthersDisplays() throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let box = StatusBox(handoffStatus(.none, target: nil, source: nil))
+        let model = makeModel(defaults: defaults, displays: displays, status: { box.value })
+        model.setHideEnabled(true, for: displays[1])
+        model.setHideSource(Self.sourceUUID, for: Self.targetUUID)
+        XCTAssertTrue(model.hideRemovesFromDesktop(displays[1]))
+        XCTAssertFalse(model.hideRemovesFromDesktop(displays[2]))
+
+        // Removal never mirrors onto a blacked-out display.
+        model.hide(targetUUID: Self.sourceUUID)
+        XCTAssertTrue(model.isBlackoutHidden(Self.sourceUUID))
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.actionBlocker,
+                       "The display it mirrors onto is hidden. Show it first.")
+        model.show(targetUUID: Self.sourceUUID)
+        XCTAssertNil(model.displayTiles.first { $0.id == Self.targetKey }?.actionBlocker)
+
+        // Black out leaves a removed display alone, which doesn't count as visible.
+        box.value = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "fixture-journal", canShow: true)
+        model.refreshHandoffStatus()
+        spin { !model.protectionQuiescencePending }
+        XCTAssertEqual(model.blackoutReadiness(for: displays[1])?.localizedDescription,
+                       "PanelCtl removed this display from the desktop. Show it first.")
+        model.hide(targetUUID: Self.sourceUUID)
+        XCTAssertTrue(model.isBlackoutHidden(Self.sourceUUID), "another display can still be blacked out")
+        XCTAssertEqual(model.blackoutReadiness(for: displays[0])?.localizedDescription,
+                       "PanelCtl keeps at least one display visible, so it won\u{2019}t hide this one.")
     }
 
     func testShowUsesConfirmedJournalAndRetainsFailureWithoutFalseSuccess() async throws {
@@ -1312,7 +1345,8 @@ final class DisplayHideAppTests: XCTestCase {
         settle(window)
         let toggle = try XCTUnwrap(removalSwitch(in: window), controlSummary(window))
         XCTAssertEqual(toggle.state, .off)
-        XCTAssertNil(model.displayTiles.first { $0.id == Self.targetKey }?.action)
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.action, .hide)
+        XCTAssertFalse(model.hideRemovesFromDesktop(displays[1]), "Hide blacks out until removal is on")
 
         toggle.performClick(nil)
         settle(window)
@@ -1323,6 +1357,7 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertNil(configuration.awayInput, "no input switch by default")
         XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.action, .hide)
         XCTAssertNil(model.displayTiles.first { $0.id == Self.targetKey }?.actionBlocker)
+        XCTAssertTrue(model.hideRemovesFromDesktop(displays[1]))
         XCTAssertEqual(ddcChecks, 0, "nothing is read until the monitor input switches")
 
         model.setHideSource(Self.sourceUUID, for: Self.targetUUID)
@@ -1606,7 +1641,6 @@ final class DisplayHideAppTests: XCTestCase {
         }
         let hidden = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "fixture-journal", canShow: true)
         let model = makeModel(defaults: defaults, displays: displays, status: { hidden })
-        model.setHideEnabled(true, for: displays[2])
         spin { !model.protectionQuiescencePending }
         let delegate = AppDelegate()
         delegate.model = model
@@ -1615,7 +1649,7 @@ final class DisplayHideAppTests: XCTestCase {
         let titles = menu.items.map(\.title)
         XCTAssertTrue(titles.contains("Show Target"))
         XCTAssertFalse(titles.contains("Review Display Recovery\u{2026}"), "a healthy hidden display isn't a recovery problem")
-        XCTAssertFalse(titles.contains { $0.hasPrefix("Hide ") }, "one removed display at a time")
+        XCTAssertTrue(titles.contains("Hide Mirror source"), "another display can still be blacked out")
         let settingsItem = try XCTUnwrap(menu.items.first { $0.title == "Settings\u{2026}" })
         XCTAssertEqual(settingsItem.keyEquivalent, ",")
         model.setShowMenuBarIcon(false)
@@ -2036,6 +2070,8 @@ final class DisplayHideAppTests: XCTestCase {
             hideDisplay: hideDisplay,
             showDisplay: showDisplay,
             checkDDCInput: checkDDCInput,
+            // Black out never draws over a real screen in tests.
+            coverDisplays: { _ in [] },
             quiesceProtection: useManagedProtectionService ? nil : quiesceProtection
         )
     }

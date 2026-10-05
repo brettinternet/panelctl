@@ -84,6 +84,14 @@ struct DisplaySettingsView: View {
         switch tile.status {
         case .on:
             return tile.display.map { "On · \($0.settingsDetail)" } ?? "On"
+        case .hidden where model.isBlackoutHidden(tile.uuid):
+            if tile.display == nil {
+                return "Disconnected · blacked out again when it reconnects"
+            }
+            if model.uncoveredHiddenDisplays.contains(tile.id) {
+                return "Hidden, but PanelCtl couldn\u{2019}t cover it. It tries again when displays change."
+            }
+            return "Blacked out until you show it"
         case .hidden:
             return "Removed from the desktop · mirrored onto \(model.handoffStatus?.source?.name ?? "another display")"
         case .hiding:
@@ -128,9 +136,20 @@ struct DisplaySettingsView: View {
         }
     }
 
-    /// Why the action can't run, or what Show will do with the monitor input.
+    /// Why the action can't run, or what it will do.
     private func actionNote(_ tile: DisplayTile) -> String? {
-        tile.actionBlocker ?? (tile.action == .show ? model.showReturnInputNote : nil)
+        if let blocker = tile.actionBlocker { return blocker }
+        switch tile.action {
+        case .show? where model.isBlackoutHidden(tile.uuid):
+            return tile.display == nil ? nil : "To show it from the keyboard, point at it and press Esc."
+        case .show?:
+            return model.showReturnInputNote
+        case .hide?:
+            guard let display = tile.display, !model.hideRemovesFromDesktop(display) else { return nil }
+            return "Hide blacks out this display until you show it."
+        case nil:
+            return nil
+        }
     }
 
     private func resultLabel(_ text: String, attention: Bool) -> some View {
@@ -172,7 +191,7 @@ struct DisplaySettingsView: View {
                         set: { model.setHideEnabled($0, for: display) }
                     )) {
                         Text("Remove from desktop")
-                        Text("Experimental. Mirrors this display onto another, so windows move off it.")
+                        Text("Experimental. Hide mirrors this display onto another so windows move off it, instead of blacking it out.")
                     }
                     .disabled(reason != nil || frozen)
                     .accessibilityLabel("Remove \(tile.name) from desktop")

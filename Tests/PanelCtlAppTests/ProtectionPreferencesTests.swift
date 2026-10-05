@@ -81,6 +81,40 @@ final class ProtectionPreferencesTests: XCTestCase {
         )
     }
 
+    func testHiddenDisplaysAreSkippedButCountAsCovered() throws {
+        var preferences = ProtectionPreferences()
+        preferences.selectedDisplayUUIDs = ["AAAA-UUID", "BBBB-UUID"]
+        preferences.followUpAction = .restore
+        let options = ["--mode", "blocking", "--overlay-opacity", "100", "--idle-after", "300", "--watch", "--timeout", "1800"]
+        XCTAssertEqual(
+            try preferences.commandArguments(for: displays, hiddenDisplayUUIDs: ["bbbb-uuid"]),
+            ["blackout", "--display", "AAAA-UUID", "--panelctl-hidden-display", "BBBB-UUID"] + options
+        )
+
+        preferences.allDisplays = true
+        XCTAssertEqual(
+            try preferences.commandArguments(for: displays, hiddenDisplayUUIDs: ["bbbb-uuid", "cccc-uuid"]),
+            ["blackout", "--all", "--panelctl-hidden-display", "BBBB-UUID", "--panelctl-hidden-display", "CCCC-UUID"] + options
+        )
+
+        // Automation waits, rather than fails, while everything it covers is hidden.
+        preferences.allDisplays = false
+        preferences.selectedDisplayUUIDs = ["BBBB-UUID"]
+        XCTAssertThrowsError(try preferences.commandArguments(for: displays, hiddenDisplayUUIDs: ["bbbb-uuid"])) {
+            XCTAssertEqual($0 as? ProtectionConfigurationError, .selectedDisplaysHidden)
+            XCTAssertEqual(($0 as? ProtectionConfigurationError)?.waitsForDisplays, true)
+        }
+
+        // Without a safety limit, one shown display must stay uncovered.
+        preferences.selectedDisplayUUIDs = ["AAAA-UUID", "BBBB-UUID"]
+        preferences.followUpAction = .untilActivity
+        XCTAssertNoThrow(try preferences.commandArguments(for: displays))
+        XCTAssertThrowsError(try preferences.commandArguments(for: displays, hiddenDisplayUUIDs: ["cccc-uuid"])) {
+            XCTAssertEqual($0 as? ProtectionConfigurationError, .selectionWouldCoverEveryShownDisplay)
+            XCTAssertEqual(($0 as? ProtectionConfigurationError)?.waitsForDisplays, true)
+        }
+    }
+
     func testDefaultConfigurationUsesFiveMinuteIdleSleepAndBoundedDisplayAssertion() throws {
         let defaults = ProtectionPreferences()
         XCTAssertEqual(defaults.idleSeconds, 5 * 60)

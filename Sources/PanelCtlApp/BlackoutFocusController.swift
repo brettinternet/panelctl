@@ -243,9 +243,12 @@ final class BlackoutFocusController {
         ownsActivation = false
     }
 
+    /// Latches before asking, so a restore that leaves focus at once (Show
+    /// on a hidden display) leaves the latch clear for the next engagement.
     private func restoreFromEscape() {
-        guard ownsActivation, !escapeRestoreInFlight, requestRestore() else { return }
+        guard ownsActivation, !escapeRestoreInFlight else { return }
         escapeRestoreInFlight = true
+        if !requestRestore() { escapeRestoreInFlight = false }
     }
 
     private func restoreCursor() -> Bool {
