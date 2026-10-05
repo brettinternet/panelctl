@@ -90,9 +90,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTo
     static let windowIdentifier = NSUserInterfaceItemIdentifier("PanelCtlSettingsWindow")
 
     private let navigation: SettingsNavigation
+    private let onPresentationChange: (Bool) -> Void
     private var tabSubscription: AnyCancellable?
 
-    init(model: AppModel) {
+    // Process-wide activation belongs to the executable, not native window fixtures.
+    init(model: AppModel, onPresentationChange: @escaping (Bool) -> Void = { _ in }) {
+        self.onPresentationChange = onPresentationChange
         let navigation = SettingsNavigation()
         self.navigation = navigation
         let hostingView = NSHostingView(rootView: SettingsView(model: model, navigation: navigation))
@@ -182,14 +185,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTo
 
     func windowWillClose(_ notification: Notification) {
         // Closing Settings returns to menu-bar-only operation, not termination.
-        NSApp.setActivationPolicy(.accessory)
+        onPresentationChange(false)
     }
 
     func present() {
         guard let window = window as? SettingsWindow else { return }
-        NSApp.setActivationPolicy(.regular)
+        onPresentationChange(true)
         if window.isMiniaturized { window.deminiaturize(nil) }
-        NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window.makeKeyAndOrderFront(nil)
         applySizeConstraints(to: window)

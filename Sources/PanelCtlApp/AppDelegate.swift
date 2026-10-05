@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var controlServer: AppControlServer?
     private var statusItem: NSStatusItem?
     private var settingsWindowController: SettingsWindowController?
+    private let onSettingsPresentationChange: (Bool) -> Void
     private var noticeCancellable: AnyCancellable?
     private var launchedAsLoginItem = false
     private var suppressInitialSettings = false
@@ -27,6 +28,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self?.handleBlackoutEscape() ?? false
     }
     private var blackoutFocusTimer: Timer?
+
+    init(onSettingsPresentationChange: @escaping (Bool) -> Void = { _ in }) {
+        self.onSettingsPresentationChange = onSettingsPresentationChange
+        super.init()
+    }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let event = NSAppleEventManager.shared().currentAppleEvent
@@ -570,7 +576,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// its display unless the caller asks for something else.
     private func showSettings(tab: SettingsTab? = nil, displayUUID: String? = nil) {
         if settingsWindowController == nil {
-            settingsWindowController = SettingsWindowController(model: model)
+            settingsWindowController = SettingsWindowController(
+                model: model, onPresentationChange: onSettingsPresentationChange
+            )
         }
         model.refreshLaunchAtLoginStatus()
         model.refreshDisplays()

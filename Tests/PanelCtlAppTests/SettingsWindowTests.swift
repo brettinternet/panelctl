@@ -28,35 +28,34 @@ final class SettingsWindowTests: XCTestCase {
         let app = NSApplication.shared
         let originalPolicy = app.activationPolicy()
         let originalMenu = app.mainMenu
-        defer {
-            app.mainMenu = originalMenu
-            app.setActivationPolicy(originalPolicy)
-        }
-        app.setActivationPolicy(.accessory)
+        defer { app.mainMenu = originalMenu }
         let (model, defaults) = try makeModel()
         defer { defaults.removePersistentDomain(forName: Self.suiteName) }
         let delegate = AppDelegate()
         delegate.model = model
         delegate.configureMainMenu()
-        let controller = SettingsWindowController(model: model)
+        var presentations: [Bool] = []
+        let controller = SettingsWindowController(model: model) { presentations.append($0) }
         let window = try XCTUnwrap(controller.window)
 
-        XCTAssertEqual(app.activationPolicy(), .accessory)
+        XCTAssertTrue(presentations.isEmpty)
         controller.present()
-        XCTAssertEqual(app.activationPolicy(), .regular)
+        XCTAssertEqual(presentations, [true])
+        XCTAssertEqual(app.activationPolicy(), originalPolicy, "fixtures must not promote XCTest into the Dock")
         XCTAssertTrue(window.isVisible)
         window.miniaturize(nil)
-        XCTAssertEqual(app.activationPolicy(), .regular, "minimizing is not closing")
+        XCTAssertEqual(presentations, [true], "minimizing is not closing")
         controller.present()
         XCTAssertFalse(window.isMiniaturized)
+        XCTAssertEqual(presentations, [true, true])
 
         window.performClose(nil)
         XCTAssertFalse(window.isVisible)
-        XCTAssertEqual(app.activationPolicy(), .accessory)
+        XCTAssertEqual(presentations, [true, true, false])
         XCTAssertFalse(delegate.applicationShouldTerminateAfterLastWindowClosed(app))
 
         controller.present()
-        XCTAssertEqual(app.activationPolicy(), .regular)
+        XCTAssertEqual(presentations, [true, true, false, true])
         XCTAssertTrue(window.isVisible)
         let closeItem = try XCTUnwrap(app.mainMenu?.items
             .first { $0.title == "File" }?.submenu?.items.first)
@@ -66,13 +65,48 @@ final class SettingsWindowTests: XCTestCase {
         // Exercise the same responder action as Command-W.
         XCTAssertTrue(app.sendAction(try XCTUnwrap(closeItem.action), to: window, from: closeItem))
         XCTAssertFalse(window.isVisible)
-        XCTAssertEqual(app.activationPolicy(), .accessory)
+        XCTAssertEqual(presentations, [true, true, false, true, false])
+        XCTAssertEqual(app.activationPolicy(), originalPolicy)
 
         let quitItem = try XCTUnwrap(app.mainMenu?.items.first?.submenu?.items
             .first { $0.title == "Quit PanelCtl" })
         XCTAssertEqual(quitItem.keyEquivalent, "q")
         XCTAssertEqual(quitItem.keyEquivalentModifierMask, .command)
         XCTAssertTrue(quitItem.target === delegate)
+    }
+
+    func testDefaultSettingsFixtureLeavesHostActivationPolicyUnchanged() throws {
+        let app = NSApplication.shared
+        let originalPolicy = app.activationPolicy()
+        let (model, defaults) = try makeModel()
+        defer { defaults.removePersistentDomain(forName: Self.suiteName) }
+        let controller = SettingsWindowController(model: model)
+        controller.present()
+        XCTAssertEqual(app.activationPolicy(), originalPolicy)
+        try XCTUnwrap(controller.window).close()
+        XCTAssertEqual(app.activationPolicy(), originalPolicy)
+    }
+
+    func testDelegateForwardsSettingsPresentationWithoutPromotingTestHost() throws {
+        let app = NSApplication.shared
+        let originalPolicy = app.activationPolicy()
+        let (model, defaults) = try makeModel()
+        defer { defaults.removePersistentDomain(forName: Self.suiteName) }
+        var presentations: [Bool] = []
+        let delegate = AppDelegate { presentations.append($0) }
+        delegate.model = model
+        XCTAssertFalse(delegate.applicationShouldHandleReopen(app, hasVisibleWindows: false))
+        XCTAssertEqual(presentations, [true])
+        let window = try XCTUnwrap(app.windows.first {
+            $0.identifier == SettingsWindowController.windowIdentifier && $0.isVisible
+        })
+        window.close()
+        XCTAssertEqual(presentations, [true, false])
+        XCTAssertFalse(delegate.applicationShouldHandleReopen(app, hasVisibleWindows: false))
+        XCTAssertEqual(presentations, [true, false, true])
+        window.close()
+        XCTAssertEqual(presentations, [true, false, true, false])
+        XCTAssertEqual(app.activationPolicy(), originalPolicy)
     }
 
     func testToolbarTabsAndKeyboardShortcutsReachEveryTab() throws {
