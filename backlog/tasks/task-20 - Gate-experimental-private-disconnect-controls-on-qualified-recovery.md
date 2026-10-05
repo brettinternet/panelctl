@@ -4,14 +4,15 @@ title: Gate experimental private disconnect controls on qualified recovery
 status: To Do
 assignee: []
 created_date: '2026-10-04 17:13'
-updated_date: '2026-10-04 18:15'
+updated_date: '2026-10-05 03:53'
 labels:
   - display-hide
   - app
 dependencies:
-  - TASK-17
-  - TASK-12
   - TASK-9
+  - TASK-12
+  - TASK-17
+  - TASK-22
 references:
   - docs/display-disable-implementation-plan.md
   - docs/display-disable-trial.md
@@ -26,7 +27,7 @@ ordinal: 10010
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Mirror hide does not drop the Mac display signal. Users seeking signal removal need an honest, separately gated experimental disconnect path rather than a misleading hide label or silent backend fallback. This task is blocked on TASK-12 production providers, TASK-9 qualified trial evidence and the app recovery flow; their completion alone is not blanket hardware or automation approval. Keep mirror hide/handoff independently deliverable. Offline design, implementation and fake/no-write validation only. This task does not authorize live mirror/unmirror, DDC or private setter writes. Any hardware validation needs fresh scoped human approval; record untested behavior honestly.
+Mirror hide does not drop the Mac display signal. Users seeking signal removal need an honest, separately gated experimental disconnect path rather than a misleading hide label or silent backend fallback. TASK-22 now owns independently deliverable app-local synthetic UI states and fake-backed presentation tests; reuse that work here rather than duplicating it. This task retains qualification-dependent production backend integration, recorded-qualification availability, actual consent/lease/journal/watchdog enforcement and fake UI/core integration coverage of those boundaries. It is blocked on TASK-12 production providers, TASK-9 qualified trial evidence, TASK-17 app recovery flow and TASK-22 offline presentation; their completion alone is not blanket hardware or automation approval. Keep mirror hide/handoff independently deliverable. Offline implementation and fake/no-write validation only. This task does not authorize live mirror/unmirror, DDC or private setter writes. Any hardware validation needs fresh scoped human approval; record untested behavior honestly.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -42,4 +43,6 @@ Mirror hide does not drop the Mac display signal. Users seeking signal removal n
 
 <!-- SECTION:NOTES:BEGIN -->
 Parked 2026-10-04 with TASK-12/TASK-9 (user decision: mirroring is the first hide route). App dependency is now TASK-17, which owns app journal recovery after the TASK-17/18 re-slice. Resume only if those tasks are resumed and qualified.
+
+User-approved split: TASK-22 may proceed independently alongside TASK-12, scoped to app-local synthetic presentation and fake-backed tests with production disconnect unavailable. TASK-20 remains qualification-gated and owns integrating those states with production recovery plus AC5 UI/core boundary tests; TASK-22 completion does not satisfy hardware qualification or authorize writes. Earlier parking notes do not block TASK-22. Existing acceptance criteria remain intact.
 <!-- SECTION:NOTES:END -->
