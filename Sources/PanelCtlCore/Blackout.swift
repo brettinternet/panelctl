@@ -27,6 +27,7 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
     case workingOverlayRequired
     case persistentDimming
     case invalidHiddenMirrorSourceOverlay
+    case invalidHiddenDisplay
     case mirrorSourceNotAuthorized(String, String)
     public var description: String {
         switch self {
@@ -52,6 +53,8 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
             return "refusing persistent blackout with --dim-to because DDC restore is not time-bounded"
         case .invalidHiddenMirrorSourceOverlay:
             return "invalid PanelCtl hidden-mirror overlay options; use one matching source UUID, an opaque watched overlay, and a finite Restore timeout without hardware dimming, sleep, or display-awake options"
+        case .invalidHiddenDisplay:
+            return "invalid PanelCtl hidden display; use --watch and distinct UUIDs that aren't blackout targets, without a hidden-mirror overlay"
         case .mirrorSourceNotAuthorized(let selector, let reason):
             return "refusing mirrored display target \(selector): \(reason)"
     }
@@ -809,8 +812,10 @@ public final class BlackoutController {
             }
         }
         guard !selected.isEmpty else { throw BlackoutError.noScreens }
+        let hidden = Self.hiddenScreenIDs(options: options, drawable: drawableScreens)
+        guard hidden.isDisjoint(with: selectedIDs) else { throw BlackoutError.invalidHiddenDisplay }
         try Self.validateSelection(
-            selectedCount: selected.count,
+            selectedCount: selected.count + hidden.count,
             drawableCount: drawableScreens.count,
             hasSafetyLimit: Self.hasSafetyLimit(options)
         )
@@ -826,6 +831,9 @@ public final class BlackoutController {
             Self.currentFrame(for: $0).map(Self.isValidScreenFrame) == true
         }
         guard !drawable.isEmpty else { throw BlackoutError.noScreens }
+        // Hidden displays already look blacked out: skip them, but count them
+        // as covered so the safety rules still apply.
+        let hidden = Self.hiddenScreenIDs(options: options, drawable: drawable)
         if options.all {
             if watchMode {
                 try Self.validateSelection(
@@ -833,7 +841,9 @@ public final class BlackoutController {
                     drawableCount: drawable.count,
                     hasSafetyLimit: Self.hasSafetyLimit(options)
                 )
-                return (drawable, true)
+                let visible = drawable.filter { Self.screenID($0).map { !hidden.contains($0) } ?? true }
+                guard !visible.isEmpty else { throw BlackoutError.noScreens }
+                return (visible, true)
             }
             var currentByID: [CGDirectDisplayID: NSScreen] = [:]
             for screen in drawable {
@@ -874,12 +884,13 @@ public final class BlackoutController {
             return screen
         }
         guard !selected.isEmpty else { throw BlackoutError.noScreens }
+        let coveredCount = selected.count + hidden.count
         try Self.validateSelection(
-            selectedCount: selected.count,
+            selectedCount: coveredCount,
             drawableCount: drawable.count,
             hasSafetyLimit: Self.hasSafetyLimit(options)
         )
-        return (selected, selected.count >= drawable.count)
+        return (selected, coveredCount >= drawable.count)
     }
 
     private func beginFullCycle(
@@ -944,7 +955,7 @@ public final class BlackoutController {
                 }
                 continue
             }
-            let window = makeWindow(
+            let window = Self.makeWindow(
                 for: target.screen,
                 frame: target.frame,
                 mode: mode,
@@ -991,7 +1002,7 @@ public final class BlackoutController {
         mode: BlackoutMode,
         overlayOpacityPercent: Int?
     ) -> NSWindow {
-        makeWindow(
+        Self.makeWindow(
             for: screen,
             frame: Self.currentFrame(for: screen) ?? screen.frame,
             mode: mode,
@@ -999,7 +1010,31 @@ public final class BlackoutController {
         )
     }
 
-    private func makeWindow(
+    /// An opaque window, configured like a blocking blackout's, that exactly
+    /// covers `screen`; nil when the screen has no valid frame. The caller
+    /// orders it front and closes it.
+    public static func makeCoveringWindow(for screen: NSScreen) -> NSWindow? {
+        guard let frame = currentFrame(for: screen) else { return nil }
+        let window = makeWindow(for: screen, frame: frame, mode: .blocking, overlayOpacityPercent: 100)
+        guard isCovering(window, screen: screen) else {
+            window.close()
+            return nil
+        }
+        return window
+    }
+
+    /// Whether `window` exactly covers `screen` as the display is now placed.
+    public static func isCovering(_ window: NSWindow, screen: NSScreen) -> Bool {
+        guard let id = screenID(screen), let frame = currentFrame(for: screen) else { return false }
+        return exactlyCovers(
+            windowFrame: window.frame,
+            screenFrame: frame,
+            windowScreenID: window.screen.flatMap(screenID),
+            targetScreenID: id
+        )
+    }
+
+    private static func makeWindow(
         for screen: NSScreen,
         frame: CGRect,
         mode: BlackoutMode,
@@ -1643,6 +1678,23 @@ public final class BlackoutController {
                 throw BlackoutError.invalidHiddenMirrorSourceOverlay
             }
         }
+        guard options.hiddenDisplaysAreValid else { throw BlackoutError.invalidHiddenDisplay }
+    }
+
+    /// Drawable screens of displays PanelCtl has hidden.
+    private static func hiddenScreenIDs(
+        options: BlackoutOptions,
+        drawable: [NSScreen]
+    ) -> Set<CGDirectDisplayID> {
+        guard !options.hiddenDisplayUUIDs.isEmpty else { return [] }
+        let hiddenIDs = DisplayInventory.records().compactMap { record -> CGDirectDisplayID? in
+            guard let uuid = record.uuid,
+                  options.hiddenDisplayUUIDs.contains(where: {
+                      $0.caseInsensitiveCompare(uuid) == .orderedSame
+                  }) else { return nil }
+            return record.id
+        }
+        return Set(drawable.compactMap(screenID)).intersection(hiddenIDs)
     }
 
     static func validateSelection(

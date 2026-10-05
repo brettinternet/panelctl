@@ -118,6 +118,48 @@ final class CLIParserTests: XCTestCase {
         XCTAssertNil(normal.hiddenMirrorSourceUUID, "ordinary CLI blackout has no mirror permission")
     }
 
+    func testHiddenDisplaysAreWatchedUUIDsOutsideTheSelection() throws {
+        let selected = "00000000-0000-0000-0000-000000000001"
+        let hidden = "00000000-0000-0000-0000-000000000002"
+        let other = "00000000-0000-0000-0000-000000000003"
+        let watched = ["--watch", "--idle-after", "300", "--timeout", "60"]
+        let command = try CLIParser.parse([
+            "blackout", "--all", "--panelctl-hidden-display", hidden,
+            "--panelctl-hidden-display", other
+        ] + watched)
+        guard case .blackout(let options) = command else { return XCTFail("expected blackout") }
+        XCTAssertEqual(options.hiddenDisplayUUIDs, [hidden, other])
+        XCTAssertNoThrow(try BlackoutController.validateOptions(options))
+        XCTAssertNoThrow(try CLIParser.parse(
+            ["blackout", "--display", selected, "--panelctl-hidden-display", hidden] + watched
+        ))
+
+        let rejected: [[String]] = [
+            ["--display", selected, "--panelctl-hidden-display", hidden, "--timeout", "60"],
+            ["--display", selected, "--panelctl-hidden-display", "not-a-uuid"] + watched,
+            ["--display", selected, "--panelctl-hidden-display", hidden,
+             "--panelctl-hidden-display", hidden.lowercased()] + watched,
+            ["--display", selected, "--panelctl-hidden-display", selected.lowercased()] + watched,
+            ["--display", selected, "--panelctl-hidden-mirror-source", selected,
+             "--panelctl-hidden-display", hidden] + watched
+        ]
+        for arguments in rejected {
+            XCTAssertThrowsError(try CLIParser.parse(["blackout"] + arguments), "\(arguments)") {
+                XCTAssertEqual($0 as? CLIParseError, .invalidHiddenDisplay)
+            }
+        }
+        XCTAssertThrowsError(try CLIParser.parse(["blackout", "--all", "--panelctl-hidden-display"] + watched)) {
+            XCTAssertEqual($0 as? CLIParseError, .missingValue("--panelctl-hidden-display"))
+        }
+        let unwatched = BlackoutOptions(
+            selectors: [selected], all: false, idleAfter: nil, timeout: nil, sleepAfter: nil,
+            caffeinate: false, hiddenDisplayUUIDs: [hidden]
+        )
+        XCTAssertThrowsError(try BlackoutController.validateOptions(unwatched)) {
+            XCTAssertEqual($0 as? BlackoutError, .invalidHiddenDisplay)
+        }
+    }
+
     func testBlackoutModeAndChannelDefaults() throws {
         let command = try CLIParser.parse(["blackout", "--display", "1"])
         guard case .blackout(let options) = command else {

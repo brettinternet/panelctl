@@ -22,9 +22,23 @@ public struct BlackoutOptions: Equatable {
     public let deferPlayback: Bool
     public let deferCamera: Bool
     public let hiddenMirrorSourceUUID: String?
+    /// Displays PanelCtl has hidden: blackout never covers them, but counts
+    /// them as covered for the all-screens safety rules.
+    public let hiddenDisplayUUIDs: [String]
 
     var effectiveKeepBlackoutOnInput: Bool {
         mode == .working || keepBlackoutOnInput
+    }
+
+    /// Hidden displays need --watch and distinct UUIDs that aren't selected
+    /// and aren't combined with a hidden-mirror overlay.
+    var hiddenDisplaysAreValid: Bool {
+        guard !hiddenDisplayUUIDs.isEmpty else { return true }
+        let keys = hiddenDisplayUUIDs.map { $0.uppercased() }
+        return watch && hiddenMirrorSourceUUID == nil &&
+            keys.allSatisfy { UUID(uuidString: $0) != nil } &&
+            Set(keys).count == keys.count &&
+            !selectors.contains { keys.contains($0.uppercased()) }
     }
 
     public init(
@@ -43,7 +57,8 @@ public struct BlackoutOptions: Equatable {
         hardwareBrightnessPercent: Int? = nil,
         deferPlayback: Bool = true,
         deferCamera: Bool = false,
-        hiddenMirrorSourceUUID: String? = nil
+        hiddenMirrorSourceUUID: String? = nil,
+        hiddenDisplayUUIDs: [String] = []
     ) {
         self.selectors = selectors
         self.all = all
@@ -61,6 +76,7 @@ public struct BlackoutOptions: Equatable {
         self.deferPlayback = deferPlayback
         self.deferCamera = deferCamera
         self.hiddenMirrorSourceUUID = hiddenMirrorSourceUUID
+        self.hiddenDisplayUUIDs = hiddenDisplayUUIDs
     }
 }
 
@@ -122,6 +138,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case conflictingOverlayOptions
     case workingOverlayRequired
     case invalidHiddenMirrorSourceOverlay
+    case invalidHiddenDisplay
     public var description: String {
         switch self {
         case .missingCommand: return "missing command (use 'panelctl help' for usage)"
@@ -154,6 +171,8 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
             return "--no-overlay or overlay opacity below 100 requires --mode working"
         case .invalidHiddenMirrorSourceOverlay:
             return "--panelctl-hidden-mirror-source requires a single matching UUID target, --watch, --idle-after, and a finite --timeout; it cannot be combined with all-screen, sleep, dimming, or display-awake options"
+        case .invalidHiddenDisplay:
+            return "--panelctl-hidden-display requires --watch and a distinct UUID that isn't a --display target; it cannot be combined with --panelctl-hidden-mirror-source"
         case .invalidLuminance: return "luminance must be an integer from 0 through 65535"
         case .invalidInputValue(let value):
             return "invalid input value: \(value) (expected dp1, dp2, hdmi1, hdmi2, or 1 through 255; hex with 0x)"
@@ -460,6 +479,7 @@ public enum CLIParser {
         var deferPlayback = true
         var deferCamera = false
         var hiddenMirrorSourceUUID: String?
+        var hiddenDisplayUUIDs: [String] = []
         var i = 0
         while i < args.count {
             switch args[i] {
@@ -554,6 +574,12 @@ public enum CLIParser {
                     throw CLIParseError.missingValue("--panelctl-hidden-mirror-source")
                 }
                 hiddenMirrorSourceUUID = args[i]
+            case "--panelctl-hidden-display":
+                i += 1
+                guard i < args.count, !args[i].hasPrefix("--") else {
+                    throw CLIParseError.missingValue("--panelctl-hidden-display")
+                }
+                hiddenDisplayUUIDs.append(args[i])
             default:
                 throw CLIParseError.unknownOption(args[i])
             }
@@ -586,7 +612,7 @@ public enum CLIParser {
                 throw CLIParseError.invalidHiddenMirrorSourceOverlay
             }
         }
-        return .blackout(BlackoutOptions(
+        let options = BlackoutOptions(
             selectors: selectors,
             all: all,
             idleAfter: idleAfter,
@@ -602,8 +628,11 @@ public enum CLIParser {
             hardwareBrightnessPercent: hardwareBrightnessPercent,
             deferPlayback: deferPlayback,
             deferCamera: deferCamera,
-            hiddenMirrorSourceUUID: hiddenMirrorSourceUUID
-        ))
+            hiddenMirrorSourceUUID: hiddenMirrorSourceUUID,
+            hiddenDisplayUUIDs: hiddenDisplayUUIDs
+        )
+        guard options.hiddenDisplaysAreValid else { throw CLIParseError.invalidHiddenDisplay }
+        return .blackout(options)
     }
 
     private static func parseDDCLuminance(_ args: [String]) throws -> PanelCommand {
