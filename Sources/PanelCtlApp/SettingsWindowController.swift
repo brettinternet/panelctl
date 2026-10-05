@@ -35,10 +35,18 @@ enum SettingsTab: String, CaseIterable {
     }
 }
 
-/// Selected Settings tab, shared by the AppKit toolbar and the SwiftUI content.
+/// Selected Settings tab and display, shared by AppKit and the SwiftUI content.
 @MainActor
 final class SettingsNavigation: ObservableObject {
     @Published var tab: SettingsTab = .displays
+    /// A `DisplayTile.id`; the Displays tab falls back to the first tile.
+    @Published var selectedDisplayID: String?
+
+    /// Opens the Displays tab, on one display when given its UUID.
+    func showDisplays(selecting uuid: String?) {
+        if let uuid { selectedDisplayID = uuid.lowercased() }
+        tab = .displays
+    }
 }
 
 private final class SettingsWindow: NSWindow {
@@ -121,8 +129,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTo
 
     var selectedTab: SettingsTab { navigation.tab }
 
+    var selectedDisplayID: String? { navigation.selectedDisplayID }
+
     func select(_ tab: SettingsTab) {
         navigation.tab = tab
+    }
+
+    /// Opens the Displays tab on one display, by UUID.
+    func selectDisplay(uuid: String) {
+        navigation.showDisplays(selecting: uuid)
     }
 
     private func applySizeConstraints(to window: SettingsWindow) {

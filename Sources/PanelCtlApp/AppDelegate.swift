@@ -22,7 +22,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var launchedAsLoginItem = false
     private var suppressInitialSettings = false
     private var terminationPending = false
-    private var quitAfterShow = false
     private var systemSleeping = false
     private lazy var blackoutFocusController = BlackoutFocusController { [weak self] in
         self?.requestBlackoutRestore() ?? false
@@ -40,17 +39,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         model = AppModel()
-        model.onRequestHide = { [weak self] request in
-            self?.confirmHide(request)
-        }
-        model.onRequestShow = { [weak self] status in
-            self?.confirmShow(status)
-        }
-        model.onShowCompletion = { [weak self] succeeded in
-            guard let self, self.quitAfterShow else { return }
-            self.quitAfterShow = false
-            if succeeded { NSApp.terminate(nil) }
-        }
         if model.protectionPausedForDisplayRecovery {
             displayHideLogger.error("Startup found unresolved display recovery: \(self.model.handoffStatus?.inspectionCommand ?? "inspect shared display journal", privacy: .public)")
         }
@@ -79,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateBlackoutFocus()
 
         if !launchedAsLoginItem && !suppressInitialSettings {
-            showSettings(focusRecovery: model.protectionPausedForDisplayRecovery)
+            showSettings()
         }
     }
 
@@ -87,7 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
-        showSettings(focusRecovery: model.protectionPausedForDisplayRecovery)
+        showSettings()
         return false
     }
 
@@ -109,34 +97,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.messageText = "Display operation in progress"
-            alert.informativeText = "PanelCtl is finishing a confirmed Hide or Show. Wait for it to finish before quitting. The operation cannot be canceled after it starts."
+            alert.informativeText = "PanelCtl is finishing a Hide or Show. Wait for it to finish before quitting; it can\u{2019}t be canceled once started."
             alert.addButton(withTitle: "OK")
             alert.runModal()
             return .terminateCancel
         }
         if model.handoffStatus?.hasUnresolvedJournal == true || model.protectionQuiescenceFailure != nil {
+            let status = model.handoffStatus
+            let target = status?.hasUnresolvedJournal == true ? status?.target : nil
+            let canShow = model.canShowHiddenDisplay
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = "Hidden desktop/recovery remains after quitting"
-            alert.informativeText = "PanelCtl will not automatically Show, restore topology, or switch monitor inputs when it quits. The shared journal remains available after relaunch."
+            if status?.hasUnresolvedJournal == true {
+                alert.messageText = status?.state == .hidden && canShow
+                    ? "\(target?.name ?? "A display") is still hidden"
+                    : "Display recovery isn\u{2019}t finished"
+                alert.informativeText = "PanelCtl won\u{2019}t show it or switch the monitor input after quitting. Open PanelCtl again to show it."
+            } else {
+                alert.messageText = "Automation cleanup needs attention"
+                alert.informativeText = "PanelCtl couldn\u{2019}t confirm automation stopped: \(model.protectionQuiescenceFailure ?? "unknown error")"
+            }
             alert.addButton(withTitle: "Cancel")
-            let canShow = (model.handoffStatus?.state == .hidden || model.handoffStatus?.state == .recovery) &&
-                model.handoffStatus?.canShow == true
-            alert.addButton(withTitle: canShow ? "Show…" : "Review recovery…")
-            alert.addButton(withTitle: "Quit Without Showing")
+            alert.addButton(withTitle: canShow ? "Show and Quit" : "Review\u{2026}")
+            alert.addButton(withTitle: "Quit Anyway")
             if let cancel = alert.buttons.first {
                 alert.window.defaultButtonCell = cancel.cell as? NSButtonCell
             }
             switch alert.runModal() {
             case .alertSecondButtonReturn:
-                if canShow {
-                    do {
-                        confirmShow(try model.makeShowRequest(), quitAfterShow: true)
-                    } catch {
-                        showSettings(focusRecovery: true)
+                if canShow, let uuid = target?.uuid {
+                    model.show(targetUUID: uuid) { [weak self] result in
+                        if result.succeeded {
+                            NSApp.terminate(nil)
+                        } else {
+                            self?.showSettings(displayUUID: uuid)
+                        }
                     }
+                } else if let uuid = target?.uuid {
+                    showSettings(displayUUID: uuid)
                 } else {
-                    showSettings(focusRecovery: true)
+                    showSettings(tab: status?.hasUnresolvedJournal == true ? .displays : .automation)
                 }
                 return .terminateCancel
             case .alertThirdButtonReturn:
@@ -337,9 +337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(pauseMenuItem)
         }
 
-        if showsHideMenuSection {
-            addHideMenuSection(to: menu)
-        }
+        addDisplayMenuSection(to: menu)
         menu.addItem(.separator())
 
         if model.runtimeState.errorMessage != nil, model.preferences.isEnabled {
@@ -352,52 +350,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return menu
     }
 
-    /// Hide controls follow the Experimental flag; recovery stays reachable without it.
-    private var showsHideMenuSection: Bool {
-        model.experimentalFeaturesEnabled || model.handoffStatus?.hasUnresolvedJournal == true ||
-            model.handoffInspectionFailure != nil || model.hideOperation.isBusy
-    }
-
-    private func addHideMenuSection(to menu: NSMenu) {
-        menu.addItem(.separator())
-        let hideHeading = NSMenuItem(title: "Hide a desktop · Experimental", action: nil, keyEquivalent: "")
-        hideHeading.isEnabled = false
-        menu.addItem(hideHeading)
-        switch model.hideOperation {
-        case .hiding:
-            disabledMenuItem("Hiding…", in: menu)
-        case .showing:
-            disabledMenuItem("Showing…", in: menu)
-        case .idle:
-            if model.handoffStatus?.hasUnresolvedJournal == true {
-                if model.handoffStatus?.state == .hidden,
-                   model.handoffStatus?.canShow == true {
-                    let name = model.handoffStatus?.target?.name ?? "desktop"
-                    let show = item("Show \(name)…", action: #selector(showDisplayFromMenu))
-                    show.toolTip = model.handoffStatus?.target?.identityDetail
-                    show.isEnabled = !model.displayLifecycleTransitioning
-                    menu.addItem(show)
-                    disabledMenuItem("Desktop hidden by PanelCtl · input unknown; target black on Mac input", in: menu)
-                } else {
-                    menu.addItem(item("Review display recovery…", action: #selector(reviewDisplayRecovery)))
-                }
-            } else if model.handoffInspectionFailure != nil {
-                menu.addItem(item("Review display recovery…", action: #selector(reviewDisplayRecovery)))
-            } else if model.displayLifecycleTransitioning {
-                disabledMenuItem("Display transition in progress · Refresh after wake", in: menu)
-            } else if model.menuHideConfigurations.isEmpty {
-                menu.addItem(item("Configure in Displays…", action: #selector(reviewDisplayRecovery)))
-            } else {
-                for configuration in model.menuHideConfigurations {
-                    let name = configuration.target.name ?? "Display \(configuration.target.id)"
-                    let suffix = String(configuration.target.uuid.prefix(8))
-                    let hide = item("Hide \(name) · \(suffix)…", action: #selector(hideDisplayFromMenu(_:)))
-                    hide.toolTip = configuration.target.identityDetail
-                    hide.representedObject = configuration.target.uuid
-                    menu.addItem(hide)
-                }
+    /// Hide items follow each display's action, so they need the Experimental
+    /// flag; Show and recovery stay reachable without it. A Hide that can't run
+    /// is left out, and Settings explains why.
+    private func addDisplayMenuSection(to menu: NSMenu) {
+        var items: [NSMenuItem] = []
+        if model.displayRecoveryProblem != nil {
+            items.append(item("Review Display Recovery…", action: #selector(reviewDisplayRecovery)))
+        }
+        for tile in model.displayTiles {
+            switch (tile.status, tile.action) {
+            case (.hiding, _):
+                items.append(disabledItem("Hiding \(tile.name)…"))
+            case (.showing, _):
+                items.append(disabledItem("Showing \(tile.name)…"))
+            case (_, .show?):
+                let show = item("Show \(tile.name)", action: #selector(showDisplayFromMenu(_:)))
+                show.representedObject = tile.uuid
+                show.isEnabled = tile.actionBlocker == nil
+                items.append(show)
+            case (_, .hide?) where tile.actionBlocker == nil:
+                let hide = item("Hide \(tile.name)", action: #selector(hideDisplayFromMenu(_:)))
+                hide.representedObject = tile.uuid
+                items.append(hide)
+            default:
+                break
+            }
+            if let line = model.displayResults[tile.id]?.menuLine {
+                let result = disabledItem(line.count > 72 ? String(line.prefix(71)) + "…" : line)
+                result.toolTip = line
+                result.indentationLevel = 1
+                items.append(result)
             }
         }
+        guard !items.isEmpty else { return }
+        menu.addItem(.separator())
+        items.forEach(menu.addItem)
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -428,10 +416,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return restore
     }
 
-    private func disabledMenuItem(_ title: String, in menu: NSMenu) {
+    private func disabledItem(_ title: String) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.isEnabled = false
-        menu.addItem(item)
+        return item
     }
 
     private func snoozeItem(_ title: String, duration: TimeInterval) -> NSMenuItem {
@@ -453,15 +441,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func hideDisplayFromMenu(_ sender: NSMenuItem) {
         guard let uuid = sender.representedObject as? String else { return }
-        model.requestHide(targetUUID: uuid)
+        model.hide(targetUUID: uuid) { [weak self] in self?.revealFailure($0, displayUUID: uuid) }
     }
 
-    @objc private func showDisplayFromMenu() {
-        model.requestShow()
+    @objc private func showDisplayFromMenu(_ sender: NSMenuItem) {
+        guard let uuid = sender.representedObject as? String else { return }
+        model.show(targetUUID: uuid) { [weak self] in self?.revealFailure($0, displayUUID: uuid) }
+    }
+
+    /// A menu action that fails opens its display in Settings, where the result is shown.
+    private func revealFailure(_ result: DisplayOperationResult, displayUUID: String) {
+        guard !result.succeeded else { return }
+        showSettings(displayUUID: displayUUID)
     }
 
     @objc private func reviewDisplayRecovery() {
-        showSettings(focusRecovery: true)
+        if let uuid = model.handoffStatus?.target?.uuid {
+            showSettings(displayUUID: uuid)
+        } else {
+            showSettings(tab: .displays)
+        }
     }
 
     @objc private func blackoutNow() {
@@ -514,47 +513,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.openGitHub()
     }
 
-    private func confirmHide(_ request: DisplayHideRequest) {
-        let targetName = request.target.name ?? "Display \(request.target.id)"
-        let message = DisplayOperationConfirmation.hideMessage(
-            request,
-            journalPath: DisplayHandoff.defaultJournalPath
-        )
-        guard DisplayOperationConfirmation.confirm(
-            title: "Hide \(targetName) desktop?",
-            message: message,
-            actionTitle: "Hide desktop"
-        ) else { return }
-        model.confirmHide(request, acknowledged: true)
-    }
-
-    private func confirmShow(_ request: DisplayShowRequest, quitAfterShow shouldQuit: Bool = false) {
-        let target = request.status.target
-        let targetName = target?.name ?? "journaled display"
-        let message = DisplayOperationConfirmation.showMessage(request)
-        guard DisplayOperationConfirmation.confirm(
-            title: "Show \(targetName) desktop?",
-            message: message,
-            actionTitle: "Show desktop"
-        ) else { return }
-        quitAfterShow = shouldQuit
-        model.confirmShow(request, acknowledged: true)
-        if model.hideOperation == .idle {
-            quitAfterShow = false
-        }
-    }
-
-    private func showSettings(tab: SettingsTab? = nil, focusRecovery: Bool = false) {
+    /// Opens Settings on a tab or display; a display recovery problem opens
+    /// its display unless the caller asks for something else.
+    private func showSettings(tab: SettingsTab? = nil, displayUUID: String? = nil) {
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(model: model)
         }
         model.refreshLaunchAtLoginStatus()
         model.refreshDisplays()
         settingsWindowController?.present()
-        if let tab {
+        if let displayUUID {
+            settingsWindowController?.selectDisplay(uuid: displayUUID)
+        } else if let tab {
             settingsWindowController?.select(tab)
-        } else if focusRecovery || model.protectionPausedForDisplayRecovery {
-            model.requestDisplayRecoveryFocus()
+        } else if model.displayRecoveryProblem != nil {
+            if let uuid = model.handoffStatus?.target?.uuid {
+                settingsWindowController?.selectDisplay(uuid: uuid)
+            } else {
+                settingsWindowController?.select(.displays)
+            }
         }
     }
 

@@ -49,12 +49,15 @@ final class AppModel: ObservableObject {
     }
     @Published private(set) var handoffStatus: DisplayHandoffStatus?
     @Published private(set) var handoffInspectionFailure: String?
-    @Published private(set) var ddcInputAvailability: [String: DisplayDDCInputAvailability] = [:]
+    /// Keyed by lowercased target UUID.
+    @Published private(set) var macInputDetections: [String: MacInputDetection] = [:]
+    /// Last Hide or Show outcome per display, keyed by lowercased target UUID.
+    /// Input outcomes are session evidence, not a claim about the monitor's current input.
+    @Published private(set) var displayResults: [String: DisplayOperationResult] = [:]
     @Published private(set) var hideOperation: DisplayHideOperation = .idle
     @Published private(set) var protectionQuiescencePending = false
     @Published private(set) var protectionQuiescenceFailure: String?
     @Published private(set) var displayLifecycleTransitioning = false
-    @Published private(set) var displayRecoveryFocusRequest = 0
     @Published private(set) var runtimeState: ProtectionRuntimeState = .disabled {
         didSet {
             if runtimeState != oldValue {
@@ -204,13 +207,6 @@ final class AppModel: ObservableObject {
             $0.online &&
             $0.bounds.width > 0 &&
             $0.bounds.height > 0
-        }
-    }
-
-    var menuHideConfigurations: [DisplayHideConfiguration] {
-        guard experimentalFeaturesEnabled, !protectionPausedForDisplayRecovery else { return [] }
-        return hideDisplayConfigurations.filter {
-            $0.enabled && hideReadinessMessage(for: $0) == nil
         }
     }
 
@@ -387,47 +383,228 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func hideReadinessMessage(
+    /// Why Hide can't start for this configuration right now, or nil when it can.
+    func hideReadiness(
         for configuration: DisplayHideConfiguration,
         allowingCurrentOperation: Bool = false
-    ) -> String? {
-        guard handoffInspectionFailure == nil else {
-            return "Could not inspect shared display recovery: \(handoffInspectionFailure ?? "unknown error")"
+    ) -> DisplayHideError? {
+        if let failure = handoffInspectionFailure {
+            return .recoveryBlocksHide("Couldn\u{2019}t check display recovery: \(failure)")
         }
-        guard allowingCurrentOperation || !hideConfigurationFrozen else {
-            return handoffStatus?.state == .busy
-                ? "Another display operation is using the shared recovery lock. Refresh and try again."
-                : "Resolve display recovery before changing Hide settings."
+        guard let status = handoffStatus else {
+            return .recoveryBlocksHide("Display recovery status is unknown. Try again in a moment.")
         }
-        guard configuration.enabled else { return "Enable experimental hide for this display first." }
+        if status.state == .busy {
+            return .recoveryBlocksHide("Another display operation is running. Try again in a moment.")
+        }
+        if status.hasUnresolvedJournal {
+            return .recoveryBlocksHide("Only one display can be removed at a time. Show the hidden display or finish its recovery first.")
+        }
+        if !allowingCurrentOperation, hideOperation.isBusy { return .actionInProgress }
+        if displayLifecycleTransitioning { return .sleeping }
+        if protectionQuiescencePending { return Self.automationStopping }
+        if let failure = protectionQuiescenceFailure {
+            return .protectionCleanup("Automation cleanup needs attention: \(failure) Check Automation, then try again.")
+        }
+        guard configuration.enabled else {
+            return .unavailable("Turn on Remove from desktop for this display first.")
+        }
         guard let target = matchingDisplay(configuration.target) else {
-            return "Unavailable or changed display identity. Reconnect the exact display and Refresh; PanelCtl will not bind this setting to another display."
+            return .identityChanged("This display is disconnected or changed. Reconnect it, then try again; PanelCtl won\u{2019}t apply its settings to a different display.")
         }
-        guard isEligibleHideTarget(target) else {
-            return "Only an awake, active, non-main external display can be hidden."
+        if let reason = removalIneligibleReason(for: target) {
+            return .unavailable(reason)
         }
         guard !isDisplayMirrored(target.id) else {
-            return "This display is already mirrored outside PanelCtl. Correct it in macOS Displays before hiding."
+            return .unavailable("macOS is already mirroring this display. Turn off mirroring in System Settings \u{2192} Displays first.")
         }
         guard let sourceIdentity = configuration.source else {
-            return "Choose a mirror source explicitly; PanelCtl never chooses one for you."
+            return .unavailable("Choose a display to mirror onto.")
         }
         guard let source = matchingDisplay(sourceIdentity) else {
-            return "The saved mirror source is unavailable or its identity changed. Reconnect that exact display and choose the source again."
+            return .identityChanged("The display it mirrors onto is disconnected or changed. Choose it again.")
         }
         guard source.online, source.active, !source.asleep else {
-            return "The explicit mirror source must be online, active, and awake."
+            return .unavailable("The display it mirrors onto must be on and awake.")
         }
         guard target.id != source.id else {
-            return "The mirror source must be different from the target."
-        }
-        guard handoffStatus?.state == DisplayHandoffStatus.State.none else {
-            return "Resolve the shared display recovery journal before another Hide."
-        }
-        guard !displayLifecycleTransitioning else {
-            return "Wait for the display transition to finish, then Refresh."
+            return .unavailable("Choose a different display to mirror onto.")
         }
         return nil
+    }
+
+    func hideReadinessMessage(for configuration: DisplayHideConfiguration) -> String? {
+        hideReadiness(for: configuration)?.localizedDescription
+    }
+
+    /// Why this display can't be removed from the desktop, or nil when it can.
+    func removalIneligibleReason(for display: DisplayRecord) -> String? {
+        if display.builtin {
+            return "Built-in displays can\u{2019}t be removed from the desktop."
+        }
+        if display.main {
+            return "The main display can\u{2019}t be removed from the desktop. To remove it, make another display the main display in System Settings \u{2192} Displays."
+        }
+        guard display.uuid.flatMap(UUID.init(uuidString:)) != nil else {
+            return "This display has no stable ID, so PanelCtl can\u{2019}t remove it from the desktop."
+        }
+        guard display.active, display.online, !display.asleep,
+              display.bounds.width > 0, display.bounds.height > 0 else {
+            return "Wake this display to remove it from the desktop."
+        }
+        return nil
+    }
+
+    /// Saved Hide settings for a display, or defaults for an eligible one.
+    func hideConfiguration(for uuid: String) -> DisplayHideConfiguration? {
+        hideDisplayConfigurations.first { $0.target.uuid.caseInsensitiveCompare(uuid) == .orderedSame }
+    }
+
+    /// Displays in arrangement order, plus a journaled display that is no longer connected.
+    var displayTiles: [DisplayTile] {
+        let journalTarget = handoffStatus?.hasUnresolvedJournal == true ? handoffStatus?.target : nil
+        func isJournalTarget(_ display: DisplayRecord) -> Bool {
+            guard let journalTarget, let uuid = display.uuid else { return false }
+            return uuid.caseInsensitiveCompare(journalTarget.uuid) == .orderedSame
+        }
+        let present = displays
+            .filter {
+                ($0.active && $0.online && $0.bounds.width > 0 && $0.bounds.height > 0) || isJournalTarget($0)
+            }
+            .sorted { lhs, rhs in
+                if lhs.bounds.x != rhs.bounds.x { return lhs.bounds.x < rhs.bounds.x }
+                if lhs.bounds.y != rhs.bounds.y { return lhs.bounds.y < rhs.bounds.y }
+                // A display hidden by mirroring shares its source's origin.
+                if isJournalTarget(lhs) != isJournalTarget(rhs) { return isJournalTarget(rhs) }
+                return lhs.id < rhs.id
+            }
+        var tiles = present.map { display in
+            DisplayTile(
+                id: display.uuid?.lowercased() ?? "display-\(display.id)",
+                uuid: display.uuid,
+                name: display.settingsName,
+                status: tileStatus(for: display, isJournalTarget: isJournalTarget(display)),
+                display: display
+            )
+        }
+        if let journalTarget, !tiles.contains(where: { $0.id == journalTarget.uuid.lowercased() }) {
+            tiles.append(DisplayTile(
+                id: journalTarget.uuid.lowercased(),
+                uuid: journalTarget.uuid,
+                name: journalTarget.name,
+                status: tileStatus(for: nil, isJournalTarget: true),
+                display: nil
+            ))
+        }
+        // Number identical names in order, as macOS does.
+        let names = tiles.map(\.name)
+        for index in tiles.indices {
+            let name = tiles[index].name
+            if names.filter({ $0 == name }).count > 1 {
+                tiles[index] = DisplayTile(
+                    id: tiles[index].id, uuid: tiles[index].uuid,
+                    name: "\(name) (\(names[...index].filter { $0 == name }.count))",
+                    status: tiles[index].status, display: tiles[index].display
+                )
+            }
+            setAction(of: &tiles[index])
+        }
+        return tiles
+    }
+
+    /// The tile with this ID, else the display that is hidden or needs recovery, else the first.
+    func tile(selecting id: String?) -> DisplayTile? {
+        let tiles = displayTiles
+        let journalTargetID = handoffStatus?.hasUnresolvedJournal == true
+            ? handoffStatus?.target?.uuid.lowercased() : nil
+        return tiles.first { $0.id == id } ?? tiles.first { $0.id == journalTargetID } ?? tiles.first
+    }
+
+    /// Whether PanelCtl's hidden display can be shown: its saved layout is restorable.
+    var canShowHiddenDisplay: Bool {
+        guard handoffInspectionFailure == nil, let status = handoffStatus else { return false }
+        return (status.state == .hidden || status.state == .recovery) && status.canShow
+    }
+
+    private static let automationStopping = DisplayHideError.recoveryBlocksAction(
+        "PanelCtl is still stopping automation. Try again in a moment."
+    )
+
+    /// Why Show must wait, apart from the hidden display's own state.
+    private var showWait: DisplayHideError? {
+        if hideOperation.isBusy { return .actionInProgress }
+        if displayLifecycleTransitioning { return .sleeping }
+        if protectionQuiescencePending { return Self.automationStopping }
+        return nil
+    }
+
+    private func setAction(of tile: inout DisplayTile) {
+        switch tile.status {
+        case .hiding, .showing, .busy:
+            return
+        case .hidden, .needsRecovery:
+            guard canShowHiddenDisplay else { return }
+            tile.action = .show
+            tile.actionBlocker = showWait?.localizedDescription
+        case .on, .blackedOut, .asleep, .mirrored, .unavailable:
+            guard experimentalFeaturesEnabled, let uuid = tile.uuid,
+                  let configuration = hideConfiguration(for: uuid), configuration.enabled else { return }
+            tile.action = .hide
+            tile.actionBlocker = hideReadinessMessage(for: configuration)
+        }
+    }
+
+    private func tileStatus(for display: DisplayRecord?, isJournalTarget: Bool) -> DisplayTile.Status {
+        let uuid = isJournalTarget ? handoffStatus?.target?.uuid : display?.uuid
+        switch hideOperation {
+        case .hiding(let target) where uuid?.caseInsensitiveCompare(target) == .orderedSame:
+            return .hiding
+        case .showing(let target) where uuid?.caseInsensitiveCompare(target) == .orderedSame:
+            return .showing
+        default:
+            break
+        }
+        if isJournalTarget, let status = handoffStatus {
+            switch status.state {
+            case .busy: return .busy
+            case .hidden where status.canShow: return .hidden
+            default: return .needsRecovery
+            }
+        }
+        guard let display, display.active, display.online else { return .unavailable }
+        if display.asleep { return .asleep }
+        if blackedOutDisplayIDs.contains(display.id) { return .blackedOut }
+        // The source of PanelCtl's mirror is still a normal display.
+        let isJournalSource = handoffStatus?.hasUnresolvedJournal == true &&
+            display.uuid.map { handoffStatus?.source?.uuid.caseInsensitiveCompare($0) == .orderedSame } == true
+        if isDisplayMirrored(display.id), !isJournalSource { return .mirrored }
+        return .on
+    }
+
+    /// A display recovery problem that needs the user; a healthy hidden display isn't one.
+    var displayRecoveryProblem: String? {
+        if let failure = handoffInspectionFailure {
+            return "Couldn\u{2019}t check display recovery: \(failure)"
+        }
+        guard let status = handoffStatus else { return nil }
+        switch status.state {
+        case .none, .busy:
+            return nil
+        case .hidden where status.canShow:
+            return nil
+        case .hidden, .recovery, .unsupported:
+            return status.reason ?? "\(status.target?.name ?? "A display") needs recovery."
+        }
+    }
+
+    /// What Show will do with the monitor input of the journaled display.
+    var showReturnInputNote: String? {
+        guard let status = handoffStatus, status.hasUnresolvedJournal else { return nil }
+        let input = configuredReturnInput(for: status)
+        if let warning = input.warning {
+            return "Show won\u{2019}t switch the monitor input: \(warning)"
+        }
+        return input.value.map { "Show switches the monitor back to \(MonitorInput.name($0))." }
     }
 
     func observedDesktopState(for configuration: DisplayHideConfiguration) -> String {
@@ -450,25 +627,23 @@ final class AppModel: ObservableObject {
         return isDisplayMirrored(display.id) ? "Mirrored outside PanelCtl" : "Separate"
     }
 
-    func automationSelectionState(for configuration: DisplayHideConfiguration) -> String {
-        if preferences.allDisplays { return "Included (all displays)" }
-        let selected = preferences.selectedDisplayUUIDs.contains {
-            $0.caseInsensitiveCompare(configuration.target.uuid) == .orderedSame
-        }
-        return selected ? "Included" : "Not included"
-    }
-
+    /// Turns Remove from desktop on or off for a display.
     func setHideEnabled(_ enabled: Bool, for display: DisplayRecord) {
         guard !hideConfigurationFrozen,
               isEligibleHideTarget(display),
               let uuid = display.uuid else { return }
         var updated = hidePreferences
-        let key = uuid.lowercased()
         var configuration = updated[uuid] ?? DisplayHideConfiguration(target: DisplayIdentitySnapshot(display))
         guard matches(configuration.target, display) else { return }
         configuration.enabled = enabled
-        updated[key] = configuration
+        // The main display is the default and the only hardware-qualified source.
+        if enabled, configuration.source == nil,
+           let main = sourceChoices(for: configuration).first(where: \.main) {
+            configuration.source = DisplayIdentitySnapshot(main)
+        }
+        updated[uuid] = configuration
         hidePreferences = updated
+        clearFailedResult(uuid)
     }
 
     func setHideSource(_ sourceUUID: String?, for targetUUID: String) {
@@ -478,7 +653,6 @@ final class AppModel: ObservableObject {
               }),
               let uuid = target.uuid else { return }
         var updated = hidePreferences
-        let key = uuid.lowercased()
         var configuration = updated[uuid] ?? DisplayHideConfiguration(target: DisplayIdentitySnapshot(target))
         guard matches(configuration.target, target) else { return }
         if let sourceUUID {
@@ -490,78 +664,85 @@ final class AppModel: ObservableObject {
         } else {
             configuration.source = nil
         }
-        updated[key] = configuration
+        updated[uuid] = configuration
         hidePreferences = updated
+        clearFailedResult(uuid)
     }
 
-    @discardableResult
-    func setHideAwayInput(_ rawValue: String, for targetUUID: String) -> String? {
-        setHideInput(rawValue, for: targetUUID, onHide: true)
+    /// Sets the input the monitor switches to on Hide. Nil switches nothing,
+    /// on Show too; the input Show switches back to is detected, not chosen.
+    func setHideSwitchInput(_ value: UInt8?, for targetUUID: String) {
+        guard !hideConfigurationFrozen,
+              let target = displays.first(where: { $0.uuid?.caseInsensitiveCompare(targetUUID) == .orderedSame }),
+              let uuid = target.uuid else { return }
+        var updated = hidePreferences
+        var configuration = updated[uuid] ?? DisplayHideConfiguration(target: DisplayIdentitySnapshot(target))
+        guard matches(configuration.target, target) else { return }
+        configuration.awayInput = value
+        var detected: UInt8?
+        if case .detected(let macInput) = macInputDetections[uuid.lowercased()] { detected = macInput }
+        configuration.returnInput = Self.returnInput(saved: configuration.returnInput, detected: detected, away: value)
+        updated[uuid] = configuration
+        hidePreferences = updated
+        clearFailedResult(uuid)
     }
 
-    @discardableResult
-    func setHideReturnInput(_ rawValue: String, for targetUUID: String) -> String? {
-        setHideInput(rawValue, for: targetUUID, onHide: false)
+    /// The input Show switches back to: the detected Mac input, unless it is
+    /// the input Hide switches to. Then the monitor may be showing the other
+    /// computer, so the reading proves nothing and the saved input stays.
+    private static func returnInput(saved: UInt8?, detected: UInt8?, away: UInt8?) -> UInt8? {
+        guard let away else { return nil }
+        if let detected, detected != away { return detected }
+        return saved == away ? nil : saved
     }
 
-    func checkDDCInputAvailability(for targetUUID: String) {
-        let key = targetUUID.lowercased()
-        guard let configuration = hidePreferences[targetUUID],
-              let matchingDisplay = matchingDisplay(configuration.target) else {
-            ddcInputAvailability[key] = .unavailable(
-                "Saved display identity is unavailable or changed. Reconnect the exact display and Refresh; PanelCtl will not check another display."
-            )
-            onStatusChange?()
-            return
+    /// A failed result describes settings that just changed, so it no longer applies.
+    private func clearFailedResult(_ uuid: String) {
+        if displayResults[uuid.lowercased()]?.succeeded == false {
+            displayResults[uuid.lowercased()] = nil
         }
+    }
+
+    /// Reads, read-only over DDC, the input this Mac uses on the display and
+    /// keeps it as the input Show switches back to.
+    func detectMacInput(for targetUUID: String) {
+        let key = targetUUID.lowercased()
+        guard !hideConfigurationFrozen,
+              let configuration = hidePreferences[targetUUID], configuration.enabled,
+              let display = matchingDisplay(configuration.target),
+              isEligibleHideTarget(display), !isDisplayMirrored(display.id) else { return }
         do {
             let reading = try checkDDCInput(coreIdentity(configuration.target))
             guard reading.displayID == configuration.target.id,
                   reading.uuid.caseInsensitiveCompare(configuration.target.uuid) == .orderedSame,
-                  matches(configuration.target, matchingDisplay) else {
-                throw DisplayHideError.identityChanged(
-                    "DDC availability check returned a different display identity. Refresh and reconnect the exact display."
-                )
+                  matches(configuration.target, display) else {
+                throw DisplayHideError.identityChanged("The monitor answered as a different display. Reconnect it, then try again.")
             }
-            ddcInputAvailability[key] = .readable(current: reading.current)
+            macInputDetections[key] = .detected(reading.current)
+            let returnInput = Self.returnInput(
+                saved: configuration.returnInput, detected: reading.current, away: configuration.awayInput
+            )
+            if configuration.returnInput != returnInput {
+                var updated = hidePreferences
+                var saved = configuration
+                saved.returnInput = returnInput
+                updated[targetUUID] = saved
+                hidePreferences = updated
+            }
         } catch {
-            ddcInputAvailability[key] = .unavailable(error.localizedDescription)
+            macInputDetections[key] = .unavailable(Self.sentence(error.localizedDescription))
         }
         onStatusChange?()
     }
-
-    func ddcInputAvailabilityMessage(for configuration: DisplayHideConfiguration) -> String {
-        switch ddcInputAvailability[configuration.target.uuid.lowercased()] {
-        case .readable(let current):
-            return "DDC input readable at \(inputCodeLabel(current)); readability does not prove switching support. Use the monitor's input buttons if a switch is unavailable or fails."
-        case .unavailable(let reason):
-            return "DDC input unavailable: \(reason) Use the monitor's input buttons; Hide and Show remain available."
-        case nil:
-            return "DDC input availability is unknown. You can check explicitly or use the monitor's input buttons; Hide and Show do not require DDC."
-        }
-    }
-
-    func removeHideConfiguration(targetUUID: String) {
-        guard !hideConfigurationFrozen else { return }
-        var updated = hidePreferences
-        updated.remove(uuid: targetUUID)
-        hidePreferences = updated
-    }
-
-    func hasHideConfiguration(targetUUID: String) -> Bool {
-        hidePreferences[targetUUID] != nil
-    }
-
-    // Input results are session evidence, not a claim about the monitor's current input.
-    private var controlInputOutcomes: [String: DisplayInputOutcome] = [:]
 
     var controlDisplayOutcome: AppControlOutcome? {
         if hideOperation.isBusy || handoffStatus?.state == .busy { return .busy }
         if handoffInspectionFailure != nil || handoffStatus?.state == .recovery ||
             handoffStatus?.state == .unsupported ||
             (handoffStatus?.state == .hidden && handoffStatus?.canShow != true) { return .recoveryNeeded }
-        if controlInputOutcomes.values.contains(where: {
-            [.failed, .skipped, .unverified, .notAttempted].contains($0.state)
+        if displayResults.values.contains(where: {
+            guard let outcome = $0.inputOutcome else { return false }
+            return [.failed, .skipped, .unverified, .notAttempted].contains(outcome.state)
         }) { return .partial }
         return nil
     }
@@ -592,7 +773,7 @@ final class AppModel: ObservableObject {
                 recoveryNeeded: handoffInspectionFailure != nil ||
                     handoffStatus?.state == .recovery || handoffStatus?.state == .unsupported ||
                     (handoffStatus?.state == .hidden && handoffStatus?.canShow != true),
-                lastInputOutcome: controlInputOutcomes[uuid.lowercased()]
+                lastInputOutcome: displayResults[uuid.lowercased()]?.inputOutcome
             )
         }
     }
@@ -641,7 +822,7 @@ final class AppModel: ObservableObject {
             }
             do {
                 _ = try makeShowRequest()
-                return response(.confirmationRequired, "Show requires confirmation of the journaled layout and saved Mac input. Open PanelCtl Settings → Displays and choose Show. Automation may remain off or paused.")
+                return response(.confirmationRequired, "Scripts can\u{2019}t show displays yet. Use Show in PanelCtl Settings \u{2192} Displays or the menu.")
             } catch {
                 return response(.recoveryNeeded, error.localizedDescription)
             }
@@ -658,7 +839,7 @@ final class AppModel: ObservableObject {
         }
         do {
             _ = try makeHideRequest(targetUUID: uuid)
-            return response(.confirmationRequired, "Hide requires confirmation of the saved source, optional inputs, automation suspension and manual fallback. Open PanelCtl Settings → Displays and choose Hide.")
+            return response(.confirmationRequired, "Scripts can\u{2019}t hide displays yet. Use Hide in PanelCtl Settings \u{2192} Displays or the menu.")
         } catch {
             return response(.refused, error.localizedDescription)
         }
@@ -667,171 +848,89 @@ final class AppModel: ObservableObject {
     func makeHideRequest(targetUUID: String) throws -> DisplayHideRequest {
         guard !hideOperation.isBusy else { throw DisplayHideError.actionInProgress }
         guard experimentalFeaturesEnabled else {
-            throw DisplayHideError.unavailable("Turn on Experimental features in Settings → General to remove a display from the desktop.")
+            throw DisplayHideError.unavailable("Turn on Experimental features in General to remove a display from the desktop.")
         }
-        guard !displayLifecycleTransitioning else { throw DisplayHideError.sleeping }
-        guard protectionQuiescenceFailure == nil else {
-            throw DisplayHideError.protectionCleanup(protectionQuiescenceFailure ?? "Automation cleanup needs attention.")
+        guard let configuration = hidePreferences[targetUUID] else {
+            throw DisplayHideError.unavailable("Turn on Remove from desktop for this display first.")
         }
-        guard handoffInspectionFailure == nil,
-              handoffStatus?.state == DisplayHandoffStatus.State.none else {
-            throw DisplayHideError.recoveryBlocksHide("A shared recovery journal is unresolved or could not be inspected. Review display recovery before starting another Hide.")
-        }
-        guard let configuration = hidePreferences[targetUUID], configuration.enabled else {
-            throw DisplayHideError.unavailable("Enable experimental hide for this display in Settings → Displays.")
-        }
-        if let reason = hideReadinessMessage(for: configuration) {
-            if reason.contains("identity") || reason.contains("Unavailable") {
-                throw DisplayHideError.identityChanged(reason)
-            }
-            throw DisplayHideError.unavailable(reason)
-        }
+        if let refusal = hideReadiness(for: configuration) { throw refusal }
         guard let source = configuration.source else {
-            throw DisplayHideError.unavailable("Choose an explicit mirror source first.")
+            throw DisplayHideError.unavailable("Choose a display to mirror onto.")
         }
-        let away = validatedSavedInput(configuration.awayInput, label: "Other computer")
-        let returning = validatedSavedInput(configuration.returnInput, label: "Mac")
-        return DisplayHideRequest(
-            target: configuration.target,
-            source: source,
-            awayInput: away.value,
-            returnInput: returning.value,
-            awayInputWarning: away.warning,
-            returnInputWarning: returning.warning
-        )
+        return hideRequest(target: configuration.target, source: source, configuration: configuration)
     }
 
-    func requestHide(targetUUID: String) {
+    /// Removes a display from the desktop right away. The outcome is kept in
+    /// `displayResults` and passed to `completion`.
+    func hide(targetUUID: String, completion: ((DisplayOperationResult) -> Void)? = nil) {
+        let request: DisplayHideRequest
         do {
-            let request = try makeHideRequest(targetUUID: targetUUID)
-            guard let onRequestHide else {
-                throw DisplayHideError.unavailable("Display Hide confirmation is unavailable.")
-            }
-            onRequestHide(request)
+            request = try makeHideRequest(targetUUID: targetUUID)
         } catch {
-            presentDisplayError("Cannot hide this desktop", error: error)
-        }
-    }
-
-    func confirmHide(_ request: DisplayHideRequest, acknowledged: Bool) {
-        guard acknowledged else {
-            presentDisplayError("Hide canceled", error: DisplayHideError.acknowledgementRequired)
+            refuse(.hide, targetUUID: targetUUID, error: error, completion: completion)
             return
         }
-        guard hideOperation == .idle else {
-            presentDisplayError("Display operation in progress", error: DisplayHideError.actionInProgress)
-            return
-        }
-        do {
-            let current = try makeHideRequest(targetUUID: request.target.uuid)
-            guard current == request else {
-                throw DisplayHideError.identityChanged("The target, source, or saved configuration changed while confirmation was open. Review the current Displays settings and confirm again.")
-            }
-        } catch {
-            presentDisplayError("Hide not started", error: error)
-            return
-        }
-
+        displayResults[request.target.uuid.lowercased()] = nil
         hideOperation = .hiding(request.target.uuid)
         manualActivityDate = now()
         onStatusChange?()
-        let finish: (Bool, String?) -> Void = { [weak self] succeeded, message in
+        stopManagedProtection { [weak self] succeeded, message in
             Task { @MainActor in
                 self?.finishHideAfterProtectionQuiescence(
                     request,
                     cleanupSucceeded: succeeded,
-                    cleanupFailure: message
+                    cleanupFailure: message,
+                    completion: completion
                 )
             }
         }
-        stopManagedProtection(completion: finish)
     }
 
     func makeShowRequest() throws -> DisplayShowRequest {
-        guard !hideOperation.isBusy else { throw DisplayHideError.actionInProgress }
-        guard !displayLifecycleTransitioning else { throw DisplayHideError.sleeping }
-        guard !protectionQuiescencePending else {
-            throw DisplayHideError.recoveryBlocksAction("PanelCtl is still stopping automation before display recovery. Wait, then Refresh.")
-        }
+        if let showWait { throw showWait }
         refreshHandoffStatus()
         guard handoffInspectionFailure == nil,
               let handoffStatus,
               handoffStatus.state == .hidden || handoffStatus.state == .recovery else {
             throw DisplayHideError.recoveryBlocksAction(
-                handoffInspectionFailure ?? handoffStatus?.reason ?? "There is no supported unresolved mirror journal to Show."
+                handoffInspectionFailure ?? handoffStatus?.reason ?? "No display is hidden by PanelCtl."
             )
         }
         guard handoffStatus.canShow else {
             throw DisplayHideError.recoveryBlocksAction(
-                handoffStatus.reason ?? "The captured layout is not currently eligible for Show. Refresh after correcting the refusal."
+                handoffStatus.reason ?? "PanelCtl can\u{2019}t restore the saved layout right now."
             )
         }
         let input = configuredReturnInput(for: handoffStatus)
         return DisplayShowRequest(status: handoffStatus, returnInput: input.value, returnInputWarning: input.warning)
     }
 
-    func requestShow() {
+    /// Shows the display hidden by PanelCtl right away. Refuses when the journal
+    /// belongs to a different display, so a stale action never shows another one.
+    func show(targetUUID: String, completion: ((DisplayOperationResult) -> Void)? = nil) {
+        let request: DisplayShowRequest
         do {
-            guard let onRequestShow else {
-                throw DisplayHideError.recoveryBlocksAction("Display Show confirmation is unavailable.")
-            }
-            onRequestShow(try makeShowRequest())
-        } catch {
-            presentDisplayError("Cannot show this desktop", error: error)
-        }
-    }
-
-    func confirmShow(_ request: DisplayShowRequest, acknowledged: Bool) {
-        guard acknowledged else {
-            presentDisplayError("Show canceled", error: DisplayHideError.acknowledgementRequired)
-            return
-        }
-        guard hideOperation == .idle else {
-            presentDisplayError("Display operation in progress", error: DisplayHideError.actionInProgress)
-            return
-        }
-        do {
-            let current = try makeShowRequest()
-            guard current.status.journalID == request.status.journalID,
-                  current.status.target?.uuid == request.status.target?.uuid,
-                  current.status.source?.uuid == request.status.source?.uuid,
-                  current.returnInput == request.returnInput,
-                  current.returnInputWarning == request.returnInputWarning else {
-                throw DisplayHideError.recoveryBlocksAction("The recovery journal or saved Mac input configuration changed while confirmation was open. Refresh and review the captured target/source and input setting before Show.")
+            request = try makeShowRequest()
+            guard request.status.target?.uuid.caseInsensitiveCompare(targetUUID) == .orderedSame else {
+                throw DisplayHideError.recoveryBlocksAction("This display isn\u{2019}t hidden by PanelCtl.")
             }
         } catch {
-            presentDisplayError("Show not started", error: error)
+            refuse(.show, targetUUID: targetUUID, error: error, completion: completion)
             return
         }
-
-        hideOperation = .showing(request.status.target?.uuid ?? "")
+        displayResults[targetUUID.lowercased()] = nil
+        hideOperation = .showing(targetUUID)
         onStatusChange?()
-        let finish: (Bool, String?) -> Void = { [weak self] succeeded, message in
+        stopManagedProtection { [weak self] succeeded, message in
             Task { @MainActor in
                 self?.finishShowAfterProtectionQuiescence(
                     request,
                     cleanupSucceeded: succeeded,
-                    cleanupFailure: message
+                    cleanupFailure: message,
+                    completion: completion
                 )
             }
         }
-        stopManagedProtection(completion: finish)
-    }
-
-    func confirmShow(_ status: DisplayHandoffStatus, acknowledged: Bool) {
-        let input = configuredReturnInput(for: status)
-        confirmShow(
-            DisplayShowRequest(status: status, returnInput: input.value, returnInputWarning: input.warning),
-            acknowledged: acknowledged
-        )
-    }
-
-    var onRequestHide: ((DisplayHideRequest) -> Void)?
-    var onRequestShow: ((DisplayShowRequest) -> Void)?
-    var onShowCompletion: ((Bool) -> Void)?
-
-    func requestDisplayRecoveryFocus() {
-        displayRecoveryFocusRequest &+= 1
     }
 
     func setDisplayLifecycleTransitioning(_ transitioning: Bool) {
@@ -1373,87 +1472,55 @@ final class AppModel: ObservableObject {
             display.model == identity.model && display.serial == identity.serial
     }
 
-    private func setHideInput(_ rawValue: String, for targetUUID: String, onHide: Bool) -> String? {
-        guard !hideConfigurationFrozen,
-              let target = displays.first(where: { $0.uuid?.caseInsensitiveCompare(targetUUID) == .orderedSame }),
-              let uuid = target.uuid else { return nil }
-        var updated = hidePreferences
-        var configuration = updated[uuid] ?? DisplayHideConfiguration(target: DisplayIdentitySnapshot(target))
-        guard matches(configuration.target, target) else { return nil }
-        let value = rawValue.isEmpty ? nil : DDCInput.parseValue(rawValue)
-        let validation = rawValue.isEmpty || value != nil
-            ? nil
-            : "Invalid DDC input code. Enter dp1, dp2, hdmi1, hdmi2, a decimal value from 1–255, or a 0x-prefixed hexadecimal value. This input was not saved; clear the field to use monitor buttons."
-        if onHide {
-            configuration.awayInput = value
-        } else {
-            configuration.returnInput = value
-        }
-        updated[uuid] = configuration
-        hidePreferences = updated
-        return validation
-    }
-
-    private func validatedSavedInput(_ value: UInt8?, label: String) -> (value: UInt8?, warning: String?) {
+    private func validatedSavedInput(_ value: UInt8?) -> (value: UInt8?, warning: String?) {
         guard let value else { return (nil, nil) }
         guard DDCInput.parseValue(String(value)) != nil else {
-            return (nil, "Saved \(label) input code 0x\(String(format: "%02X", value)) is invalid and will not be sent. Correct it in Settings → Displays or clear it to use monitor buttons.")
+            return (nil, String(format: "the saved input code 0x%02X isn\u{2019}t valid. Choose the input again in Settings \u{2192} Displays.", value))
         }
         return (value, nil)
     }
 
+    /// Show switches the input back only when Hide switched it.
     private func configuredReturnInput(for status: DisplayHandoffStatus) -> (value: UInt8?, warning: String?) {
         guard let target = status.target,
-              let configuration = hidePreferences[target.uuid] else { return (nil, nil) }
+              let configuration = hidePreferences[target.uuid],
+              configuration.awayInput != nil, configuration.returnInput != nil else { return (nil, nil) }
         guard configuration.target.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame,
               configuration.target.id == target.id,
               configuration.target.vendor == target.vendor,
               configuration.target.model == target.model,
               configuration.target.serial == target.serial else {
-            return (nil, "Saved Mac input belongs to a different display identity and was not sent. Review Settings → Displays; use the monitor buttons if needed.")
+            return (nil, "the saved input belongs to a different display.")
         }
-        return validatedSavedInput(configuration.returnInput, label: "Mac")
-    }
-
-    private func inputCodeLabel(_ value: UInt8) -> String {
-        let code = String(format: "0x%02X", value)
-        if let named = DDCInput.namedValues.first(where: { $0.value == value }) {
-            return "\(named.name) (\(code))"
-        }
-        return code
+        return validatedSavedInput(configuration.returnInput)
     }
 
     private func hideRequest(target: DisplayIdentitySnapshot, source: DisplayIdentitySnapshot,
                              configuration: DisplayHideConfiguration) -> DisplayHideRequest {
-        let away = validatedSavedInput(configuration.awayInput, label: "Other computer")
-        let returning = validatedSavedInput(configuration.returnInput, label: "Mac")
-        return DisplayHideRequest(
-            target: target,
-            source: source,
-            awayInput: away.value,
-            returnInput: returning.value,
-            awayInputWarning: away.warning,
-            returnInputWarning: returning.warning
-        )
+        let away = validatedSavedInput(configuration.awayInput)
+        return DisplayHideRequest(target: target, source: source, awayInput: away.value, awayInputWarning: away.warning)
     }
 
     private func finishHideAfterProtectionQuiescence(
         _ request: DisplayHideRequest,
         cleanupSucceeded: Bool,
-        cleanupFailure: String?
+        cleanupFailure: String?,
+        completion: ((DisplayOperationResult) -> Void)?
     ) {
         guard hideOperation == .hiding(request.target.uuid) else { return }
+        let notAttempted = DisplayInputOutcome(
+            state: request.awayInput == nil ? .notRequested : .notAttempted,
+            requestedInput: request.awayInput
+        )
         if !cleanupSucceeded {
             let failure = cleanupFailure ?? "Automation cleanup could not be verified."
             protectionQuiescenceFailure = failure
             hideOperation = .idle
             refreshHandoffStatus()
             reconcileProtection()
-            presentDisplayError(
-                "Hide not started",
-                error: DisplayHideError.protectionCleanup("PanelCtl could not confirm that blackout/dimming cleanup finished: \(failure) No desktop change was attempted; inspect automation status and try again only after it is clear.")
-            )
-            onStatusChange?()
+            finish(.hide, targetUUID: request.target.uuid, succeeded: false,
+                   message: "Couldn\u{2019}t hide. PanelCtl couldn\u{2019}t confirm automation stopped, so it didn\u{2019}t change the display: \(failure)",
+                   input: notAttempted, inputWarning: request.awayInputWarning, completion: completion)
             return
         }
         protectionQuiescenceFailure = nil
@@ -1462,78 +1529,62 @@ final class AppModel: ObservableObject {
             displays = displayProvider()
             refreshHandoffStatus()
             guard let configuration = hidePreferences[request.target.uuid],
-                  hideReadinessMessage(for: configuration, allowingCurrentOperation: true) == nil,
+                  hideReadiness(for: configuration, allowingCurrentOperation: true) == nil,
                   let source = configuration.source,
                   request == hideRequest(target: configuration.target, source: source, configuration: configuration) else {
-                throw DisplayHideError.identityChanged("The target, source, input codes, inventory, or saved configuration changed before Hide began. Review Displays and confirm again.")
+                throw DisplayHideError.identityChanged("The displays or Hide settings changed before Hide began. Try again.")
             }
             let inputOutcome = try hideDisplay(
                 coreIdentity(request.target), coreIdentity(request.source), request.awayInput
             )
             returnedInputOutcome = inputOutcome
-            controlInputOutcomes[request.target.uuid.lowercased()] = inputOutcome
             refreshHandoffStatus()
             guard handoffStatus?.state == .hidden else {
                 throw DisplayHideError.recoveryBlocksAction(
-                    "Hide did not remain observable as active. The journal and observed topology are retained; Refresh Displays and review the recovery details before taking another action."
+                    "PanelCtl couldn\u{2019}t confirm the display is hidden. Check its recovery details before trying again."
                 )
             }
             hideOperation = .idle
             reconcileProtection()
-            notice = AppNotice(
-                title: "Desktop hidden",
-                message: "Desktop: \(request.target.name ?? request.target.uuid) is hidden by mirroring \(request.source.name ?? request.source.uuid). The Mac signal remains on; modes/HDR may change. While the journal and topology verify Hidden by PanelCtl, automation may cover only the selected source with an overlay; the mirrored target also appears black on the Mac input. Brightness dimming and automatic follow-up Sleep stay suspended; activity/Restore affect only the overlay and Show remains explicit. Unknown, stale, busy, unselected, or recovery-needed state keeps automation suspended.\n\(inputSummary(inputOutcome, purpose: "Other computer", warning: request.awayInputWarning))",
-                opensLoginItemSettings: false
-            )
+            finish(.hide, targetUUID: request.target.uuid, succeeded: true, message: "Hidden.",
+                   input: inputOutcome, inputWarning: request.awayInputWarning, completion: completion)
         } catch {
             refreshHandoffStatus()
             hideOperation = .idle
             rearmProtectionAfterDisplayRecovery()
-            let outcome = returnedInputOutcome ?? (error as? DisplayHandoffOperationFailure)?.inputOutcome ??
-                DisplayInputOutcome(
-                    state: request.awayInput == nil ? .notRequested : .notAttempted,
-                    requestedInput: request.awayInput,
-                    detail: "Input operation details are unavailable because the guarded Hide operation did not complete."
-                )
-            controlInputOutcomes[request.target.uuid.lowercased()] = outcome
-            let desktopResult = returnedInputOutcome == nil
-                ? "Desktop: Hide did not complete."
-                : "Desktop: Hide backend returned, but current desktop/recovery status could not be confirmed. Refresh Displays and review recovery before another action."
-            let message = "\(desktopResult)\n\(error.localizedDescription)\n\(inputSummary(outcome, purpose: "Other computer", warning: request.awayInputWarning))"
-            presentDisplayError("Could not hide the desktop", message: message)
+            let outcome = returnedInputOutcome ?? (error as? DisplayHandoffOperationFailure)?.inputOutcome ?? notAttempted
+            finish(.hide, targetUUID: request.target.uuid, succeeded: false,
+                   message: "Couldn\u{2019}t hide. \(error.localizedDescription)",
+                   input: outcome, inputWarning: request.awayInputWarning, completion: completion)
         }
-        onStatusChange?()
     }
 
     private func finishShowAfterProtectionQuiescence(
         _ request: DisplayShowRequest,
         cleanupSucceeded: Bool,
-        cleanupFailure: String?
+        cleanupFailure: String?,
+        completion: ((DisplayOperationResult) -> Void)?
     ) {
-        guard case .showing = hideOperation else { return }
-        if cleanupSucceeded {
-            protectionQuiescenceFailure = nil
-        } else {
-            protectionQuiescenceFailure = cleanupFailure ?? "Automation cleanup could not be verified."
+        guard case .showing(let targetUUID) = hideOperation else { return }
+        let notAttempted = DisplayInputOutcome(
+            state: request.returnInput == nil ? .notRequested : .notAttempted,
+            requestedInput: request.returnInput
+        )
+        func notStarted(_ reason: String) {
             hideOperation = .idle
             reconcileProtection()
-            onShowCompletion?(false)
-            presentDisplayError(
-                "Show not started",
-                message: "PanelCtl could not verify that the source overlay was quiesced: \(protectionQuiescenceFailure ?? "automation cleanup failed"). No topology or monitor-input action was attempted. Retry automation cleanup, then Refresh and confirm Show again."
-            )
-            onStatusChange?()
+            finish(.show, targetUUID: targetUUID, succeeded: false, message: "Couldn\u{2019}t show. \(reason)",
+                   input: notAttempted, inputWarning: request.returnInputWarning, completion: completion)
+        }
+        guard cleanupSucceeded else {
+            let failure = cleanupFailure ?? "Automation cleanup could not be verified."
+            protectionQuiescenceFailure = failure
+            notStarted("PanelCtl couldn\u{2019}t confirm automation stopped, so it didn\u{2019}t change the display: \(failure)")
             return
         }
+        protectionQuiescenceFailure = nil
         guard !displayLifecycleTransitioning else {
-            hideOperation = .idle
-            reconcileProtection()
-            onShowCompletion?(false)
-            presentDisplayError(
-                "Show paused",
-                message: "Desktop: Show was paused during a display transition.\nMonitor input: Not attempted. Wait for displays to wake, then Refresh and confirm again."
-            )
-            onStatusChange?()
+            notStarted(DisplayHideError.sleeping.localizedDescription)
             return
         }
         refreshHandoffStatus()
@@ -1543,98 +1594,113 @@ final class AppModel: ObservableObject {
               handoffStatus?.target?.uuid == request.status.target?.uuid,
               handoffStatus?.source?.uuid == request.status.source?.uuid,
               let expectedJournalID = request.status.journalID else {
-            hideOperation = .idle
-            reconcileProtection()
-            onShowCompletion?(false)
-            presentDisplayError(
-                "Show not started",
-                error: DisplayHideError.recoveryBlocksAction("The journal or observed topology changed before Show began. Refresh Displays and review the current recovery details.")
-            )
-            onStatusChange?()
+            notStarted("The displays changed before Show began. Try again.")
             return
         }
         var returnedInputOutcome: DisplayInputOutcome?
         do {
             let inputOutcome = try showDisplay(expectedJournalID, request.returnInput)
             returnedInputOutcome = inputOutcome
-            if let uuid = request.status.target?.uuid {
-                controlInputOutcomes[uuid.lowercased()] = inputOutcome
-            }
             refreshHandoffStatus()
             guard handoffStatus?.hasUnresolvedJournal != true,
                   handoffInspectionFailure == nil else {
                 throw DisplayHideError.recoveryBlocksAction(
-                    handoffStatus?.reason ?? handoffInspectionFailure ?? "Show returned, but the journal could not be verified resolved. Keep the journal and inspect the recovery details."
+                    handoffStatus?.reason ?? handoffInspectionFailure ??
+                        "PanelCtl couldn\u{2019}t confirm the display is back. Check its recovery details."
                 )
             }
             hideOperation = .idle
             rearmProtectionAfterDisplayRecovery()
-            let protectionStatus = protectionQuiescenceFailure.map {
-                "Automation cleanup still needs attention: \($0) Automation remains suspended."
-            } ?? ""
-            notice = AppNotice(
-                title: "Desktop restored",
-                message: "Desktop: The journaled public display layout and modes were restored and verified. HDR, color profiles, rotation, windows, and Spaces are not restored. \(protectionStatus)\n\(inputSummary(inputOutcome, purpose: "Mac", warning: request.returnInputWarning))",
-                opensLoginItemSettings: false
-            )
-            onShowCompletion?(true)
+            finish(.show, targetUUID: targetUUID, succeeded: true, message: "Shown.",
+                   input: inputOutcome, inputWarning: request.returnInputWarning, completion: completion)
         } catch {
             refreshHandoffStatus()
             hideOperation = .idle
             reconcileProtection()
-            onShowCompletion?(false)
-            let outcome = returnedInputOutcome ?? (error as? DisplayHandoffOperationFailure)?.inputOutcome ??
-                DisplayInputOutcome(
-                    state: request.returnInput == nil ? .notRequested : .notAttempted,
-                    requestedInput: request.returnInput,
-                    detail: "Input operation details are unavailable because guarded Show did not complete."
-                )
-            if let uuid = request.status.target?.uuid {
-                controlInputOutcomes[uuid.lowercased()] = outcome
-            }
-            let desktopResult = returnedInputOutcome == nil
-                ? "Desktop: Show did not complete."
-                : "Desktop: Show backend returned, but current desktop/recovery status could not be confirmed. Refresh Displays and review recovery before assuming the result."
-            presentDisplayError(
-                "Could not show the journaled desktop",
-                message: "\(desktopResult)\n\(error.localizedDescription)\n\(inputSummary(outcome, purpose: "Mac", warning: request.returnInputWarning))"
-            )
+            let outcome = returnedInputOutcome ?? (error as? DisplayHandoffOperationFailure)?.inputOutcome ?? notAttempted
+            finish(.show, targetUUID: targetUUID, succeeded: false,
+                   message: "Couldn\u{2019}t show. \(error.localizedDescription)",
+                   input: outcome, inputWarning: request.returnInputWarning, completion: completion)
         }
-        onStatusChange?()
     }
 
-    private func inputSummary(_ outcome: DisplayInputOutcome, purpose: String, warning: String?) -> String {
-        let prefix = "Monitor input (\(purpose)): "
-        if let warning, outcome.state == .notRequested {
-            return prefix + "Not requested. \(warning) Use the monitor's input buttons if needed."
+    private func finish(
+        _ action: DisplayOperationResult.Action,
+        targetUUID: String,
+        succeeded: Bool,
+        message: String,
+        input: DisplayInputOutcome,
+        inputWarning: String?,
+        completion: ((DisplayOperationResult) -> Void)?
+    ) {
+        let line = inputResultLine(input, warning: inputWarning)
+        let result = DisplayOperationResult(
+            action: action,
+            succeeded: succeeded,
+            message: message,
+            inputMessage: line?.text,
+            inputOutcome: input,
+            inputNeedsAttention: line?.needsAttention ?? false
+        )
+        displayResults[targetUUID.lowercased()] = result
+        onStatusChange?()
+        completion?(result)
+    }
+
+    /// Records a Hide or Show that didn't start. A refusal while another
+    /// operation runs never replaces that operation's result.
+    private func refuse(
+        _ action: DisplayOperationResult.Action,
+        targetUUID: String,
+        error: Error,
+        completion: ((DisplayOperationResult) -> Void)?
+    ) {
+        let result = DisplayOperationResult(
+            action: action,
+            succeeded: false,
+            message: "Couldn\u{2019}t \(action == .hide ? "hide" : "show"). \(error.localizedDescription)",
+            inputMessage: nil,
+            inputOutcome: nil,
+            inputNeedsAttention: false
+        )
+        if case .actionInProgress? = error as? DisplayHideError {
+            completion?(result)
+            return
         }
-        let requested = outcome.requestedInput.map { inputCodeLabel($0) }
-        let recovery = outcome.recoveryCommand.map { " To return to the previous input, run: \($0)." } ?? ""
+        displayResults[targetUUID.lowercased()] = result
+        onStatusChange?()
+        completion?(result)
+    }
+
+    private func inputResultLine(
+        _ outcome: DisplayInputOutcome,
+        warning: String?
+    ) -> (text: String, needsAttention: Bool)? {
+        let input = outcome.requestedInput.map(MonitorInput.name) ?? "the requested input"
+        let detail = outcome.detail.map { " " + Self.sentence($0) } ?? ""
         switch outcome.state {
         case .notRequested:
-            return prefix + "No DDC input change was requested. Use the monitor's input buttons to switch manually if needed."
+            return warning.map { ("Didn\u{2019}t switch the monitor input: \($0)", true) }
         case .notAttempted:
-            return prefix + "Not attempted. \(outcome.detail ?? "The desktop operation did not reach the input step.") Use the monitor's input buttons if needed."
+            return outcome.requestedInput == nil ? nil : ("Didn\u{2019}t switch the monitor input.", false)
         case .skipped:
-            return prefix + "Skipped. \(outcome.detail ?? "DDC was unavailable.") Use the monitor's input buttons if needed."
+            return ("Couldn\u{2019}t switch the monitor input.\(detail) Use the monitor\u{2019}s buttons.", true)
         case .verified:
-            return prefix + "\(requested ?? "Requested input") selected and verified by readback.\(recovery)"
+            return ("Switched the monitor to \(input).", false)
         case .alreadySelected:
-            return prefix + "Already on \(requested ?? "the requested input"); no DDC write was sent.\(recovery)"
+            return ("The monitor was already on \(input).", false)
         case .unverified:
-            let detail = outcome.detail ?? "readback was unavailable"
-            return prefix + "Selection of \(requested ?? "the requested input") is unverified (\(detail)); PanelCtl does not claim it changed. Check the monitor.\(recovery) Use the monitor's input buttons if needed."
+            return ("Asked the monitor to switch to \(input) but couldn\u{2019}t confirm it. Check the monitor and use its buttons if needed.", true)
         case .failed:
-            return prefix + "Failed. \(outcome.detail ?? "DDC input selection failed.")\(recovery) Use the monitor's input buttons if needed."
+            return ("Couldn\u{2019}t switch the monitor to \(input).\(detail) Use the monitor\u{2019}s buttons.", true)
         }
     }
 
-    private func presentDisplayError(_ title: String, error: Error) {
-        presentDisplayError(title, message: error.localizedDescription)
-    }
-
-    private func presentDisplayError(_ title: String, message: String) {
-        notice = AppNotice(title: title, message: message, opensLoginItemSettings: false)
+    /// Ends backend detail text with exactly one sentence terminator.
+    private static func sentence(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let last = trimmed.last else { return "" }
+        return ".!?".contains(last) ? trimmed : trimmed + "."
     }
 
     private func snooze(until: Date) {

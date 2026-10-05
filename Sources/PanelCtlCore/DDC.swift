@@ -30,7 +30,7 @@ public struct DDCLuminanceWriteResult: Equatable, Codable {
     public let maximum: UInt16
 }
 
-public enum DDCError: Error, Equatable, CustomStringConvertible {
+public enum DDCError: Error, Equatable, CustomStringConvertible, LocalizedError {
     case unsupportedArchitecture
     case displayNotFound(String)
     case displayMetadataUnavailable(UInt32)
@@ -72,6 +72,8 @@ public enum DDCError: Error, Equatable, CustomStringConvertible {
             return String(format: "monitor input is unknown after the write attempt (%@); switch back with: panelctl ddc-input --display %@ --set 0x%02X, or use the monitor's input button", detail, uuid, original)
         }
     }
+
+    public var errorDescription: String? { description }
 }
 
 /// One Get/Set VCP channel to a resolved display. Tests inject fakes.

@@ -62,9 +62,9 @@ final class SettingsWindowTests: XCTestCase {
         }
 
         controller.select(.general)
-        model.requestDisplayRecoveryFocus()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
-        XCTAssertEqual(controller.selectedTab, .displays, "recovery focus opens Displays")
+        controller.selectDisplay(uuid: Self.sideUUID)
+        XCTAssertEqual(controller.selectedTab, .displays, "selecting a display opens Displays")
+        XCTAssertEqual(controller.selectedDisplayID, Self.sideUUID.lowercased())
     }
 
     func testExperimentalFlagDefaultsOffPersistsAndGatesHideButNotShow() throws {
@@ -81,23 +81,23 @@ final class SettingsWindowTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: Self.suiteName) }
         let delegate = AppDelegate()
         delegate.model = model
-        let hideHeading = "Hide a desktop · Experimental"
 
         XCTAssertFalse(model.experimentalFeaturesEnabled)
-        XCTAssertTrue(model.menuHideConfigurations.isEmpty)
+        XCTAssertNil(try sideTile(model).action, "Hide needs the Experimental flag")
         XCTAssertThrowsError(try model.makeHideRequest(targetUUID: Self.sideUUID)) { error in
             XCTAssertTrue(error.localizedDescription.contains("Turn on Experimental features"))
         }
         XCTAssertEqual(model.handleDisplayControlRequest(AppControlRequest(command: .hide, targetUUID: Self.sideUUID)).outcome, .refused)
-        XCTAssertFalse(delegate.makeMenu().items.contains { $0.title == hideHeading })
-        XCTAssertNil(try mirrorSourcePicker(in: model), "hide configuration stays out of Settings")
+        XCTAssertFalse(delegate.makeMenu().items.contains { $0.title.hasPrefix("Hide ") })
+        XCTAssertNil(try removalSwitch(in: model), "removal setup stays out of Settings")
 
         model.acceptExperimentalConsent()
         XCTAssertTrue(defaults.bool(forKey: "experimentalFeaturesEnabled"))
-        XCTAssertEqual(model.menuHideConfigurations.map(\.target.uuid), [Self.sideUUID])
+        XCTAssertEqual(try sideTile(model).action, .hide)
+        XCTAssertNil(try sideTile(model).actionBlocker)
         XCTAssertNoThrow(try model.makeHideRequest(targetUUID: Self.sideUUID))
-        XCTAssertTrue(delegate.makeMenu().items.contains { $0.title.hasPrefix("Hide DELL S2721DGF") })
-        XCTAssertNotNil(try mirrorSourcePicker(in: model))
+        XCTAssertTrue(delegate.makeMenu().items.contains { $0.title == "Hide DELL S2721DGF" })
+        XCTAssertEqual(try removalSwitch(in: model)?.state, .on)
         let reloaded = try makeModel(keepingDefaults: true).0
         XCTAssertTrue(reloaded.experimentalFeaturesEnabled)
 
@@ -108,8 +108,7 @@ final class SettingsWindowTests: XCTestCase {
         model.refreshHandoffStatus()
         spin { !model.protectionQuiescencePending }
         let titles = delegate.makeMenu().items.map(\.title)
-        XCTAssertTrue(titles.contains(hideHeading))
-        XCTAssertTrue(titles.contains("Show DELL S2721DGF…"))
+        XCTAssertTrue(titles.contains("Show DELL S2721DGF"))
         XCTAssertNoThrow(try model.makeShowRequest())
     }
 
@@ -220,16 +219,83 @@ final class SettingsWindowTests: XCTestCase {
             window.setContentSize(NSSize(width: 680, height: height))
             for tab in SettingsTab.allCases {
                 controller.select(tab)
-                window.contentView?.layoutSubtreeIfNeeded()
-                RunLoop.main.run(until: Date().addingTimeInterval(0.3))
-                let frameView = try XCTUnwrap(window.contentView?.superview)
-                let bitmap = try XCTUnwrap(frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds))
-                frameView.cacheDisplay(in: frameView.bounds, to: bitmap)
-                let url = URL(fileURLWithPath: output)
-                    .appendingPathComponent("settings-\(scenario.name)-\(tab.rawValue).png")
-                try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: url)
+                try writeSnapshot(of: window, to: output, name: "settings-\(scenario.name)-\(tab.rawValue)")
             }
         }
+    }
+
+    /// Opt-in visual fixture: writes one PNG per Displays state for review and docs.
+    func testDisplaysFixtureSnapshots() throws {
+        guard let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] else {
+            throw XCTSkip("Set PANELCTL_SETTINGS_FIXTURE_OUTPUT to a directory to write Settings PNGs.")
+        }
+        let height = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_HEIGHT"].flatMap(Double.init) ?? 640
+        let recovery = DisplayHandoffStatus(
+            state: .recovery,
+            target: hiddenStatus().target,
+            source: hiddenStatus().source,
+            journalPath: Self.journalPath,
+            journalID: "settings-fixture",
+            reason: "The display\u{2019}s mode changed since it was hidden. Reconnect it as it was, then try again.",
+            recoveryCommand: "panelctl recovery enable --journal \(Self.journalPath)"
+        )
+        let scenarios: [(name: String, experimental: Bool, status: DisplayHandoffStatus?, tab: SettingsTab)] = [
+            ("off", false, nil, .displays),
+            ("setup", true, nil, .displays),
+            ("unreadable", true, nil, .displays),
+            ("refused", true, nil, .displays),
+            ("hidden", true, hiddenStatus(), .displays),
+            ("recovery", true, recovery, .displays),
+            ("recovery-banner", true, recovery, .automation)
+        ]
+        for scenario in scenarios {
+            // "unreadable" uses a custom input code and a monitor that doesn't answer over DDC.
+            let unreadable = scenario.name == "unreadable"
+            let (model, defaults) = try makeModel(
+                status: { scenario.status },
+                checkDDCInput: {
+                    if unreadable { throw DDCError.requestFailed(-536870212) }
+                    return DDCInputReading(displayID: $0.displayID, uuid: $0.uuid, current: 0x0F)
+                },
+                configure: { defaults in
+                    defaults.set(scenario.experimental, forKey: "experimentalFeaturesEnabled")
+                    var hidePreferences = DisplayHidePreferences()
+                    hidePreferences[Self.sideUUID] = DisplayHideConfiguration(
+                        target: DisplayIdentitySnapshot(self.displays[1]),
+                        enabled: true,
+                        source: DisplayIdentitySnapshot(self.displays[0]),
+                        awayInput: unreadable ? 0x1B : 0x11,
+                        returnInput: unreadable ? nil : 0x0F
+                    )
+                    defaults.set(try JSONEncoder().encode(hidePreferences), forKey: "displayHidePreferences")
+                }
+            )
+            defer { defaults.removePersistentDomain(forName: Self.suiteName) }
+            spin { !model.protectionQuiescencePending }
+            if scenario.name == "refused" {
+                model.setDisplayLifecycleTransitioning(true)
+                model.hide(targetUUID: Self.sideUUID)
+                model.setDisplayLifecycleTransitioning(false)
+            }
+            let controller = SettingsWindowController(model: model)
+            controller.present()
+            let window = try XCTUnwrap(controller.window)
+            defer { window.close() }
+            window.setContentSize(NSSize(width: 680, height: height))
+            controller.selectDisplay(uuid: Self.sideUUID)
+            controller.select(scenario.tab)
+            try writeSnapshot(of: window, to: output, name: "displays-\(scenario.name)")
+        }
+    }
+
+    private func writeSnapshot(of window: NSWindow, to directory: String, name: String) throws {
+        window.contentView?.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        let frameView = try XCTUnwrap(window.contentView?.superview)
+        let bitmap = try XCTUnwrap(frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds))
+        frameView.cacheDisplay(in: frameView.bounds, to: bitmap)
+        let url = URL(fileURLWithPath: directory).appendingPathComponent("\(name).png")
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: url)
     }
 
     private static let suiteName = "panelctl-settings-window-\(ProcessInfo.processInfo.processIdentifier)"
@@ -242,22 +308,25 @@ final class SettingsWindowTests: XCTestCase {
         }
     }
 
+    private func sideTile(_ model: AppModel) throws -> DisplayTile {
+        try XCTUnwrap(model.displayTiles.first { $0.id == Self.sideUUID.lowercased() })
+    }
+
     private func nativeViews(in root: NSView) -> [NSView] {
         [root] + root.subviews.flatMap(nativeViews)
     }
 
-    /// Opens the Displays tab and returns the hide card's mirror source picker, if shown.
-    private func mirrorSourcePicker(in model: AppModel) throws -> NSPopUpButton? {
+    /// Opens the side display in Displays and returns its Remove from desktop switch, if shown.
+    private func removalSwitch(in model: AppModel) throws -> NSSwitch? {
         let controller = SettingsWindowController(model: model)
         controller.present()
+        controller.selectDisplay(uuid: Self.sideUUID)
         let window = try XCTUnwrap(controller.window)
         defer { window.close() }
         window.setContentSize(NSSize(width: 680, height: 1200))
         window.contentView?.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        return nativeViews(in: try XCTUnwrap(window.contentView)).lazy
-            .compactMap { $0 as? NSPopUpButton }
-            .first { $0.accessibilityLabel()?.hasPrefix("Mirror source for") == true }
+        return nativeViews(in: try XCTUnwrap(window.contentView)).lazy.compactMap { $0 as? NSSwitch }.first
     }
 
     private func hiddenStatus() -> DisplayHandoffStatus {
@@ -284,6 +353,10 @@ final class SettingsWindowTests: XCTestCase {
         displays: [DisplayRecord]? = nil,
         keepingDefaults: Bool = false,
         status: @escaping () -> DisplayHandoffStatus? = { nil },
+        checkDDCInput: @escaping (DisplayHideIdentity) throws -> DDCInputReading = { _ in
+            XCTFail("Settings fixtures never query DDC")
+            return DDCInputReading(displayID: 0, uuid: "", current: 1)
+        },
         configure: (UserDefaults) throws -> Void = { _ in }
     ) throws -> (AppModel, UserDefaults) {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: Self.suiteName))
@@ -308,10 +381,7 @@ final class SettingsWindowTests: XCTestCase {
                 XCTFail("Settings fixtures never show a display")
                 return .notRequested
             },
-            checkDDCInput: { _ in
-                XCTFail("Settings fixtures never query DDC")
-                return DDCInputReading(displayID: 0, uuid: "", current: 1)
-            },
+            checkDDCInput: checkDDCInput,
             quiesceProtection: { $0(true, nil) }
         )
         return (model, defaults)

@@ -1,9 +1,10 @@
 ---
 id: TASK-25
 title: Rebuild the Displays tab around display tiles and inline hide results
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-05 06:06'
+updated_date: '2026-10-05 08:03'
 labels:
   - app
   - ui
@@ -39,3 +40,18 @@ On 2026-10-05 the user approved a tile-based Displays tab: each display shows it
 - [ ] #5 Backend safety is unchanged: one removed display at a time, identity and topology checks, journal capture before writes, unresolved journals blocking new removal, and Show and recovery available regardless of the Experimental flag or automation state.
 - [ ] #6 Fake-backed tests cover tile states, default source, input detection success and failure, inline outcomes and recovery focus; full offline tests and warnings-as-errors builds pass.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Model: DisplayTile list in arrangement order plus journal targets, typed readiness, one Hide/Show action per tile shared by Settings and the menu, main display as default mirror source, read-only Mac input detection as the return input, inline DisplayOperationResult instead of notices.
+2. Remove per-operation confirmation (DisplayOperationConfirmation); Settings, menu and quit call hide/show(targetUUID:) with a completion; quit offers Show and Quit.
+3. Displays view: tile strip, detail summary with primary action and inline results, Hide setup (switch, source picker, named input picker with Other…, Mac input row), collapsed Recovery details with copy actions; banner only for real problems and selects the affected display.
+4. Tests and docs: fake-backed tile, default source, detection, inline outcome and recovery focus tests; Displays snapshot fixtures; development.md fixture notes; full offline tests and warnings-as-errors builds.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented model, view, menu and quit changes; removed confirmation dialogs and the foreground-only keyboard fixtures that exercised them. DDCError now conforms to LocalizedError so DDC failures read as their description instead of a generic Cocoa message. Full offline suite (223 core, 105 app; 4 opt-in skips) and warnings-as-errors builds pass.
+<!-- SECTION:NOTES:END -->

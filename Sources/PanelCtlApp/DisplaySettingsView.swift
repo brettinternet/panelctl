@@ -2,421 +2,543 @@ import AppKit
 import SwiftUI
 import PanelCtlCore
 
-private final class DropdownPickerTarget: NSObject {
-    var onChange: (Int) -> Void = { _ in }
-
-    @objc func selectionChanged(_ sender: NSPopUpButton) {
-        onChange(sender.indexOfSelectedItem)
-    }
-}
-
-private struct DropdownPicker<Value: Hashable>: NSViewRepresentable {
-    @Binding var selection: Value
-    let options: [(Value, String)]
-    var accessibilityLabel: String? = nil
-
-    func makeCoordinator() -> DropdownPickerTarget {
-        DropdownPickerTarget()
-    }
-
-    func makeNSView(context: Context) -> NSPopUpButton {
-        let button = NSPopUpButton()
-        if let accessibilityLabel {
-            button.setAccessibilityLabel(accessibilityLabel)
-        }
-        button.target = context.coordinator
-        button.action = #selector(DropdownPickerTarget.selectionChanged(_:))
-        button.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        return button
-    }
-
-    func updateNSView(_ button: NSPopUpButton, context: Context) {
-        if let accessibilityLabel {
-            button.setAccessibilityLabel(accessibilityLabel)
-        }
-        let titles = options.map(\.1)
-        if button.itemTitles != titles {
-            button.removeAllItems()
-            button.addItems(withTitles: titles)
-        }
-        if let index = options.firstIndex(where: { $0.0 == selection }) {
-            button.selectItem(at: index)
-        }
-        context.coordinator.onChange = { index in
-            guard options.indices.contains(index) else { return }
-            selection = options[index].0
-        }
-    }
-}
-
-private final class InputCodeFieldTarget: NSObject, NSTextFieldDelegate {
-    var onChange: (String) -> Void = { _ in }
-
-    func controlTextDidChange(_ notification: Notification) {
-        guard let field = notification.object as? NSTextField else { return }
-        onChange(field.stringValue)
-    }
-}
-
-private struct InputCodeField: NSViewRepresentable {
-    @Binding var text: String
-    let placeholder: String
-    let accessibilityLabel: String
-
-    func makeCoordinator() -> InputCodeFieldTarget {
-        InputCodeFieldTarget()
-    }
-
-    func makeNSView(context: Context) -> NSTextField {
-        let field = NSTextField()
-        field.placeholderString = placeholder
-        field.isBordered = true
-        field.isBezeled = true
-        field.bezelStyle = .roundedBezel
-        field.setAccessibilityLabel(accessibilityLabel)
-        field.delegate = context.coordinator
-        context.coordinator.onChange = { text = $0 }
-        return field
-    }
-
-    func updateNSView(_ field: NSTextField, context: Context) {
-        field.setAccessibilityLabel(accessibilityLabel)
-        if field.stringValue != text {
-            field.stringValue = text
-        }
-        context.coordinator.onChange = { text = $0 }
-    }
-}
-
 struct DisplaySettingsView: View {
     @ObservedObject var model: AppModel
-    @State private var inputDrafts: [String: String] = [:]
-    @State private var inputValidationErrors: [String: String] = [:]
+    @ObservedObject var navigation: SettingsNavigation
+    /// Input codes being typed while "Other…" is chosen, by tile ID.
+    @State private var customInputs: [String: String] = [:]
 
     var body: some View {
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 12) {
-                // Recovery never depends on the Experimental flag.
-                displayRecoveryCard
-                if model.experimentalFeaturesEnabled {
-                    hideDisplaySection
+        let tiles = model.displayTiles
+        let selected = model.tile(selecting: navigation.selectedDisplayID)
+        VStack(spacing: 0) {
+            DisplayArrangement(
+                tiles: tiles,
+                selectedID: selected?.id,
+                attentionIDs: Set(model.displayResults.filter(\.value.needsAttention).keys)
+            ) { navigation.selectedDisplayID = $0 }
+            Form {
+                if let failure = model.handoffInspectionFailure {
+                    inspectionFailureSection(failure)
+                }
+                if let selected {
+                    summarySection(selected)
+                    hideSection(selected, tiles: tiles)
+                    if isJournalTarget(selected), let status = model.handoffStatus {
+                        Section {
+                            recoveryDetails(status)
+                        }
+                    }
                 } else {
-                    connectedDisplays
+                    Section {
+                        Text("No displays found.")
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .formStyle(.grouped)
+            // Another display is another page: replace its controls instead of
+            // animating one display's settings into the next.
+            .id(selected?.id)
         }
     }
 
-    private var connectedDisplays: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    if model.activeDisplays.isEmpty {
-                        Text("No active displays found.")
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(model.activeDisplays, id: \.id) { display in
-                        HStack(spacing: 10) {
-                            Image(systemName: display.builtin ? "laptopcomputer" : "display")
-                                .foregroundStyle(.secondary)
-                                .frame(width: 22)
-                                .accessibilityHidden(true)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(display.settingsName)
-                                Text(display.settingsDetail)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .accessibilityElement(children: .combine)
-                    }
+    // MARK: Summary
+
+    private func summarySection(_ tile: DisplayTile) -> some View {
+        Section {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(tile.name)
+                        .font(.headline)
+                    Text(stateLine(tile))
+                        .foregroundStyle(tile.status == .needsRecovery ? Color.orange : Color.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                Spacer(minLength: 8)
+                primaryAction(tile)
             }
-            Text("To remove a display from the desktop, turn on Experimental features in General.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if let result = model.displayResults[tile.id] {
+                if !result.succeeded {
+                    resultLabel(result.message, attention: true)
+                }
+                if let input = result.inputMessage {
+                    resultLabel(input, attention: result.inputNeedsAttention)
+                }
+            }
+            if let note = actionNote(tile) {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func stateLine(_ tile: DisplayTile) -> String {
+        switch tile.status {
+        case .on:
+            return tile.display.map { "On · \($0.settingsDetail)" } ?? "On"
+        case .hidden:
+            return "Removed from the desktop · mirrored onto \(model.handoffStatus?.source?.name ?? "another display")"
+        case .hiding:
+            return "Removing from the desktop…"
+        case .showing:
+            return "Showing…"
+        case .blackedOut:
+            return "Blacked out by automation"
+        case .asleep:
+            return "Asleep"
+        case .mirrored:
+            return "Mirrored by macOS"
+        case .busy:
+            return "Another display operation is running."
+        case .unavailable:
+            return "Disconnected"
+        case .needsRecovery:
+            return model.displayRecoveryProblem ?? "Needs recovery."
         }
     }
 
     @ViewBuilder
-    private var displayRecoveryCard: some View {
-        if let status = model.handoffStatus, status.hasUnresolvedJournal {
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Recovery needed · shared display journal")
-                        .font(.headline)
-                    if let target = status.target {
-                        Text("Captured target: \(target.name) · \(target.identityDetail)")
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if let source = status.source {
-                        Text("Captured mirror source: \(source.name) · \(source.identityDetail)")
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if let reason = status.reason {
-                        Text(reason)
-                            .foregroundStyle(.orange)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Text("Journal: \(status.journalPath)")
-                        .font(.caption)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if status.state == .unsupported {
-                        Text(status.inspectionCommand)
-                            .font(.caption.monospaced())
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else if let command = status.recoveryCommand {
-                        Text("After reviewing the journal, explicit CLI recovery is available: \(command)")
-                            .font(.caption.monospaced())
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    HStack {
-                        if status.state == .hidden || status.state == .recovery {
-                            Button("Show \(status.target?.name ?? "desktop")…") { model.requestShow() }
-                                .disabled(!status.canShow || model.hideOperation.isBusy || model.displayLifecycleTransitioning)
-                                .accessibilityLabel("Show captured display desktop")
-                        }
-                        Button("Refresh") { model.refreshDisplays() }
-                    }
-                    if !status.canShow, status.state != .unsupported,
-                       let refusal = status.reason {
-                        Text("Show is unavailable: \(refusal)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .id("display-recovery-card")
-        } else if let failure = model.handoffInspectionFailure {
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Display recovery status unavailable")
-                        .font(.headline)
-                    Text(failure)
-                        .foregroundStyle(.orange)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text("Journal: \(DisplayHandoff.defaultJournalPath)")
-                        .font(.caption)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button("Refresh") { model.refreshDisplays() }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .id("display-recovery-card")
-        }
-    }
-
-    private var hideDisplaySection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Hide a desktop · Experimental")
-                .font(.system(size: 12, weight: .semibold))
-            Text("Experimental · mirror hide removes a separate desktop by mirroring another display. The Mac signal stays on and the monitor may show the mirrored picture. Resolution, refresh rate, and HDR may change. Show restores the saved public layout and modes, not HDR, color profiles, rotation, windows, or Spaces. Optional input switching uses DDC only when configured; otherwise use the monitor buttons. Saving settings makes no topology or DDC requests; Check DDC availability is an explicit read-only input check and does not prove switching support.")
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("Idle and empty-display rules control blackout/dimming, not Hide or monitor inputs. While hidden, only the verified selected mirror source may receive an overlay; its target also appears black on the Mac input. Brightness dimming and automatic follow-up Sleep are suspended. Launch at login never hides or shows a desktop.")
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if model.hideDisplayConfigurations.isEmpty {
-                Text("No eligible external desktop is available to configure. Connect an awake, active, non-main external display, then Refresh.")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(model.hideDisplayConfigurations, id: \.target.uuid) { configuration in
-                        hideDisplayCard(configuration)
-                    }
-                }
-            }
-        }
-    }
-
-    private func hideDisplayCard(_ configuration: DisplayHideConfiguration) -> some View {
-        let target = configuration.target
-        let matchingDisplay = model.displays.first {
-            $0.uuid?.caseInsensitiveCompare(target.uuid) == .orderedSame
-        }
-        let identityIsCurrent = model.identityIsCurrent(target)
-        let frozen = model.hideConfigurationFrozen || model.displayLifecycleTransitioning
-        let journalOwnsTarget = model.handoffStatus?.hasUnresolvedJournal == true &&
-            model.handoffStatus?.target?.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame
-        let readiness = model.hideReadinessMessage(for: configuration)
-        var sourceOptions: [(String, String)] = [("", "Choose a display…")]
-        for source in model.sourceChoices(for: configuration) {
-            let identity = DisplayIdentitySnapshot(source)
-            sourceOptions.append((identity.uuid, "\(source.name ?? "Display \(source.id)") · \(identity.identityDetail)"))
-        }
-        if let saved = configuration.source,
-           !sourceOptions.contains(where: { $0.0.caseInsensitiveCompare(saved.uuid) == .orderedSame }) {
-            sourceOptions.append((saved.uuid, "\(saved.name ?? "Display \(saved.id)") · Unavailable · \(saved.identityDetail)"))
-        }
-
-        return GroupBox {
-            VStack(alignment: .leading, spacing: 7) {
-                Text("\(target.name ?? "Display \(target.id)") · \(target.identityDetail)")
-                    .font(.system(size: 11, weight: .semibold))
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("Desktop: \(model.observedDesktopState(for: configuration))")
-                    .accessibilityLabel("Desktop state: \(model.observedDesktopState(for: configuration))")
-                Text("Automation: \(model.automationSelectionState(for: configuration))")
-                Toggle(
-                    "Enable experimental hide for this display",
-                    isOn: Binding(
-                        get: { configuration.enabled },
-                        set: { enabled in
-                            if let matchingDisplay {
-                                model.setHideEnabled(enabled, for: matchingDisplay)
-                            }
-                        }
-                    )
-                )
-                .disabled(frozen || !identityIsCurrent)
-                .accessibilityLabel("Enable experimental hide for \(target.name ?? target.uuid)")
-                settingRow("Mirror source") {
-                    DropdownPicker(
-                        selection: Binding(
-                            get: { configuration.source?.uuid ?? "" },
-                            set: { value in
-                                model.setHideSource(value.isEmpty ? nil : value, for: target.uuid)
-                            }
-                        ),
-                        options: sourceOptions,
-                        accessibilityLabel: "Mirror source for \(target.name ?? target.uuid)"
-                    )
-                    .accessibilityLabel("Mirror source for \(target.name ?? target.uuid)")
-                    .disabled(frozen || !identityIsCurrent)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                if configuration.enabled {
-                    settingRow("Other computer input (on Hide)") {
-                        InputCodeField(
-                            text: inputBinding(configuration, onHide: true),
-                            placeholder: "Off — use monitor buttons",
-                            accessibilityLabel: "Other computer input on Hide for \(target.name ?? target.uuid)"
-                        )
-                        .disabled(frozen || !identityIsCurrent)
-                    }
-                    settingRow("Mac input (on Show)") {
-                        InputCodeField(
-                            text: inputBinding(configuration, onHide: false),
-                            placeholder: "Off — use monitor buttons",
-                            accessibilityLabel: "Mac input on Show for \(target.name ?? target.uuid)"
-                        )
-                        .disabled(frozen || !identityIsCurrent)
-                    }
-                    Text("Use dp1 = 0x0F, dp2 = 0x10, hdmi1 = 0x11, hdmi2 = 0x12, any decimal/0x code from 1–255, or leave Off. DDC is optional; monitor buttons always remain available.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    ForEach([true, false], id: \.self) { onHide in
-                        if let error = inputValidationErrors[inputDraftKey(configuration, onHide: onHide)] {
-                            Text(error)
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    Button("Check DDC availability") {
-                        model.checkDDCInputAvailability(for: target.uuid)
-                    }
-                    .disabled(frozen || !identityIsCurrent)
-                    .accessibilityLabel("Check DDC availability for \(target.name ?? target.uuid)")
-                    Text(model.ddcInputAvailabilityMessage(for: configuration))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if case .hiding(let uuid) = model.hideOperation,
-                   uuid.caseInsensitiveCompare(target.uuid) == .orderedSame {
-                    Text("Hiding…")
-                        .accessibilityLabel("Hiding \(target.name ?? target.uuid) desktop")
-                } else if case .showing(let uuid) = model.hideOperation,
-                          uuid.caseInsensitiveCompare(target.uuid) == .orderedSame {
-                    Text("Showing…")
-                        .accessibilityLabel("Showing \(target.name ?? target.uuid) desktop")
-                } else if !journalOwnsTarget, !model.hideOperation.isBusy {
-                    Button("Hide \(target.name ?? "display")…") {
-                        model.requestHide(targetUUID: target.uuid)
-                    }
-                    .disabled(readiness != nil || frozen)
-                    .accessibilityLabel("Hide \(target.name ?? target.uuid) desktop")
-                }
-                if let readiness, !journalOwnsTarget {
-                    Text(readiness)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if !identityIsCurrent {
-                    Text("This saved identity is unavailable or changed. Settings remain attached to its UUID and will not bind to a similar display.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if !frozen, model.hasHideConfiguration(targetUUID: target.uuid) {
-                    Button("Remove hide configuration") {
-                        model.removeHideConfiguration(targetUUID: target.uuid)
-                    }
-                    .accessibilityLabel("Remove hide configuration for \(target.name ?? target.uuid)")
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private func inputDraftKey(_ configuration: DisplayHideConfiguration, onHide: Bool) -> String {
-        "\(configuration.target.uuid.lowercased()):\(onHide ? "away" : "return")"
-    }
-
-    private func inputBinding(_ configuration: DisplayHideConfiguration, onHide: Bool) -> Binding<String> {
-        let key = inputDraftKey(configuration, onHide: onHide)
-        let savedValue = onHide ? configuration.awayInput : configuration.returnInput
-        return Binding(
-            get: {
-                if let draft = inputDrafts[key] { return draft }
-                guard let savedValue else { return "" }
-                return DDCInput.namedValues.first(where: { $0.value == savedValue })?.name ?? String(savedValue)
-            },
-            set: { value in
-                inputDrafts[key] = value
-                let error = onHide
-                    ? model.setHideAwayInput(value, for: configuration.target.uuid)
-                    : model.setHideReturnInput(value, for: configuration.target.uuid)
-                if let error {
-                    inputValidationErrors[key] = error
+    private func primaryAction(_ tile: DisplayTile) -> some View {
+        if [.hiding, .showing, .busy].contains(tile.status) {
+            ProgressView()
+                .controlSize(.small)
+        } else if let action = tile.action, let uuid = tile.uuid {
+            let title = action == .hide ? "Hide" : "Show"
+            Button(title) {
+                if action == .hide {
+                    model.hide(targetUUID: uuid)
                 } else {
-                    inputDrafts.removeValue(forKey: key)
-                    inputValidationErrors.removeValue(forKey: key)
+                    model.show(targetUUID: uuid)
                 }
             }
-        )
+            .disabled(tile.actionBlocker != nil)
+            .accessibilityLabel("\(title) \(tile.name)")
+        } else if tile.status == .needsRecovery {
+            // Display changes are checked automatically; this is for fixes made elsewhere.
+            Button("Check Again") { model.refreshDisplays() }
+                .accessibilityLabel("Check \(tile.name) again")
+        }
     }
 
-    private func settingRow<Content: View>(
-        _ label: String,
-        @ViewBuilder content: () -> Content
+    /// Why the action can't run, or what Show will do with the monitor input.
+    private func actionNote(_ tile: DisplayTile) -> String? {
+        tile.actionBlocker ?? (tile.action == .show ? model.showReturnInputNote : nil)
+    }
+
+    private func resultLabel(_ text: String, attention: Bool) -> some View {
+        Label {
+            Text(text)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: attention ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .foregroundStyle(attention ? Color.orange : Color.green)
+        }
+    }
+
+    // MARK: Hide setup
+
+    @ViewBuilder
+    private func hideSection(_ tile: DisplayTile, tiles: [DisplayTile]) -> some View {
+        if !isJournalTarget(tile), let display = tile.display {
+            let reason = model.removalIneligibleReason(for: display)
+            if !model.experimentalFeaturesEnabled {
+                if reason == nil {
+                    Section {
+                        LabeledContent {
+                            Button("Open General") { navigation.tab = .general }
+                        } label: {
+                            Text("Remove from desktop")
+                            Text("Experimental. Turn on Experimental features in General to use it.")
+                        }
+                    } header: {
+                        Text("Hide")
+                    }
+                }
+            } else {
+                let configuration = tile.uuid.flatMap(model.hideConfiguration)
+                let frozen = model.hideConfigurationFrozen
+                Section {
+                    Toggle(isOn: Binding(
+                        get: { reason == nil && configuration?.enabled == true },
+                        set: { model.setHideEnabled($0, for: display) }
+                    )) {
+                        Text("Remove from desktop")
+                        Text("Experimental. Mirrors this display onto another, so windows move off it.")
+                    }
+                    .disabled(reason != nil || frozen)
+                    .accessibilityLabel("Remove \(tile.name) from desktop")
+                    if reason == nil, let configuration, configuration.enabled, let uuid = tile.uuid {
+                        Group {
+                            sourcePicker(configuration, uuid: uuid, tiles: tiles)
+                            inputPicker(configuration, tileID: tile.id, uuid: uuid)
+                            if inputChoice(configuration, tileID: tile.id) == .other {
+                                customInputField(configuration, tileID: tile.id, uuid: uuid)
+                            }
+                        }
+                        .disabled(frozen)
+                        if configuration.awayInput != nil {
+                            macInputRow(configuration, tileID: tile.id, uuid: uuid, frozen: frozen)
+                        }
+                    }
+                } header: {
+                    Text("Hide")
+                } footer: {
+                    if let footer = hideFooter(configuration, reason: reason, tileID: tile.id) {
+                        Text(footer)
+                    }
+                }
+            }
+        }
+    }
+
+    private func sourcePicker(
+        _ configuration: DisplayHideConfiguration,
+        uuid: String,
+        tiles: [DisplayTile]
     ) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(label)
-            content()
-                .frame(maxWidth: .infinity, alignment: .leading)
+        let choices = model.sourceChoices(for: configuration)
+        let saved = configuration.source
+        let savedIsChoice = saved.map { saved in
+            choices.contains { $0.uuid?.caseInsensitiveCompare(saved.uuid) == .orderedSame }
+        } ?? false
+        func name(_ display: DisplayRecord) -> String {
+            let tileName = tiles.first { $0.id == display.uuid?.lowercased() }?.name ?? display.settingsName
+            return display.main ? "\(tileName) (main display)" : tileName
+        }
+        return Picker("Mirror onto", selection: Binding(
+            get: { saved?.uuid.lowercased() ?? "" },
+            set: { model.setHideSource($0.isEmpty ? nil : $0, for: uuid) }
+        )) {
+            if saved == nil {
+                Text("Choose a display").tag("")
+            }
+            ForEach(choices, id: \.id) { choice in
+                Text(name(choice)).tag(choice.uuid?.lowercased() ?? "")
+            }
+            if let saved, !savedIsChoice {
+                Text("\(saved.name ?? "Display \(saved.id)") (disconnected)").tag(saved.uuid.lowercased())
+            }
+        }
+    }
+
+    private enum InputChoice: Hashable {
+        case none
+        case input(UInt8)
+        case other
+    }
+
+    private func inputChoice(_ configuration: DisplayHideConfiguration, tileID: String) -> InputChoice {
+        if customInputs[tileID] != nil { return .other }
+        guard let away = configuration.awayInput else { return .none }
+        return MonitorInput.common.contains { $0.value == away } ? .input(away) : .other
+    }
+
+    private func inputPicker(_ configuration: DisplayHideConfiguration, tileID: String, uuid: String) -> some View {
+        Picker("Switch monitor to", selection: Binding(
+            get: { inputChoice(configuration, tileID: tileID) },
+            set: { choice in
+                switch choice {
+                case .none:
+                    customInputs[tileID] = nil
+                    model.setHideSwitchInput(nil, for: uuid)
+                case .input(let value):
+                    customInputs[tileID] = nil
+                    model.setHideSwitchInput(value, for: uuid)
+                case .other:
+                    customInputs[tileID] = configuration.awayInput.map { String(format: "0x%02X", $0) } ?? ""
+                }
+            }
+        )) {
+            Text("Don’t switch").tag(InputChoice.none)
+            ForEach(MonitorInput.common, id: \.value) { input in
+                Text(input.name).tag(InputChoice.input(input.value))
+            }
+            Text("Other…").tag(InputChoice.other)
+        }
+    }
+
+    private func customInputField(_ configuration: DisplayHideConfiguration, tileID: String, uuid: String) -> some View {
+        let text = customInputs[tileID] ?? configuration.awayInput.map { String(format: "0x%02X", $0) } ?? ""
+        return VStack(alignment: .leading, spacing: 4) {
+            TextField("Input code", text: Binding(
+                get: { text },
+                set: { newValue in
+                    customInputs[tileID] = newValue
+                    if let value = DDCInput.parseValue(newValue.trimmingCharacters(in: .whitespaces)) {
+                        model.setHideSwitchInput(value, for: uuid)
+                    }
+                }
+            ), prompt: Text("0x1B"))
+            if !text.isEmpty, DDCInput.parseValue(text.trimmingCharacters(in: .whitespaces)) == nil {
+                Text("Enter a code from 1 to 255, like 27 or 0x1B.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    /// Reads the Mac's input once per session when shown; never writes.
+    private func macInputRow(
+        _ configuration: DisplayHideConfiguration,
+        tileID: String,
+        uuid: String,
+        frozen: Bool
+    ) -> some View {
+        LabeledContent("This Mac’s input") {
+            HStack(spacing: 8) {
+                Text(configuration.returnInput.map(MonitorInput.name) ?? "Unknown")
+                if case .unavailable = model.macInputDetections[tileID] {
+                    Button("Detect Again") { model.detectMacInput(for: uuid) }
+                        .disabled(frozen)
+                }
+            }
+        }
+        .task(id: "\(tileID)|\(frozen)") {
+            if !frozen, model.macInputDetections[tileID] == nil {
+                model.detectMacInput(for: uuid)
+            }
+        }
+    }
+
+    private func hideFooter(_ configuration: DisplayHideConfiguration?, reason: String?, tileID: String) -> String? {
+        if let reason { return reason }
+        if model.hideConfigurationFrozen, model.handoffStatus?.hasUnresolvedJournal == true {
+            return "Show the hidden display to change these settings."
+        }
+        guard let configuration, configuration.enabled else { return nil }
+        var lines: [String] = []
+        if let away = configuration.awayInput {
+            let awayName = MonitorInput.name(away)
+            switch model.macInputDetections[tileID] {
+            case .detected(let mac) where mac == away:
+                lines.append("The monitor is on \(awayName) now, the input Hide switches to. If that’s this Mac’s input, choose the input your other computer uses.")
+            case .unavailable(let why):
+                lines.append("Couldn’t read this Mac’s input: \(why)")
+            default:
+                break
+            }
+            if let back = configuration.returnInput {
+                lines.append("Hide switches the monitor to \(awayName), and Show switches it back to \(MonitorInput.name(back)).")
+            } else {
+                lines.append("Hide switches the monitor to \(awayName). After Show, switch it back with the monitor’s buttons.")
+            }
+        }
+        lines.append("Windows move to the other display, and resolution or refresh rate can change until you show it again.")
+        return lines.joined(separator: " ")
+    }
+
+    // MARK: Recovery
+
+    private func inspectionFailureSection(_ failure: String) -> some View {
+        Section {
+            Label {
+                Text("Couldn’t check display recovery")
+                Text(failure)
+                    .textSelection(.enabled)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+            Button("Try Again") { model.refreshDisplays() }
+            if let status = model.handoffStatus {
+                recoveryDetails(status)
+            }
+        }
+    }
+
+    private func recoveryDetails(_ status: DisplayHandoffStatus) -> some View {
+        DisclosureGroup("Recovery details") {
+            copyRow("Journal", status.journalPath)
+            if let target = status.target {
+                LabeledContent("Hidden display") {
+                    Text("\(target.name)\n\(target.identityDetail)")
+                        .textSelection(.enabled)
+                }
+            }
+            if let source = status.source {
+                LabeledContent("Mirrored onto") {
+                    Text("\(source.name)\n\(source.identityDetail)")
+                        .textSelection(.enabled)
+                }
+            }
+            let command = status.state == .unsupported || status.inspectionFailure != nil
+                ? status.inspectionCommand
+                : status.recoveryCommand ?? status.inspectionCommand
+            copyRow("Recovery command", command, monospaced: true)
+        }
+    }
+
+    private func copyRow(_ title: String, _ value: String, monospaced: Bool = false) -> some View {
+        LabeledContent(title) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(value)
+                    .font(monospaced ? .callout.monospaced() : .callout)
+                    .textSelection(.enabled)
+                    .multilineTextAlignment(.trailing)
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(value, forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .help("Copy")
+                .accessibilityLabel("Copy \(title.lowercased())")
+            }
+        }
+    }
+
+    // MARK: Helpers
+
+    private func isJournalTarget(_ tile: DisplayTile) -> Bool {
+        guard let status = model.handoffStatus, status.hasUnresolvedJournal,
+              let target = status.target else { return false }
+        return target.uuid.lowercased() == tile.id
+    }
+}
+
+/// Displays as screens in arrangement order, like System Settings → Displays.
+private struct DisplayArrangement: View {
+    let tiles: [DisplayTile]
+    let selectedID: String?
+    let attentionIDs: Set<String>
+    let select: (String) -> Void
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            strip
+            ScrollView(.horizontal, showsIndicators: false) {
+                strip
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 18)
+        .padding(.bottom, 4)
+    }
+
+    private var strip: some View {
+        HStack(alignment: .top, spacing: 18) {
+            ForEach(tiles) { tile in
+                DisplayTileButton(
+                    tile: tile,
+                    selected: tile.id == selectedID,
+                    attention: attentionIDs.contains(tile.id)
+                ) {
+                    select(tile.id)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+private struct DisplayTileButton: View {
+    let tile: DisplayTile
+    let selected: Bool
+    let attention: Bool
+    let action: () -> Void
+
+    private static let height: CGFloat = 54
+
+    var body: some View {
+        let width = (Self.height * tile.aspectRatio).rounded()
+        Button(action: action) {
+            VStack(spacing: 6) {
+                screen
+                    .frame(width: width, height: Self.height)
+                VStack(spacing: 1) {
+                    Text(tile.name)
+                        .font(.caption.weight(selected ? .semibold : .regular))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(tile.status.label)
+                        .font(.caption2)
+                        .foregroundStyle(tile.status == .needsRecovery || attention ? Color.orange : Color.secondary)
+                }
+                .frame(width: max(width, 128))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(tile.name)
+        .accessibilityLabel("\(tile.name), \(tile.status.label)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var screen: some View {
+        let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
+        return shape
+            .fill(fill)
+            .overlay(alignment: .top) {
+                if tile.isMain {
+                    // macOS marks the main display with a menu bar.
+                    Rectangle()
+                        .fill(Color.white.opacity(0.75))
+                        .frame(height: 6)
+                }
+            }
+            .overlay { symbol }
+            .clipShape(shape)
+            .overlay(alignment: .topTrailing) {
+                if attention, tile.status != .needsRecovery {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(Color.orange)
+                        .background(Circle().fill(Color.white).padding(2))
+                        .offset(x: 5, y: -5)
+                }
+            }
+            .overlay(
+                shape.strokeBorder(
+                    selected ? Color.accentColor : Color.secondary.opacity(0.45),
+                    style: StrokeStyle(lineWidth: selected ? 2.5 : 1, dash: tile.status == .unavailable ? [4, 3] : [])
+                )
+            )
+    }
+
+    private var fill: AnyShapeStyle {
+        switch tile.status {
+        case .hidden, .blackedOut:
+            return AnyShapeStyle(Color.black)
+        case .needsRecovery:
+            return AnyShapeStyle(Color.orange.opacity(0.22))
+        case .unavailable:
+            return AnyShapeStyle(Color.clear)
+        case .asleep:
+            return AnyShapeStyle(Color.secondary.opacity(0.25))
+        case .on, .hiding, .showing, .mirrored, .busy:
+            return AnyShapeStyle(LinearGradient(
+                colors: [Color.accentColor.opacity(0.6), Color.accentColor.opacity(0.28)],
+                startPoint: .top,
+                endPoint: .bottom
+            ))
+        }
+    }
+
+    @ViewBuilder
+    private var symbol: some View {
+        switch tile.status {
+        case .hiding, .showing, .busy:
+            ProgressView()
+                .controlSize(.small)
+        case .hidden:
+            Image(systemName: "eye.slash")
+                .foregroundStyle(Color.white.opacity(0.85))
+        case .needsRecovery:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Color.orange)
+        case .asleep:
+            Image(systemName: "moon.zzz.fill")
+                .foregroundStyle(.secondary)
+        case .mirrored:
+            Image(systemName: "rectangle.on.rectangle")
+                .foregroundStyle(Color.white.opacity(0.9))
+        case .on, .blackedOut, .unavailable:
+            EmptyView()
         }
     }
 }

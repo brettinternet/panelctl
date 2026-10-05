@@ -8,14 +8,14 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // The Displays tab shows recovery itself; elsewhere the banner leads there.
-            if model.protectionPausedForDisplayRecovery, navigation.tab != .displays {
-                recoveryBanner
+            // Displays shows recovery on the affected display; elsewhere the banner leads there.
+            if let problem = model.displayRecoveryProblem, navigation.tab != .displays {
+                recoveryBanner(problem)
                     .padding([.top, .horizontal], 16)
             }
             switch navigation.tab {
             case .displays:
-                DisplaySettingsView(model: model)
+                DisplaySettingsView(model: model, navigation: navigation)
             case .automation:
                 AutomationSettingsView(model: model)
             case .general:
@@ -23,9 +23,6 @@ struct SettingsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onChange(of: model.displayRecoveryFocusRequest) { _ in
-            navigation.tab = .displays
-        }
         .alert(item: $model.notice) { notice in
             if notice.opensLoginItemSettings {
                 return Alert(
@@ -45,28 +42,23 @@ struct SettingsView: View {
         }
     }
 
-    private var recoveryBanner: some View {
+    private func recoveryBanner(_ problem: String) -> some View {
         GroupBox {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(model.handoffStatus?.state == .hidden
-                        ? "Desktop hidden · Show remains explicit"
-                        : "Display recovery needs attention")
+                    Text("Display recovery needs attention")
                         .font(.headline)
-                    Text(model.handoffStatus?.hasUnresolvedJournal == true || model.handoffInspectionFailure != nil
-                        ? model.hiddenMirrorProtectionSummary
-                        : model.protectionQuiescenceFailure.map { "Automation cleanup needs attention: \($0)" }
-                            ?? "Automation is suspended during the display operation.")
+                    Text(problem)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
-                Button("Review display recovery…") {
-                    model.requestDisplayRecoveryFocus()
+                Button("Review…") {
+                    navigation.showDisplays(selecting: model.handoffStatus?.target?.uuid)
                 }
                 .accessibilityLabel("Review display recovery")
             }

@@ -1,9 +1,21 @@
 import Foundation
 import PanelCtlCore
 
-enum DisplayDDCInputAvailability: Equatable {
-    case readable(current: UInt8)
+/// Session result of reading, read-only over DDC, the input this Mac uses.
+enum MacInputDetection: Equatable {
+    case detected(UInt8)
     case unavailable(String)
+}
+
+/// Display names for the common MCCS input codes.
+enum MonitorInput {
+    static let common: [(value: UInt8, name: String)] = [
+        (0x11, "HDMI 1"), (0x12, "HDMI 2"), (0x0F, "DisplayPort 1"), (0x10, "DisplayPort 2")
+    ]
+
+    static func name(_ value: UInt8) -> String {
+        common.first { $0.value == value }?.name ?? String(format: "Input 0x%02X", value)
+    }
 }
 
 struct DisplayIdentitySnapshot: Codable, Equatable {
@@ -92,34 +104,97 @@ struct DisplayHidePreferences: Codable, Equatable {
     }
 }
 
-struct DisplayHideRequest: Equatable, Identifiable {
+struct DisplayHideRequest: Equatable {
     let target: DisplayIdentitySnapshot
     let source: DisplayIdentitySnapshot
     let awayInput: UInt8?
-    let returnInput: UInt8?
     let awayInputWarning: String?
-    let returnInputWarning: String?
-
-    init(target: DisplayIdentitySnapshot, source: DisplayIdentitySnapshot,
-         awayInput: UInt8? = nil, returnInput: UInt8? = nil,
-         awayInputWarning: String? = nil, returnInputWarning: String? = nil) {
-        self.target = target
-        self.source = source
-        self.awayInput = awayInput
-        self.returnInput = returnInput
-        self.awayInputWarning = awayInputWarning
-        self.returnInputWarning = returnInputWarning
-    }
-
-    var id: String { target.uuid.lowercased() }
 }
 
-struct DisplayShowRequest: Equatable, Identifiable {
+struct DisplayShowRequest: Equatable {
     let status: DisplayHandoffStatus
     let returnInput: UInt8?
     let returnInputWarning: String?
+}
 
-    var id: String { status.journalID ?? "unknown-journal" }
+/// The last Hide or Show outcome for one display, shown inline instead of in alerts.
+struct DisplayOperationResult: Equatable {
+    enum Action: Equatable {
+        case hide
+        case show
+    }
+
+    let action: Action
+    /// Whether the desktop reached the requested state.
+    let succeeded: Bool
+    /// One line about the desktop.
+    let message: String
+    /// One line about the monitor input, when one was involved.
+    let inputMessage: String?
+    /// Input evidence, also reported to scripts.
+    let inputOutcome: DisplayInputOutcome?
+    let inputNeedsAttention: Bool
+
+    var needsAttention: Bool { !succeeded || inputNeedsAttention }
+
+    /// A short line for the menu: the failure, or else the input outcome.
+    var menuLine: String? { succeeded ? inputMessage : message }
+}
+
+/// One display in the Displays tab, in arrangement order.
+struct DisplayTile: Identifiable, Equatable {
+    enum Status: Equatable {
+        case on
+        case hidden
+        case hiding
+        case showing
+        case blackedOut
+        case asleep
+        case mirrored
+        case busy
+        case unavailable
+        case needsRecovery
+
+        var label: String {
+            switch self {
+            case .on: return "On"
+            case .hidden: return "Hidden"
+            case .hiding: return "Hiding…"
+            case .showing: return "Showing…"
+            case .blackedOut: return "Blacked out"
+            case .asleep: return "Asleep"
+            case .mirrored: return "Mirrored"
+            case .busy: return "Busy"
+            case .unavailable: return "Unavailable"
+            case .needsRecovery: return "Needs recovery"
+            }
+        }
+    }
+
+    enum Action: Equatable {
+        case hide
+        case show
+    }
+
+    /// Lowercased UUID, or a display-ID key for a display without one.
+    let id: String
+    let uuid: String?
+    let name: String
+    let status: Status
+    /// Nil for a journaled display that is no longer connected.
+    let display: DisplayRecord?
+    /// The Hide or Show this display offers, shared by Settings and the menu.
+    var action: Action?
+    /// Why the action can't run now; nil when it can.
+    var actionBlocker: String?
+
+    var isMain: Bool { display?.main == true }
+
+    /// Width over height, clamped to a drawable range.
+    var aspectRatio: Double {
+        guard let display, display.pixelWidth > 0, display.pixelHeight > 0 else { return 16.0 / 9.0 }
+        return min(max(Double(display.pixelWidth) / Double(display.pixelHeight), 0.5), 3.6)
+    }
 }
 
 enum DisplayHideOperation: Equatable {
@@ -139,7 +214,6 @@ enum DisplayHideError: Error, LocalizedError, Equatable {
     case recoveryBlocksHide(String)
     case recoveryBlocksAction(String)
     case actionInProgress
-    case acknowledgementRequired
     case protectionCleanup(String)
     case sleeping
 
@@ -150,11 +224,9 @@ enum DisplayHideError: Error, LocalizedError, Equatable {
              .protectionCleanup(let message):
             return message
         case .actionInProgress:
-            return "A display hide/show operation is already in progress. Wait for it to finish."
-        case .acknowledgementRequired:
-            return "Confirm that you have another usable display and a manual recovery option before continuing."
+            return "Another Hide or Show is still running. Try again when it finishes."
         case .sleeping:
-            return "Hide and Show are unavailable during sleep or display transitions. Wait for the displays to wake, then Refresh."
+            return "Displays are sleeping or changing. Try again once they’re awake."
         }
     }
 }

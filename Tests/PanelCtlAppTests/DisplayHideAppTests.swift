@@ -1,5 +1,4 @@
 import AppKit
-import ApplicationServices
 import Darwin
 import XCTest
 @testable import PanelCtlApp
@@ -10,9 +9,10 @@ final class DisplayHideAppTests: XCTestCase {
     // Keep AppKit's tracked-menu objects alive past XCTest's per-scope memory checker.
     private static var retainedNativeMenuFixtures: [AnyObject] = []
     private static let mainUUID = "00000000-0000-0000-0000-000000000001"
-    private static let targetUUID = "00000000-0000-0000-0000-000000000002"
+    private nonisolated static let targetUUID = "00000000-0000-0000-0000-000000000002"
     private static let sourceUUID = "00000000-0000-0000-0000-000000000003"
     private static let replacementUUID = "00000000-0000-0000-0000-000000000004"
+    private static let targetKey = targetUUID.lowercased()
     private var displays: [DisplayRecord] {
         [
             Self.display(index: 1, id: 101, uuid: Self.mainUUID, name: "Main OLED", main: true),
@@ -28,69 +28,6 @@ final class DisplayHideAppTests: XCTestCase {
             guard let event = NSApp.nextEvent(matching: .any, until: Date(), inMode: .default, dequeue: true) else { break }
             NSApp.sendEvent(event)
         }
-    }
-
-    private func activateForegroundNativeKeyboardFixture(
-        requiresCGEventPostPermission: Bool = true
-    ) throws -> (activationPolicy: NSApplication.ActivationPolicy, previouslyFrontmost: NSRunningApplication?) {
-        guard ProcessInfo.processInfo.environment["PANELCTL_RUN_NATIVE_DISPLAY_KEYBOARD_FIXTURES"] == "1" else {
-            throw XCTSkip("Foreground native-key fixtures are opt-in. Set PANELCTL_RUN_NATIVE_DISPLAY_KEYBOARD_FIXTURES=1 to activate the XCTest host; any CGEvent is posted only to that XCTest process PID.")
-        }
-        if requiresCGEventPostPermission && !CGPreflightPostEventAccess() {
-            let hostPath = ProcessInfo.processInfo.arguments.first ?? ProcessInfo.processInfo.processName
-            throw XCTSkip("Native Escape key validation requires Accessibility event-post access for the XCTest host at \(hostPath) (System Settings → Privacy & Security → Accessibility), plus PANELCTL_RUN_NATIVE_DISPLAY_KEYBOARD_FIXTURES=1.")
-        }
-
-        let previouslyFrontmost = NSWorkspace.shared.frontmostApplication
-        let application = NSApplication.shared
-        let originalActivationPolicy = application.activationPolicy()
-        guard application.setActivationPolicy(.regular) else {
-            throw XCTSkip("The opted-in XCTest host could not change to a regular app activation policy.")
-        }
-        // A package test runner has no application window to activate. Establish
-        // a real fixture window before requesting foreground keyboard ownership.
-        let activationWindow = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: 120),
-            styleMask: [.titled], backing: .buffered, defer: false
-        )
-        activationWindow.title = "PanelCtl offline keyboard fixture"
-        activationWindow.isReleasedWhenClosed = false
-        activationWindow.center()
-        activationWindow.makeKeyAndOrderFront(nil)
-        application.activate(ignoringOtherApps: true)
-        defer { activationWindow.close() }
-        let currentPID = ProcessInfo.processInfo.processIdentifier
-        let activationDeadline = Date().addingTimeInterval(2)
-        while (!application.isActive || NSWorkspace.shared.frontmostApplication?.processIdentifier != currentPID),
-              Date() < activationDeadline {
-            dispatchNativeEvents()
-            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-        }
-        dispatchNativeEvents()
-        guard application.isActive, NSWorkspace.shared.frontmostApplication?.processIdentifier == currentPID else {
-            application.setActivationPolicy(originalActivationPolicy)
-            previouslyFrontmost?.activate(options: [.activateAllWindows])
-            throw XCTSkip("The opted-in XCTest host did not become frontmost; no keyboard event was posted.")
-        }
-        return (originalActivationPolicy, previouslyFrontmost)
-    }
-
-    private func restoreForegroundNativeKeyboardFixture(
-        _ state: (activationPolicy: NSApplication.ActivationPolicy, previouslyFrontmost: NSRunningApplication?)
-    ) {
-        NSApp.setActivationPolicy(state.activationPolicy)
-        state.previouslyFrontmost?.activate(options: [.activateAllWindows])
-        // Drain asynchronous deactivation before the next native menu starts
-        // tracking; otherwise that stale event immediately cancels its popup.
-        let deadline = Date().addingTimeInterval(2)
-        while let previous = state.previouslyFrontmost,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier != previous.processIdentifier,
-              Date() < deadline {
-            dispatchNativeEvents()
-            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-        }
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        dispatchNativeEvents()
     }
 
     func testHiddenOverlayIsSourceOnlyRestoreOnlyAndQuiescedBeforeShow() async throws {
@@ -153,7 +90,7 @@ final class DisplayHideAppTests: XCTestCase {
         let delegate = AppDelegate()
         delegate.model = model
         let menuTitles = delegate.makeMenu().items.map(\.title)
-        XCTAssertTrue(menuTitles.contains("Show Target…"), "Show stays reachable over a source overlay")
+        XCTAssertTrue(menuTitles.contains("Show Target"), "Show stays reachable over a source overlay")
         XCTAssertTrue(menuTitles.contains("Restore"), "protection Restore stays available over a source overlay")
         XCTAssertTrue(try model.restoreBlackout(), "Restore controls the overlay while the journal remains hidden")
         lines = try await waitForLogLines(2, at: log)
@@ -163,9 +100,8 @@ final class DisplayHideAppTests: XCTestCase {
 
         try model.blackoutNow()
         try await waitUntil { model.runtimeState == .blackedOut }
-        let request = try model.makeShowRequest()
-        model.confirmShow(request, acknowledged: true)
-        try await waitUntil { showCalls == 1 && !model.hideOperation.isBusy }
+        let shown = try await showAndWait(model)
+        XCTAssertTrue(shown.succeeded)
         lines = try String(contentsOf: log, encoding: .utf8).split(separator: "\n").map(String.init)
         XCTAssertTrue(watcherWasStoppedBeforeShow)
         XCTAssertEqual(lines.filter { $0 == "stop" }.count, 1)
@@ -325,17 +261,18 @@ final class DisplayHideAppTests: XCTestCase {
         try await waitUntil { model.runtimeState == .blackedOut }
         XCTAssertTrue(model.hiddenMirrorOverlayPolicyEligible)
 
-        model.confirmShow(try model.makeShowRequest(), acknowledged: true)
-        try await waitUntil { showCalls == 1 && !model.hideOperation.isBusy }
+        let failed = try await showAndWait(model)
+        XCTAssertEqual(showCalls, 1)
         XCTAssertNil(model.protectionQuiescenceFailure, "process death proves that its windows are gone")
-        XCTAssertEqual(model.notice?.title, "Could not show the journaled desktop")
+        XCTAssertFalse(failed.succeeded)
+        XCTAssertTrue(failed.message.contains("fake no-write Show refusal"))
         XCTAssertEqual(try String(contentsOf: log, encoding: .utf8).split(separator: "\n").count, 1)
 
-        model.confirmShow(try model.makeShowRequest(), acknowledged: true)
-        try await waitUntil { showCalls == 2 && !model.hideOperation.isBusy }
+        let shown = try await showAndWait(model)
+        XCTAssertEqual(showCalls, 2)
         XCTAssertNil(model.protectionQuiescenceFailure, "a second Show is not blocked by a stale cleanup latch")
         XCTAssertEqual(box.value.state, .none)
-        XCTAssertEqual(model.notice?.title, "Desktop restored")
+        XCTAssertTrue(shown.succeeded)
         XCTAssertEqual(try String(contentsOf: log, encoding: .utf8).split(separator: "\n").count, 1,
                        "no helper restart is required to prove the overlay process terminated")
 
@@ -477,18 +414,14 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(initialLaunches, ["launch:0"])
         try Data().write(to: staleIdle)
         model.setHideEnabled(true, for: displays[1])
-        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
-        var request: DisplayHideRequest?
-        model.onRequestHide = { request = $0 }
-        model.requestHide(targetUUID: Self.targetUUID)
-        model.confirmHide(try XCTUnwrap(request), acknowledged: true)
-        try await waitUntil { !model.hideOperation.isBusy && hideAttempts == 1 }
+        let result = try await hideAndWait(model)
+        XCTAssertEqual(hideAttempts, 1)
 
         let restartedLaunches = try await waitForLogLines(2, at: launchesPath)
         XCTAssertEqual(restartedLaunches, ["launch:0", "launch:1"])
         try await waitUntil { model.runtimeState == .waitingForInput }
         XCTAssertFalse(FileManager.default.fileExists(atPath: actionLog.path), "pre-capture refusal must not reuse stale idle")
-        XCTAssertTrue(model.notice?.message.contains("preflight refusal") == true)
+        XCTAssertTrue(result.message.contains("preflight refusal"))
 
         let stopped = expectation(description: "rearmed helper stopped")
         model.shutdown { stopped.fulfill() }
@@ -509,7 +442,7 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertFalse(model.preferences.allDisplays)
         XCTAssertTrue(model.hidePreferences.configurations.isEmpty)
         XCTAssertNil(defaults.data(forKey: "displayHidePreferences"))
-        XCTAssertEqual(model.menuHideConfigurations, [])
+        XCTAssertTrue(model.displayTiles.allSatisfy { $0.action == nil }, "no display offers Hide until it is set up")
     }
 
     func testPerDisplayHideConfigurationPersistsIndependently() throws {
@@ -542,58 +475,117 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(reloaded.preferences, protectionBefore)
     }
 
-    func testInputConfigurationUsesValidatedCodesAndOnlyChecksDDCOnExplicitRequest() throws {
+    func testRemovalDefaultsToTheMainDisplayAsMirrorSource() throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let model = makeModel(defaults: defaults, displays: displays)
+
+        XCTAssertNil(model.removalIneligibleReason(for: displays[1]))
+        XCTAssertTrue(model.removalIneligibleReason(for: displays[0])?.contains("main display") == true)
+        model.setHideEnabled(true, for: displays[1])
+        XCTAssertEqual(model.hidePreferences[Self.targetUUID]?.source?.uuid, Self.mainUUID)
+        XCTAssertEqual(try model.makeHideRequest(targetUUID: Self.targetUUID).source.uuid, Self.mainUUID)
+
+        // A chosen source survives turning removal off and on again.
+        model.setHideSource(Self.sourceUUID, for: Self.targetUUID)
+        model.setHideEnabled(false, for: displays[1])
+        model.setHideEnabled(true, for: displays[1])
+        XCTAssertEqual(model.hidePreferences[Self.targetUUID]?.source?.uuid, Self.sourceUUID)
+        XCTAssertEqual(model.sourceChoices(for: try XCTUnwrap(model.hideConfiguration(for: Self.targetUUID))).compactMap(\.uuid),
+                       [Self.mainUUID, Self.sourceUUID], "the target is never its own source")
+    }
+
+    func testMacInputIsDetectedReadOnlyAndBecomesTheReturnInput() throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
         var checkCalls = 0
-        let target = displays[1]
+        var current: UInt8 = 0x0F
         let model = makeModel(
             defaults: defaults,
             displays: displays,
             checkDDCInput: { identity in
                 checkCalls += 1
-                return DDCInputReading(displayID: identity.displayID, uuid: identity.uuid, current: 15)
+                return DDCInputReading(displayID: identity.displayID, uuid: identity.uuid, current: current)
             }
         )
-        model.setHideEnabled(true, for: target)
-        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
-        XCTAssertTrue(model.setHideAwayInput("0", for: Self.targetUUID)?.contains("Invalid DDC input code") == true)
-        XCTAssertNil(try XCTUnwrap(model.hidePreferences[Self.targetUUID]).awayInput)
-        XCTAssertNil(model.setHideAwayInput("hdmi1", for: Self.targetUUID))
-        XCTAssertNil(model.setHideReturnInput("dp1", for: Self.targetUUID))
-        XCTAssertEqual(checkCalls, 0, "saving input preferences must not open or read DDC")
+        model.detectMacInput(for: Self.targetUUID)
+        XCTAssertEqual(checkCalls, 0, "nothing is read before removal is turned on")
+        model.setHideEnabled(true, for: displays[1])
+        model.setHideSwitchInput(0x11, for: Self.targetUUID)
+        XCTAssertEqual(checkCalls, 0, "choosing an input never reads DDC")
+        XCTAssertEqual(model.hidePreferences[Self.targetUUID]?.awayInput, 0x11)
+        XCTAssertNil(model.hidePreferences[Self.targetUUID]?.returnInput, "the Mac input is detected, never guessed")
 
-        let reloaded = makeModel(
-            defaults: defaults,
-            displays: displays,
-            checkDDCInput: { identity in
-                checkCalls += 1
-                return DDCInputReading(displayID: identity.displayID, uuid: identity.uuid, current: 15)
+        model.detectMacInput(for: Self.targetUUID)
+        XCTAssertEqual(checkCalls, 1)
+        XCTAssertEqual(model.macInputDetections[Self.targetKey], .detected(0x0F))
+        XCTAssertEqual(model.hidePreferences[Self.targetUUID]?.returnInput, 0x0F)
+        XCTAssertEqual(try model.makeHideRequest(targetUUID: Self.targetUUID).awayInput, 0x11)
+
+        // The monitor showing the input Hide switches to says nothing about the Mac.
+        current = 0x11
+        model.detectMacInput(for: Self.targetUUID)
+        XCTAssertEqual(model.macInputDetections[Self.targetKey], .detected(0x11))
+        XCTAssertEqual(model.hidePreferences[Self.targetUUID]?.returnInput, 0x0F)
+
+        let reloaded = makeModel(defaults: defaults, displays: displays, checkDDCInput: { _ in
+            XCTFail("loading settings never reads DDC")
+            return DDCInputReading(displayID: 0, uuid: "", current: 0)
+        })
+        XCTAssertEqual(reloaded.hidePreferences[Self.targetUUID]?.awayInput, 0x11)
+        XCTAssertEqual(reloaded.hidePreferences[Self.targetUUID]?.returnInput, 0x0F)
+
+        // A failed or mismatched read is explained, keeps the last detected input
+        // and never blocks Hide.
+        for (failure, expected) in [
+            ({ (_: DisplayHideIdentity) throws -> DDCInputReading in
+                throw NSError(domain: "FakeDDC", code: 1, userInfo: [NSLocalizedDescriptionKey: "fake DDC unavailable"])
+            }, "fake DDC unavailable."),
+            ({ (_: DisplayHideIdentity) throws -> DDCInputReading in
+                throw DDCError.requestFailed(-536870212)
+            }, "DDC I2C request failed (IOReturn -536870212)."),
+            ({ (identity: DisplayHideIdentity) throws -> DDCInputReading in
+                DDCInputReading(displayID: identity.displayID + 1, uuid: identity.uuid, current: 0x0F)
+            }, "answered as a different display")
+        ] {
+            let failing = makeModel(defaults: defaults, displays: displays, checkDDCInput: failure)
+            failing.detectMacInput(for: Self.targetUUID)
+            guard case .unavailable(let message) = failing.macInputDetections[Self.targetKey] else {
+                return XCTFail("expected an unavailable detection")
             }
-        )
-        let saved = try XCTUnwrap(reloaded.hidePreferences[Self.targetUUID])
-        XCTAssertEqual(saved.awayInput, 17)
-        XCTAssertEqual(saved.returnInput, 15)
-        XCTAssertEqual(checkCalls, 0, "loading input preferences must not open or read DDC")
-        XCTAssertTrue(reloaded.ddcInputAvailabilityMessage(for: saved).contains("availability is unknown"))
+            XCTAssertTrue(message.contains(expected), message)
+            XCTAssertEqual(failing.hidePreferences[Self.targetUUID]?.returnInput, 0x0F)
+            XCTAssertNoThrow(try failing.makeHideRequest(targetUUID: Self.targetUUID))
+        }
 
-        reloaded.checkDDCInputAvailability(for: Self.targetUUID)
-        XCTAssertEqual(checkCalls, 1, "only the explicit capability check may read DDC")
-        XCTAssertTrue(reloaded.ddcInputAvailabilityMessage(for: saved).contains("does not prove switching support"))
-
-        let unavailable = makeModel(
-            defaults: defaults,
-            displays: displays,
-            checkDDCInput: { _ in throw NSError(domain: "FakeDDC", code: 1, userInfo: [NSLocalizedDescriptionKey: "fake DDC unavailable"]) }
-        )
-        unavailable.checkDDCInputAvailability(for: Self.targetUUID)
-        let unavailableMessage = unavailable.ddcInputAvailabilityMessage(for: saved)
-        XCTAssertTrue(unavailableMessage.contains("fake DDC unavailable"))
-        XCTAssertTrue(unavailableMessage.contains("monitor's input buttons"))
-        XCTAssertTrue(unavailableMessage.contains("Hide and Show remain available"))
+        model.setHideSwitchInput(nil, for: Self.targetUUID)
+        XCTAssertNil(model.hidePreferences[Self.targetUUID]?.awayInput)
+        XCTAssertNil(model.hidePreferences[Self.targetUUID]?.returnInput, "Show switches back only when Hide switched")
+        XCTAssertEqual(checkCalls, 2)
     }
 
-    func testHideAndShowReportDesktopAndInputResultsSeparately() async throws {
+    func testMacInputIsNotReadWhileTheDisplayIsHidden() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var preferences = DisplayHidePreferences()
+        preferences[Self.targetUUID] = DisplayHideConfiguration(
+            target: DisplayIdentitySnapshot(displays[1]), enabled: true,
+            source: DisplayIdentitySnapshot(displays[0]), awayInput: 0x11, returnInput: 0x0F
+        )
+        defaults.set(try JSONEncoder().encode(preferences), forKey: "displayHidePreferences")
+        let hidden = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "frozen", canShow: true)
+        let model = makeModel(defaults: defaults, displays: displays, status: { hidden }, checkDDCInput: { _ in
+            XCTFail("a hidden display shows the other computer; reading it would replace the Mac input")
+            return DDCInputReading(displayID: 0, uuid: "", current: 0)
+        })
+        try await waitUntil { !model.protectionQuiescencePending }
+        model.detectMacInput(for: Self.targetUUID)
+        model.setHideSwitchInput(nil, for: Self.targetUUID)
+        XCTAssertEqual(model.hidePreferences[Self.targetUUID]?.returnInput, 0x0F, "settings are frozen while hidden")
+        XCTAssertEqual(model.showReturnInputNote, "Show switches the monitor back to DisplayPort 1.")
+    }
+
+    func testHideAndShowReportDesktopAndInputResultsInline() async throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
         let hidden = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "input-journal", canShow: true)
@@ -621,42 +613,41 @@ final class DisplayHideAppTests: XCTestCase {
                     detail: "fake DDC write failure after desktop restore",
                     recoveryCommand: "panelctl ddc-input --display '\(Self.targetUUID)' --set 0x11"
                 )
+            },
+            checkDDCInput: { identity in
+                DDCInputReading(displayID: identity.displayID, uuid: identity.uuid, current: 0x0F)
             }
         )
         model.setHideEnabled(true, for: displays[1])
-        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
-        XCTAssertNil(model.setHideAwayInput("hdmi1", for: Self.targetUUID))
-        XCTAssertNil(model.setHideReturnInput("dp1", for: Self.targetUUID))
+        model.setHideSwitchInput(0x11, for: Self.targetUUID)
+        model.detectMacInput(for: Self.targetUUID)
 
-        var hideRequest: DisplayHideRequest?
-        model.onRequestHide = { hideRequest = $0 }
-        model.requestHide(targetUUID: Self.targetUUID)
-        let confirmation = try XCTUnwrap(hideRequest)
-        XCTAssertEqual(confirmation.awayInput, 17)
-        XCTAssertEqual(confirmation.returnInput, 15)
-        let hideText = DisplayOperationConfirmation.hideMessage(confirmation, journalPath: "/tmp/synthetic/current.json")
-        XCTAssertTrue(hideText.contains("Other computer input on Hide: hdmi1 (0x11)"))
-        XCTAssertTrue(hideText.contains("Mac input on Show: dp1 (0x0F)"))
-        model.confirmHide(confirmation, acknowledged: true)
-        try await waitUntil { !model.hideOperation.isBusy }
-        XCTAssertEqual(awayInputs, [17])
-        XCTAssertTrue(model.notice?.message.contains("Desktop: Target is hidden") == true)
-        XCTAssertTrue(model.notice?.message.contains("Monitor input (Other computer): hdmi1 (0x11) selected and verified") == true)
-        XCTAssertTrue(model.notice?.message.contains("panelctl ddc-input --display") == true)
+        let hiddenResult = try await hideAndWait(model)
+        XCTAssertEqual(awayInputs, [0x11])
+        XCTAssertEqual(model.displayResults[Self.targetKey], hiddenResult)
+        XCTAssertTrue(hiddenResult.succeeded)
+        XCTAssertEqual(hiddenResult.message, "Hidden.")
+        XCTAssertEqual(hiddenResult.inputMessage, "Switched the monitor to HDMI 1.")
+        XCTAssertFalse(hiddenResult.needsAttention)
+        XCTAssertEqual(hiddenResult.inputOutcome?.recoveryCommand, "panelctl ddc-input --display '\(Self.targetUUID)' --set 0x0F")
+        XCTAssertNil(model.notice, "results never open an alert")
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.status, .hidden)
+        XCTAssertNil(model.displayRecoveryProblem, "a healthy hidden display isn't a recovery problem")
+        XCTAssertEqual(model.showReturnInputNote, "Show switches the monitor back to DisplayPort 1.")
 
-        var showRequest: DisplayShowRequest?
-        model.onRequestShow = { showRequest = $0 }
-        model.requestShow()
-        let showConfirmation = try XCTUnwrap(showRequest)
-        XCTAssertEqual(showConfirmation.returnInput, 15)
-        XCTAssertTrue(DisplayOperationConfirmation.showMessage(showConfirmation).contains("Mac input on Show: dp1 (0x0F)"))
-        model.confirmShow(showConfirmation, acknowledged: true)
-        try await waitUntil { !model.hideOperation.isBusy && model.handoffStatus?.state == DisplayHandoffStatus.State.none }
-        XCTAssertEqual(returnInputs, [15])
-        XCTAssertTrue(model.notice?.message.contains("Desktop: The journaled public display layout and modes were restored and verified") == true)
-        XCTAssertTrue(model.notice?.message.contains("Monitor input (Mac): Failed") == true)
-        XCTAssertTrue(model.notice?.message.contains("fake DDC write failure after desktop restore") == true)
-        XCTAssertTrue(model.notice?.message.contains("panelctl ddc-input --display") == true)
+        let shownResult = try await showAndWait(model)
+        XCTAssertEqual(returnInputs, [0x0F])
+        XCTAssertTrue(shownResult.succeeded, "the desktop is back even though the input switch failed")
+        XCTAssertEqual(shownResult.message, "Shown.")
+        XCTAssertEqual(
+            shownResult.inputMessage,
+            "Couldn\u{2019}t switch the monitor to DisplayPort 1. fake DDC write failure after desktop restore. Use the monitor\u{2019}s buttons."
+        )
+        XCTAssertTrue(shownResult.needsAttention)
+        XCTAssertEqual(shownResult.menuLine, shownResult.inputMessage)
+        XCTAssertNil(model.notice)
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.status, .on)
+        XCTAssertEqual(model.controlDisplayOutcome, .partial)
     }
 
     func testHideInspectionFailurePreservesReturnedInputOutcome() async throws {
@@ -681,19 +672,15 @@ final class DisplayHideAppTests: XCTestCase {
             }
         )
         model.setHideEnabled(true, for: displays[1])
-        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
-        XCTAssertNil(model.setHideAwayInput("hdmi1", for: Self.targetUUID))
-        var request: DisplayHideRequest?
-        model.onRequestHide = { request = $0 }
-        model.requestHide(targetUUID: Self.targetUUID)
-        model.confirmHide(try XCTUnwrap(request), acknowledged: true)
-        try await waitUntil { !model.hideOperation.isBusy }
+        model.setHideSwitchInput(0x11, for: Self.targetUUID)
+        let result = try await hideAndWait(model)
 
-        let message = try XCTUnwrap(model.notice?.message)
-        XCTAssertTrue(message.contains("Desktop: Hide backend returned, but current desktop/recovery status could not be confirmed"))
-        XCTAssertFalse(message.contains("Desktop: Hide did not complete."))
-        XCTAssertTrue(message.contains("Monitor input (Other computer): hdmi1 (0x11) selected and verified"))
-        XCTAssertTrue(message.contains(command), "the returned input recovery command survives inspection failure")
+        XCTAssertFalse(result.succeeded)
+        XCTAssertTrue(result.message.contains("couldn\u{2019}t confirm the display is hidden"), result.message)
+        XCTAssertEqual(result.inputMessage, "Switched the monitor to HDMI 1.")
+        XCTAssertEqual(result.inputOutcome?.recoveryCommand, command, "the returned input outcome survives inspection failure")
+        XCTAssertNotNil(model.displayRecoveryProblem)
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.status, .needsRecovery)
     }
 
     func testShowInspectionFailurePreservesReturnedInputOutcome() async throws {
@@ -704,6 +691,7 @@ final class DisplayHideAppTests: XCTestCase {
             target: DisplayIdentitySnapshot(displays[1]),
             enabled: true,
             source: DisplayIdentitySnapshot(displays[0]),
+            awayInput: 17,
             returnInput: 15
         )
         defaults.set(try JSONEncoder().encode(preferences), forKey: "displayHidePreferences")
@@ -730,22 +718,20 @@ final class DisplayHideAppTests: XCTestCase {
             }
         )
         try await waitUntil { !model.protectionQuiescencePending }
-        let request = try model.makeShowRequest()
-        XCTAssertEqual(request.returnInput, 15)
-        model.confirmShow(request, acknowledged: true)
-        try await waitUntil { !model.hideOperation.isBusy }
+        XCTAssertEqual(try model.makeShowRequest().returnInput, 15)
+        let result = try await showAndWait(model)
 
-        let message = try XCTUnwrap(model.notice?.message)
         XCTAssertEqual(shownInput, 15)
-        XCTAssertTrue(message.contains("Desktop: Show backend returned, but current desktop/recovery status could not be confirmed"))
-        XCTAssertFalse(message.contains("Desktop: Show did not complete."))
-        XCTAssertTrue(message.contains("Monitor input (Mac): dp1 (0x0F) selected and verified"))
-        XCTAssertTrue(message.contains(command), "the returned input recovery command survives inspection failure")
+        XCTAssertFalse(result.succeeded)
+        XCTAssertTrue(result.message.contains("post-Show observation failed"), result.message)
+        XCTAssertEqual(result.inputMessage, "Switched the monitor to DisplayPort 1.")
+        XCTAssertEqual(result.inputOutcome?.recoveryCommand, command, "the returned input outcome survives inspection failure")
+        XCTAssertNotNil(model.displayRecoveryProblem)
     }
 
     func testSkippedAndUnverifiedHideOutcomesRemainSeparateFromDesktopSuccess() async throws {
         for (index, state, detail) in [
-            (1, DisplayInputOutcome.State.skipped, "fake DDC unavailable; use monitor buttons"),
+            (1, DisplayInputOutcome.State.skipped, "DDC is unavailable"),
             (2, DisplayInputOutcome.State.unverified, "readback unavailable")
         ] {
             let defaults = try makeDefaults()
@@ -765,24 +751,17 @@ final class DisplayHideAppTests: XCTestCase {
                 }
             )
             model.setHideEnabled(true, for: displays[1])
-            model.setHideSource(Self.mainUUID, for: Self.targetUUID)
-            XCTAssertNil(model.setHideAwayInput("hdmi1", for: Self.targetUUID))
-            var request: DisplayHideRequest?
-            model.onRequestHide = { request = $0 }
-            model.requestHide(targetUUID: Self.targetUUID)
-            model.confirmHide(try XCTUnwrap(request), acknowledged: true)
-            try await waitUntil { !model.hideOperation.isBusy }
+            model.setHideSwitchInput(0x11, for: Self.targetUUID)
+            let result = try await hideAndWait(model)
 
-            XCTAssertTrue(model.notice?.message.contains("Desktop: Target is hidden") == true)
-            let expectedState = state == .skipped ? "Skipped." : "is unverified"
-            XCTAssertTrue(model.notice?.message.contains(expectedState) == true)
-            XCTAssertTrue(model.notice?.message.contains(detail) == true)
-            if state == .unverified {
-                XCTAssertTrue(model.notice?.message.contains("panelctl ddc-input --display") == true)
-                XCTAssertTrue(model.notice?.message.contains("does not claim it changed") == true)
-            } else {
-                XCTAssertTrue(model.notice?.message.contains("monitor's input buttons") == true)
-            }
+            XCTAssertTrue(result.succeeded)
+            XCTAssertEqual(result.message, "Hidden.")
+            XCTAssertTrue(result.inputNeedsAttention)
+            XCTAssertEqual(result.menuLine, result.inputMessage)
+            XCTAssertEqual(result.inputMessage, state == .skipped
+                ? "Couldn\u{2019}t switch the monitor input. \(detail). Use the monitor\u{2019}s buttons."
+                : "Asked the monitor to switch to HDMI 1 but couldn\u{2019}t confirm it. Check the monitor and use its buttons if needed.")
+            XCTAssertEqual(model.controlDisplayOutcome, .partial)
         }
     }
 
@@ -808,20 +787,17 @@ final class DisplayHideAppTests: XCTestCase {
             }
         )
         model.setHideEnabled(true, for: displays[1])
-        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
-        XCTAssertNil(model.setHideAwayInput("hdmi1", for: Self.targetUUID))
-        var request: DisplayHideRequest?
-        model.onRequestHide = { request = $0 }
-        model.requestHide(targetUUID: Self.targetUUID)
-        model.confirmHide(try XCTUnwrap(request), acknowledged: true)
-        try await waitUntil { !model.hideOperation.isBusy }
+        model.setHideSwitchInput(0x11, for: Self.targetUUID)
+        let result = try await hideAndWait(model)
 
         XCTAssertEqual(hideCalls, 1)
         XCTAssertEqual(model.handoffStatus?.state, .recovery)
-        XCTAssertTrue(model.notice?.message.contains("Desktop: Hide did not complete") == true)
-        XCTAssertTrue(model.notice?.message.contains("Monitor input (Other computer): Failed") == true)
-        XCTAssertTrue(model.notice?.message.contains(command) == true)
-        XCTAssertTrue(model.notice?.message.contains("panelctl recovery restore --journal") == true)
+        XCTAssertFalse(result.succeeded)
+        XCTAssertTrue(result.message.contains("panelctl recovery restore --journal"), result.message)
+        XCTAssertEqual(result.inputMessage, "Couldn\u{2019}t switch the monitor to HDMI 1. fake write failed. Use the monitor\u{2019}s buttons.")
+        XCTAssertEqual(result.inputOutcome?.recoveryCommand, command)
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.status, .needsRecovery)
+        XCTAssertEqual(model.displayRecoveryProblem, "journal retained after DDC failure")
     }
 
     func testStaleSavedReturnInputIsActionableButNeverBlocksShow() async throws {
@@ -831,7 +807,7 @@ final class DisplayHideAppTests: XCTestCase {
         let staleTarget = DisplayIdentitySnapshot(
             uuid: Self.targetUUID, id: 202, name: "Target", vendor: 2, model: 20, serial: 999
         )
-        preferences[Self.targetUUID] = DisplayHideConfiguration(target: staleTarget, enabled: true, returnInput: 15)
+        preferences[Self.targetUUID] = DisplayHideConfiguration(target: staleTarget, enabled: true, awayInput: 17, returnInput: 15)
         defaults.set(try JSONEncoder().encode(preferences), forKey: "displayHidePreferences")
         let hidden = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "stale-input-journal", canShow: true)
         let box = StatusBox(hidden)
@@ -851,15 +827,16 @@ final class DisplayHideAppTests: XCTestCase {
         try await waitUntil { !model.protectionQuiescencePending }
         let request = try model.makeShowRequest()
         XCTAssertNil(request.returnInput)
-        XCTAssertTrue(request.returnInputWarning?.contains("different display identity") == true)
-        XCTAssertTrue(DisplayOperationConfirmation.showMessage(request).contains("Saved Mac input belongs to a different display identity"))
+        let warning = "the saved input belongs to a different display."
+        XCTAssertEqual(request.returnInputWarning, warning)
+        XCTAssertEqual(model.showReturnInputNote, "Show won\u{2019}t switch the monitor input: \(warning)")
 
-        model.confirmShow(request, acknowledged: true)
-        try await waitUntil { !model.hideOperation.isBusy && model.handoffStatus?.state == DisplayHandoffStatus.State.none }
+        let result = try await showAndWait(model)
         XCTAssertTrue(showCalled)
         XCTAssertNil(showInput, "Show proceeds without issuing stale saved DDC input")
-        XCTAssertTrue(model.notice?.message.contains("Desktop: The journaled public display layout and modes were restored") == true)
-        XCTAssertTrue(model.notice?.message.contains("different display identity") == true)
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(result.inputMessage, "Didn\u{2019}t switch the monitor input: \(warning)")
+        XCTAssertTrue(result.inputNeedsAttention)
     }
 
     func testMissingAndChangedTargetsRemainBoundToTheirSavedIdentity() throws {
@@ -877,9 +854,9 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(saved.target.name, "Target")
         XCTAssertTrue(saved.enabled)
         XCTAssertFalse(reloaded.identityIsCurrent(saved.target))
-        XCTAssertTrue(reloaded.hideReadinessMessage(for: saved)?.contains("will not bind") == true)
+        XCTAssertTrue(reloaded.hideReadinessMessage(for: saved)?.contains("won\u{2019}t apply its settings to a different display") == true)
         XCTAssertThrowsError(try reloaded.makeHideRequest(targetUUID: Self.targetUUID))
-        XCTAssertFalse(reloaded.hasHideConfiguration(targetUUID: Self.replacementUUID))
+        XCTAssertNil(reloaded.hidePreferences[Self.replacementUUID])
     }
 
     func testOrdinaryDisableFailureOrUnknownCleanupBlocksLaterHide() async throws {
@@ -944,16 +921,12 @@ final class DisplayHideAppTests: XCTestCase {
                 hideDisplay: { _, _, _ in hideCalls += 1; return .notRequested }
             )
             model.setHideEnabled(true, for: displays[1])
-            model.setHideSource(Self.mainUUID, for: Self.targetUUID)
-            var request: DisplayHideRequest?
-            model.onRequestHide = { request = $0 }
-            model.requestHide(targetUUID: Self.targetUUID)
-            model.confirmHide(try XCTUnwrap(request), acknowledged: true)
-            try await waitUntil { !model.hideOperation.isBusy }
+            let result = try await hideAndWait(model)
 
             XCTAssertEqual(hideCalls, 0, "cleanup \(cleanupResult) retained after ordinary disable must block Hide")
             XCTAssertTrue(model.protectionQuiescenceFailure?.localizedCaseInsensitiveContains("cleanup") == true)
-            XCTAssertEqual(model.notice?.title, "Hide not started")
+            XCTAssertFalse(result.succeeded)
+            XCTAssertTrue(result.message.contains("didn\u{2019}t change the display"), result.message)
         }
     }
 
@@ -973,34 +946,35 @@ final class DisplayHideAppTests: XCTestCase {
             hideDisplay: { _, _, _ in hideCalls += 1; return .notRequested }
         )
         model.setHideEnabled(true, for: displays[1])
-        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
         let protectedSelection = model.preferences.selectedDisplayUUIDs
-        var request: DisplayHideRequest?
-        model.onRequestHide = { request = $0 }
-        model.requestHide(targetUUID: Self.targetUUID)
-        let confirmation = try XCTUnwrap(request)
-
-        model.confirmHide(confirmation, acknowledged: false)
-        XCTAssertEqual(quiesceCalls, 0)
-        XCTAssertEqual(hideCalls, 0)
-        XCTAssertEqual(model.notice?.title, "Hide canceled")
-        model.confirmHide(confirmation, acknowledged: true)
-        model.confirmHide(confirmation, acknowledged: true)
-        XCTAssertEqual(quiesceCalls, 1)
-        XCTAssertEqual(hideCalls, 0)
+        var result: DisplayOperationResult?
+        model.hide(targetUUID: Self.targetUUID) { result = $0 }
+        var duplicate: DisplayOperationResult?
+        model.hide(targetUUID: Self.targetUUID) { duplicate = $0 }
+        XCTAssertEqual(quiesceCalls, 1, "Hide runs at once, with no confirmation")
+        XCTAssertEqual(hideCalls, 0, "automation stops before the backend runs")
         XCTAssertTrue(model.hideOperation.isBusy)
+        XCTAssertEqual(duplicate?.succeeded, false, "a second Hide is refused, not queued")
+        XCTAssertNil(model.displayResults[Self.targetKey], "a refused duplicate never replaces the running Hide's result")
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.status, .hiding)
         let delegate = AppDelegate()
         delegate.model = model
-        XCTAssertTrue(delegate.makeMenu().items.contains { $0.title == "Hiding…" })
+        XCTAssertTrue(delegate.makeMenu().items.contains { $0.title == "Hiding Target\u{2026}" && !$0.isEnabled })
 
         completion?(false, "brightness restore failed")
-        try await waitUntil { !model.hideOperation.isBusy }
+        try await waitUntil { result != nil }
         XCTAssertEqual(hideCalls, 0)
         XCTAssertNil(model.handoffStatus?.journalID)
         XCTAssertTrue(model.protectionQuiescenceFailure?.contains("brightness restore failed") == true)
         XCTAssertEqual(model.preferences.selectedDisplayUUIDs, protectedSelection)
         XCTAssertFalse(model.preferences.isEnabled)
-        XCTAssertEqual(model.notice?.title, "Hide not started")
+        XCTAssertEqual(result?.succeeded, false)
+        XCTAssertTrue(result?.message.contains("brightness restore failed") == true)
+        XCTAssertEqual(model.displayResults[Self.targetKey], result)
+        XCTAssertNil(model.notice, "failures appear inline, not in an alert")
+        let configuration = try XCTUnwrap(model.hideConfiguration(for: Self.targetUUID))
+        XCTAssertTrue(model.hideReadinessMessage(for: configuration)?.contains("Automation cleanup needs attention") == true,
+                      "the cleanup failure blocks another Hide until it clears")
     }
 
     func testConfirmedIdentityChangeAtLockedBackendRefusesBeforeJournalOrWriter() async throws {
@@ -1019,7 +993,6 @@ final class DisplayHideAppTests: XCTestCase {
         var backendDisplays = displays
         var captureCalls = 0
         var writerCalls = 0
-        var hideRequest: DisplayHideRequest?
         var quiesceCompletion: ((Bool, String?) -> Void)?
         let mirror = MirrorController(
             records: { backendDisplays },
@@ -1057,19 +1030,18 @@ final class DisplayHideAppTests: XCTestCase {
             }
         )
         model.setHideEnabled(true, for: displays[1])
-        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
-        model.onRequestHide = { hideRequest = $0 }
-        model.requestHide(targetUUID: Self.targetUUID)
-        model.confirmHide(try XCTUnwrap(hideRequest), acknowledged: true)
-        XCTAssertNotNil(quiesceCompletion, "the app has validated the confirmed identities before cleanup begins")
+        var result: DisplayOperationResult?
+        model.hide(targetUUID: Self.targetUUID) { result = $0 }
+        XCTAssertNotNil(quiesceCompletion, "the app validated the identities before cleanup began")
 
         quiesceCompletion?(true, nil)
-        try await waitUntil { !model.hideOperation.isBusy }
+        try await waitUntil { result != nil }
 
         XCTAssertEqual(captureCalls, 0, "identity refusal happens before fresh capture")
         XCTAssertEqual(writerCalls, 0, "no transaction or writer begins for a changed target")
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.url.path), "no recovery journal is created")
-        XCTAssertTrue(model.notice?.message.localizedCaseInsensitiveContains("target identity changed") == true, model.notice?.message ?? "missing notice")
+        let message = try XCTUnwrap(result?.message)
+        XCTAssertTrue(message.localizedCaseInsensitiveContains("target identity changed"), message)
     }
 
     func testBackendRefusalBeforeCaptureKeepsNoJournalAndNoFalseSuccess() async throws {
@@ -1087,18 +1059,19 @@ final class DisplayHideAppTests: XCTestCase {
             }
         )
         model.setHideEnabled(true, for: displays[1])
-        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
-        var request: DisplayHideRequest?
-        model.onRequestHide = { request = $0 }
-        model.requestHide(targetUUID: Self.targetUUID)
-        model.confirmHide(try XCTUnwrap(request), acknowledged: true)
+        let result = try await hideAndWait(model)
 
-        try await waitUntil { !model.hideOperation.isBusy }
         XCTAssertEqual(hideCalls, 1)
         XCTAssertEqual(model.handoffStatus?.state, DisplayHandoffStatus.State.none)
         XCTAssertFalse(model.protectionPausedForDisplayRecovery)
-        XCTAssertEqual(model.notice?.title, "Could not hide the desktop")
-        XCTAssertTrue(model.notice?.message.contains("no capture") == true)
+        XCTAssertFalse(result.succeeded)
+        XCTAssertTrue(result.message.contains("no capture"), result.message)
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.status, .on)
+        XCTAssertNil(model.displayRecoveryProblem)
+
+        // Changing the settings clears a failure that described the old ones.
+        model.setHideSource(Self.sourceUUID, for: Self.targetUUID)
+        XCTAssertNil(model.displayResults[Self.targetKey])
     }
 
     func testPartialHideFailureKeepsRecoveryAndBlocksAnotherHide() async throws {
@@ -1119,20 +1092,30 @@ final class DisplayHideAppTests: XCTestCase {
             }
         )
         model.setHideEnabled(true, for: displays[1])
-        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
-        var request: DisplayHideRequest?
-        model.onRequestHide = { request = $0 }
-        model.requestHide(targetUUID: Self.targetUUID)
-        model.confirmHide(try XCTUnwrap(request), acknowledged: true)
+        model.setHideEnabled(true, for: displays[2])
+        let result = try await hideAndWait(model)
 
-        try await waitUntil { !model.hideOperation.isBusy }
         XCTAssertEqual(hideCalls, 1)
         XCTAssertEqual(model.handoffStatus?.state, .recovery)
         XCTAssertEqual(model.handoffStatus?.journalID, "fake-journal")
         XCTAssertTrue(model.protectionPausedForDisplayRecovery)
-        XCTAssertThrowsError(try model.makeHideRequest(targetUUID: Self.targetUUID))
-        XCTAssertEqual(model.notice?.title, "Could not hide the desktop")
-        XCTAssertTrue(model.notice?.message.contains("journal retained") == true)
+        XCTAssertFalse(result.succeeded)
+        XCTAssertTrue(result.message.contains("journal retained"), result.message)
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.status, .needsRecovery)
+        XCTAssertEqual(model.displayRecoveryProblem, "fake writer interrupted; journal retained")
+        for uuid in [Self.targetUUID, Self.sourceUUID] {
+            XCTAssertThrowsError(try model.makeHideRequest(targetUUID: uuid), "one removed display at a time") { error in
+                XCTAssertTrue(error.localizedDescription.contains("Only one display can be removed at a time"))
+            }
+        }
+        let other = try XCTUnwrap(model.displayTiles.first { $0.id == Self.sourceUUID.lowercased() })
+        XCTAssertEqual(other.action, .hide)
+        XCTAssertTrue(other.actionBlocker?.contains("Only one display can be removed at a time") == true,
+                      other.actionBlocker ?? "no blocker")
+        let delegate = AppDelegate()
+        delegate.model = model
+        XCTAssertFalse(delegate.makeMenu().items.contains { $0.title.hasPrefix("Hide ") },
+                       "the menu leaves out a Hide that can't run")
     }
 
     func testShowUsesConfirmedJournalAndRetainsFailureWithoutFalseSuccess() async throws {
@@ -1158,62 +1141,43 @@ final class DisplayHideAppTests: XCTestCase {
         )
         try await waitUntil { !model.protectionQuiescencePending }
 
-        var request: DisplayShowRequest?
-        model.onRequestShow = { request = $0 }
-        model.requestShow()
-        let confirmation = try XCTUnwrap(request)
-        model.confirmShow(confirmation, acknowledged: false)
+        // A stale action for another display never shows the journaled one.
+        let wrongDisplay = try await showAndWait(model, Self.sourceUUID)
+        XCTAssertFalse(wrongDisplay.succeeded)
+        XCTAssertTrue(wrongDisplay.message.contains("isn\u{2019}t hidden by PanelCtl"), wrongDisplay.message)
         XCTAssertTrue(shownJournalIDs.isEmpty)
-        XCTAssertEqual(model.notice?.title, "Show canceled")
-        model.confirmShow(confirmation, acknowledged: true)
-        try await waitUntil { !model.hideOperation.isBusy }
 
+        let failed = try await showAndWait(model)
         XCTAssertEqual(shownJournalIDs, ["captured-journal"])
         XCTAssertEqual(model.handoffStatus?.state, .hidden)
         XCTAssertTrue(model.protectionPausedForDisplayRecovery)
-        XCTAssertEqual(model.notice?.title, "Could not show the journaled desktop")
-        XCTAssertTrue(model.notice?.message.contains("fake restore mismatch") == true)
+        XCTAssertFalse(failed.succeeded)
+        XCTAssertTrue(failed.message.contains("fake restore mismatch"), failed.message)
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.status, .hidden,
+                       "a failed Show leaves the display hidden, with Show still available")
 
         showFails = false
-        model.requestShow()
-        model.confirmShow(try XCTUnwrap(request), acknowledged: true)
-        try await waitUntil {
-            !model.hideOperation.isBusy && model.handoffStatus?.state == DisplayHandoffStatus.State.none
-        }
+        let shown = try await showAndWait(model)
         XCTAssertEqual(shownJournalIDs, ["captured-journal", "captured-journal"])
+        XCTAssertEqual(model.handoffStatus?.state, DisplayHandoffStatus.State.none)
         XCTAssertFalse(model.protectionPausedForDisplayRecovery)
-        XCTAssertEqual(model.notice?.title, "Desktop restored")
+        XCTAssertTrue(shown.succeeded)
+        XCTAssertEqual(shown.message, "Shown.")
+        XCTAssertNil(model.notice)
     }
 
-    func testLifecycleAndConfirmationTextKeepActionsExplicitAndOLEDWarningVisible() async throws {
+    func testDisplayTransitionsBlockHideAndShow() async throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
         let box = StatusBox(handoffStatus(.none, target: nil, source: nil))
         let model = makeModel(defaults: defaults, displays: displays, status: { box.value })
         model.setHideEnabled(true, for: displays[1])
-        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
         model.setDisplayLifecycleTransitioning(true)
-        XCTAssertThrowsError(try model.makeHideRequest(targetUUID: Self.targetUUID))
+        XCTAssertThrowsError(try model.makeHideRequest(targetUUID: Self.targetUUID)) { error in
+            XCTAssertEqual(error as? DisplayHideError, .sleeping)
+        }
         model.setDisplayLifecycleTransitioning(false)
-
-        let request = try model.makeHideRequest(targetUUID: Self.targetUUID)
-        let hideText = DisplayOperationConfirmation.hideMessage(request, journalPath: "/tmp/synthetic/current.json")
-        XCTAssertTrue(hideText.contains("Target: Target"))
-        XCTAssertTrue(hideText.contains("Explicit mirror source: Main OLED"))
-        XCTAssertTrue(hideText.contains("Recovery journal: /tmp/synthetic/current.json"))
-        XCTAssertTrue(hideText.contains("overlay only to the selected mirror source Main OLED"))
-        XCTAssertTrue(hideText.contains("mirrored target is never an overlay target"))
-        XCTAssertTrue(hideText.contains("automatic follow-up Sleep"))
-        XCTAssertTrue(hideText.contains("hardware qualification is unperformed"))
-
-        let showText = DisplayOperationConfirmation.showMessage(
-            handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "journal", canShow: true)
-        )
-        XCTAssertTrue(showText.contains("Journaled target: Target"))
-        XCTAssertTrue(showText.contains("Captured mirror source: Main OLED"))
-        XCTAssertTrue(showText.contains("Restoring the layout may affect other captured displays"))
-        XCTAssertTrue(showText.contains("overlay is quiesced and verified stopped before Show"))
-        XCTAssertTrue(showText.contains("Recovery journal:"))
+        XCTAssertNoThrow(try model.makeHideRequest(targetUUID: Self.targetUUID))
 
         box.value = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "lifecycle-journal", canShow: true)
         model.refreshHandoffStatus()
@@ -1224,67 +1188,113 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertNoThrow(try model.makeShowRequest())
     }
 
-    func testNativeSettingsInputControlsAreConditionalAccessibleAndOfflineByDefault() throws {
+    func testDisplayTilesFollowArrangementAndShowEachState() throws {
         let defaults = try makeDefaults()
-        defer {
-            defaults.removePersistentDomain(forName: suiteName(defaults))
-            NSApp.windows.filter { $0.identifier == SettingsWindowController.windowIdentifier }.forEach { $0.close() }
-        }
-        var ddcChecks = 0
-        let model = makeModel(
-            defaults: defaults,
-            displays: displays,
-            checkDDCInput: { identity in
-                ddcChecks += 1
-                return DDCInputReading(displayID: identity.displayID, uuid: identity.uuid, current: 15)
-            }
-        )
-        let controller = SettingsWindowController(model: model)
-        controller.present()
-        model.requestDisplayRecoveryFocus()
-        let window = try XCTUnwrap(controller.window)
-        window.setContentSize(NSSize(width: 680, height: 1800))
-        window.contentView?.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let left = Self.display(index: 4, id: 404, uuid: Self.replacementUUID, name: "Dell", main: false, x: -1920)
+        let main = displays[0]
+        let right = Self.display(index: 2, id: 202, uuid: Self.targetUUID, name: "Dell", main: false)
+        let asleep = Self.display(index: 3, id: 303, uuid: Self.sourceUUID, name: "Sleepy", main: false, asleep: true)
+        let offline = Self.display(index: 5, id: 505, uuid: "00000000-0000-0000-0000-000000000005",
+                                   name: "Offline", main: false, online: false)
+        let box = StatusBox(handoffStatus(.none, target: nil, source: nil))
+        var connected = [right, offline, asleep, main, left]
+        let model = makeModel(defaults: defaults, displays: [], displayProvider: { connected }, status: { box.value })
 
-        var controls = nativeControls(in: try XCTUnwrap(window.contentView))
-        XCTAssertFalse(controls.contains { $0.accessibilityLabel() == "Other computer input on Hide for Target" })
-        XCTAssertFalse(controls.contains { $0.accessibilityLabel() == "Mac input on Show for Target" })
-        XCTAssertEqual(ddcChecks, 0)
+        // Left to right, numbering identical names as macOS does.
+        var tiles = model.displayTiles
+        XCTAssertEqual(tiles.map(\.name), ["Dell (1)", "Main OLED", "Dell (2)", "Sleepy"])
+        XCTAssertEqual(tiles.map(\.status), [.on, .on, .on, .asleep])
+        XCTAssertEqual(tiles.map(\.isMain), [false, true, false, false])
+        XCTAssertEqual(tiles[2].id, Self.targetKey)
 
-        model.setHideEnabled(true, for: displays[1])
-        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
-        XCTAssertNil(model.setHideAwayInput("hdmi1", for: Self.targetUUID))
-        XCTAssertNil(model.setHideReturnInput("dp1", for: Self.targetUUID))
-        window.contentView?.layoutSubtreeIfNeeded()
-        let inputScrollView = try XCTUnwrap(nativeViews(in: try XCTUnwrap(window.contentView)).compactMap { $0 as? NSScrollView }.last)
-        let inputDocumentHeight = inputScrollView.documentView?.frame.height ?? 0
-        inputScrollView.contentView.scroll(to: NSPoint(x: 0, y: inputDocumentHeight))
-        inputScrollView.reflectScrolledClipView(inputScrollView.contentView)
-        window.contentView?.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        controls = nativeControls(in: try XCTUnwrap(window.contentView))
-        let nativeSummary = nativeViews(in: try XCTUnwrap(window.contentView)).map {
-            "\(type(of: $0)): \($0.accessibilityLabel() ?? "") \(($0 as? NSTextField)?.stringValue ?? "") \($0.frame)"
-        }
-        let awayField = try XCTUnwrap(controls.compactMap { $0 as? NSTextField }.first {
-            $0.accessibilityLabel() == "Other computer input on Hide for Target"
-        }, "Native controls: \(nativeSummary)")
-        let returnField = try XCTUnwrap(controls.compactMap { $0 as? NSTextField }.first {
-            $0.accessibilityLabel() == "Mac input on Show for Target"
-        })
-        XCTAssertEqual(awayField.stringValue, "hdmi1")
-        XCTAssertEqual(returnField.stringValue, "dp1")
-        let saved = try XCTUnwrap(model.hidePreferences[Self.targetUUID])
-        XCTAssertTrue(model.ddcInputAvailabilityMessage(for: saved).contains("You can check explicitly"))
-        XCTAssertEqual(ddcChecks, 0, "rendering and saving native Settings controls performs no DDC query")
+        // A display hidden by mirroring shares its source's origin and follows it.
+        let mirrored = Self.display(index: 2, id: 202, uuid: Self.targetUUID, name: "Dell", main: false, x: 0)
+        connected = [mirrored, asleep, main, left]
+        box.value = handoffStatus(.hidden, target: right, source: main, journalID: "tiles", canShow: true)
+        model.refreshDisplays()
+        tiles = model.displayTiles
+        XCTAssertEqual(tiles.map(\.id), [Self.replacementUUID.lowercased(), Self.mainUUID.lowercased(), Self.targetKey, Self.sourceUUID.lowercased()])
+        XCTAssertEqual(tiles.map(\.status), [.on, .on, .hidden, .asleep])
+        XCTAssertNil(model.displayRecoveryProblem)
+
+        // A journaled display that is gone stays listed, last, by its saved name.
+        connected = [asleep, main, left]
+        box.value = handoffStatus(.recovery, target: right, source: main, journalID: "tiles", reason: "Reconnect Dell.")
+        model.refreshDisplays()
+        tiles = model.displayTiles
+        XCTAssertEqual(tiles.map(\.name), ["Dell (1)", "Main OLED", "Sleepy", "Dell (2)"])
+        XCTAssertEqual(tiles.last?.status, .needsRecovery)
+        XCTAssertNil(tiles.last?.display)
+        XCTAssertEqual(model.displayRecoveryProblem, "Reconnect Dell.")
+
+        // Inspection failures are problems even without a journal.
+        box.value = handoffStatus(.none, target: nil, source: nil, inspectionFailure: "unreadable journal")
+        model.refreshDisplays()
+        XCTAssertEqual(model.displayRecoveryProblem, "Couldn\u{2019}t check display recovery: unreadable journal")
     }
 
-    func testNativeSettingsFixtureRetainsMissingRecoveryIdentityAndFreezesEditing() throws {
+    func testNativeHideSetupDefaultsSourceAndDetectsTheMacInputWhenSwitching() throws {
         let defaults = try makeDefaults()
         defer {
             defaults.removePersistentDomain(forName: suiteName(defaults))
-            NSApp.windows.filter { $0.identifier == SettingsWindowController.windowIdentifier }.forEach { $0.close() }
+            closeSettingsWindows()
+        }
+        var ddcChecks = 0
+        let model = makeModel(defaults: defaults, displays: displays, checkDDCInput: { identity in
+            ddcChecks += 1
+            return DDCInputReading(displayID: identity.displayID, uuid: identity.uuid, current: 0x0F)
+        })
+        let controller = SettingsWindowController(model: model)
+        controller.present()
+        controller.selectDisplay(uuid: Self.targetUUID)
+        let window = try XCTUnwrap(controller.window)
+        window.setContentSize(NSSize(width: 680, height: 1200))
+        settle(window)
+        let toggle = try XCTUnwrap(removalSwitch(in: window), controlSummary(window))
+        XCTAssertEqual(toggle.state, .off)
+        XCTAssertNil(model.displayTiles.first { $0.id == Self.targetKey }?.action)
+
+        toggle.performClick(nil)
+        settle(window)
+        let configuration = try XCTUnwrap(model.hideConfiguration(for: Self.targetUUID))
+        XCTAssertTrue(configuration.enabled)
+        XCTAssertEqual(configuration.source?.uuid, Self.mainUUID, "the main display is the default mirror source")
+        XCTAssertEqual(model.sourceChoices(for: configuration).map(\.uuid), [Self.mainUUID, Self.sourceUUID])
+        XCTAssertNil(configuration.awayInput, "no input switch by default")
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.action, .hide)
+        XCTAssertNil(model.displayTiles.first { $0.id == Self.targetKey }?.actionBlocker)
+        XCTAssertEqual(ddcChecks, 0, "nothing is read until the monitor input switches")
+
+        model.setHideSource(Self.sourceUUID, for: Self.targetUUID)
+        XCTAssertEqual(model.hideConfiguration(for: Self.targetUUID)?.source?.uuid, Self.sourceUUID)
+
+        // Choosing an input shows the Mac's input, read once when shown.
+        model.setHideSwitchInput(0x11, for: Self.targetUUID)
+        settle(window)
+        spin { ddcChecks > 0 }
+        XCTAssertEqual(ddcChecks, 1, "showing the input setup reads the Mac input")
+        XCTAssertEqual(model.macInputDetections[Self.targetKey], .detected(0x0F))
+        XCTAssertEqual(model.hidePreferences[Self.targetUUID]?.returnInput, 0x0F)
+        settle(window)
+        XCTAssertEqual(ddcChecks, 1, "redrawing doesn't read again")
+        XCTAssertNil(controls(in: window).compactMap { $0 as? NSTextField }.first { $0.isEditable },
+                     "a named input needs no code field")
+
+        // A code without a name is edited under Other….
+        model.setHideSwitchInput(0x2A, for: Self.targetUUID)
+        settle(window)
+        let field = try XCTUnwrap(controls(in: window).compactMap { $0 as? NSTextField }.first { $0.isEditable },
+                                  controlSummary(window))
+        XCTAssertEqual(field.stringValue, "0x2A")
+        XCTAssertNil(window.attachedSheet)
+    }
+
+    func testNativeMissingJournalTargetStaysSelectedAndFreezesSetup() throws {
+        let defaults = try makeDefaults()
+        defer {
+            defaults.removePersistentDomain(forName: suiteName(defaults))
+            closeSettingsWindows()
         }
         let recovery = handoffStatus(
             .recovery,
@@ -1295,74 +1305,50 @@ final class DisplayHideAppTests: XCTestCase {
             reason: "The journaled target is unavailable. Reconnect the exact display and Refresh.",
             observationState: .unavailable
         )
-        let model = makeModel(
-            defaults: defaults,
-            displays: [displays[0], displays[2]],
-            status: { recovery }
-        )
-        XCTAssertEqual(model.handoffStatus?.state, .recovery)
-        XCTAssertFalse(model.handoffStatus?.canShow ?? true)
-        let savedTarget = try XCTUnwrap(model.hideDisplayConfigurations.first {
-            $0.target.uuid == Self.targetUUID
-        })
+        let model = makeModel(defaults: defaults, displays: [displays[0], displays[2]], status: { recovery })
+        XCTAssertTrue(model.hideConfigurationFrozen)
+        let savedTarget = try XCTUnwrap(model.hideDisplayConfigurations.first { $0.target.uuid == Self.targetUUID })
         XCTAssertEqual(model.observedDesktopState(for: savedTarget), "Unavailable")
         XCTAssertFalse(model.identityIsCurrent(savedTarget.target))
+        let target = try XCTUnwrap(model.displayTiles.last)
+        XCTAssertEqual(target.id, Self.targetKey)
+        XCTAssertEqual(target.status, .needsRecovery)
+        XCTAssertNil(target.action, "Show needs a restorable journal")
+        XCTAssertEqual(model.tile(selecting: nil)?.id, Self.targetKey, "the display that needs recovery is selected by default")
+        XCTAssertEqual(model.tile(selecting: Self.sourceUUID.lowercased())?.id, Self.sourceUUID.lowercased())
+        XCTAssertEqual(model.tile(selecting: "gone")?.id, Self.targetKey)
 
         let controller = SettingsWindowController(model: model)
         controller.present()
         let window = try XCTUnwrap(controller.window)
         window.setContentSize(NSSize(width: 680, height: 1200))
-        window.contentView?.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        let controls = nativeControls(in: try XCTUnwrap(window.contentView))
-        let sourcePicker = try XCTUnwrap(controls.compactMap { $0 as? NSPopUpButton }.first {
-            $0.accessibilityLabel() == "Mirror source for Target"
-        })
-        XCTAssertFalse(sourcePicker.isEnabled, "The missing target remains visible by saved identity but cannot be edited or rebound")
-    }
+        settle(window)
+        XCTAssertNil(removalSwitch(in: window), "a journal target has no removal setup")
+        XCTAssertTrue(controls(in: window).compactMap { $0 as? NSPopUpButton }.isEmpty)
 
-    func testNativeConfirmationRequiresAccessibleAcknowledgementAndDefaultsToCancel() throws {
-        let confirmation = DisplayOperationConfirmation.prepareConfirmation(
-            title: "Hide Target?",
-            message: "Target and source identities",
-            actionTitle: "Hide desktop"
-        )
-
-        XCTAssertEqual(confirmation.alert.alertStyle, .warning)
-        XCTAssertEqual(confirmation.alert.buttons.map(\.title), ["Cancel", "Hide desktop"])
-        XCTAssertTrue(confirmation.alert.window.defaultButtonCell === confirmation.cancelButton.cell)
-        XCTAssertFalse(confirmation.actionButton.isEnabled)
-        XCTAssertEqual(
-            confirmation.acknowledgement.accessibilityLabel(),
-            DisplayOperationConfirmation.recoveryAcknowledgement
-        )
-        let acknowledgementLabel = try XCTUnwrap(
-            confirmation.alert.accessoryView?.subviews.compactMap { $0 as? NSTextField }.first
-        )
-        XCTAssertEqual(acknowledgementLabel.stringValue, DisplayOperationConfirmation.recoveryAcknowledgement)
-        XCTAssertEqual(acknowledgementLabel.accessibilityLabel(), DisplayOperationConfirmation.recoveryAcknowledgement)
-
-        confirmation.acknowledgement.performClick(nil)
-        XCTAssertEqual(confirmation.acknowledgement.state, .on)
-        XCTAssertTrue(confirmation.actionButton.isEnabled)
-        confirmation.acknowledgement.performClick(nil)
-        XCTAssertEqual(confirmation.acknowledgement.state, .off)
-        XCTAssertFalse(confirmation.actionButton.isEnabled)
+        controller.selectDisplay(uuid: Self.sourceUUID)
+        settle(window)
+        let toggle = try XCTUnwrap(removalSwitch(in: window), controlSummary(window))
+        XCTAssertFalse(toggle.isEnabled, "settings stay frozen until recovery finishes")
     }
 
     func testNativeMenuArrowEventsReachShowAction() throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
-        let hidden = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "keyboard-menu-journal", canShow: true)
-        let model = makeModel(defaults: defaults, displays: displays, status: { hidden })
-        var requestedJournalID: String?
-        model.onRequestShow = { requestedJournalID = $0.status.journalID }
+        let box = StatusBox(handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "keyboard-menu-journal", canShow: true))
+        var shownJournalIDs: [String] = []
+        let model = makeModel(defaults: defaults, displays: displays, status: { box.value }, showDisplay: { journalID, _ in
+            shownJournalIDs.append(journalID)
+            box.value = self.handoffStatus(.none, target: nil, source: nil)
+            return .notRequested
+        })
+        spin { !model.protectionQuiescencePending }
         dispatchNativeEvents()
         let originalFrontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let delegate = AppDelegate()
         delegate.model = model
         let menu = delegate.makeMenu()
-        let showItem = try XCTUnwrap(menu.items.first { $0.title == "Show Target…" })
+        let showItem = try XCTUnwrap(menu.items.first { $0.title == "Show Target" })
 
         let window = NSWindow(
             contentRect: NSRect(x: 40, y: 40, width: 320, height: 180),
@@ -1427,7 +1413,9 @@ final class DisplayHideAppTests: XCTestCase {
 
         XCTAssertGreaterThan(arrowCount, 0, "the menu must receive actual Arrow Down key events")
         XCTAssertTrue(reachedShowItem, "arrow navigation must highlight Show Target before Return")
-        XCTAssertEqual(requestedJournalID, "keyboard-menu-journal")
+        spin { !shownJournalIDs.isEmpty && !model.hideOperation.isBusy }
+        XCTAssertEqual(shownJournalIDs, ["keyboard-menu-journal"], "the menu item shows the display without a confirmation")
+        XCTAssertEqual(model.displayResults[Self.targetKey]?.succeeded, true)
         XCTAssertEqual(
             NSWorkspace.shared.frontmostApplication?.processIdentifier,
             originalFrontmostPID,
@@ -1435,56 +1423,14 @@ final class DisplayHideAppTests: XCTestCase {
         )
     }
 
-    func testNativeEscapeEventCancelsConfirmationWithoutAction() throws {
-        let applicationState = try activateForegroundNativeKeyboardFixture()
-        defer { restoreForegroundNativeKeyboardFixture(applicationState) }
-        let confirmation = DisplayOperationConfirmation.prepareConfirmation(
-            title: "Show Target?",
-            message: "Synthetic confirmation fixture; no backend is connected.",
-            actionTitle: "Show desktop"
-        )
-        var injectionWindowNumber: Int?
-        var inputFailure: String?
-        let currentPID = ProcessInfo.processInfo.processIdentifier
-        let timeout = DispatchWorkItem { NSApp.stopModal(withCode: .alertFirstButtonReturn) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            guard let modalWindow = NSApp.modalWindow,
-                  let source = CGEventSource(stateID: .hidSystemState),
-                  let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: true),
-                  let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: false) else {
-                inputFailure = "Could not create an Escape event targeted at the XCTest PID."
-                NSApp.stopModal(withCode: .alertFirstButtonReturn)
-                return
-            }
-            injectionWindowNumber = modalWindow.windowNumber
-            keyDown.flags = []
-            keyUp.flags = []
-            keyDown.postToPid(currentPID)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { keyUp.postToPid(currentPID) }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: timeout)
-        let start = ProcessInfo.processInfo.systemUptime
-        let response = confirmation.runModal()
-        let elapsed = ProcessInfo.processInfo.systemUptime - start
-        timeout.cancel()
-
-        XCTAssertNotNil(injectionWindowNumber)
-        XCTAssertNil(inputFailure)
-        XCTAssertEqual(response, .alertFirstButtonReturn)
-        XCTAssertFalse(confirmation.acknowledgement.state == .on)
-        XCTAssertLessThan(elapsed, 1.5, "Escape must dismiss the real alert window before the safety timeout")
-    }
-
-    func testNativeShowCompletionAndFailureFocusTheirSettingsNotice() async throws {
-        let applicationState = try activateForegroundNativeKeyboardFixture(requiresCGEventPostPermission: false)
-        defer { restoreForegroundNativeKeyboardFixture(applicationState) }
+    func testNativeShowRunsWithoutDialogsAndResultsStayInline() async throws {
         for succeeds in [true, false] {
             let defaults = try makeDefaults()
             defer {
                 defaults.removePersistentDomain(forName: suiteName(defaults))
-                NSApp.windows.filter { $0.identifier == SettingsWindowController.windowIdentifier }.forEach { $0.close() }
+                closeSettingsWindows()
             }
-            let hidden = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "focus-journal", canShow: true)
+            let hidden = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "inline-journal", canShow: true)
             let box = StatusBox(hidden)
             var showCalls = 0
             let model = makeModel(
@@ -1500,200 +1446,146 @@ final class DisplayHideAppTests: XCTestCase {
                     throw NSError(domain: "FakeRecovery", code: 1, userInfo: [NSLocalizedDescriptionKey: "offline verification failure"])
                 }
             )
+            try await waitUntil { !model.protectionQuiescencePending }
+            let target = try XCTUnwrap(model.displayTiles.first { $0.id == Self.targetKey })
+            XCTAssertEqual(target.status, .hidden)
+            XCTAssertEqual(target.action, .show)
+            XCTAssertNil(target.actionBlocker)
             let controller = SettingsWindowController(model: model)
             controller.present()
-            model.requestDisplayRecoveryFocus()
             let window = try XCTUnwrap(controller.window)
-            window.setContentSize(NSSize(width: 680, height: 1200))
-            window.contentView?.layoutSubtreeIfNeeded()
-            try await Task.sleep(nanoseconds: 100_000_000)
-            let sourcePicker = try XCTUnwrap(nativeControls(in: try XCTUnwrap(window.contentView)).compactMap { $0 as? NSPopUpButton }.first {
-                $0.accessibilityLabel() == "Mirror source for Target"
-            })
-            XCTAssertTrue(window.makeFirstResponder(sourcePicker))
+            settle(window)
 
-            model.confirmShow(hidden, acknowledged: true)
-            try await waitUntil { model.notice != nil && !model.hideOperation.isBusy }
-            try await Task.sleep(nanoseconds: 100_000_000)
+            // The Show button runs this directly.
+            let result = try await showAndWait(model)
+            settle(window)
 
-            let expectedTitle = succeeds ? "Desktop restored" : "Could not show the journaled desktop"
-            XCTAssertEqual(model.notice?.title, expectedTitle)
             XCTAssertEqual(showCalls, 1)
-            XCTAssertTrue(succeeds
-                ? model.handoffStatus?.state == DisplayHandoffStatus.State.none
-                : model.handoffStatus?.state == DisplayHandoffStatus.State.hidden)
-            try await waitUntil {
-                self.dispatchNativeEvents()
-                return window.attachedSheet?.isKeyWindow == true
+            XCTAssertEqual(result.succeeded, succeeds)
+            XCTAssertEqual(model.displayResults[Self.targetKey], result)
+            XCTAssertNil(window.attachedSheet, "results appear inline, not in a sheet")
+            XCTAssertNil(model.notice)
+            let after = try XCTUnwrap(model.displayTiles.first { $0.id == Self.targetKey })
+            if succeeds {
+                XCTAssertEqual(after.status, .on)
+            } else {
+                XCTAssertTrue(result.message.contains("offline verification failure"), result.message)
+                XCTAssertTrue(result.needsAttention)
+                XCTAssertEqual(after.action, .show, "Show stays available to retry")
+                XCTAssertNil(after.actionBlocker)
             }
-            let noticeSheet = try XCTUnwrap(window.attachedSheet, "completion and failure notices must present a native Settings sheet")
-            XCTAssertTrue(noticeSheet.isKeyWindow, "focus must move into the completion/error notice")
-            XCTAssertNotNil(noticeSheet.firstResponder)
-            guard let returnDown = NSEvent.keyEvent(
-                    with: .keyDown,
-                    location: .zero,
-                    modifierFlags: [],
-                    timestamp: ProcessInfo.processInfo.systemUptime,
-                    windowNumber: noticeSheet.windowNumber,
-                    context: nil,
-                    characters: "\r",
-                    charactersIgnoringModifiers: "\r",
-                    isARepeat: false,
-                    keyCode: 36
-                  ),
-                  let returnUp = NSEvent.keyEvent(
-                    with: .keyUp,
-                    location: .zero,
-                    modifierFlags: [],
-                    timestamp: ProcessInfo.processInfo.systemUptime + 0.04,
-                    windowNumber: noticeSheet.windowNumber,
-                    context: nil,
-                    characters: "\r",
-                    charactersIgnoringModifiers: "\r",
-                    isARepeat: false,
-                    keyCode: 36
-                  ) else {
-                XCTFail("Could not create app-local Return events for the focused notice")
-                continue
-            }
-            NSApp.sendEvent(returnDown)
-            NSApp.sendEvent(returnUp)
-            // Sheet detachment precedes the end of AppKit's dismissal animation
-            // and restoration of key-window status.
-            try await waitUntil {
-                self.dispatchNativeEvents()
-                return window.attachedSheet == nil && window.isKeyWindow
-            }
-            XCTAssertTrue(window.isKeyWindow)
-            XCTAssertTrue(window.firstResponder === sourcePicker, "dismissal restores focus to the setting that had focus before the notice")
         }
     }
 
-    func testNativeLongRecoveryContentFitsScrollableMinimumWidthSettings() throws {
+    func testNativeLongContentFitsMinimumWidthSettings() throws {
         let defaults = try makeDefaults()
         defer {
             defaults.removePersistentDomain(forName: suiteName(defaults))
-            NSApp.windows.filter { $0.identifier == SettingsWindowController.windowIdentifier }.forEach { $0.close() }
+            closeSettingsWindows()
         }
         let longName = String(repeating: "VeryLongMonitorName-", count: 8)
+        let main = Self.display(index: 1, id: 101, uuid: Self.mainUUID, name: longName, main: true)
         let target = Self.display(index: 2, id: 202, uuid: Self.targetUUID, name: longName, main: false)
-        let source = Self.display(index: 1, id: 101, uuid: Self.mainUUID, name: "Main OLED", main: true)
-        let longError = String(repeating: "Recovery identity/mode mismatch; reconnect the exact display and review the captured journal. ", count: 30)
-        let recovery = handoffStatus(
-            .recovery,
-            target: target,
-            source: source,
-            journalID: "long-content-journal",
-            canShow: false,
-            reason: longError
-        )
-        var hidePreferences = DisplayHidePreferences()
-        hidePreferences[Self.targetUUID] = DisplayHideConfiguration(
-            target: DisplayIdentitySnapshot(target),
-            enabled: true,
-            source: DisplayIdentitySnapshot(source)
-        )
-        defaults.set(try JSONEncoder().encode(hidePreferences), forKey: "displayHidePreferences")
-        let model = makeModel(defaults: defaults, displays: [source, target], status: { recovery })
-        XCTAssertEqual(model.hideDisplayConfigurations.map(\.target.name), [longName])
+        let other = Self.display(index: 3, id: 303, uuid: Self.sourceUUID, name: longName, main: false)
+        let longError = String(repeating: "Recovery identity/mode mismatch; reconnect the exact display and review the captured journal. ", count: 12)
+        let box = StatusBox(handoffStatus(.none, target: nil, source: nil))
+        let model = makeModel(defaults: defaults, displays: [main, target, other], status: { box.value })
+        model.setHideEnabled(true, for: target)
+        model.setHideSwitchInput(0x2A, for: Self.targetUUID)
         let controller = SettingsWindowController(model: model)
         controller.present()
-        model.requestDisplayRecoveryFocus()
+        controller.selectDisplay(uuid: Self.targetUUID)
         let window = try XCTUnwrap(controller.window)
         window.setContentSize(NSSize(width: 440, height: 560))
-        window.contentView?.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        let root = try XCTUnwrap(window.contentView)
-        XCTAssertGreaterThan(root.fittingSize.width, 0)
-        XCTAssertGreaterThan(root.fittingSize.height, 0)
-        let scrollView = try XCTUnwrap(nativeViews(in: root).compactMap { $0 as? NSScrollView }.last)
-        let documentHeight = scrollView.documentView?.frame.height ?? 0
-        scrollView.contentView.scroll(to: NSPoint(x: 0, y: documentHeight))
-        scrollView.reflectScrolledClipView(scrollView.contentView)
-        root.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        let controls = nativeControls(in: root)
-        let controlSummary = controls.map {
-            String(describing: type(of: $0)) + ": " + ($0.accessibilityLabel() ?? "unlabeled")
-        }
-        let sourcePicker = try XCTUnwrap(controls.compactMap { $0 as? NSPopUpButton }.first {
-            $0.accessibilityLabel() == "Mirror source for \(longName)"
-        }, "Native controls: \(controlSummary)")
-        XCTAssertFalse(sourcePicker.isEnabled)
-        XCTAssertGreaterThan(sourcePicker.frame.width, 0)
-        XCTAssertLessThanOrEqual(root.bounds.width, 440)
-        XCTAssertLessThanOrEqual(sourcePicker.frame.width, root.bounds.width)
-        XCTAssertTrue(sourcePicker.itemTitles.contains { $0.contains(Self.mainUUID) && $0.contains("Display ID 101") })
+        settle(window)
+
+        XCTAssertEqual(window.contentLayoutRect.width, 440, "long names never widen the window")
+        let field = try XCTUnwrap(controls(in: window).compactMap { $0 as? NSTextField }.first { $0.isEditable },
+                                  controlSummary(window))
+        assertInsideContent(field, of: window)
+        try assertInsideContent(XCTUnwrap(removalSwitch(in: window)), of: window)
+
+        box.value = handoffStatus(.recovery, target: target, source: main, journalID: "long-content-journal",
+                                  canShow: false, reason: longError)
+        model.refreshDisplays()
+        settle(window)
+        XCTAssertEqual(window.contentLayoutRect.width, 440, "a long recovery reason wraps instead")
+        XCTAssertEqual(model.displayRecoveryProblem, longError)
     }
 
-    func testNativeMenuAndSettingsFixtureExposeRecoveryAndKeyboardAccessibility() throws {
+    func testNativeMenuAndSettingsKeepShowReachableForAHiddenDisplay() throws {
         let defaults = try makeDefaults()
         defer {
             defaults.removePersistentDomain(forName: suiteName(defaults))
-            NSApp.windows.filter { $0.identifier == SettingsWindowController.windowIdentifier }.forEach { $0.close() }
+            closeSettingsWindows()
         }
         let hidden = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "fixture-journal", canShow: true)
-        let model = makeModel(
-            defaults: defaults,
-            displays: displays,
-            status: { hidden },
-            quiesceProtection: { $0(true, nil) }
-        )
+        let model = makeModel(defaults: defaults, displays: displays, status: { hidden })
+        model.setHideEnabled(true, for: displays[2])
+        spin { !model.protectionQuiescencePending }
         let delegate = AppDelegate()
         delegate.model = model
 
         let menu = delegate.makeMenu()
         let titles = menu.items.map(\.title)
-        XCTAssertTrue(titles.contains("Hide a desktop · Experimental"))
-        XCTAssertTrue(titles.contains("Show Target…"))
-        XCTAssertTrue(titles.contains("Desktop hidden by PanelCtl · input unknown; target black on Mac input"))
-        let settingsItem = try XCTUnwrap(menu.items.first { $0.title == "Settings…" })
+        XCTAssertTrue(titles.contains("Show Target"))
+        XCTAssertFalse(titles.contains("Review Display Recovery\u{2026}"), "a healthy hidden display isn't a recovery problem")
+        XCTAssertFalse(titles.contains { $0.hasPrefix("Hide ") }, "one removed display at a time")
+        let settingsItem = try XCTUnwrap(menu.items.first { $0.title == "Settings\u{2026}" })
         XCTAssertEqual(settingsItem.keyEquivalent, ",")
-        XCTAssertEqual(menu.items.firstIndex { $0.title == "Hide a desktop · Experimental" }, menu.items.firstIndex { $0.title == "Show Target…" }.map { $0 - 1 })
-
         model.setShowMenuBarIcon(false)
-        XCTAssertFalse(model.showMenuBarIcon)
-        XCTAssertTrue(delegate.makeMenu().items.contains { $0.title == "Show Target…" }, "recovery remains available even when the status icon preference is off")
+        XCTAssertTrue(delegate.makeMenu().items.contains { $0.title == "Show Target" },
+                      "Show stays available when the status icon preference is off")
+        model.setExperimentalFeaturesEnabled(false)
+        XCTAssertTrue(delegate.makeMenu().items.contains { $0.title == "Show Target" },
+                      "Show stays available without the Experimental flag")
 
-        let controller = SettingsWindowController(model: model)
-        var window = try XCTUnwrap(controller.window)
-        controller.present()
-        XCTAssertTrue(window.autorecalculatesKeyViewLoop)
-        window.contentView?.frame = NSRect(x: 0, y: 0, width: 680, height: 620)
-        window.contentView?.layoutSubtreeIfNeeded()
-        XCTAssertGreaterThan(window.contentView?.fittingSize.width ?? 0, 0)
-        XCTAssertGreaterThan(window.contentView?.fittingSize.height ?? 0, 0)
-        XCTAssertFalse(try XCTUnwrap(window.contentView).subviews.isEmpty)
-
-        let focusRequest = model.displayRecoveryFocusRequest
+        // Reopening shows Displays with the hidden display selected; no banner.
         XCTAssertFalse(delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false))
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        XCTAssertGreaterThan(model.displayRecoveryFocusRequest, focusRequest)
-        let recoveryWindow = try XCTUnwrap(NSApp.windows.first {
-            $0.identifier == SettingsWindowController.windowIdentifier && $0 !== controller.window
+        let window = try XCTUnwrap(NSApp.windows.first {
+            $0.identifier == SettingsWindowController.windowIdentifier && $0.isVisible
         })
-        window = recoveryWindow
-        XCTAssertTrue(window.isVisible)
-        window.setContentSize(NSSize(width: 680, height: 1200))
-        window.contentView?.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        window.recalculateKeyViewLoop()
-        let controls = nativeControls(in: try XCTUnwrap(window.contentView))
-        let controlSummary = controls.map {
-            "\(type(of: $0)): \($0.accessibilityLabel() ?? "") \(($0 as? NSPopUpButton)?.itemTitles ?? [])"
+        let controller = try XCTUnwrap(window.windowController as? SettingsWindowController)
+        XCTAssertEqual(controller.selectedTab, .displays)
+        XCTAssertEqual(model.tile(selecting: controller.selectedDisplayID)?.id, Self.targetKey)
+        XCTAssertEqual(model.tile(selecting: controller.selectedDisplayID)?.action, .show)
+        XCTAssertNil(model.displayRecoveryProblem, "no banner for a healthy hidden display")
+    }
+
+    func testRecoveryProblemOpensItsDisplayFromReopenAndMenu() throws {
+        let defaults = try makeDefaults()
+        defer {
+            defaults.removePersistentDomain(forName: suiteName(defaults))
+            closeSettingsWindows()
         }
-        let sourcePicker = try XCTUnwrap(controls.compactMap { $0 as? NSPopUpButton }.first {
-            $0.accessibilityLabel() == "Mirror source for Target"
-        }, "Native controls: \(controlSummary)")
-        XCTAssertTrue(sourcePicker.itemTitles.contains {
-            $0.contains(Self.mainUUID) && $0.contains("Display ID 101")
+        let recovery = handoffStatus(
+            .recovery, target: displays[1], source: displays[0], journalID: "problem-journal",
+            canShow: false, reason: "The captured display mode changed."
+        )
+        let model = makeModel(defaults: defaults, displays: displays, status: { recovery })
+        spin { !model.protectionQuiescencePending }
+        XCTAssertEqual(model.displayRecoveryProblem, "The captured display mode changed.")
+        let delegate = AppDelegate()
+        delegate.model = model
+        let menu = delegate.makeMenu()
+        let titles = menu.items.map(\.title)
+        XCTAssertTrue(titles.contains("Review Display Recovery\u{2026}"))
+        XCTAssertFalse(titles.contains("Show Target"), "Show needs a restorable journal")
+
+        XCTAssertFalse(delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false))
+        let window = try XCTUnwrap(NSApp.windows.first {
+            $0.identifier == SettingsWindowController.windowIdentifier && $0.isVisible
         })
-        let previousKeyView = try XCTUnwrap(sourcePicker.previousKeyView)
-        let nextKeyView = try XCTUnwrap(sourcePicker.nextKeyView)
-        XCTAssertFalse(previousKeyView === sourcePicker)
-        XCTAssertFalse(nextKeyView === sourcePicker)
-        // Tab only reaches this frozen picker with Full Keyboard Access; tab
-        // switching by keyboard is covered in SettingsWindowTests.
+        let controller = try XCTUnwrap(window.windowController as? SettingsWindowController)
+        XCTAssertEqual(controller.selectedTab, .displays)
+        XCTAssertEqual(controller.selectedDisplayID, Self.targetKey, "Settings opens on the display that needs recovery")
+
+        controller.selectDisplay(uuid: Self.mainUUID)
+        controller.select(.automation)
+        let review = try XCTUnwrap(menu.items.firstIndex { $0.title == "Review Display Recovery\u{2026}" })
+        menu.performActionForItem(at: review)
+        XCTAssertEqual(controller.selectedTab, .displays)
+        XCTAssertEqual(controller.selectedDisplayID, Self.targetKey, "review selects the affected display")
     }
 
     private func writeHiddenOverlayHelper(in directory: URL, log: URL) throws -> URL {
@@ -1774,14 +1666,14 @@ final class DisplayHideAppTests: XCTestCase {
                 showCalls += 1
                 box.value = self.handoffStatus(.none, target: nil, source: nil)
                 return DisplayInputOutcome(state: .failed, requestedInput: 15, detail: "Input readback mismatch")
+            },
+            checkDDCInput: { identity in
+                DDCInputReading(displayID: identity.displayID, uuid: identity.uuid, current: 15)
             }
         )
         model.setHideEnabled(true, for: displays[1])
-        model.setHideSource(Self.mainUUID, for: Self.targetUUID)
-        XCTAssertNil(model.setHideAwayInput("17", for: Self.targetUUID))
-        XCTAssertNil(model.setHideReturnInput("15", for: Self.targetUUID))
-        model.onRequestHide = { _ in XCTFail("headless requests must not open a dialog") }
-        model.onRequestShow = { _ in XCTFail("headless requests must not open a dialog") }
+        model.setHideSwitchInput(17, for: Self.targetUUID)
+        model.detectMacInput(for: Self.targetUUID)
         let delegate = AppDelegate()
         delegate.model = model
         let path = "\(try AppControlSocket.userTemporaryDirectory())/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
@@ -1810,9 +1702,9 @@ final class DisplayHideAppTests: XCTestCase {
         let reply1 = try await send(.hide, uuid: Self.replacementUUID)
         XCTAssertEqual(reply1.outcome, .refused)
 
-        // Only explicit UI consent can perform the fake operation. Concurrent
+        // Only Settings or the menu can perform the fake operation. Concurrent
         // socket requests observe busy and never replay it.
-        model.confirmHide(try model.makeHideRequest(targetUUID: target), acknowledged: true)
+        model.hide(targetUUID: target)
         let busy = try await send(.hide)
         XCTAssertEqual(busy.outcome, .busy)
         XCTAssertEqual(busy.displays?.first { $0.targetUUID == target }?.operation, "hiding")
@@ -1838,7 +1730,7 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(reply6.outcome, .confirmationRequired)
         XCTAssertEqual(showCalls, 0)
 
-        model.confirmShow(try model.makeShowRequest(), acknowledged: true)
+        model.show(targetUUID: target)
         cleanup?(true, nil)
         try await waitUntil { !model.hideOperation.isBusy }
         XCTAssertEqual(showCalls, 1)
@@ -1938,6 +1830,7 @@ final class DisplayHideAppTests: XCTestCase {
     private func makeModel(
         defaults: UserDefaults,
         displays: [DisplayRecord],
+        displayProvider: (() -> [DisplayRecord])? = nil,
         idleSecondsProvider: @escaping () -> TimeInterval? = { nil },
         status: @escaping () -> DisplayHandoffStatus? = { nil },
         quiesceProtection: @escaping ProtectionQuiesce = { $0(true, nil) },
@@ -1951,7 +1844,7 @@ final class DisplayHideAppTests: XCTestCase {
         let fallback = handoffStatus(.none, target: nil, source: nil)
         return AppModel(
             defaults: defaults,
-            displayProvider: { displays },
+            displayProvider: displayProvider ?? { displays },
             idleSecondsProvider: idleSecondsProvider,
             isDisplayMirrored: { _ in false },
             inspectHandoff: { status() ?? fallback },
@@ -2056,22 +1949,84 @@ final class DisplayHideAppTests: XCTestCase {
         XCTFail("Timed out waiting for display hide state")
     }
 
+    /// Runs the main run loop until the condition holds or two seconds pass.
+    private func spin(until condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(2)
+        while !condition(), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+    }
+
+    private func hideAndWait(_ model: AppModel, _ uuid: String = targetUUID) async throws -> DisplayOperationResult {
+        var result: DisplayOperationResult?
+        model.hide(targetUUID: uuid) { result = $0 }
+        try await waitUntil { result != nil }
+        return try XCTUnwrap(result)
+    }
+
+    private func showAndWait(_ model: AppModel, _ uuid: String = targetUUID) async throws -> DisplayOperationResult {
+        var result: DisplayOperationResult?
+        model.show(targetUUID: uuid) { result = $0 }
+        try await waitUntil { result != nil }
+        return try XCTUnwrap(result)
+    }
+
+    // MARK: Native Settings
+
+    private func settle(_ window: NSWindow) {
+        window.contentView?.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+        window.contentView?.layoutSubtreeIfNeeded()
+    }
+
+    private func closeSettingsWindows() {
+        NSApp.windows.filter { $0.identifier == SettingsWindowController.windowIdentifier }.forEach { $0.close() }
+    }
+
+    // SwiftUI builds its accessibility tree only for a connected assistive
+    // client and draws buttons and pickers itself, so tests reach only the
+    // AppKit controls it renders: switches and text fields.
+
+    private func controls(in window: NSWindow) -> [NSControl] {
+        window.contentView.map(nativeControls) ?? []
+    }
+
+    /// The Displays tab's only switch: Remove from desktop.
+    private func removalSwitch(in window: NSWindow) -> NSSwitch? {
+        let switches = controls(in: window).compactMap { $0 as? NSSwitch }
+        return switches.count == 1 ? switches[0] : nil
+    }
+
+    private func controlSummary(_ window: NSWindow) -> String {
+        controls(in: window).map {
+            "\(type(of: $0)) enabled=\($0.isEnabled) frame=\($0.convert($0.bounds, to: nil))"
+        }.joined(separator: "\n")
+    }
+
+    /// Asserts that the control is drawn inside the window's content width.
+    private func assertInsideContent(_ control: NSControl, of window: NSWindow, file: StaticString = #filePath, line: UInt = #line) {
+        let frame = control.convert(control.bounds, to: nil)
+        XCTAssertGreaterThanOrEqual(frame.minX, -1, file: file, line: line)
+        XCTAssertLessThanOrEqual(frame.maxX, window.contentLayoutRect.width + 1, file: file, line: line)
+    }
+
     private static func display(index: Int, id: UInt32, uuid: String, name: String, main: Bool,
-                                serial: UInt32? = nil) -> DisplayRecord {
+                                serial: UInt32? = nil, x: Int? = nil, asleep: Bool = false,
+                                online: Bool = true) -> DisplayRecord {
         DisplayRecord(
             index: index,
             id: id,
             uuid: uuid,
             name: name,
-            active: true,
-            online: true,
-            asleep: false,
+            active: online,
+            online: online,
+            asleep: asleep,
             builtin: false,
             main: main,
             vendor: UInt32(index),
             model: UInt32(index * 10),
             serial: serial ?? UInt32(index * 100),
-            bounds: DisplayBounds(CGRect(x: (index - 1) * 1920, y: 0, width: 1920, height: 1080)),
+            bounds: DisplayBounds(CGRect(x: x ?? (index - 1) * 1920, y: 0, width: 1920, height: 1080)),
             pixelWidth: 1920,
             pixelHeight: 1080
         )
