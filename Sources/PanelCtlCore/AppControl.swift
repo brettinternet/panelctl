@@ -6,6 +6,7 @@ import Darwin
 public enum AppControlCommand: String, Codable, Equatable, Sendable {
     case hide
     case show
+    case toggleHide = "toggle-hide"
     case enable
     case disable
     case toggle
@@ -16,6 +17,21 @@ public enum AppControlCommand: String, Codable, Equatable, Sendable {
     case snooze
     case resume
     case openSettings = "open-settings"
+
+    /// Hide, Show and Toggle Hide act on the one display named by `--display`.
+    public var isDisplayCommand: Bool {
+        self == .hide || self == .show || self == .toggleHide
+    }
+
+    /// A shell command line that runs this display command with the CLI at
+    /// `executable`, for pasting into a script.
+    public func commandLine(executable: String, displayUUID: String) -> String {
+        let safe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@%+=:,./_-")
+        let path = !executable.isEmpty && executable.unicodeScalars.allSatisfy(safe.contains)
+            ? executable
+            : "'" + executable.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return "\(path) app \(rawValue) --display \(displayUUID)"
+    }
 }
 
 /// Versioned, newline-delimited request sent to PanelCtl.app.
@@ -209,6 +225,8 @@ public enum AppControlError: Error, Equatable, CustomStringConvertible, Localize
 public struct AppControlClient {
     static let defaultDeadline: TimeInterval = 3
     static let pollInterval: TimeInterval = 0.05
+    /// How long a display command waits for its Hide or Show to finish.
+    static let displayResponseTimeout = 30
 
     private let socketPath: String
     private let launch: () throws -> Void
@@ -238,10 +256,10 @@ public struct AppControlClient {
         self.isAppRunning = isAppRunning
     }
 
-    /// Sends one request.  Status never starts the app; mutating commands
-    /// launch it after an unavailable first attempt and retry once after the
-    /// bounded startup poll.  A toggle is never retried after request bytes
-    /// have reached the socket.
+    /// Sends one request.  Status and display commands never start the app;
+    /// other mutating commands launch it after an unavailable first attempt
+    /// and retry once after the bounded startup poll.  A toggle or display
+    /// command is never retried after request bytes have reached the socket.
     public func execute(
         _ command: AppControlCommand,
         durationSeconds: TimeInterval? = nil,
@@ -264,13 +282,13 @@ public struct AppControlClient {
         do {
             return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID)
         } catch let error as AppControlTransportError {
-            if command == .status || command == .hide || command == .show {
+            if command == .status || command.isDisplayCommand {
                 if !error.requestBytesWritten, !isAppRunning() {
                     return .unavailable(error.description)
                 }
                 throw AppControlError.transport(error.description)
             }
-            if (command == .toggle || command == .hide || command == .show) && error.requestBytesWritten {
+            if command == .toggle && error.requestBytesWritten {
                 throw AppControlError.transport(error.description)
             }
             if isAppRunning() {
@@ -328,6 +346,11 @@ public struct AppControlClient {
 
         let fd = try Self.connect(to: socketPath)
         defer { close(fd) }
+        if command.isDisplayCommand {
+            // The app answers when the Hide or Show has finished.
+            var timeout = timeval(tv_sec: Self.displayResponseTimeout, tv_usec: 0)
+            _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        }
         var written = 0
         while written < bytes.count {
             let result = bytes.withUnsafeBytes { raw in

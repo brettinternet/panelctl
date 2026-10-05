@@ -105,8 +105,27 @@ final class AppControlServerTests: XCTestCase {
     }
 
     @MainActor
+    func testDisplayCommandWaitsForItsOperationToFinish() async throws {
+        let path = "\(try AppControlSocket.userTemporaryDirectory())/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
+        let server = AppControlServer(socketPath: path) { _ in
+            // Longer than the one second other commands wait.
+            try? await Task.sleep(nanoseconds: 1_300_000_000)
+            return AppControlResponse(ok: true, running: true, enabled: false, state: "disabled",
+                                      summary: "Hidden.", outcome: .done)
+        }
+        try server.start()
+        defer { server.stop() }
+        let response = try await Task.detached {
+            try AppControlClient(socketPath: path, launch: { XCTFail("display commands must not launch") })
+                .execute(.toggleHide, targetUUID: "00000000-0000-0000-0000-000000000002")
+        }.value
+        XCTAssertEqual(response.outcome, .done)
+        XCTAssertEqual(response.exitCode, 0)
+    }
+
+    @MainActor
     func testHideShowLostResponseNeverLaunchesOrRetries() async throws {
-        for command in [AppControlCommand.hide, .show] {
+        for command in [AppControlCommand.hide, .show, .toggleHide] {
             let path = "\(try AppControlSocket.userTemporaryDirectory())/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
             let listener = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
             XCTAssertGreaterThanOrEqual(listener, 0)

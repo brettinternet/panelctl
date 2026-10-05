@@ -3,7 +3,8 @@ import Foundation
 import PanelCtlCore
 
 final class AppControlServer {
-    typealias Handler = @MainActor (AppControlRequest) -> AppControlResponse
+    /// Answers one request; a display command answers when its operation finishes.
+    typealias Handler = @MainActor (AppControlRequest) async -> AppControlResponse
 
     private let handler: Handler
     private let configuredSocketPath: String?
@@ -152,7 +153,7 @@ final class AppControlServer {
                     Darwin.close(client)
                     return
                 }
-                let response = handler(decoded)
+                let response = await handler(decoded)
                 clientQueue.async {
                     Self.write(response, to: client)
                 }
@@ -239,7 +240,7 @@ final class AppControlServer {
                 ? String(response.summary.prefix(512))
                 : "Response exceeded the control message limit; no complete status is available.",
             error: response.displays == nil ? response.error.map { String($0.prefix(512)) }
-                : "Reduce saved display configurations and retry status; do not infer an operation result.",
+                : "Check PanelCtl Settings \u{2192} Displays; do not infer an operation result.",
             outcome: response.displays == nil ? response.outcome : .refused
         )
         guard let data = try? encoder.encode(requiredFieldsOnly),

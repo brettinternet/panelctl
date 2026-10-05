@@ -39,9 +39,12 @@ final class BlackoutHideTests: XCTestCase {
         XCTAssertEqual(tile(Self.sideUUID, model).action, .show)
         XCTAssertNil(tile(Self.sideUUID, model).actionBlocker)
         XCTAssertEqual(model.coveredHiddenDisplayIDs, [202])
-        var titles = delegate.makeMenu().items.map(\.title)
-        XCTAssertTrue(titles.contains("Show Side"))
-        XCTAssertTrue(titles.contains("Hide Main"))
+        let showSide = try XCTUnwrap(delegate.makeMenu().items.first { $0.title == "Show Side" })
+        XCTAssertTrue(showSide.isEnabled)
+        if #available(macOS 14.4, *) {
+            XCTAssertEqual(showSide.subtitle, "Hidden", "each display shows its state")
+        }
+        XCTAssertTrue(delegate.makeMenu().items.contains { $0.title == "Hide Main" && $0.isEnabled })
         XCTAssertEqual(hide(Self.sideUUID, model)?.message, "Couldn\u{2019}t hide. This display is already hidden.")
 
         XCTAssertEqual(hide(Self.thirdUUID, model)?.succeeded, true)
@@ -50,8 +53,9 @@ final class BlackoutHideTests: XCTestCase {
         // The last visible display stays visible.
         let blocker = "PanelCtl keeps at least one display visible, so it won\u{2019}t hide this one."
         XCTAssertEqual(tile(Self.mainUUID, model).actionBlocker, blocker)
-        titles = delegate.makeMenu().items.map(\.title)
-        XCTAssertFalse(titles.contains("Hide Main"), "the menu leaves out a Hide that can't run")
+        let hideMain = try XCTUnwrap(delegate.makeMenu().items.first { $0.title == "Hide Main" })
+        XCTAssertFalse(hideMain.isEnabled, "a Hide that can't run is dimmed")
+        XCTAssertEqual(hideMain.toolTip, blocker)
         let requests = coverRequests.count
         result = hide(Self.mainUUID, model)
         XCTAssertEqual(result?.succeeded, false)

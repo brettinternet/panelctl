@@ -88,7 +88,7 @@ struct PanelCtlMain {
                         targetUUID: targetUUID
                     )
                 } catch {
-                    guard appCommand == .hide || appCommand == .show else { throw error }
+                    guard appCommand.isDisplayCommand else { throw error }
                     // A transport failure does not prove whether the request was received.
                     response = AppControlResponse(
                         ok: false, running: true, enabled: false, state: "unknown",

@@ -129,59 +129,64 @@ Use the bundled CLI if the standalone one is not installed:
 /Applications/PanelCtl.app/Contents/Helpers/panelctl app toggle
 ```
 
-`status`, `hide` and `show` do not launch the app; other commands start it in
-the background if needed. Only `open-settings` shows a window. JSON status may
+`status`, `hide`, `show` and `toggle-hide` do not launch the app; other commands
+start it in the background if needed. Only `open-settings` shows a window. JSON status may
 include `nextAction`, `secondsRemaining`, and `snoozedUntil`.
 
-### Scripted desktop Hide/Show
+### Scripted Hide and Show
 
-Configure the exact target and mirror source in Settings → Displays first.
-Use the target UUID, not a numeric ID, name or index:
+`hide`, `show` and `toggle-hide` do what a display's Hide or Show button does
+in the running app, in that display's Hide style: Black out, or Remove from
+desktop when Experimental features are on and the display is set up for it.
+They name the display by UUID, not by numeric ID, name or index. Settings →
+Displays → Scripts shows the command for the selected display, using the CLI
+bundled in the app so it works without PATH setup:
 
 ```sh
-panelctl app hide --display 00000000-0000-0000-0000-000000000002 --json
-panelctl app show --display 00000000-0000-0000-0000-000000000002 --json
+/Applications/PanelCtl.app/Contents/Helpers/panelctl app toggle-hide --display 00000000-0000-0000-0000-000000000002
 ```
 
-Replace the example UUID with your configured display's UUID. These commands
-check current identity and shared-journal observations using the app's UI
-settings, including optional monitor inputs. **Every actual change still needs
-fresh UI confirmation.** A headless request returns `confirmation-required`
-and directs you to Settings → Displays; it never opens a hidden modal or treats
-saved opt-in as consent. There is no `--yes` bypass. Open the app and choose
-Hide or Show to review the source, inputs, protection suspension and fallback.
-An already hidden/shown desktop returns `no-op`, with no repeated DDC write.
-Show confirmation/recovery remains available while protection is disabled or
-snoozed, and uses the journal owner rather than guessing an absent target.
+`toggle-hide` shows a hidden display and hides a shown one, which suits a
+single Stream Deck button; `hide` and `show` set one state. A display already
+in the requested state returns `no-op`, with no repeated input switch. The
+command waits up to 30 seconds for the Hide or Show to finish and reports the
+result. A request that can't run now is refused, never queued: another Hide or
+Show is running, displays are asleep or changing, no connected display has the
+UUID, the display can't be hidden, or it is the last visible display. While
+display recovery is unresolved, scripts can only show hidden displays; other
+requests return `recovery-needed`. Only these commands hide a display; idle,
+startup, wake and reconnection never do.
 
 For a Shortcut, use **Run Shell Script** with the bundled CLI and capture the
 JSON even on a nonzero result:
 
 ```sh
-/Applications/PanelCtl.app/Contents/Helpers/panelctl app show \
+/Applications/PanelCtl.app/Contents/Helpers/panelctl app toggle-hide \
   --display 00000000-0000-0000-0000-000000000002 --json || :
 ```
 
-Read `outcome` in the returned dictionary. On `confirmation-required`, instruct
-the user to open PanelCtl and confirm Show in Displays. Do not poll/retry Hide
-or Show to obtain consent. On `response-lost`, inspect `app status --json`
-before taking any further action; the CLI does not resend these requests.
+Read `outcome` in the returned dictionary: `done`, `no-op`, `refused`, `busy`,
+`failed`, `partial`, `recovery-needed` or `response-lost`. `summary` describes
+the desktop, `detail` the monitor input when Hide or Show switched it, and
+`displays` holds that display's status entry, described below. On
+`response-lost`, inspect `app status --json` before taking any further action;
+the CLI does not resend these requests.
 
 | Exit | Meaning |
 | --- | --- |
-| 0 | Successful existing action/status, or Hide/Show `no-op` |
-| 1 | `refused`, `busy`, `response-lost`, or other control failure |
+| 0 | Success, including `done` and `no-op` |
+| 1 | `refused`, `busy`, `failed`, `response-lost`, or other control failure |
 | 2 | Invalid CLI arguments (usage error on stderr, no JSON) |
 | 3 | App unavailable (Hide/Show/status do not launch it) |
-| 4 | `confirmation-required`; complete the operation in the UI |
-| 5 | Status reports `partial`: a session input result was skipped, unverified, not attempted or failed |
+| 5 | `partial`: the desktop changed but switching the monitor input was skipped, unverified, not attempted or failed; status reports it while that result is current |
 | 6 | `recovery-needed`; inspect the shared journal in Displays |
 
-Status keeps `state` as the protection state. Its added `displays` array contains
-`targetUUID`, `observedState` (`separate`, `hidden-by-panelctl`,
-`mirrored-externally`, `unavailable`, `recovery-needed`,
-`unsupported-recovery` or `unknown`), `operation` (`idle`, `hiding`,
-`showing`), `recoveryNeeded`, and optional `lastInputOutcome`. Input evidence
+Status keeps `state` as the protection state. Its added `displays` array lists
+every display the Displays tab shows, with `targetUUID`, `observedState`
+(`separate`, `hidden-by-panelctl`, `mirrored-externally`, `unavailable`,
+`recovery-needed`, `unsupported-recovery` or `unknown`), `operation` (`idle`,
+`hiding`, `showing`), `recoveryNeeded`, and optional `lastInputOutcome`. A
+blacked-out display reports `hidden-by-panelctl`. Input evidence
 includes its state, requested/observed codes, detail and any recovery command.
 It is the last app operation result **in this session**, not a live input reading
 or saved configuration. Relaunch discards it rather than inventing input state.

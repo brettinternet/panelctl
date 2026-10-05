@@ -182,16 +182,18 @@ public enum CLIHelp {
               open-settings
               hide --display <UUID>
               show --display <UUID>
+              toggle-hide --display <UUID>
 
             Control PanelCtl.app; status does not launch the app. --json emits
             the machine-readable response. snooze temporarily pauses automation
             for up to 30 days; resume ends a snooze early.
-            Hide/Show require an already running app and an exact saved UUID.
-            Already-observed desired state is a no-op; changes require fresh UI
-            confirmation (exit 4), never a hidden dialog or unattended write.
-            Exit codes: 0 success, 1 refusal/busy/control failure, 2 usage,
-            3 app unavailable, 4 confirmation required, 5 partial input outcome,
-            6 recovery needed. Status includes observed displays and input outcomes.
+            hide, show and toggle-hide act like the display's Hide or Show in
+            the running app, using its Hide style, and wait for the result. Copy
+            the command from Settings > Displays. A display already in the
+            requested state is a no-op.
+            Exit codes: 0 done or no-op, 1 refused, busy, failed or control
+            failure, 2 usage, 3 app unavailable, 5 partial input outcome,
+            6 recovery needed. Status includes each display and its input outcome.
             """
         default:
             return text(for: nil)

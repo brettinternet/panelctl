@@ -820,26 +820,6 @@ final class AppModel: ObservableObject {
         return input.value.map { "Show switches the monitor back to \(MonitorInput.name($0))." }
     }
 
-    func observedDesktopState(for configuration: DisplayHideConfiguration) -> String {
-        if handoffInspectionFailure != nil { return "Recovery status unavailable" }
-        if let observation = handoffStatus?.observations.first(where: {
-            $0.identity.uuid.caseInsensitiveCompare(configuration.target.uuid) == .orderedSame
-        }) {
-            switch observation.state {
-            case .separate: return "Separate"
-            case .hiddenByPanelCtl: return "Hidden by PanelCtl"
-            case .unavailable: return "Unavailable"
-            case .mirroredExternally: return "Mirrored outside PanelCtl"
-            case .recoveryNeeded: return "Recovery needed"
-            case .unsupportedRecovery: return "Unsupported recovery journal"
-            case .unknown: return "Unknown"
-            }
-        }
-        guard let display = matchingDisplay(configuration.target) else { return "Unavailable" }
-        guard display.online, display.active else { return "Unavailable" }
-        return isDisplayMirrored(display.id) ? "Mirrored outside PanelCtl" : "Separate"
-    }
-
     /// Turns Remove from desktop on or off for a display.
     func setHideEnabled(_ enabled: Bool, for display: DisplayRecord) {
         guard !hideConfigurationFrozen,
@@ -959,112 +939,121 @@ final class AppModel: ObservableObject {
 
     var controlDisplayOutcome: AppControlOutcome? {
         if hideOperation.isBusy || handoffStatus?.state == .busy { return .busy }
-        if handoffInspectionFailure != nil || handoffStatus?.state == .recovery ||
-            handoffStatus?.state == .unsupported ||
-            (handoffStatus?.state == .hidden && handoffStatus?.canShow != true) { return .recoveryNeeded }
-        if displayResults.values.contains(where: {
-            guard let outcome = $0.inputOutcome else { return false }
-            return [.failed, .skipped, .unverified, .notAttempted].contains(outcome.state)
-        }) { return .partial }
+        if displayRecoveryProblem != nil { return .recoveryNeeded }
+        if displayResults.values.contains(where: { $0.inputOutcome?.isPartial == true }) { return .partial }
         return nil
     }
 
+    /// Every display with a UUID, as the Displays tab shows it.
     var controlDisplayStatuses: [AppControlDisplayStatus] {
-        hideDisplayConfigurations.map { configuration in
-            let uuid = configuration.target.uuid
-            let operation: String
-            switch hideOperation {
-            case .hiding(let target) where target.caseInsensitiveCompare(uuid) == .orderedSame:
-                operation = "hiding"
-            case .showing(let target) where target.caseInsensitiveCompare(uuid) == .orderedSame:
-                operation = "showing"
-            default: operation = "idle"
-            }
-            let state: String
-            switch observedDesktopState(for: configuration) {
-            case "Separate": state = "separate"
-            case "Hidden by PanelCtl": state = "hidden-by-panelctl"
-            case "Unavailable": state = "unavailable"
-            case "Mirrored outside PanelCtl": state = "mirrored-externally"
-            case "Recovery needed": state = "recovery-needed"
-            case "Unsupported recovery journal": state = "unsupported-recovery"
-            default: state = "unknown"
-            }
+        let recoveryNeeded = displayRecoveryProblem != nil
+        return displayTiles.compactMap { tile in
+            guard let uuid = tile.uuid else { return nil }
             return AppControlDisplayStatus(
-                targetUUID: uuid, observedState: state, operation: operation,
-                recoveryNeeded: handoffInspectionFailure != nil ||
-                    handoffStatus?.state == .recovery || handoffStatus?.state == .unsupported ||
-                    (handoffStatus?.state == .hidden && handoffStatus?.canShow != true),
-                lastInputOutcome: displayResults[uuid.lowercased()]?.inputOutcome
+                targetUUID: uuid,
+                observedState: controlState(of: tile),
+                operation: tile.status == .hiding ? "hiding" : tile.status == .showing ? "showing" : "idle",
+                recoveryNeeded: recoveryNeeded,
+                lastInputOutcome: displayResults[tile.id]?.inputOutcome
             )
         }
     }
 
-    /// Headless calls never open confirmation UI or supply consent. The approved
-    /// contract requires a fresh, scoped UI confirmation for every actual change.
-    func handleDisplayControlRequest(_ request: AppControlRequest) -> AppControlResponse {
-        func response(_ outcome: AppControlOutcome, _ message: String) -> AppControlResponse {
-            AppControlResponse(
-                ok: outcome == .noOp, running: true, enabled: preferences.isEnabled,
-                state: runtimeState.controlIdentifier, summary: message,
-                error: outcome == .noOp ? nil : message, outcome: outcome,
-                displays: controlDisplayStatuses
+    private func controlState(of tile: DisplayTile) -> String {
+        if isBlackoutHidden(tile.uuid) { return "hidden-by-panelctl" }
+        if handoffInspectionFailure != nil { return "unknown" }
+        if let observation = handoffStatus?.observations.first(where: {
+            $0.identity.uuid.caseInsensitiveCompare(tile.uuid ?? "") == .orderedSame
+        }) {
+            switch observation.state {
+            case .separate: return "separate"
+            case .hiddenByPanelCtl: return "hidden-by-panelctl"
+            case .unavailable: return "unavailable"
+            case .mirroredExternally: return "mirrored-externally"
+            case .recoveryNeeded: return "recovery-needed"
+            case .unsupportedRecovery: return "unsupported-recovery"
+            case .unknown: return "unknown"
+            }
+        }
+        guard let display = tile.display, display.online, display.active else { return "unavailable" }
+        return isDisplayMirrored(display.id) ? "mirrored-externally" : "separate"
+    }
+
+    /// Runs Hide, Show or Toggle Hide for a script, like the display's Hide or
+    /// Show button, and answers when it finishes. A request that can't run now
+    /// is refused, never queued for later. The response includes only the
+    /// requested display, which keeps it well inside the message limit.
+    func handleDisplayControlRequest(_ request: AppControlRequest) async -> AppControlResponse {
+        func response(_ outcome: AppControlOutcome, _ summary: String,
+                      detail: String? = nil, error: String? = nil) -> AppControlResponse {
+            let ok = outcome == .done || outcome == .noOp
+            return AppControlResponse(
+                ok: ok, running: true, enabled: preferences.isEnabled,
+                state: runtimeState.controlIdentifier, summary: summary, detail: detail,
+                error: ok ? nil : error ?? summary, outcome: outcome,
+                displays: controlDisplayStatuses.filter {
+                    $0.targetUUID.caseInsensitiveCompare(request.targetUUID ?? "") == .orderedSame
+                }
             )
         }
         guard request.protocolVersion == AppControlRequest.currentProtocol,
-              request.command == .hide || request.command == .show,
-              request.durationSeconds == nil,
+              request.command.isDisplayCommand, request.durationSeconds == nil,
               let uuid = request.targetUUID, UUID(uuidString: uuid) != nil else {
-            return response(.refused, "Hide/Show requires --display with an exact UUID and a supported protocol; no duration is accepted.")
+            return response(.refused, "Hide, Show and Toggle Hide need --display with a display UUID.")
         }
         guard !hideOperation.isBusy else {
-            return response(.busy, "A UI Hide/Show is in progress. Inspect status after it finishes.")
+            return response(.busy, DisplayHideError.actionInProgress.localizedDescription)
         }
-        displays = displayProvider()
-        refreshHandoffStatus()
+        refreshDisplays()
         guard handoffStatus?.state != .busy else {
-            return response(.busy, "Another display operation owns the shared lock. Retry status after it finishes.")
-        }
-        guard handoffInspectionFailure == nil, handoffStatus != nil else {
-            return response(.recoveryNeeded, handoffInspectionFailure ?? "Display recovery status is unknown. Review Settings → Displays.")
+            return response(.busy, "Another display operation is running. Try again when it finishes.")
         }
         guard !displayLifecycleTransitioning else {
-            return response(.refused, "Wait for displays to wake and the display transition to finish.")
+            return response(.refused, DisplayHideError.sleeping.localizedDescription)
         }
-        if handoffStatus?.hasUnresolvedJournal == true {
-            guard let target = handoffStatus?.target,
-                  target.uuid.caseInsensitiveCompare(uuid) == .orderedSame else {
-                return response(.recoveryNeeded, "A different or unknown target owns the shared journal. Review display recovery; no target substitution is allowed.")
+        let tile = displayTiles.first { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame }
+        let hidden = tile?.status == .hidden || tile?.status == .needsRecovery
+        let action: DisplayTile.Action
+        switch request.command {
+        case .hide: action = .hide
+        case .show: action = .show
+        default: action = hidden ? .show : .hide
+        }
+        // While recovery is unresolved, scripts can only show the hidden display,
+        // which is the way out, or change a display that PanelCtl blacked out.
+        if let problem = displayRecoveryProblem, !isBlackoutHidden(uuid),
+           !(action == .show && tile?.action == .show) {
+            return response(.recoveryNeeded, problem)
+        }
+        guard let tile else {
+            return response(.refused, "No connected display has this UUID. Copy the command again from PanelCtl Settings \u{2192} Displays.")
+        }
+        if action == .hide, tile.status == .hidden {
+            return response(.noOp, "\(tile.name) is already hidden.")
+        }
+        if action == .show, !hidden {
+            return response(.noOp, "\(tile.name) isn\u{2019}t hidden.")
+        }
+        guard tile.action == action, tile.actionBlocker == nil else {
+            return response(.refused, tile.actionBlocker ?? "PanelCtl can\u{2019}t do that for \(tile.name) now.")
+        }
+        let result = await withCheckedContinuation { continuation in
+            let finished: (DisplayOperationResult) -> Void = { continuation.resume(returning: $0) }
+            if action == .hide {
+                hide(targetUUID: uuid, completion: finished)
+            } else {
+                show(targetUUID: uuid, completion: finished)
             }
-            if request.command == .hide {
-                guard handoffStatus?.state == .hidden, handoffStatus?.canShow == true else {
-                    return response(.recoveryNeeded, handoffStatus?.reason ?? "Resolve display recovery before Hide.")
-                }
-                return response(.noOp, "Desktop is already hidden by PanelCtl; no topology or input write was attempted.")
+        }
+        if result.succeeded {
+            if result.inputOutcome?.isPartial == true {
+                return response(.partial, result.message, detail: result.inputMessage, error: result.inputMessage)
             }
-            do {
-                _ = try makeShowRequest()
-                return response(.confirmationRequired, "Scripts can\u{2019}t show displays yet. Use Show in PanelCtl Settings \u{2192} Displays or the menu.")
-            } catch {
-                return response(.recoveryNeeded, error.localizedDescription)
-            }
+            return response(.done, result.message, detail: result.inputMessage)
         }
-        guard let configuration = hidePreferences[uuid],
-              matchingDisplay(configuration.target) != nil else {
-            return response(.refused, "No matching saved display identity. Configure the exact display in Settings → Displays; do not substitute an ID.")
-        }
-        if request.command == .show {
-            guard observedDesktopState(for: configuration) == "Separate" else {
-                return response(.refused, "The target is not an observed separate desktop and has no PanelCtl-owned journal. Review macOS Displays.")
-            }
-            return response(.noOp, "Desktop is already shown; no topology or input write was attempted.")
-        }
-        do {
-            _ = try makeHideRequest(targetUUID: uuid)
-            return response(.confirmationRequired, "Scripts can\u{2019}t hide displays yet. Use Hide in PanelCtl Settings \u{2192} Displays or the menu.")
-        } catch {
-            return response(.refused, error.localizedDescription)
-        }
+        let outcome: AppControlOutcome = displayRecoveryProblem != nil ? .recoveryNeeded
+            : result.inputOutcome == nil ? .refused : .failed
+        return response(outcome, result.message, detail: result.inputMessage)
     }
 
     func makeHideRequest(targetUUID: String) throws -> DisplayHideRequest {
@@ -1997,4 +1986,9 @@ final class AppModel: ObservableObject {
         let minutes = Int(seconds / 60)
         return "\(minutes) \(minutes == 1 ? "minute" : "minutes")"
     }
+}
+
+private extension DisplayInputOutcome {
+    /// An input result that scripts report as partial.
+    var isPartial: Bool { [.failed, .skipped, .unverified, .notAttempted].contains(state) }
 }

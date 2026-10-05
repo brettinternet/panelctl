@@ -30,6 +30,7 @@ struct DisplaySettingsView: View {
                             recoveryDetails(status)
                         }
                     }
+                    scriptSection(selected)
                 } else {
                     Section {
                         Text("No displays found.")
@@ -357,6 +358,24 @@ struct DisplaySettingsView: View {
         return lines.joined(separator: " ")
     }
 
+    // MARK: Scripts
+
+    /// The command that runs this display's Hide or Show, using the CLI inside
+    /// the app so it works without PATH setup.
+    @ViewBuilder
+    private func scriptSection(_ tile: DisplayTile) -> some View {
+        if let uuid = tile.uuid, let cli = try? ProtectionService.helperExecutableURL() {
+            Section {
+                copyRow("Command", AppControlCommand.toggleHide.commandLine(executable: cli.path, displayUUID: uuid),
+                        monospaced: true)
+            } header: {
+                Text("Scripts")
+            } footer: {
+                Text("Hides or shows this display, like its Hide or Show button. Use it in a Stream Deck or Shortcuts action that runs a shell command. To set one state, replace toggle-hide with hide or show.")
+            }
+        }
+    }
+
     // MARK: Recovery
 
     /// A recovery problem that no display tile shows.
@@ -405,7 +424,8 @@ struct DisplaySettingsView: View {
                 Text(value)
                     .font(monospaced ? .callout.monospaced() : .callout)
                     .textSelection(.enabled)
-                    .multilineTextAlignment(.trailing)
+                    // A command that wraps reads left to right.
+                    .multilineTextAlignment(monospaced ? .leading : .trailing)
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(value, forType: .string)

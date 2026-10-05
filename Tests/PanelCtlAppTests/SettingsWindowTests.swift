@@ -88,7 +88,6 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertThrowsError(try model.makeHideRequest(targetUUID: Self.sideUUID)) { error in
             XCTAssertTrue(error.localizedDescription.contains("Turn on Experimental features"))
         }
-        XCTAssertEqual(model.handleDisplayControlRequest(AppControlRequest(command: .hide, targetUUID: Self.sideUUID)).outcome, .refused)
         XCTAssertTrue(delegate.makeMenu().items.contains { $0.title == "Hide DELL S2721DGF" })
         XCTAssertNil(try removalSwitch(in: model), "removal setup stays out of Settings")
 

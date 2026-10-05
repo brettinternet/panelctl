@@ -43,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             displayHideLogger.error("Startup found unresolved display recovery: \(self.model.handoffStatus?.inspectionCommand ?? "inspect shared display journal", privacy: .public)")
         }
         let controlServer = AppControlServer { [weak self] request in
-            self?.handleControlRequest(request) ?? .unavailable()
+            await self?.handleControlRequest(request) ?? .unavailable()
         }
         do {
             try controlServer.start()
@@ -385,31 +385,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return menu
     }
 
-    /// Hide and Show items follow each display's action. A Hide that can't
-    /// run is left out, and Settings explains why.
+    /// Each display with its Hide or Show and its state. An action that can't
+    /// run is dimmed, and its tooltip says why.
     private func addDisplayMenuSection(to menu: NSMenu) {
         var items: [NSMenuItem] = []
         if model.displayRecoveryProblem != nil {
             items.append(item("Review Display Recovery…", action: #selector(reviewDisplayRecovery)))
         }
         for tile in model.displayTiles {
-            switch (tile.status, tile.action) {
-            case (.hiding, _):
-                items.append(disabledItem("Hiding \(tile.name)…"))
-            case (.showing, _):
-                items.append(disabledItem("Showing \(tile.name)…"))
-            case (_, .show?):
-                let show = item("Show \(tile.name)", action: #selector(showDisplayFromMenu(_:)))
-                show.representedObject = tile.uuid
-                show.isEnabled = tile.actionBlocker == nil
-                items.append(show)
-            case (_, .hide?) where tile.actionBlocker == nil:
-                let hide = item("Hide \(tile.name)", action: #selector(hideDisplayFromMenu(_:)))
-                hide.representedObject = tile.uuid
-                items.append(hide)
-            default:
-                break
+            let display: NSMenuItem
+            switch tile.action {
+            case .hide?:
+                display = item("Hide \(tile.name)", action: #selector(hideDisplayFromMenu(_:)))
+            case .show?:
+                display = item("Show \(tile.name)", action: #selector(showDisplayFromMenu(_:)))
+            case nil:
+                display = disabledItem(tile.name)
             }
+            display.representedObject = tile.uuid
+            if tile.action != nil {
+                display.isEnabled = tile.actionBlocker == nil
+                display.toolTip = tile.actionBlocker
+            }
+            if #available(macOS 14.4, *) {
+                display.subtitle = tile.status.label
+            } else {
+                display.title += " — \(tile.status.label)"
+            }
+            items.append(display)
             if let line = model.displayResults[tile.id]?.menuLine {
                 let result = disabledItem(line.count > 72 ? String(line.prefix(71)) + "…" : line)
                 result.toolTip = line
@@ -572,7 +575,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func handleControlRequest(
         _ request: AppControlRequest
-    ) -> AppControlResponse {
+    ) async -> AppControlResponse {
         guard request.protocolVersion == AppControlRequest.currentProtocol else {
             return controlResponse(
                 ok: false,
@@ -581,8 +584,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         switch request.command {
-        case .hide, .show:
-            return model.handleDisplayControlRequest(request)
+        case .hide, .show, .toggleHide:
+            return await model.handleDisplayControlRequest(request)
         case .enable:
             model.setProtectionEnabled(true)
         case .disable:

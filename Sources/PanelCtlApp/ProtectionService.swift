@@ -643,7 +643,8 @@ final class ProtectionService {
         return true
     }
 
-    private static func helperExecutableURL() throws -> URL {
+    /// The CLI bundled in the app, which also runs the blackout helper.
+    static func helperExecutableURL() throws -> URL {
         let fileManager = FileManager.default
         var candidates = [
             Bundle.main.bundleURL

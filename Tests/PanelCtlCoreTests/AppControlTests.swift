@@ -107,7 +107,8 @@ final class AppControlTests: XCTestCase {
 
     func testDisplayRequestsParsingOutcomesAndUnavailableApp() throws {
         let uuid = "00000000-0000-0000-0000-000000000002"
-        for command in [AppControlCommand.hide, .show] {
+        for command in [AppControlCommand.hide, .show, .toggleHide] {
+            XCTAssertTrue(command.isDisplayCommand)
             XCTAssertEqual(
                 try CLIParser.parse(["app", command.rawValue, "--display", uuid, "--json"]),
                 .app(command: command, durationSeconds: nil, targetUUID: uuid, json: true)
@@ -127,15 +128,33 @@ final class AppControlTests: XCTestCase {
             )
             XCTAssertEqual(try client.execute(command, targetUUID: uuid).exitCode, 3)
         }
+        XCTAssertFalse(AppControlCommand.toggle.isDisplayCommand)
         XCTAssertThrowsError(try CLIParser.parse(["app", "enable", "--display", uuid]))
-        for (outcome, exitCode) in [(AppControlOutcome.noOp, Int32(0)), (.refused, 1),
-                                    (.busy, 1), (.confirmationRequired, 4), (.partial, 5),
+        XCTAssertNil(AppControlOutcome(rawValue: "confirmation-required"), "scripts act instead of asking for the UI")
+        for (outcome, exitCode) in [(AppControlOutcome.done, Int32(0)), (.noOp, 0), (.refused, 1),
+                                    (.busy, 1), (.failed, 1), (.partial, 5),
                                     (.recoveryNeeded, 6), (.responseLost, 1)] {
-            let response = AppControlResponse(ok: outcome == .noOp, running: true, enabled: false,
+            let response = AppControlResponse(ok: exitCode == 0, running: true, enabled: false,
                                               state: "disabled", summary: "fixture", outcome: outcome)
             XCTAssertEqual(response.exitCode, exitCode)
             XCTAssertEqual(try JSONDecoder().decode(AppControlResponse.self, from: JSONEncoder().encode(response)), response)
         }
+    }
+
+    func testDisplayCommandLineParsesBackAndQuotesOnlyWhenNeeded() throws {
+        let uuid = "37D8832A-2D66-02CA-B9F7-8F30A301B230"
+        let bundled = "/Applications/PanelCtl.app/Contents/Helpers/panelctl"
+        let line = AppControlCommand.toggleHide.commandLine(executable: bundled, displayUUID: uuid)
+        XCTAssertEqual(line, "/Applications/PanelCtl.app/Contents/Helpers/panelctl app toggle-hide --display \(uuid)")
+        let words = line.split(separator: " ").map(String.init)
+        XCTAssertEqual(words.first, bundled)
+        XCTAssertEqual(try CLIParser.parse(Array(words.dropFirst())),
+                       .app(command: .toggleHide, durationSeconds: nil, targetUUID: uuid, json: false))
+        XCTAssertEqual(
+            AppControlCommand.hide.commandLine(executable: "/Users/me/My Apps/Bob's/PanelCtl.app/Contents/Helpers/panelctl",
+                                               displayUUID: uuid),
+            "'/Users/me/My Apps/Bob'\\''s/PanelCtl.app/Contents/Helpers/panelctl' app hide --display \(uuid)"
+        )
     }
 
     func testAppCommandParsing() throws {

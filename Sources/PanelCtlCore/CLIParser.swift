@@ -414,7 +414,7 @@ public enum CLIParser {
                 }
                 json = true
             case "--display":
-                guard command == .hide || command == .show else {
+                guard command.isDisplayCommand else {
                     throw CLIParseError.unknownOption("--display")
                 }
                 guard targetUUID == nil else { throw CLIParseError.duplicateOption("--display") }
@@ -447,7 +447,7 @@ public enum CLIParser {
         if command == .snooze, durationSeconds == nil {
             throw CLIParseError.missingValue("--for")
         }
-        if (command == .hide || command == .show), targetUUID == nil {
+        if command.isDisplayCommand, targetUUID == nil {
             throw CLIParseError.missingValue("--display")
         }
         return .app(

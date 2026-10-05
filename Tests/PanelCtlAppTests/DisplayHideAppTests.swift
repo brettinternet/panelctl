@@ -1038,7 +1038,11 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.status, .hiding)
         let delegate = AppDelegate()
         delegate.model = model
-        XCTAssertTrue(delegate.makeMenu().items.contains { $0.title == "Hiding Target\u{2026}" && !$0.isEnabled })
+        let hiding = try XCTUnwrap(delegate.makeMenu().items.first { $0.title == "Target" })
+        XCTAssertFalse(hiding.isEnabled)
+        if #available(macOS 14.4, *) {
+            XCTAssertEqual(hiding.subtitle, "Hiding\u{2026}")
+        }
 
         completion?(false, "brightness restore failed")
         try await waitUntil { result != nil }
@@ -1222,9 +1226,11 @@ final class DisplayHideAppTests: XCTestCase {
                       other.actionBlocker ?? "no blocker")
         let delegate = AppDelegate()
         delegate.model = model
-        let titles = delegate.makeMenu().items.map(\.title)
-        XCTAssertFalse(titles.contains("Hide Mirror source"), "the menu leaves out a Hide that can't run")
-        XCTAssertFalse(titles.contains("Hide Target"))
+        let items = delegate.makeMenu().items
+        let hideOther = try XCTUnwrap(items.first { $0.title == "Hide Mirror source" })
+        XCTAssertFalse(hideOther.isEnabled, "a Hide that can't run is dimmed")
+        XCTAssertEqual(hideOther.toolTip, other.actionBlocker)
+        XCTAssertFalse(items.contains { $0.title == "Hide Target" })
     }
 
     func testBlackOutAndRemovalStayOffEachOthersDisplays() throws {
@@ -1475,7 +1481,7 @@ final class DisplayHideAppTests: XCTestCase {
         let model = makeModel(defaults: defaults, displays: [displays[0], displays[2]], status: { recovery })
         XCTAssertTrue(model.hideConfigurationFrozen)
         let savedTarget = try XCTUnwrap(model.hideDisplayConfigurations.first { $0.target.uuid == Self.targetUUID })
-        XCTAssertEqual(model.observedDesktopState(for: savedTarget), "Unavailable")
+        XCTAssertEqual(model.controlDisplayStatuses.first { $0.targetUUID == Self.targetUUID }?.observedState, "unavailable")
         XCTAssertFalse(model.identityIsCurrent(savedTarget.target))
         let target = try XCTUnwrap(model.displayTiles.last)
         XCTAssertEqual(target.id, Self.targetKey)
@@ -1913,7 +1919,7 @@ final class DisplayHideAppTests: XCTestCase {
         nativeViews(in: root).compactMap { $0 as? NSControl }
     }
 
-    func testHeadlessControlSocketPreservesConfirmationAndReportsObservedResults() async throws {
+    func testScriptsHideAndShowThroughTheControlSocket() async throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
         let box = StatusBox(handoffStatus(.none, target: nil, source: nil))
@@ -1926,7 +1932,7 @@ final class DisplayHideAppTests: XCTestCase {
             hideDisplay: { _, _, _ in
                 hideCalls += 1
                 box.value = self.handoffStatus(.hidden, target: self.displays[1], source: self.displays[0], journalID: "script-journal", canShow: true)
-                return DisplayInputOutcome(state: .skipped, requestedInput: 17, detail: "Use monitor buttons")
+                return DisplayInputOutcome(state: .verified, requestedInput: 17)
             },
             showDisplay: { _, _ in
                 showCalls += 1
@@ -1943,7 +1949,7 @@ final class DisplayHideAppTests: XCTestCase {
         let delegate = AppDelegate()
         delegate.model = model
         let path = "\(try AppControlSocket.userTemporaryDirectory())/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
-        let server = AppControlServer(socketPath: path) { delegate.handleControlRequest($0) }
+        let server = AppControlServer(socketPath: path) { await delegate.handleControlRequest($0) }
         try server.start()
         defer { server.stop() }
         let target = Self.targetUUID
@@ -1953,97 +1959,149 @@ final class DisplayHideAppTests: XCTestCase {
                 return try client.execute(command, targetUUID: uuid)
             }.value
         }
+        func targetStatus(_ response: AppControlResponse) -> AppControlDisplayStatus? {
+            response.displays?.first { $0.targetUUID == target }
+        }
         let initial = try await send(.status, uuid: nil)
         XCTAssertNil(initial.outcome)
-        XCTAssertNil(initial.displays?.first { $0.targetUUID == target }?.lastInputOutcome)
-        XCTAssertEqual(initial.displays?.first { $0.targetUUID == target }?.observedState, "separate")
-        async let first = send(.hide)
-        async let second = send(.hide)
-        let duplicates = try await [first, second]
-        XCTAssertEqual(duplicates.map(\.outcome), [.confirmationRequired, .confirmationRequired])
-        XCTAssertEqual(duplicates.map(\.exitCode), [4, 4])
-        XCTAssertEqual(hideCalls, 0)
-        let shown = try await send(.show)
-        XCTAssertEqual(shown.outcome, .noOp)
-        let reply1 = try await send(.hide, uuid: Self.replacementUUID)
-        XCTAssertEqual(reply1.outcome, .refused)
+        XCTAssertEqual(initial.displays?.map(\.targetUUID), [Self.mainUUID, target, Self.sourceUUID],
+                       "status lists every display, including ones only Black out can hide")
+        XCTAssertEqual(targetStatus(initial)?.observedState, "separate")
+        XCTAssertNil(targetStatus(initial)?.lastInputOutcome)
 
-        // Only Settings or the menu can perform the fake operation. Concurrent
-        // socket requests observe busy and never replay it.
-        model.hide(targetUUID: target)
+        // The reply comes when Hide finishes; a request meanwhile is busy.
+        async let toggled = send(.toggleHide)
+        try await waitUntil { model.hideOperation.isBusy }
         let busy = try await send(.hide)
         XCTAssertEqual(busy.outcome, .busy)
-        XCTAssertEqual(busy.displays?.first { $0.targetUUID == target }?.operation, "hiding")
+        XCTAssertEqual(busy.exitCode, 1)
+        XCTAssertEqual(targetStatus(busy)?.operation, "hiding")
         cleanup?(true, nil)
-        try await waitUntil { !model.hideOperation.isBusy }
+        let hidden = try await toggled
+        XCTAssertEqual(hidden.outcome, .done)
+        XCTAssertEqual(hidden.exitCode, 0)
+        XCTAssertTrue(hidden.ok)
+        XCTAssertEqual(hidden.summary, "Hidden.")
+        XCTAssertEqual(hidden.detail, "Switched the monitor to HDMI 1.")
+        XCTAssertEqual(hidden.displays?.map(\.targetUUID), [target], "a Hide reports only its display")
+        XCTAssertEqual(targetStatus(hidden)?.observedState, "hidden-by-panelctl")
+        XCTAssertEqual(targetStatus(hidden)?.lastInputOutcome?.state, .verified)
         XCTAssertEqual(hideCalls, 1)
-        let hidden = try await send(.hide)
-        XCTAssertEqual(hidden.outcome, .noOp)
-        XCTAssertEqual(hidden.displays?.first { $0.targetUUID == target }?.observedState, "hidden-by-panelctl")
-        XCTAssertEqual(hidden.displays?.first { $0.targetUUID == target }?.lastInputOutcome?.state, .skipped)
-        let reply2 = try await send(.status, uuid: nil)
-        XCTAssertEqual(reply2.exitCode, 5)
-        let reply3 = try await send(.hide, uuid: Self.sourceUUID)
-        XCTAssertEqual(reply3.outcome, .recoveryNeeded)
-        let reply4 = try await send(.blackoutNow, uuid: nil)
-        XCTAssertFalse(reply4.ok)
+        let again = try await send(.hide)
+        XCTAssertEqual(again.outcome, .noOp)
+        XCTAssertEqual(again.exitCode, 0)
+        XCTAssertEqual(again.summary, "Target is already hidden.")
+        let unknown = try await send(.hide, uuid: Self.replacementUUID)
+        XCTAssertEqual(unknown.outcome, .refused)
+        let blackout = try await send(.blackoutNow, uuid: nil)
+        XCTAssertFalse(blackout.ok)
+        XCTAssertEqual(hideCalls, 1, "an already hidden display isn\u{2019}t hidden again")
+
+        // Show works while automation is off.
         _ = try await send(.disable, uuid: nil)
         XCTAssertFalse(model.preferences.isEnabled)
-        let reply5 = try await send(.show)
-        XCTAssertEqual(reply5.outcome, .confirmationRequired)
-        model.snooze(for: 60)
-        let reply6 = try await send(.show)
-        XCTAssertEqual(reply6.outcome, .confirmationRequired)
-        XCTAssertEqual(showCalls, 0)
-
-        model.show(targetUUID: target)
+        async let shown = send(.toggleHide)
+        try await waitUntil { model.hideOperation.isBusy }
         cleanup?(true, nil)
-        try await waitUntil { !model.hideOperation.isBusy }
-        XCTAssertEqual(showCalls, 1)
-        let reply7 = try await send(.show)
-        XCTAssertEqual(reply7.outcome, .noOp)
-        let reply8 = try await send(.show)
-        XCTAssertEqual(reply8.outcome, .noOp)
-        let partial = try await send(.status, uuid: nil)
+        let partial = try await shown
         XCTAssertEqual(partial.outcome, .partial)
         XCTAssertEqual(partial.exitCode, 5)
-        XCTAssertEqual(partial.displays?.first { $0.targetUUID == target }?.lastInputOutcome?.state, .failed)
-        XCTAssertEqual(showCalls, 1, "a duplicate Show must not repeat DDC")
-        // Journal remains visibly mirrored after a serial change, but its
-        // identity validation refuses Show. Hidden observation alone is not health.
+        XCTAssertFalse(partial.ok)
+        XCTAssertEqual(partial.summary, "Shown.")
+        XCTAssertEqual(partial.error, partial.detail)
+        XCTAssertTrue(partial.detail?.contains("Input readback mismatch") == true)
+        XCTAssertEqual(targetStatus(partial)?.observedState, "separate")
+        XCTAssertEqual(showCalls, 1)
+        let shownAgain = try await send(.show)
+        XCTAssertEqual(shownAgain.outcome, .noOp)
+        XCTAssertEqual(shownAgain.summary, "Target isn\u{2019}t hidden.")
+        XCTAssertEqual(showCalls, 1, "a repeated Show doesn\u{2019}t switch the input again")
+        let status = try await send(.status, uuid: nil)
+        XCTAssertEqual(status.outcome, .partial)
+        XCTAssertEqual(status.exitCode, 5)
+        XCTAssertEqual(targetStatus(status)?.lastInputOutcome?.state, .failed)
+
+        // A journal that fails its identity check needs recovery, whatever the command.
         box.value = handoffStatus(.hidden, target: displays[1], source: displays[0],
                                   journalID: "changed-identity", canShow: false,
                                   reason: "Captured target identity changed (serial mismatch)")
-        for command in [AppControlCommand.hide, .show, .status] {
+        for command in [AppControlCommand.hide, .show, .toggleHide, .status] {
             let staleJournal = try await send(command, uuid: command == .status ? nil : target)
             XCTAssertEqual(staleJournal.outcome, .recoveryNeeded)
             XCTAssertEqual(staleJournal.exitCode, 6)
-            XCTAssertEqual(staleJournal.displays?.first { $0.targetUUID == target }?.recoveryNeeded, true)
+            XCTAssertEqual(targetStatus(staleJournal)?.recoveryNeeded, true)
         }
-        XCTAssertEqual(hideCalls, 1, "stale journal must not write")
-        XCTAssertEqual(showCalls, 1, "stale journal must not write")
+        let otherHide = try await send(.hide, uuid: Self.mainUUID)
+        XCTAssertEqual(otherHide.exitCode, 6, "no other display hides during recovery")
         box.value = handoffStatus(.recovery, target: displays[1], source: displays[0], journalID: "unresolved", reason: "target unavailable")
-        let reply9 = try await send(.show)
-        XCTAssertEqual(reply9.exitCode, 6)
+        let unrestorable = try await send(.show)
+        XCTAssertEqual(unrestorable.exitCode, 6)
         let recovery = try await send(.status, uuid: nil)
         XCTAssertEqual(recovery.outcome, .recoveryNeeded)
-        XCTAssertEqual(recovery.displays?.first { $0.targetUUID == target }?.recoveryNeeded, true)
-        XCTAssertEqual(hideCalls, 1)
-        XCTAssertEqual(showCalls, 1)
+        XCTAssertEqual(hideCalls, 1, "recovery never writes")
+        XCTAssertEqual(showCalls, 1, "recovery never writes")
+    }
+
+    func testScriptsBlackOutByDefaultAndNeverRestartAHide() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        defaults.set(false, forKey: "experimentalFeaturesEnabled")
+        let model = makeModel(defaults: defaults, displays: displays, hideDisplay: { _, _, _ in
+            XCTFail("Remove from desktop needs Experimental features")
+            return .notRequested
+        })
+        model.setHideEnabled(true, for: displays[1])
+        func send(_ command: AppControlCommand, _ uuid: String = Self.targetUUID) async -> AppControlResponse {
+            await model.handleDisplayControlRequest(AppControlRequest(command: command, targetUUID: uuid))
+        }
+        let hidden = await send(.toggleHide)
+        XCTAssertEqual(hidden.outcome, .done)
+        XCTAssertEqual(hidden.summary, "Hidden.")
+        XCTAssertNil(hidden.detail, "Black out doesn\u{2019}t switch inputs")
+        XCTAssertTrue(model.isBlackoutHidden(Self.targetUUID))
+        XCTAssertEqual(hidden.displays?.first { $0.targetUUID == Self.targetUUID }?.observedState, "hidden-by-panelctl")
+        let again = await send(.hide)
+        XCTAssertEqual(again.outcome, .noOp)
+        let shown = await send(.toggleHide)
+        XCTAssertEqual(shown.outcome, .done)
+        XCTAssertEqual(shown.summary, "Shown.")
+        XCTAssertFalse(model.isBlackoutHidden(Self.targetUUID))
+        let shownAgain = await send(.show)
+        XCTAssertEqual(shownAgain.outcome, .noOp)
+        XCTAssertEqual(shownAgain.exitCode, 0)
+
+        // PanelCtl keeps one display visible.
+        let first = await send(.hide)
+        let second = await send(.hide, Self.sourceUUID)
+        XCTAssertEqual([first.outcome, second.outcome], [.done, .done])
+        let last = await send(.hide, Self.mainUUID)
+        XCTAssertEqual(last.outcome, .refused)
+        XCTAssertEqual(last.exitCode, 1)
+        XCTAssertEqual(last.summary, "PanelCtl keeps at least one display visible, so it won\u{2019}t hide this one.")
+        XCTAssertFalse(model.isBlackoutHidden(Self.mainUUID))
+
+        // Hides never start from wake or startup.
+        let targetShown = await send(.show)
+        XCTAssertEqual(targetShown.outcome, .done)
+        model.setDisplayLifecycleTransitioning(true)
+        let waking = await send(.hide)
+        XCTAssertEqual(waking.outcome, .refused)
+        model.setDisplayLifecycleTransitioning(false)
+        XCTAssertFalse(model.isBlackoutHidden(Self.targetUUID), "a refused request doesn\u{2019}t run later")
+        XCTAssertTrue(model.isBlackoutHidden(Self.sourceUUID))
+        let relaunched = makeModel(defaults: defaults, displays: displays)
+        XCTAssertFalse(relaunched.isBlackoutHidden(Self.sourceUUID), "relaunching doesn\u{2019}t hide a display again")
     }
 
     func testOversizedStatusDoesNotMisreportCompletedProtectionToggle() async throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
-        var saved = DisplayHidePreferences()
-        for _ in 0..<40 {
-            let identity = DisplayIdentitySnapshot(uuid: UUID().uuidString, id: 202, name: "Saved target",
-                                                   vendor: 1, model: 2, serial: 3)
-            saved[identity.uuid] = DisplayHideConfiguration(target: identity)
+        // Status lists every display, so enough of them exceed the message limit.
+        let many = displays + (4...40).map { index in
+            Self.display(index: index, id: UInt32(400 + index), uuid: UUID().uuidString, name: "Extra \(index)", main: false)
         }
-        defaults.set(try JSONEncoder().encode(saved), forKey: "displayHidePreferences")
         let hidden = handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "overflow", canShow: true)
-        let model = makeModel(defaults: defaults, displays: displays, status: { hidden })
+        let model = makeModel(defaults: defaults, displays: many, status: { hidden })
         let delegate = AppDelegate()
         delegate.model = model
         XCTAssertFalse(model.preferences.isEnabled)
@@ -2051,7 +2109,7 @@ final class DisplayHideAppTests: XCTestCase {
         var toggleCount = 0
         let server = AppControlServer(socketPath: path) { request in
             if request.command == .toggle { toggleCount += 1 }
-            return delegate.handleControlRequest(request)
+            return await delegate.handleControlRequest(request)
         }
         try server.start()
         defer { server.stop() }
@@ -2071,7 +2129,7 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(toggleCount, 1)
     }
 
-    func testHeadlessRefusesStaleIdentityUnknownJournalAndLifecycle() throws {
+    func testScriptsRefuseChangedIdentityUnreadableJournalAndTransitions() async throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
         let model = makeModel(defaults: defaults, displays: displays)
@@ -2079,18 +2137,23 @@ final class DisplayHideAppTests: XCTestCase {
         model.setHideSource(Self.mainUUID, for: Self.targetUUID)
         let changed = Self.display(index: 2, id: 202, uuid: Self.targetUUID, name: "Replacement", main: false, serial: 999)
         let stale = makeModel(defaults: defaults, displays: [displays[0], changed])
-        for command in [AppControlCommand.hide, .show] {
-            let request = AppControlRequest(command: command, targetUUID: Self.targetUUID)
-            XCTAssertEqual(stale.handleDisplayControlRequest(request).outcome, .refused)
-            model.setDisplayLifecycleTransitioning(true)
-            XCTAssertEqual(model.handleDisplayControlRequest(request).outcome, .refused)
-            model.setDisplayLifecycleTransitioning(false)
+        let staleHide = await stale.handleDisplayControlRequest(AppControlRequest(command: .hide, targetUUID: Self.targetUUID))
+        XCTAssertEqual(staleHide.outcome, .refused)
+        let staleShow = await stale.handleDisplayControlRequest(AppControlRequest(command: .show, targetUUID: Self.targetUUID))
+        XCTAssertEqual(staleShow.outcome, .noOp)
+        model.setDisplayLifecycleTransitioning(true)
+        for command in [AppControlCommand.hide, .show, .toggleHide] {
+            let waking = await model.handleDisplayControlRequest(AppControlRequest(command: command, targetUUID: Self.targetUUID))
+            XCTAssertEqual(waking.outcome, .refused)
         }
+        model.setDisplayLifecycleTransitioning(false)
         let unknown = makeModel(defaults: defaults, displays: displays, status: {
             self.handoffStatus(.recovery, target: nil, source: nil, inspectionFailure: "unreadable journal")
         })
-        XCTAssertEqual(unknown.handleDisplayControlRequest(AppControlRequest(command: .show, targetUUID: Self.targetUUID)).outcome, .recoveryNeeded)
-        XCTAssertEqual(model.handleDisplayControlRequest(AppControlRequest(command: .show)).outcome, .refused)
+        let unreadable = await unknown.handleDisplayControlRequest(AppControlRequest(command: .show, targetUUID: Self.targetUUID))
+        XCTAssertEqual(unreadable.outcome, .recoveryNeeded)
+        let missingDisplay = await model.handleDisplayControlRequest(AppControlRequest(command: .show))
+        XCTAssertEqual(missingDisplay.outcome, .refused)
     }
 
     private func makeModel(
