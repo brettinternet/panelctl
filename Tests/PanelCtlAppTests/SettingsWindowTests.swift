@@ -114,6 +114,21 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertNoThrow(try model.makeShowRequest())
     }
 
+    func testBlackedOutDisplayStaysHiddenAfterSettingsCloses() throws {
+        let (model, defaults) = try makeModel()
+        defer { defaults.removePersistentDomain(forName: Self.suiteName) }
+        let controller = SettingsWindowController(model: model)
+        controller.present()
+        controller.selectDisplay(uuid: Self.sideUUID)
+        model.hide(targetUUID: Self.sideUUID)
+        XCTAssertEqual(try sideTile(model).status, .hidden)
+
+        try XCTUnwrap(controller.window).close()
+        XCTAssertTrue(model.isBlackoutHidden(Self.sideUUID))
+        XCTAssertEqual(model.coveredHiddenDisplayIDs, [12])
+        XCTAssertEqual(try sideTile(model).action, .show)
+    }
+
     func testExperimentalToggleAsksForConsentBeforeTurningOn() throws {
         let (model, defaults) = try makeModel()
         defer { defaults.removePersistentDomain(forName: Self.suiteName) }
