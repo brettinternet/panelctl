@@ -4,7 +4,7 @@ title: Gate experimental private disconnect controls on qualified recovery
 status: To Do
 assignee: []
 created_date: '2026-10-04 17:13'
-updated_date: '2026-10-05 03:53'
+updated_date: '2026-10-05 05:30'
 labels:
   - display-hide
   - app
@@ -19,7 +19,7 @@ references:
   - docs/display-recovery.md
   - Sources/PanelCtlApp/SettingsView.swift
   - Sources/PanelCtlCore/DisplayRecovery.swift
-priority: low
+priority: medium
 type: feature
 ordinal: 10010
 ---
@@ -45,4 +45,6 @@ Mirror hide does not drop the Mac display signal. Users seeking signal removal n
 Parked 2026-10-04 with TASK-12/TASK-9 (user decision: mirroring is the first hide route). App dependency is now TASK-17, which owns app journal recovery after the TASK-17/18 re-slice. Resume only if those tasks are resumed and qualified.
 
 User-approved split: TASK-22 may proceed independently alongside TASK-12, scoped to app-local synthetic presentation and fake-backed tests with production disconnect unavailable. TASK-20 remains qualification-gated and owns integrating those states with production recovery plus AC5 UI/core boundary tests; TASK-22 completion does not satisfy hardware qualification or authorize writes. Earlier parking notes do not block TASK-22. Existing acceptance criteria remain intact.
+
+Un-parked 2026-10-05 with TASK-9: signal drop for non-DDC monitor auto-switch is a confirmed user need. Still gated on TASK-9 qualified evidence (which now waits on TASK-23). If TASK-9 shows disable does not drop the signal, reassess this task rather than shipping it.
 <!-- SECTION:NOTES:END -->
