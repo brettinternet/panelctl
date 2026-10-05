@@ -153,11 +153,15 @@ idle, startup or wake path disconnects a display. See
 
 - Only one display can be removed from the desktop at a time. An unresolved
   journal blocks another removal; it is never overwritten to start one.
-- Other independent displays can still use Black out. The removed target and
-  its mirror source cannot: covering a mirror source would copy its cover to
-  the target. Displays mirrored outside PanelCtl also refuse Black out.
+- Other independent displays can still use Black out. A verified PanelCtl
+  removal source can also be blacked out when another display remains visible;
+  its cover is copied to the removed target on the Mac's input. Displays mirrored
+  outside PanelCtl still refuse Black out, and removing onto a blacked-out source
+  is refused.
 - Removed and blacked-out displays do not count as visible for Black out's
-  last-visible check. Removing onto a blacked-out source is refused.
+  last-visible check. Showing the removed display leaves its source's manual
+  cover in place; showing the source removes only its manual cover and leaves the
+  removal intact.
 - Only an explicit person or script action starts Hide. Idle, startup, login,
   wake and reconnection never initiate a new removal or input switch. Re-covering
   a Black out Hide within the same session preserves an existing explicit Hide.
@@ -250,8 +254,11 @@ helper omitted its final status report.
 While a display is removed, automation pauses except for a source-only overlay:
 if the source is selected in Automation and automation is enabled and not
 snoozed, it may be blacked out. The removed target also looks black on the Mac's
-input; it is never itself an overlay target. This automation exception does not
-make the source's manual Hide available.
+input; it is never itself an overlay target. Manual Hide can independently
+black out a verified PanelCtl source when another display remains visible. That
+session-only Hide owns the cover instead of Automation; its overlay is stopped
+while the source is hidden and cannot show or double-cover it. Showing the source
+removes only Hide's cover; any eligible source overlay can resume separately.
 
 | Event | Behavior |
 | --- | --- |

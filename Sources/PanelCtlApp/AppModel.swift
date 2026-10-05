@@ -295,12 +295,10 @@ final class AppModel: ObservableObject {
             protectionQuiescencePending || protectionQuiescenceFailure != nil || hideOperation.isBusy
     }
 
-    var verifiedHiddenMirrorSource: DisplayRecord? {
+    /// The currently observed source identity for a verified, showable PanelCtl
+    /// removal. Sleep does not invalidate this identity for cover reconciliation.
+    private var journalVerifiedHiddenMirrorSource: DisplayRecord? {
         guard handoffInspectionFailure == nil,
-              !protectionQuiescencePending,
-              protectionQuiescenceFailure == nil,
-              !hideOperation.isBusy,
-              !displayLifecycleTransitioning,
               let status = handoffStatus,
               status.state == .hidden,
               status.canShow,
@@ -315,8 +313,18 @@ final class AppModel: ObservableObject {
               display.vendor == source.vendor,
               display.model == source.model,
               display.serial == source.serial,
-              display.online, display.active, !display.asleep else { return nil }
+              display.online, display.active else { return nil }
         return display
+    }
+
+    var verifiedHiddenMirrorSource: DisplayRecord? {
+        guard !protectionQuiescencePending,
+              protectionQuiescenceFailure == nil,
+              !hideOperation.isBusy,
+              !displayLifecycleTransitioning,
+              let source = journalVerifiedHiddenMirrorSource,
+              !source.asleep else { return nil }
+        return source
     }
 
     var selectedHiddenMirrorSource: DisplayRecord? {
@@ -542,7 +550,7 @@ final class AppModel: ObservableObject {
         if journal?.target?.uuid.caseInsensitiveCompare(uuid) == .orderedSame {
             return .unavailable("PanelCtl removed this display from the desktop. Show it first.")
         }
-        if isDisplayMirrored(display.id) {
+        if isDisplayMirrored(display.id), journalVerifiedHiddenMirrorSource?.id != display.id {
             if journal?.source?.uuid.caseInsensitiveCompare(uuid) == .orderedSame {
                 return .unavailable("PanelCtl is mirroring \(journal?.target?.name ?? "another display") onto this display. Show it first.")
             }
@@ -595,17 +603,21 @@ final class AppModel: ObservableObject {
     }
 
     /// Re-covers hidden displays after a display change. A hidden display
-    /// macOS now mirrors is shown, since its mirror would show the cover too,
-    /// and once no other display is connected, every hidden display is shown.
+    /// macOS now mirrors is shown unless it is a verified PanelCtl removal source.
+    /// Once no other non-removed display is connected, every hidden display is shown.
     private func reconcileHiddenDisplays() {
         var shown: [String: String] = [:]
         if !blackoutHiddenDisplays.isEmpty, !displayLifecycleTransitioning {
-            for (id, key) in connectedHiddenDisplays where isDisplayMirrored(id) {
+            for (id, key) in connectedHiddenDisplays
+            where isDisplayMirrored(id) && journalVerifiedHiddenMirrorSource?.id != id {
                 shown[key] = "Shown because macOS started mirroring it."
             }
             let stillHidden = Set(blackoutHiddenDisplays.keys).subtracting(shown.keys)
+            let removedTargetUUID = handoffStatus?.hasUnresolvedJournal == true
+                ? handoffStatus?.target?.uuid.lowercased() : nil
             if !stillHidden.isEmpty, !displays.contains(where: {
-                $0.online && !stillHidden.contains($0.uuid?.lowercased() ?? "")
+                $0.online && !stillHidden.contains($0.uuid?.lowercased() ?? "") &&
+                    (removedTargetUUID == nil || $0.uuid?.lowercased() != removedTargetUUID)
             }) {
                 for key in stillHidden { shown[key] = "Shown because no other display was connected." }
             }
@@ -630,6 +642,9 @@ final class AppModel: ObservableObject {
     }
 
     private func blackOut(targetUUID: String, completion: ((DisplayOperationResult) -> Void)?) {
+        // Menu and Settings actions may arrive before a topology notification.
+        displays = displayProvider()
+        refreshHandoffStatus()
         let matches = displays.filter { $0.uuid?.caseInsensitiveCompare(targetUUID) == .orderedSame }
         guard matches.count == 1, let display = matches.first else {
             refuse(.hide, targetUUID: targetUUID, error: DisplayHideError.unavailable(
@@ -641,12 +656,60 @@ final class AppModel: ObservableObject {
             refuse(.hide, targetUUID: targetUUID, error: refusal, completion: completion)
             return
         }
+        let identity = DisplayIdentitySnapshot(display)
+        if journalVerifiedHiddenMirrorSource?.id == display.id,
+           service.hasManagedProcess || protectionQuiescencePending || hiddenMirrorOverlayPolicyEligible {
+            hideOperation = .hiding(targetUUID)
+            onStatusChange?()
+            stopManagedProtection { [weak self] succeeded, message in
+                Task { @MainActor in
+                    guard let self, self.hideOperation == .hiding(targetUUID) else { return }
+                    guard succeeded else {
+                        self.hideOperation = .idle
+                        let failure = message ?? "Automation cleanup could not be verified."
+                        self.protectionQuiescenceFailure = failure
+                        self.reconcileProtection()
+                        self.refuse(.hide, targetUUID: targetUUID, error: DisplayHideError.protectionCleanup(
+                            "Automation cleanup needs attention: \(failure)"
+                        ), completion: completion)
+                        return
+                    }
+                    self.protectionQuiescenceFailure = nil
+                    self.displays = self.displayProvider()
+                    self.refreshHandoffStatus()
+                    self.hideOperation = .idle
+                    guard let current = self.matchingDisplay(identity) else {
+                        self.reconcileProtection()
+                        self.refuse(.hide, targetUUID: targetUUID, error: DisplayHideError.identityChanged(
+                            "This display changed before Hide began. Try again."
+                        ), completion: completion)
+                        return
+                    }
+                    if let refusal = self.blackoutReadiness(for: current) {
+                        self.reconcileProtection()
+                        self.refuse(.hide, targetUUID: targetUUID, error: refusal, completion: completion)
+                        return
+                    }
+                    self.coverWithBlackOut(targetUUID: targetUUID, display: current, completion: completion)
+                }
+            }
+            return
+        }
+        coverWithBlackOut(targetUUID: targetUUID, display: display, completion: completion)
+    }
+
+    private func coverWithBlackOut(
+        targetUUID: String,
+        display: DisplayRecord,
+        completion: ((DisplayOperationResult) -> Void)?
+    ) {
         let key = targetUUID.lowercased()
         blackoutHiddenDisplays[key] = DisplayIdentitySnapshot(display)
         coverHiddenDisplays()
         guard !uncoveredHiddenDisplays.contains(key) else {
             blackoutHiddenDisplays[key] = nil
             coverHiddenDisplays()
+            reconcileProtection()
             refuse(.hide, targetUUID: targetUUID, error: DisplayHideError.unavailable(
                 "The display wasn\u{2019}t fully covered. Try again."
             ), completion: completion)

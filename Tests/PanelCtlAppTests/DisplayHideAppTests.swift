@@ -137,7 +137,25 @@ final class DisplayHideAppTests: XCTestCase {
         // macOS doesn't list a hardware mirror target as active.
         let mirroredTarget = Self.display(index: 2, id: 202, uuid: Self.targetUUID, name: "Target", main: false, active: false)
         let current = [displays[0], mirroredTarget, displays[2]]
-        let model = makeModel(defaults: defaults, displays: current, status: { hidden }, useManagedProtectionService: true)
+        let mirroredIDs: Set<UInt32> = [202, 303]
+        var coverRequests: [Set<UInt32>] = []
+        var helperWasStoppedWhenSourceCovered: Bool?
+        var failSourceCover = false
+        let model = makeModel(
+            defaults: defaults,
+            displays: current,
+            status: { hidden },
+            useManagedProtectionService: true,
+            isDisplayMirrored: { mirroredIDs.contains($0) },
+            coverDisplays: { ids in
+                coverRequests.append(ids)
+                if ids.contains(303) {
+                    helperWasStoppedWhenSourceCovered =
+                        (try? String(contentsOf: log, encoding: .utf8))?.contains("stop") == true
+                }
+                return failSourceCover ? ids : []
+            }
+        )
         try await waitUntil { model.runtimeState == .blackedOut }
         var lines = try await waitForLogLines(1, at: log)
         XCTAssertFalse(lines[0].contains("--panelctl-hidden-display"))
@@ -154,6 +172,52 @@ final class DisplayHideAppTests: XCTestCase {
         let relaunch = try XCTUnwrap(lines.last { $0.hasPrefix("launch:") })
         XCTAssertTrue(relaunch.contains("--display \(Self.sourceUUID) --panelctl-hidden-mirror-source \(Self.sourceUUID) --panelctl-hidden-display \(Self.mainUUID)"), relaunch)
         XCTAssertTrue(relaunch.contains("--keep-blackout-on-input"))
+
+        let launchCountAfterMainHide = lines.filter { $0.hasPrefix("launch:") }.count
+        model.show(targetUUID: Self.mainUUID)
+        try await waitUntil {
+            (try? String(contentsOf: log, encoding: .utf8))?.split(separator: "\n")
+                .filter { $0.hasPrefix("launch:") }.count == launchCountAfterMainHide + 1
+        }
+        lines = try String(contentsOf: log, encoding: .utf8).split(separator: "\n").map(String.init)
+        XCTAssertFalse(try XCTUnwrap(lines.last { $0.hasPrefix("launch:") }).contains("--panelctl-hidden-display"))
+        let launchCountBeforeFailure = lines.filter { $0.hasPrefix("launch:") }.count
+        failSourceCover = true
+        let failedHide = try await hideAndWait(model, Self.sourceUUID)
+        XCTAssertFalse(failedHide.succeeded)
+        XCTAssertFalse(model.isBlackoutHidden(Self.sourceUUID))
+        XCTAssertEqual(coverRequests.last, [])
+        try await waitUntil {
+            (try? String(contentsOf: log, encoding: .utf8))?.split(separator: "\n")
+                .filter { $0.hasPrefix("launch:") }.count == launchCountBeforeFailure + 1
+        }
+        failSourceCover = false
+        lines = try String(contentsOf: log, encoding: .utf8).split(separator: "\n").map(String.init)
+        let launchCountBeforeHide = lines.filter { $0.hasPrefix("launch:") }.count
+        let sourceHide = try await hideAndWait(model, Self.sourceUUID)
+        XCTAssertTrue(sourceHide.succeeded, sourceHide.message)
+        XCTAssertTrue(model.isBlackoutHidden(Self.sourceUUID))
+        XCTAssertFalse(model.hiddenMirrorOverlayPolicyEligible)
+        XCTAssertEqual(coverRequests.last, [303], "Hide takes sole cover ownership after the automation overlay stops")
+        XCTAssertEqual(helperWasStoppedWhenSourceCovered, true,
+                       "the automation overlay is stopped before Hide draws its own cover")
+        try await waitUntil {
+            (try? String(contentsOf: log, encoding: .utf8))?.split(separator: "\n").contains("stop") == true
+        }
+        lines = try String(contentsOf: log, encoding: .utf8).split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines.filter { $0.hasPrefix("launch:") }.count, launchCountBeforeHide,
+                       "the helper doesn't restart or double-cover a source Hide owns")
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.status, .hidden,
+                       "the source's manual Hide leaves the removal intact")
+
+        let sourceShow = try await showAndWait(model, Self.sourceUUID)
+        XCTAssertTrue(sourceShow.succeeded)
+        XCTAssertFalse(model.isBlackoutHidden(Self.sourceUUID))
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.status, .hidden)
+        try await waitUntil {
+            (try? String(contentsOf: log, encoding: .utf8))?.split(separator: "\n")
+                .filter { $0.hasPrefix("launch:") }.count == launchCountBeforeHide + 1
+        }
 
         let stopped = expectation(description: "overlay watcher stopped")
         model.shutdown { stopped.fulfill() }
@@ -2369,6 +2433,8 @@ final class DisplayHideAppTests: XCTestCase {
         quiesceProtection: @escaping ProtectionQuiesce = { $0(true, nil) },
         useManagedProtectionService: Bool = false,
         protectionService: ProtectionService? = nil,
+        isDisplayMirrored: @escaping (UInt32) -> Bool = { _ in false },
+        coverDisplays: @escaping @MainActor (Set<UInt32>) -> Set<UInt32> = { _ in [] },
         hideDisplay: @escaping (DisplayHideIdentity, DisplayHideIdentity, UInt8?) throws -> DisplayInputOutcome = { _, _, _ in .notRequested },
         showDisplay: @escaping (String, UInt8?) throws -> DisplayInputOutcome = { _, _ in .notRequested },
         checkDDCInput: @escaping (DisplayHideIdentity) throws -> DDCInputReading = { _ in
@@ -2380,13 +2446,13 @@ final class DisplayHideAppTests: XCTestCase {
             defaults: defaults,
             displayProvider: displayProvider ?? { displays },
             idleSecondsProvider: idleSecondsProvider,
-            isDisplayMirrored: { _ in false },
+            isDisplayMirrored: isDisplayMirrored,
             inspectHandoff: { status() ?? fallback },
             hideDisplay: hideDisplay,
             showDisplay: showDisplay,
             checkDDCInput: checkDDCInput,
             // Black out never draws over a real screen in tests.
-            coverDisplays: { _ in [] },
+            coverDisplays: coverDisplays,
             quiesceProtection: useManagedProtectionService ? nil : quiesceProtection,
             protectionService: protectionService
         )

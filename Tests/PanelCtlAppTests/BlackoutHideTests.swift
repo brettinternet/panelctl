@@ -82,6 +82,186 @@ final class BlackoutHideTests: XCTestCase {
         XCTAssertEqual(tile(Self.sideUUID, relaunched).status, .on)
     }
 
+    func testVerifiedRemovalSourceCanBeHiddenAndExternalMirrorsStillRefuse() async throws {
+        var handoff = Self.handoffStatus(target: displays[1], source: displays[0])
+        var mirrored: Set<UInt32> = [101, 202]
+        let model = try makeModel(
+            mirrored: { mirrored.contains($0) },
+            handoff: { handoff }
+        )
+        try await waitUntil("verified removal status is quiesced") {
+            !model.protectionQuiescencePending
+        }
+
+        XCTAssertNil(model.blackoutReadiness(for: displays[0]))
+        let delegate = AppDelegate()
+        delegate.model = model
+        let request = AppControlRequest(command: .hide, targetUUID: Self.mainUUID)
+        let response = await model.handleDisplayControlRequest(request)
+        XCTAssertEqual(response.outcome, .done)
+        XCTAssertEqual(response.summary, "Hidden.")
+        XCTAssertEqual(response.displays?.first?.observedState, "hidden-by-panelctl")
+        XCTAssertEqual(coverRequests.last, [101], "the source cover also blacks out its mirrored removed target")
+        XCTAssertEqual(model.coveredHiddenDisplayIDs, [101])
+        XCTAssertEqual(tile(Self.mainUUID, model).status, .hidden)
+        XCTAssertEqual(tile(Self.mainUUID, model).action, .show)
+        XCTAssertNil(tile(Self.mainUUID, model).actionBlocker)
+        let showSource = try XCTUnwrap(delegate.makeMenu().items.first { $0.title == "Show Main" })
+        XCTAssertTrue(showSource.isEnabled)
+        if #available(macOS 14.4, *) {
+            XCTAssertEqual(showSource.subtitle, "Hidden")
+        }
+
+        let lastVisible = "PanelCtl keeps at least one display visible, so it won\u{2019}t hide this one."
+        XCTAssertEqual(tile(Self.thirdUUID, model).actionBlocker, lastVisible,
+                       "the removed target and blacked-out source do not count as visible")
+        XCTAssertFalse(model.isBlackoutHidden(Self.thirdUUID))
+
+        // An unverified/external mirror is not an authorized source. Reconciliation
+        // drops the source cover rather than masking a macOS mirror set.
+        handoff = Self.noHandoffStatus()
+        mirrored = [101]
+        model.refreshDisplays()
+        XCTAssertFalse(model.isBlackoutHidden(Self.mainUUID))
+        XCTAssertEqual(model.displayResults[Self.mainUUID.lowercased()]?.message,
+                       "Shown because macOS started mirroring it.")
+        XCTAssertEqual(hide(Self.mainUUID, model)?.message,
+                       "Couldn\u{2019}t hide. macOS is mirroring this display. Turn off mirroring in System Settings \u{2192} Displays first.")
+    }
+
+    func testVerifiedSourceShowAndRemovalShowKeepIndependentState() async throws {
+        var handoff = Self.handoffStatus(target: displays[1], source: displays[0])
+        var mirrored: Set<UInt32> = [101, 202]
+        let model = try makeModel(
+            mirrored: { mirrored.contains($0) },
+            handoff: { handoff },
+            showDisplay: { _, _ in
+                handoff = Self.noHandoffStatus()
+                mirrored = []
+                return .notRequested
+            }
+        )
+        try await waitUntil("verified removal status is quiesced") {
+            !model.protectionQuiescencePending
+        }
+        XCTAssertEqual(hide(Self.mainUUID, model)?.succeeded, true)
+
+        // Showing the source removes only its app-owned cover; the removal journal
+        // remains showable and no topology Show is issued.
+        let shownSource = await model.handleDisplayControlRequest(
+            AppControlRequest(command: .show, targetUUID: Self.mainUUID)
+        )
+        XCTAssertEqual(shownSource.outcome, .done)
+        XCTAssertEqual(handoff.state, .hidden)
+        XCTAssertEqual(tile(Self.sideUUID, model).status, .hidden)
+        XCTAssertFalse(model.isBlackoutHidden(Self.mainUUID))
+
+        // Re-cover it, then show the removed display. Its source's Hide cover remains.
+        XCTAssertEqual(hide(Self.mainUUID, model)?.succeeded, true)
+        let shownTarget = await model.handleDisplayControlRequest(
+            AppControlRequest(command: .show, targetUUID: Self.sideUUID)
+        )
+        XCTAssertEqual(shownTarget.outcome, .done)
+        XCTAssertEqual(handoff.state, .none)
+        XCTAssertTrue(model.isBlackoutHidden(Self.mainUUID))
+        XCTAssertEqual(coverRequests.last, [101])
+
+        // A fresh app session forgets only the source's session-only cover.
+        handoff = Self.handoffStatus(target: displays[1], source: displays[0])
+        mirrored = [101, 202]
+        let relaunched = try makeModel(
+            mirrored: { mirrored.contains($0) },
+            handoff: { handoff },
+            keepingDefaults: true
+        )
+        try await waitUntil("relaunch recovery status is quiesced") {
+            !relaunched.protectionQuiescencePending
+        }
+        XCTAssertFalse(relaunched.isBlackoutHidden(Self.mainUUID))
+        XCTAssertEqual(tile(Self.mainUUID, relaunched).status, .on)
+        XCTAssertEqual(tile(Self.sideUUID, relaunched).status, .hidden)
+    }
+
+    func testVerifiedSourceBlackoutSurvivesSleepWakeAndDisconnect() async throws {
+        var current = displays
+        var mirrored: Set<UInt32> = [101, 202]
+        let handoff = Self.handoffStatus(target: displays[1], source: displays[0])
+        let model = try makeModel(
+            displays: { current },
+            mirrored: { mirrored.contains($0) },
+            handoff: { handoff }
+        )
+        try await waitUntil("verified removal status is quiesced") {
+            !model.protectionQuiescencePending
+        }
+        XCTAssertEqual(hide(Self.mainUUID, model)?.succeeded, true)
+
+        model.setDisplayLifecycleTransitioning(true)
+        current = [Self.display(1, id: 101, uuid: Self.mainUUID, name: "Main", main: true, asleep: true), displays[1], displays[2]]
+        model.refreshDisplays()
+        XCTAssertTrue(model.isBlackoutHidden(Self.mainUUID))
+        XCTAssertEqual(coverRequests.last, [101], "the source's session Hide remains assigned through sleep")
+        model.setDisplayLifecycleTransitioning(false)
+        XCTAssertTrue(model.isBlackoutHidden(Self.mainUUID), "a verified mirror source is not mistaken for external mirroring while asleep")
+
+        current = displays
+        model.refreshDisplays()
+        XCTAssertTrue(model.isBlackoutHidden(Self.mainUUID))
+        XCTAssertEqual(coverRequests.last, [101], "the source is covered again on wake")
+
+        current = [displays[1], displays[2]]
+        mirrored = []
+        model.refreshDisplays()
+        XCTAssertTrue(model.isBlackoutHidden(Self.mainUUID), "a disconnected source retains its session Hide while another display remains")
+        XCTAssertEqual(tile(Self.mainUUID, model).status, .hidden)
+        XCTAssertNil(tile(Self.mainUUID, model).display)
+
+        current = displays
+        mirrored = [101, 202]
+        model.refreshDisplays()
+        XCTAssertTrue(model.isBlackoutHidden(Self.mainUUID))
+        XCTAssertEqual(coverRequests.last, [101], "the exact source is covered again when it reconnects")
+    }
+
+    func testSourceIsShownWhenOnlyItsRemovedTargetRemains() async throws {
+        var current = displays
+        let handoff = Self.handoffStatus(target: displays[1], source: displays[0])
+        let model = try makeModel(
+            displays: { current },
+            mirrored: { [101, 202].contains($0) },
+            handoff: { handoff }
+        )
+        try await waitUntil("verified removal status is quiesced") {
+            !model.protectionQuiescencePending
+        }
+        XCTAssertEqual(hide(Self.mainUUID, model)?.succeeded, true)
+        current = [displays[0], displays[1]]
+        model.refreshDisplays()
+        XCTAssertFalse(model.isBlackoutHidden(Self.mainUUID))
+        XCTAssertEqual(coverRequests.last, [])
+        XCTAssertEqual(tile(Self.sideUUID, model).status, .hidden)
+        XCTAssertNotNil(model.blackoutReadiness(for: current[0]))
+    }
+
+    func testUnverifiedRemovalSourceStillRefusesBlackout() async throws {
+        var handoff = Self.handoffStatus(target: displays[1], source: displays[0])
+        let model = try makeModel(mirrored: { [101, 202].contains($0) }, handoff: { handoff })
+        try await waitUntil("verified removal status is quiesced") {
+            !model.protectionQuiescencePending
+        }
+        XCTAssertNil(model.blackoutReadiness(for: displays[0]))
+        handoff = DisplayHandoffStatus(
+            state: .hidden, target: handoff.target, source: handoff.source,
+            journalPath: handoff.journalPath, journalID: handoff.journalID,
+            canShow: true, mirrorTopologyVerified: false
+        )
+        // Direct menu/Settings Hide must refresh even before a topology notification.
+        let coverCount = coverRequests.count
+        XCTAssertEqual(hide(Self.mainUUID, model)?.succeeded, false)
+        XCTAssertFalse(model.isBlackoutHidden(Self.mainUUID))
+        XCTAssertEqual(coverRequests.count, coverCount)
+    }
+
     func testHideRefusesDisplaysItCantBlackOut() throws {
         var current = [displays[0], Self.display(2, id: 202, uuid: Self.sideUUID, name: "Side", asleep: true)]
         var mirrored: Set<UInt32> = []
@@ -252,6 +432,13 @@ final class BlackoutHideTests: XCTestCase {
     private func makeModel(
         displays: (() -> [DisplayRecord])? = nil,
         mirrored: @escaping (UInt32) -> Bool = { _ in false },
+        handoff: @escaping () -> DisplayHandoffStatus = {
+            DisplayHandoffStatus(state: .none, journalPath: "/nonexistent/panelctl-blackout-hide.json")
+        },
+        showDisplay: @escaping (String, UInt8?) throws -> DisplayInputOutcome = { _, _ in
+            XCTFail("A blackout Show never restores a removed display")
+            return .notRequested
+        },
         keepingDefaults: Bool = false,
         configure: (UserDefaults) throws -> Void = { _ in }
     ) throws -> AppModel {
@@ -266,17 +453,12 @@ final class BlackoutHideTests: XCTestCase {
             displayProvider: displays ?? { fixed },
             idleSecondsProvider: { nil },
             isDisplayMirrored: mirrored,
-            inspectHandoff: {
-                DisplayHandoffStatus(state: .none, journalPath: "/nonexistent/panelctl-blackout-hide.json")
-            },
+            inspectHandoff: handoff,
             hideDisplay: { _, _, _ in
                 XCTFail("Black out never removes a display from the desktop")
                 return .notRequested
             },
-            showDisplay: { _, _ in
-                XCTFail("Black out never shows a removed display")
-                return .notRequested
-            },
+            showDisplay: showDisplay,
             checkDDCInput: { _ in
                 XCTFail("Black out never queries DDC")
                 return DDCInputReading(displayID: 0, uuid: "", current: 1)
@@ -285,6 +467,28 @@ final class BlackoutHideTests: XCTestCase {
                 coverRequests.append(ids)
                 return ids.intersection(uncoverable)
             }
+        )
+    }
+
+    private static func noHandoffStatus() -> DisplayHandoffStatus {
+        DisplayHandoffStatus(state: .none, journalPath: "/nonexistent/panelctl-blackout-hide.json")
+    }
+
+    private static func handoffStatus(target: DisplayRecord, source: DisplayRecord) -> DisplayHandoffStatus {
+        func identity(_ display: DisplayRecord) -> DisplayHandoffIdentity {
+            DisplayHandoffIdentity(DisplayHideIdentity(
+                uuid: display.uuid!, displayID: display.id, name: display.name,
+                vendor: display.vendor, model: display.model, serial: display.serial
+            ))
+        }
+        return DisplayHandoffStatus(
+            state: .hidden,
+            target: identity(target),
+            source: identity(source),
+            journalPath: "/fake/current.json",
+            journalID: "verified-fixture",
+            canShow: true,
+            mirrorTopologyVerified: true
         )
     }
 
