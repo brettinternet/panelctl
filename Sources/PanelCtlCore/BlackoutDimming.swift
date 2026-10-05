@@ -63,21 +63,42 @@ final class BlackoutDimming {
     /// Acquires the process-held lock and restores any entries left by an
     /// earlier crashed session. Failure to acquire the lock disables dimming.
     func start() {
-        guard lockFD == nil else { return }
+        guard acquireJournal() else { return }
+        restoreLoadedEntries()
+    }
+
+    /// Read-only evidence, under the same lock used by every luminance writer.
+    /// Process exit removes its windows; an empty journal proves no brightness
+    /// restoration is outstanding, even when it died before emitting status.
+    func cleanupIsVerified() -> Bool {
+        guard acquireJournal() else { return false }
+        defer { releaseLock() }
+        return entries.isEmpty
+    }
+
+    func retryCleanup() -> Bool {
+        guard acquireJournal() else { return false }
+        defer { releaseLock() }
+        return restoreLoadedEntries()
+    }
+
+    private func acquireJournal() -> Bool {
+        guard lockFD == nil else { return true }
         let directory = lockURL.deletingLastPathComponent()
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let fd = open(lockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
-            guard fd >= 0 else { return }
+            guard fd >= 0 else { return false }
             guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
                 close(fd)
-                return
+                return false
             }
             lockFD = fd
             entries = try loadJournal()
-            restoreLoadedEntries()
+            return true
         } catch {
             releaseLock()
+            return false
         }
     }
 
@@ -141,7 +162,14 @@ final class BlackoutDimming {
                 let key = uuid.lowercased()
                 if entries[key] == nil {
                     entries[key] = entry
-                    try persist()
+                    do {
+                        try persist()
+                    } catch {
+                        // A later dim must retry the journal write, not treat
+                        // this unpersisted original as durable evidence.
+                        entries.removeValue(forKey: key)
+                        throw error
+                    }
                 }
                 do {
                     _ = try set(uuid, requested)

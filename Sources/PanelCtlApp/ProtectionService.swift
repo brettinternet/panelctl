@@ -124,10 +124,16 @@ final class ProtectionService {
     private var shutdownCompletion: (() -> Void)?
     private var stopCompletions: [((Bool, String?) -> Void)] = []
     private var cleanupResultObserved: Bool?
-    private var unresolvedCleanupFailure: String?
+    private(set) var unresolvedCleanupFailure: String?
+    private let cleanupIsVerified: () -> Bool
+    private var cleanupRetryCompletion: ((Bool, String?) -> Void)?
+    private var cleanupOnly = false
+    private static let unknownCleanup = "Automation cleanup could not be verified; retry automation cleanup before hiding a display."
     private var shutdownStartedAt: TimeInterval?
 
     init(
+        initialCleanupFailure: String? = nil,
+        cleanupIsVerified: @escaping () -> Bool = BlackoutController.brightnessCleanupIsVerified,
         displaysAreAsleep: @escaping () -> Bool = {
             DisplayInventory.records().contains {
                 $0.online && $0.asleep
@@ -135,6 +141,9 @@ final class ProtectionService {
         }
     ) {
         self.displaysAreAsleep = displaysAreAsleep
+        self.cleanupIsVerified = cleanupIsVerified
+        self.unresolvedCleanupFailure = initialCleanupFailure ??
+            (cleanupIsVerified() ? nil : Self.unknownCleanup)
     }
 
     var hasManagedProcess: Bool {
@@ -150,6 +159,7 @@ final class ProtectionService {
     }
 
     func run(arguments: [String], restartForDisplayChange: Bool = false) {
+        guard cleanupRetryCompletion == nil, shutdownCompletion == nil else { return }
         if restartForDisplayChange {
             pendingDisplayRearm = true
         }
@@ -180,10 +190,40 @@ final class ProtectionService {
     }
 
     func disable() {
+        guard cleanupRetryCompletion == nil else { return }
         stop(then: .disabled)
     }
 
+    func retryCleanup(completion: @escaping (Bool, String?) -> Void) {
+        guard cleanupRetryCompletion == nil, shutdownCompletion == nil else { return }
+        cleanupRetryCompletion = completion
+        stop(then: .disabled) { [weak self] _, _ in
+            guard let self else { return }
+            guard self.shutdownCompletion == nil else {
+                self.finishCleanupRetry(succeeded: false, message: "Automation cleanup was cancelled by shutdown.")
+                return
+            }
+            self.launch(arguments: [], cleanupOnly: true)
+        }
+    }
+
+    private func finishCleanupRetry(succeeded: Bool, message: String?) {
+        let completion = cleanupRetryCompletion
+        cleanupRetryCompletion = nil
+        cleanupOnly = false
+        completion?(succeeded, message)
+    }
+
     func disableForDisplayHide(completion: @escaping (Bool, String?) -> Void) {
+        if let retryCompletion = cleanupRetryCompletion {
+            // External journal discovery can request quiescence during retry.
+            // Join that cleanup rather than kill it or acknowledge too early.
+            cleanupRetryCompletion = { succeeded, message in
+                retryCompletion(succeeded, message)
+                completion(succeeded, message)
+            }
+            return
+        }
         stop(then: .disabled, completion: completion)
     }
 
@@ -295,7 +335,8 @@ final class ProtectionService {
         completions.forEach { $0(succeeded, message) }
     }
 
-    private func launch(arguments: [String]) {
+    private func launch(arguments: [String], cleanupOnly: Bool = false) {
+        self.cleanupOnly = cleanupOnly
         let statusPipe = Pipe()
         let errorPipe = Pipe()
         let lifetimePipe = Pipe()
@@ -310,6 +351,7 @@ final class ProtectionService {
             var environment = ProcessInfo.processInfo.environment
             environment["PANELCTL_EMIT_STATUS"] = "1"
             environment["PANELCTL_PARENT_PIPE"] = "1"
+            environment["PANELCTL_CLEANUP_ONLY"] = cleanupOnly ? "1" : nil
             if pendingDisplayRearm {
                 environment["PANELCTL_REARM_ON_START"] = "1"
             }
@@ -374,6 +416,14 @@ final class ProtectionService {
             try process.run()
             lifetimePipe.fileHandleForReading.closeFile()
             lifetimeWriteHandle = lifetimePipe.fileHandleForWriting
+            if cleanupOnly {
+                let timeout = DispatchWorkItem { [weak self, weak process] in
+                    guard let self, let process, self.process === process else { return }
+                    self.requestTermination(of: process)
+                }
+                forceTerminationWorkItem = timeout
+                DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: timeout)
+            }
         } catch {
             statusPipe.fileHandleForReading.readabilityHandler = nil
             errorPipe.fileHandleForReading.readabilityHandler = nil
@@ -381,7 +431,11 @@ final class ProtectionService {
             lifetimePipe.fileHandleForWriting.closeFile()
             process = nil
             currentArguments = nil
-            state = .failed("Could not start the watcher: \(error.localizedDescription)")
+            let message = "Could not start the helper: \(error.localizedDescription)"
+            state = .failed(message)
+            if cleanupOnly {
+                finishCleanupRetry(succeeded: false, message: message)
+            }
         }
     }
 
@@ -405,16 +459,8 @@ final class ProtectionService {
                 continue
             }
             let runtimeState = status.state
-            if runtimeState == .stopped,
-               !Self.isHardwareFreeHiddenMirrorOverlay(arguments: currentArguments) {
+            if runtimeState == .stopped {
                 cleanupResultObserved = status.cleanupSucceeded
-                if status.cleanupSucceeded == true {
-                    unresolvedCleanupFailure = nil
-                } else if status.cleanupSucceeded == false {
-                    unresolvedCleanupFailure = "Hardware brightness cleanup failed; retry automation cleanup before hiding a display."
-                } else {
-                    unresolvedCleanupFailure = "Automation cleanup could not be verified; retry automation cleanup before hiding a display."
-                }
             }
             if state == .stopping {
                 updateInheritedControlIntent(for: status, from: sourceProcess)
@@ -548,19 +594,37 @@ final class ProtectionService {
         statusBuffer.removeAll(keepingCapacity: true)
         blackedOutDisplayIDs = []
         let windowOnlyOverlay = Self.isHardwareFreeHiddenMirrorOverlay(arguments: terminatedArguments)
+        if cleanupOnly {
+            let succeeded = cleanupResultObserved == true &&
+                finished.terminationReason == .exit && finished.terminationStatus == 0
+            unresolvedCleanupFailure = succeeded ? nil : (unresolvedCleanupFailure ?? Self.unknownCleanup)
+            stateAfterTermination = nil
+            state = succeeded ? .disabled : .failed(unresolvedCleanupFailure!)
+            finishStopCompletions(succeeded: succeeded, message: unresolvedCleanupFailure)
+            finishCleanupRetry(succeeded: succeeded, message: unresolvedCleanupFailure)
+            let completion = shutdownCompletion
+            shutdownCompletion = nil
+            shutdownStartedAt = nil
+            completion?()
+            return
+        }
         if !windowOnlyOverlay {
-            if cleanupResultObserved == true {
-                unresolvedCleanupFailure = nil
-            } else if cleanupResultObserved == false {
+            if cleanupResultObserved == false {
                 unresolvedCleanupFailure = "Hardware brightness cleanup failed; retry automation cleanup before hiding a display."
-            } else {
-                unresolvedCleanupFailure = "Automation cleanup could not be verified; retry automation cleanup before hiding a display."
+            } else if !cleanupIsVerified() {
+                // A clean stop from a non-dimming watcher cannot certify a
+                // brightness journal left by a previous process.
+                unresolvedCleanupFailure = unresolvedCleanupFailure ?? Self.unknownCleanup
             }
         }
 
         if let pendingArguments {
             self.pendingArguments = nil
             pendingControlSourceProcess = nil
+            if let unresolvedCleanupFailure {
+                state = .failed(unresolvedCleanupFailure)
+                return
+            }
             launch(arguments: pendingArguments)
             return
         }
@@ -568,13 +632,9 @@ final class ProtectionService {
             pendingControlSourceProcess = nil
             inFlightControlIntent = nil
             stateAfterTermination = nil
-            let processFailure: String? = !windowOnlyOverlay &&
-                (finished.terminationReason != .exit || finished.terminationStatus != 0)
-                ? String(data: errorBuffer, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .nonEmpty ?? "The automation helper did not exit cleanly (status \(finished.terminationStatus))."
-                : nil
-            let stopFailure = unresolvedCleanupFailure ?? (stopCompletions.isEmpty ? nil : processFailure)
+            // Process death removes windows. Exit status alone is not a
+            // cleanup failure when the locked luminance journal is empty.
+            let stopFailure = unresolvedCleanupFailure
             cleanupResultObserved = nil
             if let stopFailure {
                 state = .failed(stopFailure)
@@ -702,10 +762,6 @@ final class ProtectionService {
     }
 }
 
-
-private extension String {
-    var nonEmpty: String? { isEmpty ? nil : self }
-}
 
 private enum HelperError: Error, LocalizedError {
     case notFound

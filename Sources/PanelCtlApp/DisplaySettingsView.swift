@@ -18,6 +18,13 @@ struct DisplaySettingsView: View {
                 attentionIDs: Set(model.displayResults.filter(\.value.needsAttention).keys)
             ) { navigation.selectedDisplayID = $0 }
             Form {
+                if let failure = model.protectionQuiescenceFailure {
+                    Section {
+                        resultLabel(failure, attention: true)
+                        Button("Retry Automation Cleanup", action: model.retryAutomationCleanup)
+                            .disabled(model.protectionQuiescencePending || model.hideOperation.isBusy)
+                    }
+                }
                 let pageProblem = model.pageRecoveryProblem
                 if let pageProblem {
                     pageRecoverySection(pageProblem)

@@ -6,6 +6,15 @@ import Darwin
 struct PanelCtlMain {
     static func main() {
         do {
+            if ProcessInfo.processInfo.environment["PANELCTL_CLEANUP_ONLY"] == "1" {
+                let succeeded = BlackoutController.retryBrightnessCleanup()
+                let status = BlackoutRuntimeStatus(
+                    state: .stopped, blackedOutDisplayIDs: [], cleanupSucceeded: succeeded
+                )
+                FileHandle.standardOutput.write(try JSONEncoder().encode(status))
+                FileHandle.standardOutput.write(Data([0x0A]))
+                Foundation.exit(succeeded ? 0 : EXIT_FAILURE)
+            }
             let command = try CLIParser.parse(Array(CommandLine.arguments.dropFirst()))
             switch command {
             case .list(let json): try DisplayInventory.printRecords(DisplayInventory.records(), json: json)

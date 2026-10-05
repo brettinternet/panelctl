@@ -2,6 +2,60 @@ import XCTest
 @testable import PanelCtlCore
 
 final class BlackoutDimmingTests: XCTestCase {
+    func testCleanupVerificationAndRetryUseLockedDurableJournal() throws {
+        let url = temporaryURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        var writes: [String] = []
+        var fail = true
+        let manager = BlackoutDimming(journalURL: url, set: { uuid, value in
+            writes.append("\(uuid):\(value)")
+            if fail { throw TestError.failed }
+            return DDCLuminanceWriteResult(displayID: 7, uuid: uuid, original: 0,
+                                          requested: value, observed: value, maximum: 100)
+        })
+        XCTAssertTrue(manager.cleanupIsVerified(), "no journal and no writer")
+        let entries = [BlackoutLuminanceEntry(uuid: "Exact-UUID", original: 45)]
+        try JSONEncoder().encode(entries).write(to: url)
+        XCTAssertFalse(manager.cleanupIsVerified())
+        XCTAssertTrue(writes.isEmpty, "inspection never restores brightness")
+        XCTAssertFalse(manager.retryCleanup())
+        XCTAssertEqual(try JSONDecoder().decode([BlackoutLuminanceEntry].self, from: Data(contentsOf: url)), entries)
+        fail = false
+        XCTAssertTrue(manager.retryCleanup())
+        XCTAssertTrue(manager.cleanupIsVerified())
+        XCTAssertEqual(writes, ["Exact-UUID:45", "Exact-UUID:45"])
+        // Neither verification nor retry may proceed while a watcher owns it.
+        let owner = BlackoutDimming(journalURL: url)
+        owner.start()
+        XCTAssertFalse(manager.cleanupIsVerified())
+        XCTAssertFalse(manager.retryCleanup())
+        owner.stop()
+        try Data("not a journal".utf8).write(to: url)
+        XCTAssertFalse(manager.cleanupIsVerified())
+        XCTAssertFalse(manager.retryCleanup())
+        XCTAssertEqual(writes.count, 2)
+    }
+
+    func testRepeatedDimCannotWriteAfterJournalPersistenceFails() {
+        let url = temporaryURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        var writes = 0
+        var persists = 0
+        let manager = BlackoutDimming(
+            journalURL: url,
+            records: { [displayRecord(id: 7, uuid: "one")] },
+            read: { DDCLuminanceReading(displayID: 7, uuid: $0, current: 40, maximum: 100) },
+            set: { _, _ in writes += 1; throw TestError.failed },
+            journalWriter: { _ in persists += 1; throw TestError.failed }
+        )
+        manager.start()
+        for _ in 0..<2 {
+            manager.dim([BlackoutScreenTarget(id: 7, uuid: "one", selector: "one")], to: 0)
+        }
+        XCTAssertEqual(persists, 2)
+        XCTAssertEqual(writes, 0, "empty journal is proof only if every dim durably records its original")
+    }
+
     func testJournalIsWrittenBeforeLuminanceWriteAndUsesExactUUID() {
         let url = temporaryURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

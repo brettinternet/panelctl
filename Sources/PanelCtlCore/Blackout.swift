@@ -490,6 +490,15 @@ public final class BlackoutController {
         self.mirrorHandoffStatus = mirrorHandoffStatus
     }
 
+    public static func brightnessCleanupIsVerified() -> Bool {
+        BlackoutDimming().cleanupIsVerified()
+    }
+
+    /// Restores only journaled brightness. Never starts a watcher or overlay.
+    public static func retryBrightnessCleanup() -> Bool {
+        BlackoutDimming().retryCleanup()
+    }
+
     public func run(options: BlackoutOptions) throws {
         try Self.validateOptions(options)
         watchMode = options.watch

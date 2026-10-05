@@ -986,7 +986,7 @@ final class DisplayHideAppTests: XCTestCase {
 
         for cleanupResult in ["false", "unknown"] {
             setenv("PANELCTL_TEST_CLEANUP_RESULT", cleanupResult, 1)
-            let service = ProtectionService()
+            let service = ProtectionService(cleanupIsVerified: { false })
             service.run(arguments: ["blackout"])
             try await waitUntil { service.state == .waiting }
             service.disable()
@@ -1033,6 +1033,113 @@ final class DisplayHideAppTests: XCTestCase {
             XCTAssertFalse(result.succeeded)
             XCTAssertTrue(result.message.contains("didn\u{2019}t change the display"), result.message)
         }
+    }
+
+    func testCleanupRetryAfterHideFailureWorksWithAutomationOffAndSurvivesRelaunch() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panelctl-cleanup-retry-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        try Data("""
+        #!/bin/bash
+        if [[ "$PANELCTL_CLEANUP_ONLY" == "1" ]]; then
+            printf '{"state":"stopped","blackedOutDisplayIDs":[],"cleanupSucceeded":%s}\\n' "$PANELCTL_TEST_RETRY_RESULT"
+            exit 0
+        fi
+        trap 'printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":false}\\n"; exit 0' TERM
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
+        while kill -0 "$PPID" 2>/dev/null; do /bin/sleep 0.02; done
+        """.utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_RETRY_RESULT", "false", 1)
+        defer {
+            unsetenv("PANELCTL_HELPER")
+            unsetenv("PANELCTL_TEST_RETRY_RESULT")
+        }
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let service = ProtectionService(cleanupIsVerified: { true })
+        let model = makeModel(defaults: defaults, displays: displays,
+                              useManagedProtectionService: true, protectionService: service)
+        model.setHideEnabled(true, for: displays[1])
+        service.run(arguments: ["blackout"])
+        try await waitUntil { service.state == .waiting }
+        let result = try await hideAndWait(model)
+        XCTAssertFalse(result.succeeded)
+        XCTAssertNotNil(model.protectionQuiescenceFailure)
+        XCTAssertFalse(model.statusSummary.contains("desktop is hidden"))
+        XCTAssertNil(model.handoffStatus?.journalID)
+        XCTAssertFalse(model.preferences.isEnabled)
+        let delegate = AppDelegate()
+        delegate.model = model
+        XCTAssertTrue(try XCTUnwrap(delegate.makeMenu().items.first {
+            $0.title == "Retry Automation Cleanup"
+        }).isEnabled)
+
+        model.retryProtection()
+        try await waitUntil { !model.protectionQuiescencePending }
+        XCTAssertNotNil(model.protectionQuiescenceFailure, "failed retry keeps Hide blocked")
+        XCTAssertNotNil(model.hideReadinessMessage(for: try XCTUnwrap(model.hideConfiguration(for: Self.targetUUID))))
+        let relaunched = makeModel(defaults: defaults, displays: displays, useManagedProtectionService: true)
+        XCTAssertNotNil(relaunched.protectionQuiescenceFailure, "relaunch must not erase unresolved evidence")
+        setenv("PANELCTL_TEST_RETRY_RESULT", "true", 1)
+        relaunched.retryProtection()
+        try await waitUntil { !relaunched.protectionQuiescencePending }
+        XCTAssertNil(relaunched.protectionQuiescenceFailure)
+        XCTAssertNil(defaults.string(forKey: "automationCleanupFailure"))
+        XCTAssertFalse(relaunched.preferences.isEnabled, "cleanup-only retry never enables automation")
+        XCTAssertNil(relaunched.hideReadinessMessage(for: try XCTUnwrap(relaunched.hideConfiguration(for: Self.targetUUID))))
+        let again = makeModel(defaults: defaults, displays: displays)
+        XCTAssertNil(again.protectionQuiescenceFailure)
+    }
+
+    func testShowCleanupFailureCanBeRetriedWithoutRunningAutomation() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panelctl-show-cleanup-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        try Data("""
+        #!/bin/bash
+        if [[ "$PANELCTL_CLEANUP_ONLY" == "1" ]]; then
+            printf '{"state":"stopped","blackedOutDisplayIDs":[],"cleanupSucceeded":true}\\n'
+            exit 0
+        fi
+        trap 'exit 0' TERM
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
+        while kill -0 "$PPID" 2>/dev/null; do /bin/sleep 0.02; done
+        """.utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        defer { unsetenv("PANELCTL_HELPER") }
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var verified = true
+        let service = ProtectionService(cleanupIsVerified: { verified })
+        let box = StatusBox(handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "show-cleanup", canShow: true))
+        var showCalls = 0
+        let model = makeModel(defaults: defaults, displays: displays, status: { box.value },
+                              useManagedProtectionService: true, protectionService: service,
+                              showDisplay: { _, _ in showCalls += 1; return .notRequested })
+        try await waitUntil { !model.protectionQuiescencePending }
+        service.run(arguments: ["blackout"])
+        try await waitUntil { service.state == .waiting }
+        verified = false
+        var result: DisplayOperationResult?
+        model.show(targetUUID: Self.targetUUID) { result = $0 }
+        try await waitUntil { result != nil }
+        XCTAssertFalse(try XCTUnwrap(result).succeeded)
+        XCTAssertEqual(showCalls, 0)
+        XCTAssertNotNil(model.protectionQuiescenceFailure)
+        XCTAssertEqual(model.handoffStatus?.journalID, "show-cleanup")
+        verified = true
+        model.retryAutomationCleanup()
+        try await waitUntil { !model.protectionQuiescencePending }
+        XCTAssertNil(model.protectionQuiescenceFailure)
+        XCTAssertEqual(showCalls, 0, "cleanup does not silently retry Show")
+        XCTAssertEqual(model.handoffStatus?.journalID, "show-cleanup")
     }
 
     func testHideQuiescesBeforeBackendAndRefusesDuplicateOrCleanupFailure() async throws {
@@ -2261,6 +2368,7 @@ final class DisplayHideAppTests: XCTestCase {
         status: @escaping () -> DisplayHandoffStatus? = { nil },
         quiesceProtection: @escaping ProtectionQuiesce = { $0(true, nil) },
         useManagedProtectionService: Bool = false,
+        protectionService: ProtectionService? = nil,
         hideDisplay: @escaping (DisplayHideIdentity, DisplayHideIdentity, UInt8?) throws -> DisplayInputOutcome = { _, _, _ in .notRequested },
         showDisplay: @escaping (String, UInt8?) throws -> DisplayInputOutcome = { _, _ in .notRequested },
         checkDDCInput: @escaping (DisplayHideIdentity) throws -> DDCInputReading = { _ in
@@ -2279,7 +2387,8 @@ final class DisplayHideAppTests: XCTestCase {
             checkDDCInput: checkDDCInput,
             // Black out never draws over a real screen in tests.
             coverDisplays: { _ in [] },
-            quiesceProtection: useManagedProtectionService ? nil : quiesceProtection
+            quiesceProtection: useManagedProtectionService ? nil : quiesceProtection,
+            protectionService: protectionService
         )
     }
 

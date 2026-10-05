@@ -17,10 +17,14 @@ struct AutomationSettingsView: View {
                     Text("Automation")
                     Text(model.statusSummary)
                 }
-                if let problem = model.validationMessage ?? model.protectionQuiescenceFailure ?? model.runtimeState.errorMessage {
+                if let problem = model.protectionQuiescenceFailure ?? model.validationMessage ?? model.runtimeState.errorMessage {
                     Label(problem, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+                if model.protectionQuiescenceFailure != nil {
+                    Button("Retry Automation Cleanup", action: model.retryAutomationCleanup)
+                        .disabled(model.protectionQuiescencePending || model.hideOperation.isBusy)
                 }
             }
 

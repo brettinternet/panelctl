@@ -104,6 +104,22 @@ input** separately.
 The undo-input command is shown but not persisted. After a crash PanelCtl
 doesn't guess the previous input.
 
+## Automation cleanup
+
+If brightness restoration cannot be confirmed, **Retry Automation Cleanup** is
+available in the menu and in both **Settings → Displays** and **Automation**,
+including when automation is off and no desktop is hidden. The retry only
+restores saved brightness values from the luminance journal; it never hides or
+shows a display, switches inputs, or starts a blackout. Automation resumes with
+a fresh countdown only if it was enabled and no other recovery block remains.
+
+A failed retry keeps the reason and the Hide block, including after relaunch.
+Reconnect any unavailable monitor before retrying. A locked, unreadable or
+nonempty luminance journal is not successful cleanup. After a helper exits,
+its windows are gone; an empty journal checked under the luminance lock proves
+there is no outstanding brightness restoration, even if an early exit omitted
+its final status report.
+
 ## Automation while hidden
 
 While a display is removed from the desktop, automation pauses except for one

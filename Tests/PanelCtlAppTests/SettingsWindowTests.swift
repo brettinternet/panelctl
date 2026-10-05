@@ -272,7 +272,9 @@ final class SettingsWindowTests: XCTestCase {
             ("hidden", true, hiddenStatus(), .displays),
             ("recovery", true, recovery, .displays),
             ("recovery-banner", true, recovery, .automation),
-            ("recovery-journal", false, targetless, .displays)
+            ("recovery-journal", false, targetless, .displays),
+            ("cleanup-displays", true, nil, .displays),
+            ("cleanup-automation", true, nil, .automation)
         ]
         for scenario in scenarios {
             // "unreadable" uses a custom input code and a monitor that doesn't answer over DDC.
@@ -303,6 +305,10 @@ final class SettingsWindowTests: XCTestCase {
                 },
                 configure: { defaults in
                     defaults.set(scenario.experimental, forKey: "experimentalFeaturesEnabled")
+                    if scenario.name.hasPrefix("cleanup-") {
+                        defaults.set("Hardware brightness cleanup failed; retry automation cleanup before hiding a display.",
+                                     forKey: "automationCleanupFailure")
+                    }
                     var hidePreferences = DisplayHidePreferences()
                     hidePreferences[Self.sideUUID] = DisplayHideConfiguration(
                         target: DisplayIdentitySnapshot(self.displays[1]),

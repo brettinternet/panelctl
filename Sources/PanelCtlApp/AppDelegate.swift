@@ -375,7 +375,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         addDisplayMenuSection(to: menu)
         menu.addItem(.separator())
 
-        if model.runtimeState.errorMessage != nil, model.preferences.isEnabled {
+        if model.protectionQuiescenceFailure != nil {
+            let retry = item("Retry Automation Cleanup", action: #selector(retryProtection))
+            retry.isEnabled = !model.protectionQuiescencePending && !model.hideOperation.isBusy
+            menu.addItem(retry)
+        } else if model.runtimeState.errorMessage != nil, model.preferences.isEnabled {
             menu.addItem(item("Retry Automation", action: #selector(retryProtection)))
         }
 

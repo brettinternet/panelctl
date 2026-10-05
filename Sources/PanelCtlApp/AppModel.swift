@@ -62,7 +62,11 @@ final class AppModel: ObservableObject {
     /// change tries again.
     @Published private(set) var uncoveredHiddenDisplays: Set<String> = []
     @Published private(set) var protectionQuiescencePending = false
-    @Published private(set) var protectionQuiescenceFailure: String?
+    @Published private(set) var protectionQuiescenceFailure: String? {
+        didSet {
+            defaults.set(protectionQuiescenceFailure, forKey: Self.cleanupFailureKey)
+        }
+    }
     @Published private(set) var displayLifecycleTransitioning = false
     /// When a display was last hidden or shown. A script request received
     /// before then waited behind that change, such as while the main thread
@@ -126,6 +130,7 @@ final class AppModel: ObservableObject {
     private static let showMenuBarIconKey = "showMenuBarIcon"
     private static let experimentalFeaturesKey = "experimentalFeaturesEnabled"
     private static let snoozedUntilKey = "snoozedUntil"
+    private static let cleanupFailureKey = "automationCleanupFailure"
     static let maximumSnoozeDuration: TimeInterval = 30 * 24 * 60 * 60
 
     init(
@@ -153,6 +158,7 @@ final class AppModel: ObservableObject {
         },
         coverDisplays: (@MainActor (Set<UInt32>) -> Set<UInt32>)? = nil,
         quiesceProtection: ProtectionQuiesce? = nil,
+        protectionService: ProtectionService? = nil,
         disconnectController: DisplayDisconnectController = DisplayDisconnectController(),
         disconnectExecutable: @escaping @MainActor () throws -> URL = ProtectionService.helperExecutableURL
     ) {
@@ -199,7 +205,11 @@ final class AppModel: ObservableObject {
         self.preferences = preferences
         self.displays = displays
         launchAtLoginEnabled = LaunchAtLogin.isEnabled
-        service = ProtectionService()
+        service = protectionService ?? ProtectionService(
+            initialCleanupFailure: defaults.string(forKey: Self.cleanupFailureKey)
+        )
+        protectionQuiescenceFailure = defaults.string(forKey: Self.cleanupFailureKey) ??
+            service.unresolvedCleanupFailure
         let storedSnooze = defaults.object(forKey: Self.snoozedUntilKey) as? Date
         if let storedSnooze, storedSnooze > now(), preferences.isEnabled {
             runtimeState = .snoozed(storedSnooze)
@@ -208,6 +218,9 @@ final class AppModel: ObservableObject {
         }
         service.onStateChange = { [weak self] state in
             guard let self else { return }
+            if let failure = self.service.unresolvedCleanupFailure {
+                self.protectionQuiescenceFailure = failure
+            }
             self.runtimeState = self.presentedRuntimeState(for: state)
             if case .waitingForDisplays = state {
                 DispatchQueue.main.async {
@@ -328,10 +341,10 @@ final class AppModel: ObservableObject {
     var hiddenMirrorProtectionSummary: String {
         guard protectionPausedForDisplayRecovery else { return statusSummary }
         if let failure = protectionQuiescenceFailure {
-            return "Automation suspended while desktop is hidden · cleanup needs attention: \(failure)"
+            return "Automation suspended · cleanup needs attention: \(failure)"
         }
         if protectionQuiescencePending {
-            return "Automation suspended while desktop is hidden · waiting for cleanup to finish"
+            return "Automation suspended · waiting for cleanup to finish"
         }
         if displayLifecycleTransitioning {
             return "Automation suspended while desktop is hidden · display transition in progress"
@@ -444,7 +457,7 @@ final class AppModel: ObservableObject {
         if displayLifecycleTransitioning { return .sleeping }
         if protectionQuiescencePending { return Self.automationStopping }
         if let failure = protectionQuiescenceFailure {
-            return .protectionCleanup("Automation cleanup needs attention: \(failure) Check Automation, then try again.")
+            return .protectionCleanup("Automation cleanup needs attention: \(failure) Choose Retry Automation Cleanup, then try again.")
         }
         guard configuration.enabled else {
             return .unavailable("Turn on Remove from desktop for this display first.")
@@ -1290,8 +1303,30 @@ final class AppModel: ObservableObject {
     }
 
     func retryProtection() {
+        if protectionQuiescenceFailure != nil {
+            retryAutomationCleanup()
+            return
+        }
         guard preferences.isEnabled else { return }
         reconcileProtection()
+    }
+
+    func retryAutomationCleanup() {
+        guard !protectionQuiescencePending, !hideOperation.isBusy else { return }
+        protectionQuiescencePending = true
+        onStatusChange?()
+        service.retryCleanup { [weak self] succeeded, message in
+            guard let self else { return }
+            self.protectionQuiescencePending = false
+            if succeeded {
+                self.protectionQuiescenceFailure = nil
+                self.rearmProtectionAfterDisplayRecovery()
+            } else {
+                self.protectionQuiescenceFailure = message ?? self.protectionQuiescenceFailure ??
+                    "Automation cleanup could not be verified."
+            }
+            self.onStatusChange?()
+        }
     }
 
     func blackoutNow() throws {
