@@ -4,7 +4,7 @@ title: Let Hide black out a display that removed displays mirror onto
 status: Done
 assignee: []
 created_date: '2026-10-05 19:42'
-updated_date: '2026-10-05 21:42'
+updated_date: '2026-10-05 22:24'
 labels:
   - app
   - display-hide
@@ -50,6 +50,8 @@ Implementation in .worktrees/task-30-blackout-source (branch task-30-blackout-so
 Delivered a3fa961 (implementation) and live evidence documentation, merged to main. Validation: swift test --disable-sandbox: 241 core tests (2 skipped), 147 app tests (2 skipped), zero failures; panelctl and PanelCtlApp -warnings-as-errors builds pass. LSP diagnostics unknown (bounded report timeout); compiler/tests authoritative. One independent reviewer found stale topology before direct Hide and failure to restart automation after failed cover; both corrected with regressions and full checks rerun. Existing removal-onto-covered-source refusal retained. Live check 2026-10-05, Mac17,14/26A434: user approved each operation. Initial removal and refused source attempt reached installed older app; stopped, quit without Show, launched exact a3fa961 worktree executable and verified process path. Source Hide succeeded with automation stopped; user confirmed AW3423DW black, K272HUL/AW3425DW usable. Target Show verified DP 0x0F and restored layout while source remained covered; user confirmed. Source Show succeeded and user confirmed all displays restored. Journal E9181195-A9AE-4181-A992-C74CE9E7A5E4 restored. Test app quit; installed app/settings unchanged. Live scope limits recorded in docs/display-hide-ux.md. No remaining acceptance blocker; owned worktree cleanup pending.
 
 Delivery complete: a3fa961 and 6330521 fast-forward merged to main. Owned task-30-blackout-source worktree and branch removed with Worktrunk; corresponding Herdr workspace w27 verified absent. Pre-existing recovery-enable worktree left untouched (not owned by this session). Claim released. No next implementation step remains; future live combinations require fresh approval.
+
+Post-completion review (4ce885f): status said a blacked-out removal source was 'not in the idle display list'; it now says the source is blacked out by Hide (testBlackedOutRemovalSourceExplainsSuspendedAutomation).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -4,7 +4,7 @@ title: Gate experimental private disconnect controls on qualified recovery
 status: Done
 assignee: []
 created_date: '2026-10-04 17:13'
-updated_date: '2026-10-05 20:25'
+updated_date: '2026-10-05 22:24'
 labels:
   - display-hide
   - app
@@ -60,6 +60,8 @@ Delivery: f1c5583 implements TASK-20; merge 37bf06f preserves concurrent main co
 Independent review 8ce94bff-7d4b-4f03-bb8b-96a280e8c35d found one P1: watchdog recapture could adopt different private transport evidence because public snapshot verification does not compare it. Fixed by retaining the qualified expectedSnapshot as journal baseline; existing helper identity policy now refuses drift before writer construction. testWatchdogRecaptureRetainsQualifiedTransportAndHelperRefusesDrift exercises the actual start/journal boundary with a nonexistent helper and fake session; reverting the fix produced three expected assertion failures, restoring it passes. No second general review was performed. Final full swift test --disable-sandbox passed both before and after merge: 228 core + 134 app tests, four opt-in skips, zero failures. Both swift build --product panelctl -Xswiftc -warnings-as-errors and equivalent PanelCtlApp build pass on main; git diff --check passes. LSP diagnostics were unknown, not claimed clean. Logs: /tmp/panelctl-task20-main-tests.log, /tmp/panelctl-task20-main-cli.log, /tmp/panelctl-task20-main-app.log; synthetic PNGs /tmp/panelctl-task20-fixtures. Historical TASK-9 app-test failures are not fresh failures.
 
 Cleanup verified against Git-local agent-creation.json and Worktrunk listing: owned checkout .worktrees/task-20-qualified-disconnect and branch deleted together by wt remove --foreground; exact Herdr workspace w23 contained only an idle shell, post-remove hook closed it and subsequent workspace listing confirmed absence. No owned checkout/workspace retained; pre-existing recovery-enable is unowned and untouched. Claim released. Offline task complete with no remaining delivery blocker. Residual limits: new app path has not been live-qualified; only the recorded physical Dell/firmware/host/build/connector trial supplies historical evidence, manual DP return is required, electrical signal shutdown/repeated reliability are unproven, and cached-metadata identity limitations remain. Next live operation requires separate fresh scoped human approval; none granted or performed here. No push.
+
+Post-completion review (4ce885f): Black out Hide ignored an active disconnect lease; blackoutReadiness now refuses during a lease or unresolved disconnect journal (testBlackOutRefusesDuringDisconnectLease). 0943e75 condensed the disconnect UI: section shown only for the qualified display UUID (or while a journal exists), qualification/limits moved to docs/display-disable.md#app-controls, shorter consent and reconnect alerts.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
