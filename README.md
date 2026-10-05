@@ -72,7 +72,9 @@ panelctl app toggle-hide --display DISPLAY_UUID --json
 See [Hide and Show](docs/display-hide-ux.md) for eligibility and recovery limits,
 and [scripted commands](docs/usage.md#scripted-hide-and-show) for exit codes.
 
-![Displays tab with display tiles and experimental Remove from desktop setup](docs/settings.png)
+![Displays tab with display tiles and experimental Remove from desktop setup](docs/displays.png)
+
+![Automations blackout specific displays after timeout](docs/automations.png)
 
 *Settings rendered with synthetic displays; not a hardware qualification result.*
 
