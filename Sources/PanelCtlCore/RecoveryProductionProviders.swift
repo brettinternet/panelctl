@@ -129,7 +129,8 @@ enum RecoveryProductionProviders {
 
     static func eligibilityEnvironment(current: RecoverySnapshot) throws -> RecoveryEligibilityEnvironment {
         let transports = try self.transports()
-        let drivers = driverObservation()
+        let driverInventory = driverObservation(current: current)
+        let drivers = driverInventory.drivers
         let root = rootObservation()
         var screens: [UInt32: RecoveryEligibilityEnvironment.Screen] = [:]
         for display in current.displays {
@@ -158,16 +159,8 @@ enum RecoveryProductionProviders {
             (hostArchitecture == "x86_64" ? .intel : .unknown)
         let lid: RecoveryEligibilityEnvironment.Lid = root.lid
         let mirrored = current.displays.contains { $0.mirrorUUID != nil }
-        let driverEvidence: String
-        switch drivers {
-        case .displayLink: driverEvidence = "IOKit service plane contains a DisplayLink-named service"
-        case .virtual: driverEvidence = "IOKit service plane contains a known virtual-display service"
-        case .nativeOnly: driverEvidence = "not qualified"
-        case .unknown:
-            driverEvidence = "IOKit service plane found no recognized prohibited name, but no complete native-only inventory is qualified"
-        }
         return RecoveryEligibilityEnvironment(architecture: architecture, drivers: drivers, lid: lid,
-            mirrored: mirrored, screens: screens, driverInventory: driverEvidence)
+            mirrored: mirrored, screens: screens, driverInventory: driverInventory.diagnostic)
     }
 
     static func lifecycleObservation() -> LifecycleObservation {
@@ -216,27 +209,87 @@ enum RecoveryProductionProviders {
             (session[kCGSessionUserIDKey as String] as? NSNumber)?.uint32Value == getuid()
     }
 
-    private static func driverObservation() -> RecoveryEligibilityEnvironment.Drivers {
-        guard let iterator = try? serviceIterator() else { return .unknown }
-        defer { IOObjectRelease(iterator) }
-        var foundDisplayLink = false
-        var foundVirtual = false
-        while true {
-            let service = IOIteratorNext(iterator)
-            if service == 0 { break }
-            defer { IOObjectRelease(service) }
-            let name = registryName(service).lowercased()
-            let values = properties(service) ?? [:]
-            let labels = ([name] + ["IOClass", "IONameMatched", "IOProviderClass", "CFBundleIdentifier"].compactMap { values[$0] as? String })
-                .joined(separator: " ").lowercased()
-            if labels.contains("displaylink") { foundDisplayLink = true }
-            if ["virtualdisplay", "airplaydisplay", "sidecardisplay", "duetdisplay"].contains(where: labels.contains) {
-                foundVirtual = true
+    static func driverObservation(current: RecoverySnapshot) -> RecoveryDriverInventory.Observation {
+        do {
+            guard current.hostModel == RecoveryIdentityPolicy.supportedHostModel,
+                  architecture() == "arm64", current.osBuild == RecoveryIdentityPolicy.supportedOSBuild else {
+                throw RecoveryError.unsafe("driver inventory is outside Mac17,14/arm64/26A434 qualification")
             }
+            let before = try onlineDisplayIDs()
+            guard Set(before) == Set(current.displays.map(\.id)), before.count == current.displays.count else {
+                throw RecoveryError.unsafe("online CG inventory changed before driver observation")
+            }
+            let iterator = try serviceIterator()
+            defer { IOObjectRelease(iterator) }
+            var labels: [String] = []
+            var frames: [RecoveryDriverInventory.Framebuffer] = []
+            while true {
+                let service = IOIteratorNext(iterator)
+                if service == 0 { break }
+                defer { IOObjectRelease(service) }
+                let name = registryName(service)
+                guard !name.isEmpty, let values = properties(service) else {
+                    throw RecoveryError.unsafe("unreadable IOKit service inventory")
+                }
+                labels.append(([name] + ["IOClass", "IONameMatched", "IOProviderClass", "CFBundleIdentifier"]
+                    .compactMap { values[$0] as? String }).joined(separator: " "))
+                if IOObjectConformsTo(service, "IOMobileFramebufferShim") != 0 || IOObjectConformsTo(service, "IOFramebuffer") != 0 {
+                    var id: UInt64 = 0
+                    var path = [CChar](repeating: 0, count: 512)
+                    guard values["IOClass"] as? String == "IOMobileFramebufferShim",
+                          IORegistryEntryGetRegistryEntryID(service, &id) == KERN_SUCCESS,
+                          IORegistryEntryGetPath(service, kIOServicePlane, &path) == KERN_SUCCESS,
+                          let index = number(values["DCPIndex"]),
+                          let bundle = values["CFBundleIdentifier"] as? String,
+                          let kernel = values["CFBundleIdentifierKernel"] as? String,
+                          let publisher = values["IOPersonalityPublisher"] as? String else {
+                        throw RecoveryError.unsafe("unrecognized or incomplete framebuffer service")
+                    }
+                    frames.append(.init(registryID: id, path: String(cString: path), index: index,
+                        bundle: bundle, kernelBundle: kernel, publisher: publisher))
+                }
+            }
+            guard IOIteratorIsValid(iterator) != 0 else {
+                throw RecoveryError.unsafe("IOKit service inventory invalidated during enumeration")
+            }
+            let kexts = try RecoveryDriverInventory.parseLoadedKexts(RecoveryDriverInventory.command(
+                "/usr/bin/kmutil", arguments: ["showloaded", "--list-only", "--variant-suffix", "release"]))
+            let extensions = try RecoveryDriverInventory.command("/usr/bin/systemextensionsctl", arguments: ["list"])
+            // Neither a fixed-size list nor a stale captured connector establishes
+            // completeness. Recheck the topology after the synchronous inventory.
+            let latest = try RecoverySnapshot.capture()
+            try current.verify(latest)
+            guard Set(try onlineDisplayIDs()) == Set(before) else {
+                throw RecoveryError.unsafe("online CG inventory changed during driver observation")
+            }
+            var paths: [UInt32: String] = [:]
+            for display in current.displays {
+                guard paths[display.id] == nil, let path = display.identityEvidence?.framebufferLocation,
+                      !path.isEmpty else {
+                    throw RecoveryError.unsafe("missing or duplicate CG framebuffer mapping")
+                }
+                paths[display.id] = path
+            }
+            return RecoveryDriverInventory.evaluate(.init(host: current.hostModel, architecture: architecture(),
+                build: current.osBuild, onlineIDs: before, paths: paths, framebuffers: frames,
+                serviceLabels: labels, loadedKexts: kexts, systemExtensions: extensions))
+        } catch {
+            return .init(drivers: .unknown, diagnostic: "driver inventory refused: \(error)")
         }
-        if foundDisplayLink { return .displayLink }
-        if foundVirtual { return .virtual }
-        return .unknown
+    }
+
+    private static func onlineDisplayIDs() throws -> [UInt32] {
+        var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0, count <= 128 else {
+            throw RecoveryError.unsafe("cannot count online CG displays")
+        }
+        // An extra slot detects growth between count and enumeration.
+        var ids = [UInt32](repeating: 0, count: Int(count) + 1), actual: UInt32 = 0
+        guard CGGetOnlineDisplayList(UInt32(ids.count), &ids, &actual) == .success,
+              actual == count, Set(ids.prefix(Int(actual))).count == Int(actual) else {
+            throw RecoveryError.unsafe("partial or changing online CG display enumeration")
+        }
+        return Array(ids.prefix(Int(actual)))
     }
 
     private static func serviceIterator() throws -> io_iterator_t {

@@ -164,7 +164,7 @@ attest the running firmware or prove unique online/absent retained-CG mapping.
 Those and physical/driver/lifecycle qualification remain separate gates requiring
 another decision. Execution of this proposal requires explicit approval.
 
-## TASK-12 current offline implementation and rehearsal (2026-10-05)
+## TASK-12 historical offline implementation and rehearsal (2026-10-05)
 
 Production capture records `hw.model`, CG identity, optional CoreDisplay
 `IODisplayLocation`, and read-only IOKit DisplayPort transport/type/location/HPD.
@@ -234,4 +234,91 @@ Logs: `.build/task12-final-tests.log`, `.build/task12-final-cli-build.log`,
 `.build/task12-final-app-build.log`. An earlier full run had transient native-menu
 focus assertions; subsequent full runs passed. LSP diagnostics timed out
 (unknown, not clean). No second general review or hardware trial was performed.
-Driver-inventory qualification remains a TASK-9 blocker, not an inferred success.
+Driver-inventory qualification remained a TASK-9 blocker at that checkpoint, not an inferred success.
+
+## TASK-23 native-only inventory (2026-10-05)
+
+This supersedes only the TASK-12 driver-inventory blocker. `nativeOnly` now
+requires positive read-only evidence, scoped to Mac17,14 / arm64 / build 26A434:
+
+- A complete, valid IOKit service-plane traversal with readable properties and
+  names. Known DisplayLink/virtual labels prohibit native-only qualification.
+- Exactly five distinct `IOMobileFramebufferShim` services with distinct registry
+  IDs, full paths and DCP indices 0...4. Bundle, kernel bundle and personality
+  publisher must all equal `com.apple.driver.AppleMobileDispT605X-DCP`.
+  Additional/foreign framebuffer services, duplicates or missing slots refuse.
+- Every online CG ID maps to exactly one of those services via its CoreDisplay
+  `IODisplayLocation`; two CG IDs cannot share a service. The complete online CG
+  inventory is counted and enumerated with overflow detection, then rechecked
+  after observation along with the captured topology/identity. The five slots
+  are hardware services, not five online displays: unused or retained offline
+  slots are expected. Cached `DisplayAttributes` are not online-state authority.
+- A successful, strictly parsed full `kmutil showloaded --list-only
+  --variant-suffix release` inventory containing the framebuffer driver and
+  IOKit KPI, with no non-Apple identifiers or duplicate rows. A successful
+  `systemextensionsctl list` must report exactly `0 extension(s)`. Any nonempty
+  extension inventory (even unrelated/inactive), unknown format, stderr,
+  command failure or timeout refuses. Each command has a two-second deadline.
+
+There is no cached native-only verdict. Existing session environment refresh
+reruns this inventory synchronously before private writer construction and at
+begin/stage/commit boundaries for disable and journal-driven enable. Public
+restoration retains its separate strict topology policy and does not gain these
+private-driver restrictions. Fake tests cover all inventory refusals before
+writer construction, successful fake disable/recovery, and newly arriving
+extensions/kexts or lost mappings at writer boundaries.
+
+### Fresh target-host no-write rehearsal
+
+Command: `swift test --disable-sandbox --filter RecoveryProductionProviderTests`.
+The fresh observation found **nativeOnly**: four online CG displays uniquely
+mapped to five Apple DCP slots, 269 Apple loaded kexts and zero system extensions.
+Identity was eligible under the bounded capture/current contract; lifecycle was
+awake, lid unknown (all screens external), mirroring false. No writer was
+constructed, target selected, journal created, helper armed, or hardware changed.
+
+| Observed display | ID (observation only) | DCP index | Target eligibility | Physical survivor candidates |
+| --- | --- | --- | --- | --- |
+| DELL S2721DGF, 1440x2560 | 1 | 4 | Eligible, no-write only | 2, 3, 5 |
+| K272HUL, 1440x2560 | 3 | 2 | Eligible, no-write only | 1, 2, 5 |
+| AW3425DW, 3440x1440 | 2 | 1 | Eligible, no-write only | 1, 3, 5 |
+| Dell AW3423DW, 3440x1440 | 5 | 3 | Main display; survivor only | — |
+
+DCP slot 0 was unused. All four displays were online, active, physically
+classified and High-HPD. The DisplayPort transport locations were respectively
+`Port-USB-C@3/DisplayPort`, `Port-USB-C@1/DisplayPort`,
+`Port-HDMI@1/DisplayPort`, and `Port-USB-C@2/DisplayPort`.
+IDs, registry paths and this verdict are observations, never reusable authority.
+
+### Limits and next gate
+
+This is positive inventory qualification, **not** proof of private recovery or
+signal loss. It trusts the qualified OS's CoreDisplay-to-IOKit mapping and
+reported Apple ownership; it is not an independent signature or kernel-integrity
+attestation. Observations are not atomic with a later write: synchronous rechecks
+and existing lifecycle invalidation bound but do not eliminate topology/driver
+races. Cached metadata, same-port replacement and ID reuse remain limitations of
+the existing identity contract. Nonzero system-extension inventories and any
+changed host/build/framebuffer layout remain deliberately unsupported.
+
+The native-slot/remaining-display contract permits fake absent-target recovery;
+actual behavior of those services and paths after private disable is untested.
+Any missing or changed inventory must still refuse and preserve the journal.
+TASK-9 requires fresh exact-target, timeout, surviving usable screen, user
+presence and physical fallback consent. No setter, DDC, restoration, signal-drop,
+input-switch, crash, sleep, logout or reboot trial was performed here.
+
+### Offline validation and independent review
+
+`swift test --disable-sandbox` passed 320 tests (four skips). Both `panelctl`
+and `PanelCtlApp` built with `-Xswiftc -warnings-as-errors`; `git diff --check`
+passed. LSP diagnostics timed out (unknown, not clean). Session logs are
+`/tmp/panelctl-task23-full-tests.log`, `/tmp/panelctl-task23-cli-build.log`,
+and `/tmp/panelctl-task23-app-build.log`.
+
+Independent safety review `c435e25d-7a13-445e-8bad-030692510e66` reported no
+validated defects after tracing the complete diff and private writer/lifecycle
+callers. Direct subprocess tests cover launch/nonzero-exit failure; timeout,
+stderr, oversized-output and invalid-UTF-8 branches lack direct tests. Fake
+boundary tests do not establish actual post-disable registry behavior. No second
+general review or live trial was performed.

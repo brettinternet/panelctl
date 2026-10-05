@@ -253,6 +253,98 @@ final class RecoveryCLITests: XCTestCase {
         }
     }
 
+    func testDriverInventoryRefusalsNeverConstructDisableOrRecoveryWriter() throws {
+        for (name, change) in DriverInventoryFixture.refusals {
+            let f = try Fixture()
+            var evidence = DriverInventoryFixture.valid; change(&evidence)
+            var constructions = 0
+            f.session.environment = {
+                var environment = f.environment
+                environment.drivers = RecoveryDriverInventory.evaluate(evidence).drivers
+                environment.screens = environment.screens.filter { id, _ in f.current.displays.contains { $0.id == id } }
+                return environment
+            }
+            f.session.transaction = { constructions += 1; throw RecoveryError.unsafe("unexpected writer") }
+            XCTAssertThrowsError(try f.session.prepareDisable(targetID: 2), name)
+            let store = RecoveryStore(url: directory.appendingPathComponent(UUID().uuidString))
+            try stranded(f, store: store)
+            XCTAssertThrowsError(try f.session.engine.recover(store: store, trigger: "driver-inventory", ownedOnly: true), name)
+            XCTAssertEqual(constructions, 0, name)
+        }
+        let f = try Fixture()
+        f.session.environment = { throw RecoveryError.unsafe("injected enumeration failure") }
+        f.session.transaction = { XCTFail("enumeration failure constructed writer"); throw RecoveryError.unsafe("unexpected") }
+        XCTAssertThrowsError(try f.session.prepareDisable(targetID: 2))
+        let store = RecoveryStore(url: directory.appendingPathComponent("enumeration-failure"))
+        try stranded(f, store: store)
+        XCTAssertThrowsError(try f.session.engine.recover(store: store, trigger: "enumeration-failure", ownedOnly: true))
+    }
+
+    func testDriverInventoryRefreshAtDisableAndEnableBoundaries() throws {
+        for enabling in [false, true] {
+            for boundary in ["construction", "begin", "stage"] {
+                let f = try Fixture()
+                var evidence = DriverInventoryFixture.valid
+                var reads = 0, constructions = 0, stages = 0, commits = 0, cancels = 0
+                f.session.environment = {
+                    reads += 1
+                    if boundary == "construction" && reads >= 2 { evidence.systemExtensions = "1 extension(s)" }
+                    var environment = f.environment
+                    // Map only current online displays, retaining the native slots.
+                    evidence.onlineIDs = f.current.displays.map(\.id)
+                    evidence.paths = evidence.paths.filter { evidence.onlineIDs.contains($0.key) }
+                    environment.drivers = RecoveryDriverInventory.evaluate(evidence).drivers
+                    environment.screens = environment.screens.filter { evidence.onlineIDs.contains($0.key) }
+                    return environment
+                }
+                f.session.transaction = {
+                    constructions += 1
+                    return RecoveryEnableTransaction(begin: {
+                        if boundary == "begin" { evidence.loadedKexts.append("org.vendor.driver") }
+                        return CGDisplayConfigRef(bitPattern: 1)!
+                    }, setEnabled: { _, _, _ in
+                        stages += 1
+                        if boundary == "stage" { evidence.paths = [:] }
+                    }, commit: { _, _ in commits += 1 }, cancel: { _ in cancels += 1 })
+                }
+                let store = RecoveryStore(url: directory.appendingPathComponent(UUID().uuidString))
+                if enabling {
+                    try stranded(f, store: store)
+                    XCTAssertThrowsError(try f.session.engine.recover(store: store, trigger: "driver-race", ownedOnly: true))
+                } else {
+                    try store.lock()
+                    defer { store.unlock() }
+                    var journal = RecoveryJournal(snapshot: f.baseline, timeout: 30); journal.state = .armed
+                    try store.create(journal)
+                    XCTAssertThrowsError(try f.session.prepareDisable(targetID: 2).perform(&journal, store: store,
+                        targetID: 2, capture: { f.current }, lease: {}))
+                }
+                XCTAssertGreaterThanOrEqual(reads, 2)
+                XCTAssertEqual(constructions, boundary == "construction" ? 0 : 1)
+                XCTAssertEqual(stages, boundary == "stage" ? 1 : 0)
+                XCTAssertEqual(cancels, boundary == "construction" ? 0 : 1)
+                XCTAssertEqual(commits, 0)
+            }
+        }
+    }
+
+    func testPositiveDriverInventoryAllowsFakeDisableAndRecovery() throws {
+        let f = try Fixture()
+        f.session.environment = {
+            var evidence = DriverInventoryFixture.valid
+            evidence.onlineIDs = f.current.displays.map(\.id)
+            evidence.paths = evidence.paths.filter { evidence.onlineIDs.contains($0.key) }
+            var environment = f.environment
+            environment.drivers = RecoveryDriverInventory.evaluate(evidence).drivers
+            environment.screens = environment.screens.filter { evidence.onlineIDs.contains($0.key) }
+            return environment
+        }
+        let store = RecoveryStore(url: directory.appendingPathComponent("positive-driver-cycle"))
+        _ = try execute(arguments, cli: cli(f), store: store)
+        XCTAssertEqual(f.writes, [false, true])
+        XCTAssertEqual(f.current, f.baseline)
+    }
+
     func testUnqualifiedEnvironmentAndInitialLifecycleRefuseBeforeWriterConstruction() throws {
         let f = try Fixture()
         var constructions = 0
