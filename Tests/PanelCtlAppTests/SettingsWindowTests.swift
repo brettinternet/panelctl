@@ -306,7 +306,7 @@ final class SettingsWindowTests: XCTestCase {
                 configure: { defaults in
                     defaults.set(scenario.experimental, forKey: "experimentalFeaturesEnabled")
                     if scenario.name.hasPrefix("cleanup-") {
-                        defaults.set("Hardware brightness cleanup failed; retry automation cleanup before hiding a display.",
+                        defaults.set("Hardware brightness cleanup failed.",
                                      forKey: "automationCleanupFailure")
                     }
                     var hidePreferences = DisplayHidePreferences()

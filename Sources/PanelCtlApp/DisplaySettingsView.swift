@@ -20,9 +20,12 @@ struct DisplaySettingsView: View {
             Form {
                 if let failure = model.protectionQuiescenceFailure {
                     Section {
-                        resultLabel(failure, attention: true)
-                        Button("Retry Automation Cleanup", action: model.retryAutomationCleanup)
-                            .disabled(model.protectionQuiescencePending || model.hideOperation.isBusy)
+                        HStack(alignment: .firstTextBaseline) {
+                            resultLabel(failure, attention: true)
+                            Spacer(minLength: 8)
+                            Button("Retry Automation Cleanup", action: model.retryAutomationCleanup)
+                                .disabled(model.protectionQuiescencePending || model.hideOperation.isBusy)
+                        }
                     }
                 }
                 let pageProblem = model.pageRecoveryProblem
@@ -44,7 +47,9 @@ struct DisplaySettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                ExperimentalDisconnectControls(model: model, targetUUID: selected?.uuid)
+                if ExperimentalDisconnectControls.isVisible(model: model, targetUUID: selected?.uuid) {
+                    ExperimentalDisconnectControls(model: model, targetUUID: selected?.uuid)
+                }
             }
             .formStyle(.grouped)
             // Another display is another page: replace its controls instead of
@@ -150,7 +155,7 @@ struct DisplaySettingsView: View {
         if let blocker = tile.actionBlocker { return blocker }
         switch tile.action {
         case .show? where model.isBlackoutHidden(tile.uuid):
-            return tile.display == nil ? nil : "To show it from the keyboard, point at it and press Esc."
+            return tile.display == nil ? nil : "Or point at it and press Esc."
         case .show?:
             return model.showReturnInputNote
         case .hide?:
@@ -185,7 +190,7 @@ struct DisplaySettingsView: View {
                             Button("Open General") { navigation.tab = .general }
                         } label: {
                             Text("Remove from desktop")
-                            Text("Experimental. Turn on Experimental features in General to use it.")
+                            Text("Experimental. Turn on in General.")
                         }
                     } header: {
                         Text("Hide")
@@ -200,7 +205,7 @@ struct DisplaySettingsView: View {
                         set: { model.setHideEnabled($0, for: display) }
                     )) {
                         Text("Remove from desktop")
-                        Text("Experimental. Hide mirrors this display onto another so windows move off it, instead of blacking it out.")
+                        Text("Mirror onto another display instead of blacking it out.")
                     }
                     .disabled(reason != nil || frozen)
                     .accessibilityLabel("Remove \(tile.name) from desktop")
@@ -346,21 +351,21 @@ struct DisplaySettingsView: View {
             let awayName = MonitorInput.name(away)
             let detection = model.macInputDetections[tileID]
             if detection == .detected(away) {
-                lines.append("\(awayName) is this Mac’s input, so the monitor stays on this Mac. Choose the input your other computer uses.")
+                lines.append("\(awayName) is this Mac’s input. Choose your other computer’s input.")
             } else {
                 if detection == .onSwitchInput(away) {
-                    lines.append("The monitor is on \(awayName) now, the input Hide switches to. If that’s this Mac’s input, choose the input your other computer uses.")
+                    lines.append("The monitor is already on \(awayName). If that’s this Mac, choose your other computer’s input.")
                 } else if case .unavailable(let why)? = detection {
                     lines.append("Couldn’t read this Mac’s input: \(why)")
                 }
                 if let back = configuration.returnInput {
-                    lines.append("Hide switches the monitor to \(awayName), and Show switches it back to \(MonitorInput.name(back)).")
+                    lines.append("Show switches back to \(MonitorInput.name(back)).")
                 } else {
-                    lines.append("Hide switches the monitor to \(awayName). After Show, switch it back with the monitor’s buttons.")
+                    lines.append("After Show, switch back with the monitor’s buttons.")
                 }
             }
         }
-        lines.append("Windows move to the other display, and resolution or refresh rate can change until you show it again.")
+        lines.append("Windows move off this display while it\u{2019}s hidden.")
         return lines.joined(separator: " ")
     }
 
@@ -377,7 +382,8 @@ struct DisplaySettingsView: View {
             } header: {
                 Text("Scripts")
             } footer: {
-                SectionFooter("Hides or shows this display, like its Hide or Show button. Use it in a Stream Deck or Shortcuts action that runs a shell command. To set one state, replace toggle-hide with hide or show.")
+                SectionFooter("For Stream Deck or Shortcuts. Use hide or show to set one state.",
+                              learnMore: AppModel.scriptingDocsURL)
             }
         }
     }

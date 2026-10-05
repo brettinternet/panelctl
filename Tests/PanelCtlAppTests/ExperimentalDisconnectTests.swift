@@ -27,10 +27,8 @@ final class ExperimentalDisconnectTests: XCTestCase {
         XCTAssertNil(production.syntheticSession)
         XCTAssertFalse(production.canDisconnect)
         XCTAssertFalse(production.canReconnect)
-        XCTAssertTrue(production.detail.contains("qualification is required"))
-        for distinction in ["mirror Hide", "blackout", "display sleep", "DDC input", "No alternative"] {
-            XCTAssertTrue(ExperimentalDisconnectPresentation.distinction.contains(distinction))
-        }
+        XCTAssertTrue(production.detail.contains("15 seconds"))
+        XCTAssertTrue(production.detail.contains("one monitor only"))
         for command in ["disconnect", "reconnect", "experimental-disconnect"] {
             let payload = Data("{\"protocol\":1,\"command\":\"\(command)\"}".utf8)
             XCTAssertThrowsError(try JSONDecoder().decode(AppControlRequest.self, from: payload))
@@ -44,18 +42,19 @@ final class ExperimentalDisconnectTests: XCTestCase {
             let value = presentation(phase)
             XCTAssertFalse(value.canDisconnect)
             XCTAssertFalse(value.canReconnect)
-            XCTAssertTrue(value.evidence?.contains(target.uuid) == true)
-            XCTAssertTrue(value.evidence?.contains("not enumerable; retained identity only") == true)
-            XCTAssertTrue(value.evidence?.contains("never resolves, deletes, or rewrites") == true)
+            let evidence = value.evidence.map(\.value).joined(separator: "\n")
+            XCTAssertTrue(evidence.contains(target.uuid))
+            XCTAssertTrue(evidence.contains("Not connected now"))
+            XCTAssertTrue(evidence.contains("/synthetic/recovery/current.json"))
         }
         let consent = presentation(.consent).detail
-        for scope in ["15-second", "another verified usable physical screen", "future sessions", "DDC writes", "Cancel"] {
+        for scope in ["15-second", "another screen stays usable", "Cancel changes nothing"] {
             XCTAssertTrue(consent.contains(scope))
         }
-        XCTAssertTrue(presentation(.refused).detail.contains("do not guess a display ID"))
-        XCTAssertTrue(presentation(.helperFailed).detail.contains("Do not disconnect"))
-        XCTAssertTrue(presentation(.watchdogRecovery).detail.contains("Reconnect is not verified"))
-        XCTAssertTrue(presentation(.reconnectFailed).detail.contains("Preserve the journal"))
+        XCTAssertTrue(presentation(.refused).detail.contains("won\u{2019}t guess"))
+        XCTAssertTrue(presentation(.helperFailed).detail.contains("journal is kept"))
+        XCTAssertTrue(presentation(.watchdogRecovery).detail.contains("Not verified"))
+        XCTAssertTrue(presentation(.reconnectFailed).detail.contains("journal is kept"))
     }
 
     func testLeaseProgressExpiryAndInvalidBounds() {
@@ -64,8 +63,8 @@ final class ExperimentalDisconnectTests: XCTestCase {
         for elapsed in [15, 16, Int.max] {
             let value = presentation(.leased, elapsed: elapsed)
             XCTAssertEqual(value.remainingSeconds, 0)
-            XCTAssertTrue(value.detail.contains("Lease expired"))
-            XCTAssertTrue(value.detail.contains("not proof of reconnect"))
+            XCTAssertTrue(value.detail.contains("Time\u{2019}s up"))
+            XCTAssertTrue(value.detail.contains("confirm the reconnect"))
         }
         for seconds in [Int.min, 0, 61, Int.max] {
             let value = presentation(.leased, seconds: seconds)
@@ -124,7 +123,7 @@ final class ExperimentalDisconnectTests: XCTestCase {
         XCTAssertEqual(firstLaunch, secondLaunch)
         XCTAssertEqual(secondLaunch.syntheticSession?.target, target)
         XCTAssertEqual(secondLaunch.syntheticSession?.failure, journal.failure)
-        XCTAssertTrue(secondLaunch.detail.contains("Identity ambiguous"))
+        XCTAssertTrue(secondLaunch.detail.contains("identity is ambiguous"))
         XCTAssertEqual(secondLaunch.remainingSeconds, 0)
         XCTAssertFalse(secondLaunch.canReconnect)
         XCTAssertEqual(try Data(contentsOf: url), originalBytes)

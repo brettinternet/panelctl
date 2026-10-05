@@ -14,6 +14,7 @@ typealias ProtectionQuiesce = (@escaping (Bool, String?) -> Void) -> Void
 @MainActor
 final class AppModel: ObservableObject {
     static let githubURL = URL(string: "https://github.com/brettinternet/panelctl")!
+    static let scriptingDocsURL = URL(string: "https://github.com/brettinternet/panelctl/blob/main/docs/usage.md#scripted-hide-and-show")!
     static let experimentalDocsURL = URL(string: "https://github.com/brettinternet/panelctl/blob/main/docs/display-hide-ux.md#experimental-features")!
 
     @Published var preferences: ProtectionPreferences {
@@ -361,15 +362,15 @@ final class AppModel: ObservableObject {
             let name = source.name ?? "Display \(source.id)"
             switch runtimeState {
             case .blackedOut:
-                return "Desktop hidden · overlay blackout on \(name); mirrored target is black on the Mac input"
+                return "Desktop hidden · \(name) blacked out by automation"
             case .starting:
-                return "Desktop hidden · automation is starting on \(name); brightness dimming and automatic Sleep are suspended"
+                return "Desktop hidden · automation starting on \(name)"
             case .waiting:
-                return "Desktop hidden · automation watching \(name); brightness dimming and automatic Sleep are suspended"
+                return "Desktop hidden · automation watching \(name)"
             case .waitingForInput:
                 return "Desktop hidden · automation waiting for fresh activity on \(name)"
             case .waitingForPlayback:
-                return "Desktop hidden · automation paused while media or camera activity is detected on \(name)"
+                return "Desktop hidden · automation paused for media or camera activity on \(name)"
             case .sleeping:
                 return "Desktop hidden · automation paused while displays sleep"
             case .stopping:
@@ -468,7 +469,8 @@ final class AppModel: ObservableObject {
         if displayLifecycleTransitioning { return .sleeping }
         if protectionQuiescencePending { return Self.automationStopping }
         if let failure = protectionQuiescenceFailure {
-            return .protectionCleanup("Automation cleanup needs attention: \(failure) Choose Retry Automation Cleanup, then try again.")
+            _ = failure // Shown with its retry; repeating it here would duplicate it.
+            return .protectionCleanup("Automation cleanup needs attention. Choose Retry Automation Cleanup, then try again.")
         }
         guard configuration.enabled else {
             return .unavailable("Turn on Remove from desktop for this display first.")
@@ -2108,13 +2110,13 @@ final class AppModel: ObservableObject {
     // app-control command. Startup and timer refreshes inspect only; no recovery
     // writer runs without a user action (the independent lease helper is separate).
     var disconnectBlocker: String? {
-        if !experimentalFeaturesEnabled { return "Turn on Experimental features in General first. That consent does not authorize disconnect." }
-        if disconnectLease != nil || disconnectStatus?.resolved == false { return "Finish the retained disconnect lease or recovery first." }
+        if !experimentalFeaturesEnabled { return "Turn on Experimental features in General first." }
+        if disconnectLease != nil || disconnectStatus?.resolved == false { return "Finish the current disconnect first." }
         if preferences.isEnabled || service.hasManagedProcess || protectionQuiescencePending {
-            return "Turn off automation and wait for its helper to stop before disconnecting."
+            return "Turn off Automation and wait for it to stop."
         }
         if !blackoutHiddenDisplays.isEmpty || hideConfigurationFrozen || protectionQuiescenceFailure != nil {
-            return "Show hidden displays and finish other display operations or recovery first."
+            return "Show hidden displays and finish recovery first."
         }
         return nil
     }

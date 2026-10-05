@@ -3,6 +3,7 @@ import PanelCtlCore
 
 /// Presentation only. The production adapter supplies journal observations;
 /// synthetic previews never construct a controller or authorize a write.
+/// Qualification, scope and limits live in docs/display-disable.md#app-controls.
 struct ExperimentalDisconnectPresentation: Equatable {
     enum Phase: CaseIterable {
         case consent, leased, refused, helperFailed, watchdogRecovery, reconnectFailed
@@ -19,9 +20,8 @@ struct ExperimentalDisconnectPresentation: Equatable {
         let failure: String?
     }
 
-    static let qualificationReason = "Recorded hardware recovery qualification is required: only the tested DELL S2721DGF / M3T101 unit on Mac17,14 / 26A434 / USB-C@3 / DP is supported. Check the selected display before each operation."
-    static let distinction = "Private disconnect requests removal of the Mac display signal for a bounded session. It is not mirror Hide (the signal stays on), blackout (an overlay), display sleep, or DDC input selection. No alternative runs automatically."
-    static let limitations = "No indefinite disconnect. One supervised cycle auto-selected HDMI; returning to Mac output required manual DP selection. Electrical signal loss and repeated reliability are unproven. Sleep, helper death or driver failure can prevent timely recovery. No automatic global reset, logout or reboot."
+    static let summary = "Turns off this display\u{2019}s signal for 15 seconds, then reconnects it. Tested with one monitor only."
+    static let docsURL = URL(string: "https://github.com/brettinternet/panelctl/blob/main/docs/display-disable.md#app-controls")!
 
     let syntheticSession: SyntheticSession?
     var isSynthetic = true
@@ -30,14 +30,14 @@ struct ExperimentalDisconnectPresentation: Equatable {
     var canReconnect: Bool { false }
 
     var title: String {
-        guard let session = syntheticSession else { return "Disconnect a display · Experimental" }
+        guard let session = syntheticSession else { return "Private disconnect" }
         switch session.phase {
-        case .consent: return "Review scoped consent"
-        case .leased: return "Bounded disconnect lease"
+        case .consent: return "Review consent"
+        case .leased: return remainingSeconds == 0 ? "Reconnecting" : "Disconnected"
         case .refused: return "Disconnect refused"
         case .helperFailed: return "Recovery helper failed"
-        case .watchdogRecovery: return "Watchdog recovery pending verification"
-        case .reconnectFailed: return "Reconnect failed · attention required"
+        case .watchdogRecovery: return "Reconnecting"
+        case .reconnectFailed: return "Reconnect failed"
         }
     }
 
@@ -52,30 +52,36 @@ struct ExperimentalDisconnectPresentation: Equatable {
     }
 
     var detail: String {
-        guard let session = syntheticSession else { return Self.qualificationReason }
-        guard leaseIsValid else { return "Refused: lease must be 1–60 seconds with valid elapsed time. No disconnect or reconnect is authorized." }
+        guard let session = syntheticSession else { return Self.summary }
+        guard leaseIsValid else { return "Refused: the lease must be 1–60 seconds." }
         switch session.phase {
         case .consent:
-            return "Consent is limited to this captured external target and one \(session.leaseSeconds)-second session with another verified usable physical screen. It does not authorize future sessions, launch-at-login actions, DDC writes, or automatic fallback. Cancel leaves the display unchanged."
+            return "One \(session.leaseSeconds)-second disconnect of this display while another screen stays usable. Cancel changes nothing."
         case .leased:
             if remainingSeconds == 0 {
-                return "Lease expired. Do not extend or disconnect again. Inspect the retained journal and helper result; expiration is not proof of reconnect."
+                return "Time\u{2019}s up. Waiting for the helper to confirm the reconnect."
             }
-            return "\(remainingSeconds ?? 0) of \(session.leaseSeconds) seconds remaining in this \(isSynthetic ? "synthetic " : "")lease. The independent watchdog requests guarded recovery at expiry; no renewal or indefinite hold is offered."
+            return "Reconnects automatically in \(remainingSeconds ?? 0) seconds."
         case .refused:
-            return "Identity ambiguous: do not guess a display ID or substitute a currently enumerated display. Inspect the retained identity and connector evidence before any separately approved recovery."
+            return "The display\u{2019}s identity is ambiguous, so PanelCtl won\u{2019}t guess which display to use."
         case .helperFailed:
-            return "Helper readiness or health failed. Do not disconnect. If a commit may have occurred, keep the journal unresolved and inspect its completion evidence; a missing helper is not successful recovery."
+            return "Reconnect, or check recovery details. The recovery journal is kept."
         case .watchdogRecovery:
-            return "The watchdog requested guarded recovery after lease expiry or parent loss. Reconnect is not verified. Keep the journal unresolved until identity and restoration verification succeed."
+            return "Reconnect requested. Not verified yet."
         case .reconnectFailed:
-            return "Reconnect could not be verified. Preserve the journal and inspect the failure. No guessed IDs, repeated private writes, global reset, logout, or reboot will run automatically."
+            return "PanelCtl couldn\u{2019}t verify the reconnect. The recovery journal is kept."
         }
     }
 
-    var evidence: String? {
-        guard let session = syntheticSession else { return nil }
-        return "Captured target: \(session.target.name ?? session.target.uuid) · \(session.target.identityDetail)\nTarget: \(session.targetEnumerable ? "enumerable (not identity proof)" : "not enumerable; retained identity only")\nJournal: \(session.journalPath)\nJournal ID: \(session.journalID)\nUnresolved evidence is retained across app relaunch. \(isSynthetic ? "This preview never resolves, deletes, or rewrites it." : "Status inspection never mutates the journal.")"
+    /// Recovery details, shown collapsed.
+    var evidence: [(label: String, value: String)] {
+        guard let session = syntheticSession else { return [] }
+        return [
+            ("Display", "\(session.target.name ?? session.target.uuid)\n\(session.target.identityDetail)"
+                + (session.targetEnumerable ? "" : "\nNot connected now")),
+            ("Journal", session.journalPath),
+            ("Journal ID", session.journalID),
+        ]
     }
 }
 
@@ -83,32 +89,35 @@ struct ExperimentalDisconnectView: View {
     let presentation: ExperimentalDisconnectPresentation
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(presentation.title).font(.headline)
             if presentation.syntheticSession != nil && presentation.isSynthetic {
-                Text("Synthetic preview only · no display writes or live helper")
+                Text("Synthetic preview · no display writes")
                     .font(.caption).foregroundStyle(.orange)
             }
-            Text(ExperimentalDisconnectPresentation.qualificationReason)
+            Text(presentation.detail)
                 .foregroundStyle(.secondary)
-            Text(ExperimentalDisconnectPresentation.distinction)
-            if presentation.syntheticSession != nil {
-                Text(presentation.detail)
-                if let remaining = presentation.remainingSeconds,
-                   let session = presentation.syntheticSession, session.phase == .leased {
-                    ProgressView(value: Double(session.leaseSeconds - remaining), total: Double(session.leaseSeconds))
-                        .accessibilityLabel(presentation.isSynthetic ? "Synthetic lease elapsed" : "Disconnect lease elapsed")
-                        .accessibilityValue("\(remaining) seconds remaining")
-                }
-                if let evidence = presentation.evidence {
-                    Text(evidence).textSelection(.enabled)
-                }
-                if let failure = presentation.syntheticSession?.failure {
-                    Text("Recorded failure: \(failure)").foregroundStyle(.orange).textSelection(.enabled)
-                }
-                Text("Next: inspect the retained journal with recovery status. Identity ambiguity requires evidence review; lease expiry requires checking the helper result. Reconnect requests guarded recovery, not a global reset or guaranteed visible output. Reopening the app does not grant disconnect consent.")
+            if let remaining = presentation.remainingSeconds,
+               let session = presentation.syntheticSession, session.phase == .leased {
+                ProgressView(value: Double(session.leaseSeconds - remaining), total: Double(session.leaseSeconds))
+                    .accessibilityLabel(presentation.isSynthetic ? "Synthetic lease elapsed" : "Disconnect lease elapsed")
+                    .accessibilityValue("\(remaining) seconds remaining")
             }
-            Text(ExperimentalDisconnectPresentation.limitations).foregroundStyle(.secondary)
+            if let failure = presentation.syntheticSession?.failure {
+                Text(failure).foregroundStyle(.orange).textSelection(.enabled)
+            }
+            if !presentation.evidence.isEmpty {
+                DisclosureGroup("Recovery details") {
+                    ForEach(presentation.evidence, id: \.label) { row in
+                        LabeledContent(row.label) {
+                            Text(row.value).textSelection(.enabled)
+                        }
+                    }
+                    LabeledContent("Inspect") {
+                        Text("panelctl recovery status").font(.callout.monospaced()).textSelection(.enabled)
+                    }
+                }
+            }
             if presentation.isSynthetic { HStack {
                 Button("Disconnect unavailable") {}.disabled(true)
                     .accessibilityLabel("Experimental disconnect unavailable: qualification required")
@@ -118,7 +127,6 @@ struct ExperimentalDisconnectView: View {
                 }
             } }
         }
-        .font(.caption)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
     }

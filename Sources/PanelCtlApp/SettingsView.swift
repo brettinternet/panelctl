@@ -72,13 +72,22 @@ struct SettingsView: View {
 /// explicitly.
 struct SectionFooter: View {
     let text: String
+    let learnMore: URL?
 
-    init(_ text: String) {
+    /// Long explanations belong in the linked docs, not the footer.
+    init(_ text: String, learnMore: URL? = nil) {
         self.text = text
+        self.learnMore = learnMore
     }
 
     var body: some View {
-        Text(text)
+        var footer = AttributedString(text)
+        if let learnMore {
+            var link = AttributedString("Learn more")
+            link.link = learnMore
+            footer += AttributedString(" ") + link
+        }
+        return Text(footer)
             .font(.subheadline)
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.leading)

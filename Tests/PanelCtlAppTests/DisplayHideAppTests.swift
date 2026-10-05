@@ -79,7 +79,7 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertTrue(model.protectionPausedForDisplayRecovery)
         XCTAssertTrue(model.hiddenMirrorOverlayPolicyEligible)
         XCTAssertEqual(model.effectiveBlackoutMode, .blocking)
-        XCTAssertTrue(model.statusSummary.contains("overlay blackout on Mirror source"))
+        XCTAssertTrue(model.statusSummary.contains("Mirror source blacked out by automation"))
         XCTAssertTrue(lines[0].contains("--display \(Self.sourceUUID)"))
         XCTAssertTrue(lines[0].contains("--panelctl-hidden-mirror-source \(Self.sourceUUID)"))
         XCTAssertFalse(lines[0].contains(Self.targetUUID))

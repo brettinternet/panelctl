@@ -98,7 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.messageText = "Display operation in progress"
-            alert.informativeText = "PanelCtl is finishing a Hide or Show. Wait for it to finish before quitting; it can\u{2019}t be canceled once started."
+            alert.informativeText = "Wait for Hide or Show to finish. It can\u{2019}t be canceled."
             alert.addButton(withTitle: "OK")
             alert.runModal()
             return .terminateCancel
@@ -453,7 +453,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func restoreMenuItem() -> NSMenuItem {
         let restore = item("Restore", action: #selector(restoreNow))
-        restore.toolTip = "Removes PanelCtl blackout or dimming; does not show hidden desktops or switch inputs. Use Show for that."
+        restore.toolTip = "Ends automation blackout or dimming. Hidden displays stay hidden."
         return restore
     }
 

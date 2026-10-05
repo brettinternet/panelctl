@@ -7,68 +7,71 @@ struct ExperimentalDisconnectControls: View {
     @State private var reconnectConsent = false
     @State private var reconnectJournalID: String?
 
+    /// Shown for the qualified display with Experimental on, and whenever a
+    /// disconnect journal exists so reconnect stays reachable.
+    static func isVisible(model: AppModel, targetUUID: String?) -> Bool {
+        model.disconnectStatus != nil || (model.experimentalFeaturesEnabled
+            && targetUUID?.caseInsensitiveCompare(DisplayDisconnectController.qualifiedDisplayUUID) == .orderedSame)
+    }
+
     var body: some View {
-        Section("Private disconnect · Experimental") {
+        Section {
             if let status = model.disconnectStatus {
                 if status.resolved {
-                    Text("Journal recovery verified. Confirm visible output; select the Mac DP input manually if needed.")
-                    Text("Journal: \(status.journalPath)\nID: \(status.journalID)")
-                        .font(.caption).textSelection(.enabled)
+                    Text("Reconnected. If the screen stays dark, switch the monitor to DisplayPort.")
                 } else if let presentation = presentation(status) {
                     ExperimentalDisconnectView(presentation: presentation)
                 } else {
-                    Text("Helper preparation did not record a target. Inspect the retained journal; do not guess an ID.")
+                    Text("The helper stopped before recording a display. Check recovery status; don\u{2019}t guess a display.")
                     Text("\(status.journalPath) · \(status.state)").font(.caption).textSelection(.enabled)
+                    if let failure = status.failure { Text(failure).foregroundStyle(.orange).textSelection(.enabled) }
                 }
-                if let failure = status.failure { Text(failure).foregroundStyle(.orange).textSelection(.enabled) }
                 if !status.resolved {
-                    Button("Reconnect recorded display…") {
+                    Button("Reconnect…") {
                         reconnectJournalID = status.journalID
                         reconnectConsent = true
                     }
-                        .disabled(!status.canReconnect)
-                    Text("If recovery is busy, wait for the helper, then inspect status. Never delete an unresolved journal. Global restoration, logout, reboot and physical replug need separate approval.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("Inspect: panelctl recovery status").font(.caption.monospaced()).textSelection(.enabled)
+                    .disabled(!status.canReconnect)
                 }
-            } else {
-                Text(ExperimentalDisconnectPresentation.qualificationReason)
-                Text(ExperimentalDisconnectPresentation.distinction)
-                Text(ExperimentalDisconnectPresentation.limitations)
-                    .foregroundStyle(.secondary)
             }
             if let failure = model.disconnectFailure {
                 Text(failure).foregroundStyle(.orange).textSelection(.enabled)
             }
-            if let blocker = model.disconnectBlocker {
-                Text(blocker).font(.caption).foregroundStyle(.secondary)
+            if model.disconnectStatus?.resolved != false, model.experimentalFeaturesEnabled {
+                Button("Disconnect for 15 Seconds…") {
+                    if let targetUUID { model.prepareDisconnect(targetUUID) }
+                }
+                .disabled(targetUUID == nil || model.disconnectBlocker != nil)
+                if let blocker = model.disconnectBlocker {
+                    Text(blocker).font(.caption).foregroundStyle(.secondary)
+                }
             }
-            Button("Check selected display and review consent…") {
-                if let targetUUID { model.prepareDisconnect(targetUUID) }
-            }
-            .disabled(targetUUID == nil || model.disconnectBlocker != nil)
-            Link("Qualification evidence and recovery limits", destination: URL(string: "https://github.com/brettinternet/panelctl/blob/main/docs/display-disable.md#app-controls")!)
+        } header: {
+            Text("Private disconnect · Experimental")
+        } footer: {
+            SectionFooter(ExperimentalDisconnectPresentation.summary, learnMore: ExperimentalDisconnectPresentation.docsURL)
         }
-        .alert("Disconnect this display for 15 seconds?", isPresented: $model.disconnectConsentPending) {
-            Button("I confirm · Disconnect for 15 seconds", role: .destructive) { model.confirmDisconnect() }
+        .alert("Disconnect for 15 seconds?", isPresented: $model.disconnectConsentPending) {
+            Button("Disconnect", role: .destructive) { model.confirmDisconnect() }
             Button("Cancel", role: .cancel) { model.cancelDisconnect() }
         } message: {
             if let request = model.disconnectRequest {
                 Text(Self.consentMessage(request))
             }
         }
-        .alert("Request guarded reconnect?", isPresented: $reconnectConsent) {
+        .alert("Reconnect the display?", isPresented: $reconnectConsent) {
             Button("Reconnect") {
                 if let reconnectJournalID { model.reconnectDisconnect(expectedJournalID: reconnectJournalID) }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Journal: \(reconnectJournalID ?? "unavailable"). Use only the retained journal target, even if absent from the display list. This may restore the saved topology; it cannot guarantee visible output or switch back to DP. No identity override, repeated private enable, global reset, logout or reboot. Keep the journal if recovery refuses.")
+            Text("PanelCtl restores the display recorded in its recovery journal. If the screen stays dark, switch the monitor to DisplayPort.")
         }
     }
 
+    /// Consent is one-use and per operation; it confirms what PanelCtl can't read.
     static func consentMessage(_ request: DisplayDisconnectRequest) -> String {
-        "Target: \(request.target.name) · \(request.target.detail)\nSurvivor: \(request.survivor.name) · \(request.survivor.detail)\n\nI confirm this is the recorded Dell unit with firmware M3T101 on USB-C@3/DP. I am present, the surviving physical screen is usable, and no other display or input changes will run during this session. I can select DP manually afterward and accept stopping there if recovery fails.\n\nOne 15-second session only, with a journal and independent watchdog. A helper or driver failure may prevent recovery. No indefinite hold, automatic DP return, DDC writes or future consent. Cancel changes nothing."
+        "\(request.target.name) turns off for 15 seconds; \(request.survivor.name) stays on.\n\nContinue only if this is the tested Dell (firmware M3T101) on USB-C@3 DisplayPort, you\u{2019}re at this Mac, and you can switch the monitor back to DisplayPort by hand. A helper or driver failure can prevent the automatic reconnect."
     }
 
     private func presentation(_ status: DisplayDisconnectStatus) -> ExperimentalDisconnectPresentation? {

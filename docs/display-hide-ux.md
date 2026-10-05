@@ -141,7 +141,8 @@ software results, visible behavior, DDC wake and physical recovery.
 ### Private disconnect
 
 The separate **Private disconnect · Experimental** section in Displays does
-not change either Hide style. It supports only the recorded Dell/firmware/host/
+not change either Hide style. It appears only for the qualified display while
+Experimental features are on, or while a disconnect journal exists. It supports only the recorded Dell/firmware/host/
 build/connection, requires fresh per-operation consent, and holds a fixed
 15-second watchdog lease. General experimental consent is insufficient. Turn
 off automation and show hidden displays first. Journal-driven reconnect stays

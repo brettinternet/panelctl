@@ -138,6 +138,10 @@ public struct DisplayDisconnectController {
         try recover(store, id)
     }
 
+    /// The only display unit with recorded qualification. A UUID match alone
+    /// qualifies nothing; `qualifiedTarget` checks every recorded property.
+    public static let qualifiedDisplayUUID = "09084682-3c42-4455-aab8-126a7431125b"
+
     /// TASK-9: one physical unit, firmware M3T101 (confirmed per operation),
     /// Mac17,14/26A434, USB-C@3/DP. No numeric ID is persisted as qualification.
     static func qualifiedTarget(_ snapshot: RecoverySnapshot, uuid: String) throws -> RecoveryDisplay {
@@ -146,7 +150,7 @@ public struct DisplayDisconnectController {
         }
         let matches = snapshot.displays.filter { $0.uuid.caseInsensitiveCompare(uuid) == .orderedSame }
         guard matches.count == 1, let target = matches.first,
-              target.uuid.lowercased() == "09084682-3c42-4455-aab8-126a7431125b",
+              target.uuid.lowercased() == qualifiedDisplayUUID,
               target.vendor == 4268, target.model == 16857, target.serial == 1094800204,
               !target.main, !target.builtin, target.active, target.mirrorUUID == nil else {
             throw RecoveryError.unsafe("unavailable: only the recorded non-main DELL S2721DGF unit is qualified (vendor 4268, model 16857, serial 1094800204)")

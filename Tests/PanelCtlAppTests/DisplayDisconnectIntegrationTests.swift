@@ -164,7 +164,7 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         app.prepareDisconnect(f.uuid)
         let request = try XCTUnwrap(app.disconnectRequest)
         XCTAssertEqual(request.timeout, 15)
-        for phrase in ["M3T101", "present", "physical screen", "DP manually", "15-second", "No indefinite"] {
+        for phrase in ["M3T101", "Synthetic survivor", "at this Mac", "DisplayPort by hand", "15 seconds", "can prevent"] {
             XCTAssertTrue(ExperimentalDisconnectControls.consentMessage(request).contains(phrase), phrase)
         }
         app.cancelDisconnect(); app.confirmDisconnect()

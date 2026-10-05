@@ -128,7 +128,7 @@ final class ProtectionService {
     private let cleanupIsVerified: () -> Bool
     private var cleanupRetryCompletion: ((Bool, String?) -> Void)?
     private var cleanupOnly = false
-    private static let unknownCleanup = "Automation cleanup could not be verified; retry automation cleanup before hiding a display."
+    private static let unknownCleanup = "Automation cleanup couldn\u{2019}t confirm brightness was restored."
     private var shutdownStartedAt: TimeInterval?
 
     init(
@@ -610,7 +610,7 @@ final class ProtectionService {
         }
         if !windowOnlyOverlay {
             if cleanupResultObserved == false {
-                unresolvedCleanupFailure = "Hardware brightness cleanup failed; retry automation cleanup before hiding a display."
+                unresolvedCleanupFailure = "Hardware brightness cleanup failed."
             } else if !cleanupIsVerified() {
                 // A clean stop from a non-dimming watcher cannot certify a
                 // brightness journal left by a previous process.

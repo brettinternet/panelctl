@@ -5,7 +5,7 @@ struct GeneralSettingsView: View {
     @ObservedObject var model: AppModel
 
     static let experimentalConsentTitle = "Turn on experimental features?"
-    static let experimentalConsentMessage = "PanelCtl can then remove a display from your desktop by mirroring it onto another display, and optionally switch the monitor to another input. Windows on that display move, and resolution, refresh rate or HDR can change until you show it again. This has been tested with only one monitor setup. PanelCtl keeps a recovery journal, and Show stays available even if you turn this off later."
+    static let experimentalConsentMessage = "Hide can then remove a display from the desktop by mirroring it, and switch the monitor\u{2019}s input. Windows move and resolution, refresh rate or HDR can change until Show. Tested with one monitor setup only. Show stays available if you turn this off."
 
     var body: some View {
         Form {
@@ -19,7 +19,7 @@ struct GeneralSettingsView: View {
                     set: model.setShowMenuBarIcon
                 ))
             } footer: {
-                SectionFooter("Closing Settings doesn’t stop automation. If the menu bar icon is hidden, open PanelCtl again to return here. Launching at login never hides or shows a display.")
+                SectionFooter("With the menu bar icon hidden, open PanelCtl again to return here.")
             }
 
             Section {
@@ -28,9 +28,9 @@ struct GeneralSettingsView: View {
                     set: model.setExperimentalFeaturesEnabled
                 )) {
                     Text("Experimental features")
-                    Text("Remove a display from the desktop by mirroring it, with optional monitor input switching. Qualified private disconnect requires separate consent for every session.")
+                    Text("Remove from desktop, input switching and private disconnect.")
                 }
-                Link("Learn more about experimental features", destination: AppModel.experimentalDocsURL)
+                Link("Learn more", destination: AppModel.experimentalDocsURL)
             }
 
             Section {

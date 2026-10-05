@@ -70,10 +70,12 @@ panelctl recovery panic
 ## App controls
 
 **Settings → Displays → Private disconnect · Experimental** is a separate manual
-operation, not a Hide style or a fallback from Hide. Turn off automation, show
-blacked-out/hidden displays, and finish any unresolved recovery first. Turn on
-Experimental features in General, then **Check selected display and review
-consent**. That check is read-only: it never starts a display transaction.
+operation, not a Hide style or a fallback from Hide. With Experimental features
+on, the section appears only for the recorded display (and whenever a
+disconnect journal exists). Turn off automation, show blacked-out/hidden
+displays, and finish any unresolved recovery first, then choose **Disconnect for
+15 Seconds…**. Its qualification check is read-only: it never starts a display
+transaction.
 
 The app permits only the recorded physical DELL S2721DGF unit (UUID
 `09084682-3c42-4455-aab8-126a7431125b`, vendor 4268, model 16857, serial
@@ -91,8 +93,8 @@ transaction, journal and bounded recovery engine as the CLI. No automatic DDC
 input return, lease extension or repeated disconnect is offered.
 
 The app inspects the shared `Recovery/current.json` on launch and during the
-lease, without invoking recovery writes. Status and **Reconnect recorded
-display** remain available after restart, when the target is absent, and with
+lease, without invoking recovery writes. Status and **Reconnect…**
+remain available after restart, when the target is absent, and with
 Experimental features off. Reconnect closes an owned lease to request early
 helper recovery, or explicitly runs guarded journal recovery after relaunch.
 An active helper may report busy; wait and inspect again. Expiry is not proof
