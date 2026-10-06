@@ -220,7 +220,15 @@ final class SettingsWindowTests: XCTestCase {
         controller.present()
         controller.select(.general)
         let window = try XCTUnwrap(controller.window)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        // Wait for the selected tab to mount before changing its alert binding.
+        spin {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return window.contentView.map {
+                nativeViews(in: $0).compactMap { $0 as? NSSwitch }.count == 3
+            } == true
+        }
+        XCTAssertEqual(nativeViews(in: try XCTUnwrap(window.contentView))
+            .compactMap { $0 as? NSSwitch }.count, 3)
 
         func consentButton(_ title: String) throws -> NSButton {
             spin { window.attachedSheet != nil }
@@ -530,9 +538,19 @@ final class SettingsWindowTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         defer { window.close() }
         window.setContentSize(NSSize(width: 680, height: 1200))
-        window.contentView?.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        return nativeViews(in: try XCTUnwrap(window.contentView)).lazy.compactMap { $0 as? NSSwitch }.first
+        let content = try XCTUnwrap(window.contentView)
+        let expectedState: NSControl.StateValue = model.hideRemovesFromDesktop(displays[1]) ? .on : .off
+        spin {
+            content.layoutSubtreeIfNeeded()
+            let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
+            return model.experimentalFeaturesEnabled
+                ? switches.count == 1 && switches[0].state == expectedState
+                : switches.isEmpty
+        }
+        // The Displays tab has only one switch. Wait for SwiftUI to apply the
+        // selection and binding instead of reading the initial default state.
+        let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
+        return switches.count == 1 ? switches[0] : nil
     }
 
     private func hiddenStatus() -> DisplayHandoffStatus {
