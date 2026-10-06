@@ -629,7 +629,7 @@ public enum CLIParser {
             guard sourceKeys.allSatisfy({ UUID(uuidString: $0) != nil }),
                   Set(sourceKeys).count == sourceKeys.count,
                   !all, selectors.count == sourceKeys.count,
-                  selectors.allSatisfy({ selector in sourceKeys.contains(where: { selector.caseInsensitiveCompare($0) == .orderedSame }) }),
+                  Set(selectors.map { $0.lowercased() }) == Set(sourceKeys),
                   watch, idleAfter != nil, timeout != nil, sleepAfter == nil,
                   !caffeinate, !keepDisplaysAwake, !blackoutEmptyDisplays,
                   mode == .blocking, overlayOpacityPercent == 100,

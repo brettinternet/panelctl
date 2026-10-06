@@ -138,6 +138,12 @@ enum MirrorSessionTopology {
                 if original.active, !observed.active { return false }
             }
         }
+        // Removing a non-main display never moves main. Only while the
+        // original main display is removed may macOS report another as main.
+        if let originalMain = baseline.displays.first(where: \.main), activeByTarget[originalMain.uuid] == nil,
+           current.displays.first(where: \.main)?.uuid != originalMain.uuid {
+            return false
+        }
         return true
     }
 
@@ -396,10 +402,13 @@ struct MirrorController {
             try transaction.apply(target: target.id, source: sourceRecord.id) {
                 try current.verify(engine.capture())
             }
+            let mainBefore = current.displays.first(where: \.main)?.uuid
             try engine.converge {
+                let observedTopology = try engine.capture()
                 guard let observed = journal.publicMirrorSession,
                       MirrorSessionTopology.matches(baseline: baseline, removals: observed.removals,
-                                                    current: try engine.capture()) else {
+                                                    current: observedTopology),
+                      currentTarget.main || observedTopology.displays.first(where: \.main)?.uuid == mainBefore else {
                     throw RecoveryError.unsafe("mirror session verification mismatch")
                 }
             }
@@ -556,6 +565,7 @@ struct MirrorController {
                                                            targetUUID: selected.targetUUID, current: current) else {
             let reason = "current topology does not match the recorded removal session; no other removal was changed"
             markRemovalNeedsAttention(&journal, removalID: selected.id, reason: reason)
+            try? store.save(journal)
             throw RecoveryError.unsafe(reason)
         }
         active = MirrorSessionTopology.activeRemovals(session.removals)

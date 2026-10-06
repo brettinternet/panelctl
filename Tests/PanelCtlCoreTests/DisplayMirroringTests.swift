@@ -757,6 +757,59 @@ final class DisplayMirroringTests: XCTestCase {
         }
     }
 
+    func testNonMainHideRefusesWhenMacMovesMainAndSessionKeepsOriginalMain() throws {
+        let baseline = try sessionSnapshot([:])
+        let movedMain = try changedSnapshot(sessionSnapshot([2: 3])) { displays in
+            displays[0]["main"] = false
+            displays[2]["main"] = true
+        }
+        var current = baseline
+        var sut = controller(baseline)
+        sut.engine.capture = { current }
+        sut.transaction = MirrorTransaction(
+            begin: { OpaquePointer(bitPattern: 1)! }, stage: { _, _, _ in },
+            complete: { _, _ in current = movedMain },
+            cancel: { _ in XCTFail("completion consumes the fake transaction") }
+        )
+        XCTAssertThrowsError(try sut.mirror(selector: snapshotUUID(2), source: snapshotUUID(3), store: store))
+        let saved = try store.load()
+        XCTAssertEqual(saved.state, .needsAttention)
+        XCTAssertEqual(saved.publicMirrorSession?.removals.first?.state, .needsAttention)
+        let removals = try XCTUnwrap(saved.publicMirrorSession?.removals)
+        XCTAssertFalse(MirrorSessionTopology.matches(baseline: baseline, removals: removals, current: movedMain),
+                       "main may move only while the original main display is removed")
+        XCTAssertTrue(MirrorSessionTopology.matches(baseline: baseline, removals: removals,
+                                                    current: try sessionSnapshot([2: 3])))
+
+        // With the original main removed, a later non-main Hide still must not move main.
+        let mainRemovedBaseline = try sessionSnapshot([:], includeFourth: true, originalMain: 2)
+        var active: [Int: Int] = [:]
+        var staged: (UInt32, UInt32) = (0, 0)
+        let scenarioStore = RecoveryStore(url: directory.appendingPathComponent("main-removed-then-moved.json"))
+        current = mainRemovedBaseline
+        sut = controller(mainRemovedBaseline)
+        sut.records = { self.records(current) }
+        sut.engine.capture = { current }
+        sut.transaction = MirrorTransaction(
+            begin: { OpaquePointer(bitPattern: 1)! }, stage: { _, target, source in staged = (target, source) },
+            complete: { _, _ in
+                active[Int(staged.0) - 6] = Int(staged.1) - 6
+                current = try self.sessionSnapshot(active, includeFourth: true, originalMain: 2)
+                if active[3] != nil {
+                    current = try self.changedSnapshot(current) { displays in
+                        displays[0]["main"] = false
+                        displays[3]["main"] = true
+                    }
+                }
+            },
+            cancel: { _ in XCTFail("completion consumes the fake transaction") }
+        )
+        _ = try sut.mirror(selector: snapshotUUID(2), source: snapshotUUID(1), store: scenarioStore)
+        XCTAssertThrowsError(try sut.mirror(selector: snapshotUUID(3), source: snapshotUUID(1), store: scenarioStore))
+        let entries = try XCTUnwrap(scenarioStore.load().publicMirrorSession?.removals)
+        XCTAssertEqual(entries.map(\.state), [.mirrored, .needsAttention])
+    }
+
     func testRecoveryRestoreRestoresOriginalMainAndMismatchKeepsManualGuidance() throws {
         let original = try snapshot { displays in
             displays[0]["main"] = false

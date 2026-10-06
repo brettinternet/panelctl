@@ -102,6 +102,7 @@ final class CLIParserTests: XCTestCase {
         XCTAssertNoThrow(try BlackoutController.validateOptions(options))
 
         let rejected: [([String], CLIParseError)] = [
+            (["--display", source, "--display", source, "--panelctl-hidden-mirror-source", source, "--panelctl-hidden-mirror-source", "00000000-0000-0000-0000-000000000002", "--watch", "--idle-after", "10", "--timeout", "60"], .invalidHiddenMirrorSourceOverlay),
             (["--display", source, "--panelctl-hidden-mirror-source", "00000000-0000-0000-0000-000000000002", "--watch", "--idle-after", "10", "--timeout", "60"], .invalidHiddenMirrorSourceOverlay),
             (["--display", source, "--panelctl-hidden-mirror-source", source, "--watch", "--idle-after", "10"], .invalidHiddenMirrorSourceOverlay),
             (["--display", source, "--panelctl-hidden-mirror-source", source, "--watch", "--idle-after", "10", "--timeout", "60", "--dim-to", "20"], .invalidHiddenMirrorSourceOverlay),
