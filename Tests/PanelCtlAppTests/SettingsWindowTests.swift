@@ -272,6 +272,17 @@ final class SettingsWindowTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         XCTAssertNil(window.attachedSheet, "turning off needs no consent")
         XCTAssertFalse(model.experimentalFeaturesEnabled)
+
+        // The shared presenter must still display and dismiss ordinary notices.
+        model.notice = AppNotice(title: "Fixture notice", message: "No hardware action", opensLoginItemSettings: false)
+        spin { window.attachedSheet != nil }
+        let noticeSheet = try XCTUnwrap(window.attachedSheet)
+        let noticeViews = nativeViews(in: try XCTUnwrap(noticeSheet.contentView))
+        XCTAssertTrue(noticeViews.compactMap { ($0 as? NSTextField)?.stringValue }.contains("Fixture notice"))
+        try XCTUnwrap(noticeViews.compactMap { $0 as? NSButton }.first { $0.title == "OK" }).performClick(nil)
+        spin { window.attachedSheet == nil && model.notice == nil }
+        XCTAssertNil(window.attachedSheet)
+        XCTAssertNil(model.notice)
     }
 
     func testMenuUsesAutomationWording() throws {

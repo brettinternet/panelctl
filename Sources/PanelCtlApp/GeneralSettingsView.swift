@@ -45,13 +45,5 @@ struct GeneralSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .alert(Self.experimentalConsentTitle, isPresented: $model.experimentalConsentPending) {
-            Button("Turn On") {
-                model.acceptExperimentalConsent()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(Self.experimentalConsentMessage)
-        }
     }
 }
