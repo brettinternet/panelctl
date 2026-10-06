@@ -106,7 +106,7 @@ struct ExperimentalDisconnectControls: View {
 
     /// Consent is one-use and per operation; it confirms what PanelCtl can't read.
     static func consentMessage(_ request: DisplayDisconnectRequest) -> String {
-        "\(request.target.name) turns off for 15 seconds; \(request.survivor.name) stays on.\n\nThis uses a private macOS API and may not work with your monitor. Continue only if you\u{2019}re at this Mac, the named remaining screen is usable, and you can recover the monitor manually. Do not unplug displays or change inputs during the operation. A helper or driver failure can prevent automatic reconnect; selecting this Mac’s input or physically reconnecting the monitor may be necessary and may not be sufficient. Automatic recovery is not guaranteed."
+        "\(request.target.name) disconnects for 15 seconds; \(request.survivor.name) stays on.\n\nAutomatic reconnect may fail and require manual recovery. Continue only if you\u{2019}re at this Mac and the other screen is usable. Don’t unplug displays or change inputs during the test."
     }
 
     private func presentation(_ status: DisplayDisconnectStatus) -> ExperimentalDisconnectPresentation? {

@@ -164,9 +164,12 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         app.prepareDisconnect(f.uuid)
         let request = try XCTUnwrap(app.disconnectRequest)
         XCTAssertEqual(request.timeout, 15)
-        for phrase in ["private macOS API", "Synthetic survivor", "at this Mac", "recover the monitor manually", "15 seconds", "not guaranteed"] {
-            XCTAssertTrue(ExperimentalDisconnectControls.consentMessage(request).contains(phrase), phrase)
+        let consent = ExperimentalDisconnectControls.consentMessage(request)
+        for phrase in [request.target.name, "Synthetic survivor", "at this Mac", "manual recovery", "15 seconds",
+                       "Automatic reconnect may fail", "other screen is usable", "Don’t unplug displays or change inputs"] {
+            XCTAssertTrue(consent.contains(phrase), phrase)
         }
+        XCTAssertLessThanOrEqual(consent.split(whereSeparator: { $0.isWhitespace }).count, 55)
         app.cancelDisconnect(); app.confirmDisconnect()
         XCTAssertEqual(f.arms, 0)
         app.prepareDisconnect(f.uuid); f.clock += 31; app.confirmDisconnect()
