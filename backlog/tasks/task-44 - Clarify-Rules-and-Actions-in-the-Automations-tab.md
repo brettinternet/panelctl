@@ -5,11 +5,12 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-10-06 16:50'
-updated_date: '2026-10-06 17:12'
+updated_date: '2026-10-06 17:34'
 labels:
   - app
   - automation
   - ui
+  - reviewed
 dependencies: []
 references:
   - Sources/PanelCtlApp/AutomationSettingsView.swift

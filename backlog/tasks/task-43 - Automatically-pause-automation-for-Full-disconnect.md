@@ -4,8 +4,9 @@ title: Automatically pause automation for Full disconnect
 status: Done
 assignee: []
 created_date: '2026-10-06 16:20'
-updated_date: '2026-10-06 17:09'
-labels: []
+updated_date: '2026-10-06 17:34'
+labels:
+  - reviewed
 dependencies: []
 references:
   - Sources/PanelCtlApp/AppModel.swift

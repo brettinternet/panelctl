@@ -4,8 +4,9 @@ title: Generalize experimental disconnect eligibility beyond one monitor
 status: Done
 assignee: []
 created_date: '2026-10-06 15:48'
-updated_date: '2026-10-06 16:00'
-labels: []
+updated_date: '2026-10-06 17:34'
+labels:
+  - reviewed
 dependencies: []
 ordinal: 32010
 ---

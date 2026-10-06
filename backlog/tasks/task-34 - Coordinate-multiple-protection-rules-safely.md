@@ -4,11 +4,12 @@ title: Coordinate multiple protection rules safely
 status: Done
 assignee: []
 created_date: '2026-10-05 22:29'
-updated_date: '2026-10-06 05:17'
+updated_date: '2026-10-06 17:34'
 labels:
   - app
   - automation
   - safety
+  - reviewed
 dependencies: []
 references:
   - Sources/PanelCtlApp/ProtectionPreferences.swift
