@@ -672,6 +672,204 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(reloaded.preferences, protectionBefore)
     }
 
+    func testLegacySavedHideReferencesRemapTargetAndSourceIDsWithoutLosingSettings() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let legacyData = try JSONSerialization.data(withJSONObject: [
+            "configurations": [Self.targetUUID: [
+                "target": ["uuid": Self.targetUUID, "id": 202, "name": "Target", "vendor": 2, "model": 20, "serial": 200],
+                "enabled": true,
+                "source": ["uuid": Self.mainUUID, "id": 101, "name": "Main OLED", "vendor": 1, "model": 10, "serial": 100],
+                "awayInput": 17,
+                "returnInput": 15
+            ]]
+        ])
+        defaults.set(legacyData, forKey: "displayHidePreferences")
+        let remapped = [
+            Self.display(index: 1, id: 1101, uuid: Self.mainUUID, name: "Main OLED", main: true),
+            Self.display(index: 2, id: 2202, uuid: Self.targetUUID, name: "Target", main: false),
+            Self.display(index: 3, id: 3303, uuid: Self.sourceUUID, name: "Mirror source", main: false)
+        ]
+        let box = StatusBox(handoffStatus(.none, target: nil, source: nil))
+        var writtenTarget: DisplayHideIdentity?
+        var writtenSource: DisplayHideIdentity?
+        let model = makeModel(
+            defaults: defaults,
+            displays: remapped,
+            status: { box.value },
+            hideDisplay: { target, source, _ in
+                writtenTarget = target
+                writtenSource = source
+                box.value = self.handoffStatus(.hidden, target: remapped[1], source: remapped[0], journalID: "remapped-hide", canShow: true)
+                return .notRequested
+            }
+        )
+
+        let configuration = try XCTUnwrap(model.hidePreferences[Self.targetUUID])
+        XCTAssertTrue(configuration.enabled)
+        XCTAssertEqual(configuration.source?.uuid, Self.mainUUID)
+        XCTAssertEqual(configuration.awayInput, 17)
+        XCTAssertEqual(configuration.returnInput, 15)
+        let request = try model.makeHideRequest(targetUUID: Self.targetUUID)
+        XCTAssertEqual(request.target.id, 2202)
+        XCTAssertEqual(request.source.id, 1101)
+
+        let result = try await hideAndWait(model)
+        XCTAssertTrue(result.succeeded, result.message)
+        XCTAssertEqual(writtenTarget?.displayID, 2202)
+        XCTAssertEqual(writtenSource?.displayID, 1101)
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(model.hidePreferences)) as? [String: Any]
+        let rows = try XCTUnwrap(encoded?["configurations"] as? [String: Any])
+        let saved = try XCTUnwrap(rows[Self.targetUUID] as? [String: Any])
+        XCTAssertNil((saved["target"] as? [String: Any])?["id"])
+        XCTAssertNil((saved["source"] as? [String: Any])?["id"])
+    }
+
+    func testReportedMonitorIDRemappingPreservesLegacyActionsAndHideSetup() throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let specs: [(String, String, UInt32, UInt32, UInt32, UInt32)] = [
+            ("A8D3635B-35EC-4171-BBE2-95FB8CF76111", "AW3425DW", 2, 1, 41613, 809650259),
+            ("09084682-3C42-4455-AAB8-126A7431125B", "DELL S2721DGF", 1, 4, 16857, 1094800204),
+            ("1FC57E99-DE7C-4DAF-B896-3B512CEE064F", "AW3423DW", 5, 2, 41444, 809906515)
+        ]
+        let records = specs.enumerated().map { index, spec in
+            DisplayRecord(index: index + 1, id: spec.3, uuid: spec.0, name: spec.1,
+                          active: true, online: true, asleep: false, builtin: false, main: index == 2,
+                          vendor: 4268, model: spec.4, serial: spec.5,
+                          bounds: DisplayBounds(CGRect(x: index * 1920, y: 0, width: 1920, height: 1080)),
+                          pixelWidth: 1920, pixelHeight: 1080)
+        }
+        let legacyIdentities: [[String: Any]] = specs.map {
+            ["uuid": $0.0, "name": $0.1, "id": $0.2, "vendor": 4268, "model": $0.4, "serial": $0.5]
+        }
+        var configurations: [String: Any] = [:]
+        for index in 0..<2 {
+            configurations[specs[index].0.lowercased()] = [
+                "target": legacyIdentities[index], "source": legacyIdentities[2], "enabled": true,
+                "awayInput": index == 0 ? 15 : 17, "returnInput": index == 0 ? 17 : 15
+            ]
+        }
+        defaults.set(try JSONSerialization.data(withJSONObject: ["configurations": configurations]),
+                     forKey: "displayHidePreferences")
+        let actionIDs = [UUID(), UUID()]
+        let actions: [[String: Any]] = ["removeFromDesktop", "show"].enumerated().map { actionIndex, effect in
+            let steps: [[String: Any]] = (0..<2).map { index in
+                ["target": legacyIdentities[index], "effect": effect,
+                 "reviewedRemoval": ["removeEnabled": true, "sourceUUID": specs[2].0.lowercased(),
+                                     "awayInput": index == 0 ? 15 : 17]]
+            }
+            return ["id": actionIDs[actionIndex].uuidString, "name": "PC displays \(effect)", "steps": steps]
+        }
+        defaults.set(try JSONSerialization.data(withJSONObject: ["version": 2, "actions": actions]),
+                     forKey: AppModel.displayActionsKey)
+        defaults.set(true, forKey: "experimentalFeaturesEnabled")
+        let model = makeModel(defaults: defaults, displays: records)
+        XCTAssertEqual(model.displayActions.actions.map(\.id), actionIDs)
+        for index in 0..<2 {
+            let request = try model.makeHideRequest(targetUUID: specs[index].0)
+            XCTAssertEqual(request.target.id, specs[index].3)
+            XCTAssertEqual(request.source.id, 2)
+            XCTAssertEqual(request.awayInput, index == 0 ? 15 : 17)
+        }
+        for action in model.displayActions.actions {
+            XCTAssertNil(model.displayActionRunBlocker(for: action), action.name)
+            XCTAssertEqual(action.steps.compactMap { $0.target?.uuid }, Array(specs.prefix(2)).map { $0.0 })
+        }
+    }
+
+    func testSavedHideSourceMissingDuplicateOrChangedIdentityRefusesWithoutWrites() async throws {
+        let cases: [(String, (inout [DisplayRecord]) -> Void, String)] = [
+            ("missing", { $0.removeAll { $0.uuid == Self.sourceUUID } }, "missing"),
+            ("duplicate", { $0.append(Self.display(index: 5, id: 505, uuid: Self.sourceUUID, name: "Duplicate source", main: false)) }, "ambiguous"),
+            ("changed", { records in
+                records.removeAll { $0.uuid == Self.sourceUUID }
+                records.append(Self.display(index: 3, id: 303, uuid: Self.sourceUUID, name: "Changed source", main: false, serial: 999))
+            }, "identity changed")
+        ]
+        for (name, change, reason) in cases {
+            let defaults = try makeDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+            let inventory = HideDisplayInventoryBox(displays)
+            var writerCalls = 0
+            let model = makeModel(
+                defaults: defaults,
+                displays: displays,
+                displayProvider: { inventory.value },
+                hideDisplay: { _, _, _ in writerCalls += 1; return .notRequested }
+            )
+            model.setHideEnabled(true, for: displays[1])
+            model.setHideSource(Self.sourceUUID, for: Self.targetUUID)
+            change(&inventory.value)
+            model.refreshDisplays()
+
+            let result = try await hideAndWait(model)
+            XCTAssertFalse(result.succeeded, name)
+            XCTAssertTrue(result.message.localizedCaseInsensitiveContains(reason), result.message)
+            XCTAssertEqual(writerCalls, 0, "\(name) source refusal happens before the fake display writer")
+        }
+    }
+
+    func testDisplayIDChangeAfterHideRequestCaptureRefusesBeforeFakeWriter() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let inventory = HideDisplayInventoryBox(displays)
+        var quiescenceCompletion: ((Bool, String?) -> Void)?
+        var writerCalls = 0
+        let model = makeModel(
+            defaults: defaults,
+            displays: displays,
+            displayProvider: { inventory.value },
+            quiesceProtection: { quiescenceCompletion = $0 },
+            hideDisplay: { _, _, _ in writerCalls += 1; return .notRequested }
+        )
+        model.setHideEnabled(true, for: displays[1])
+        var result: DisplayOperationResult?
+        model.hide(targetUUID: Self.targetUUID) { result = $0 }
+        XCTAssertNotNil(quiescenceCompletion)
+        inventory.value[1] = Self.display(index: 2, id: 2202, uuid: Self.targetUUID, name: "Target", main: false)
+        quiescenceCompletion?(true, nil)
+        try await waitUntil { result != nil }
+
+        XCTAssertFalse(try XCTUnwrap(result).succeeded)
+        XCTAssertEqual(writerCalls, 0, "a pending request keeps the captured ID even though a new operation may resolve the new ID")
+        XCTAssertTrue(try XCTUnwrap(result?.message).contains("displays or Hide settings changed"))
+    }
+
+    func testSavedReturnInputUsesStableHardwareIdentityButShowKeepsJournalID() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var preferences = DisplayHidePreferences()
+        preferences[Self.targetUUID] = DisplayHideConfiguration(
+            target: DisplayIdentitySnapshot(uuid: Self.targetUUID, id: 999, name: "Old presentation name",
+                                            vendor: displays[1].vendor, model: displays[1].model, serial: displays[1].serial),
+            enabled: true, awayInput: 17, returnInput: 15
+        )
+        defaults.set(try JSONEncoder().encode(preferences), forKey: "displayHidePreferences")
+        let box = StatusBox(handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "strict-journal", canShow: true))
+        var shownJournalID: String?
+        var shownInput: UInt8?
+        let model = makeModel(
+            defaults: defaults,
+            displays: displays,
+            status: { box.value },
+            showDisplay: { journalID, input in
+                shownJournalID = journalID
+                shownInput = input
+                box.value = self.handoffStatus(.none, target: nil, source: nil)
+                return .notRequested
+            }
+        )
+        try await waitUntil { !model.protectionQuiescencePending }
+        let request = try model.makeShowRequest()
+        XCTAssertEqual(request.returnInput, 15, "the saved input belongs to the exact stable hardware reference, not its legacy ID or name")
+        XCTAssertEqual(request.status.target?.id, 202, "Show remains bound to the journal's captured ID")
+        let result = try await showAndWait(model)
+        XCTAssertTrue(result.succeeded, result.message)
+        XCTAssertEqual(shownJournalID, "strict-journal")
+        XCTAssertEqual(shownInput, 15)
+    }
+
     func testRemovalDefaultsToTheMainDisplayAsMirrorSource() throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
@@ -3515,4 +3713,9 @@ final class DisplayHideAppTests: XCTestCase {
 private final class StatusBox {
     var value: DisplayHandoffStatus
     init(_ value: DisplayHandoffStatus) { self.value = value }
+}
+
+private final class HideDisplayInventoryBox {
+    var value: [DisplayRecord]
+    init(_ value: [DisplayRecord]) { self.value = value }
 }

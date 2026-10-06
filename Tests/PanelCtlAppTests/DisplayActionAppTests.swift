@@ -559,6 +559,11 @@ final class DisplayActionAppTests: XCTestCase {
         let upgraded = try JSONDecoder().decode(DisplayActionSet.self, from: upgradedBytes)
         XCTAssertEqual(upgraded.actions.first?.id, legacyID)
         XCTAssertEqual(upgraded.actions.first?.name, "Legacy action renamed")
+        let upgradedJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: upgradedBytes) as? [String: Any])
+        let actionRows = try XCTUnwrap(upgradedJSON["actions"] as? [[String: Any]])
+        let savedSteps = try XCTUnwrap(actionRows.first?["steps"] as? [[String: Any]])
+        let savedTarget = try XCTUnwrap(savedSteps.first?["target"] as? [String: Any])
+        XCTAssertNil(savedTarget["id"], "numeric IDs from legacy Action snapshots are not persisted as identity")
 
         defaults.set(legacyJSON, forKey: AppModel.legacyDisplayActionsKey) // simulate an older build writing its key
         XCTAssertEqual(makeModel(defaults: defaults).displayActions, upgraded)
@@ -1038,7 +1043,7 @@ final class DisplayActionAppTests: XCTestCase {
         let result = await run(model, id: action.id)
         XCTAssertEqual(result.outcome, .partial)
         XCTAssertEqual(result.steps?.map(\.outcome), [.done, .refused, .notRun])
-        XCTAssertTrue(result.steps?[1].desktopSummary.contains("identity changed") == true)
+        XCTAssertTrue(result.steps?[1].desktopSummary.localizedCaseInsensitiveContains("changed after") == true)
         XCTAssertEqual(result.displays?.map(\.targetUUID), [targetUUID, sourceUUID, alternateUUID])
         XCTAssertEqual(result.displays?.map(\.observedState), ["hidden-by-panelctl", "unavailable", "separate"])
         XCTAssertEqual(coverRequests, [[202]])
@@ -1229,7 +1234,7 @@ final class DisplayActionAppTests: XCTestCase {
         let result = await run(model, id: action.id)
         XCTAssertEqual(result.outcome, .partial)
         XCTAssertEqual(result.steps?.map(\.outcome), [.done, .refused])
-        XCTAssertTrue(result.steps?.last?.desktopSummary.contains("identity changed") == true)
+        XCTAssertTrue(result.steps?.last?.desktopSummary.localizedCaseInsensitiveContains("changed after") == true)
         XCTAssertFalse(model.isBlackoutHidden(sourceUUID))
     }
 
@@ -1385,7 +1390,7 @@ final class DisplayActionAppTests: XCTestCase {
         XCTAssertEqual(first.outcome, .done)
         let original = try XCTUnwrap(inventory.value.first { $0.uuid == targetUUID })
         inventory.value.removeAll { $0.uuid == targetUUID }
-        inventory.value.append(display(index: 2, id: 222, uuid: targetUUID, name: "Replacement target", main: false))
+        inventory.value.append(display(index: 2, id: 222, uuid: targetUUID, name: "Replacement target", main: false, serial: 999))
         model.refreshDisplays()
         let coverCountAfterIdentityRefresh = coverRequests.count
         let identityBlocked = await run(model, id: action.id)
@@ -1403,6 +1408,160 @@ final class DisplayActionAppTests: XCTestCase {
         XCTAssertTrue(lifecycleBlocked.error?.localizedCaseInsensitiveContains("sleep") == true)
         XCTAssertEqual(coverRequests.count, coverCountAfterRestoringIdentity)
         model.setDisplayLifecycleTransitioning(false)
+    }
+
+    func testPreflightNoOpRemovalCannotBecomeWriteAfterSourceReconnects() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let inventory = DisplayRecordsBox(displays)
+        let box = StatusBox(hiddenStatus())
+        var pendingCleanup: ((Bool, String?) -> Void)?
+        var holdCleanup = false
+        var hideWrites = 0
+        let model = makeModel(
+            defaults: defaults, box: box, displayProvider: { inventory.value },
+            hide: { _, _, _ in hideWrites += 1; return .notRequested },
+            quiesce: { completion in
+                if holdCleanup { pendingCleanup = completion } else { completion(true, nil) }
+            }
+        )
+        await settleQuiescence(model)
+        let removal = try saveRemovalAction(on: model)
+        let action = DisplayAction(name: "Mixed no-op removal", steps: [
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == alternateUUID })), effect: .blackOut),
+            try XCTUnwrap(removal.steps.first)
+        ])
+        try model.saveDisplayAction(action)
+        holdCleanup = true
+        var result: AppControlResponse?
+        model.runDisplayAction(id: action.id) { result = $0 }
+        XCTAssertNotNil(pendingCleanup)
+        box.value = noneStatus()
+        inventory.value.removeAll { $0.uuid == mainUUID }
+        inventory.value.append(display(index: 1, id: 1101, uuid: mainUUID, name: "Main", main: true))
+        holdCleanup = false
+        pendingCleanup?(true, nil)
+        for _ in 0..<100 where result == nil { await Task.yield() }
+        let response = try XCTUnwrap(result)
+        XCTAssertEqual(response.steps?.map(\.outcome), [.done, .refused])
+        XCTAssertTrue(response.steps?.last?.desktopSummary.contains("state changed") == true)
+        XCTAssertEqual(hideWrites, 0, "a preflight no-op cannot capture a new mirror-source ID inside the running Action")
+    }
+
+    func testSavedBlackoutAndShowAllowMatchingZeroSerialButRefuseChangedMetadata() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let inventory = DisplayRecordsBox(displays.filter { $0.uuid != targetUUID } + [
+            display(index: 2, id: 202, uuid: targetUUID, name: "No serial", main: false, serial: 0)
+        ])
+        var covers: [Set<UInt32>] = []
+        let model = makeModel(defaults: defaults, displayProvider: { inventory.value }, cover: { covers.append($0); return [] })
+        let blackout = try saveBlackOutAction(on: model)
+        let show = DisplayAction(name: "Show no serial", steps: [DisplayActionStep(target: blackout.target, effect: .show)])
+        try model.saveDisplayAction(show)
+        let hidden = await run(model, id: blackout.id)
+        XCTAssertEqual(hidden.outcome, .done)
+        let shown = await run(model, id: show.id)
+        XCTAssertEqual(shown.outcome, .done)
+        inventory.value.removeAll { $0.uuid == targetUUID }
+        inventory.value.append(display(index: 2, id: 2202, uuid: targetUUID, name: "No serial", main: false, serial: 0))
+        let remapped = await run(model, id: blackout.id)
+        XCTAssertEqual(remapped.outcome, .done)
+        XCTAssertTrue(covers.contains([2202]))
+        let restored = await run(model, id: show.id)
+        XCTAssertEqual(restored.outcome, .done)
+        inventory.value.removeAll { $0.uuid == targetUUID }
+        inventory.value.append(display(index: 2, id: 2202, uuid: targetUUID, name: "Different serial", main: false, serial: 999))
+        let coverCount = covers.count
+        for action in [blackout, show] {
+            let refused = await run(model, id: action.id)
+            XCTAssertEqual(refused.outcome, .refused)
+        }
+        XCTAssertEqual(covers.count, coverCount)
+    }
+
+    func testSavedActionRemapsNumericDisplayIDForANewRun() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let inventory = DisplayRecordsBox(displays)
+        var coverRequests: [Set<UInt32>] = []
+        let model = makeModel(
+            defaults: defaults,
+            displayProvider: { inventory.value },
+            cover: { coverRequests.append($0); return [] }
+        )
+        let action = try saveBlackOutAction(on: model)
+        let replacement = display(index: 2, id: 2202, uuid: targetUUID, name: "Renamed target", main: false)
+        inventory.value.removeAll { $0.uuid == targetUUID }
+        inventory.value.append(replacement)
+        model.refreshDisplays()
+
+        let result = await run(model, id: action.id)
+        XCTAssertEqual(result.outcome, .done)
+        XCTAssertTrue(coverRequests.contains([2202]), "the new operation captures the current numeric display ID")
+        XCTAssertFalse(coverRequests.contains([202]), "the persisted reference never supplies an old ID to a writer")
+        let savedTarget = try XCTUnwrap(model.displayActions.actions.first?.target)
+        XCTAssertTrue(model.identityIsCurrent(savedTarget), "saved identity matching ignores ID and presentation-name changes")
+    }
+
+    func testRunningMultiStepActionDoesNotRebindAfterNumericIDChange() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let inventory = DisplayRecordsBox(displays)
+        var coverRequests: [Set<UInt32>] = []
+        let model = makeModel(
+            defaults: defaults,
+            displayProvider: { inventory.value },
+            cover: { ids in
+                coverRequests.append(ids)
+                if ids.contains(202) {
+                    inventory.value.removeAll { $0.uuid == self.sourceUUID }
+                    inventory.value.append(self.display(index: 3, id: 3303, uuid: self.sourceUUID, name: "Mirror source", main: false))
+                }
+                return []
+            }
+        )
+        let action = DisplayAction(name: "Two displays", steps: [
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == targetUUID })), effect: .blackOut),
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == sourceUUID })), effect: .blackOut)
+        ])
+        try model.saveDisplayAction(action)
+
+        let result = await run(model, id: action.id)
+        XCTAssertEqual(result.outcome, .partial)
+        XCTAssertEqual(result.steps?.map(\.outcome), [.done, .refused])
+        XCTAssertTrue(result.steps?.last?.desktopSummary.localizedCaseInsensitiveContains("changed after this action was prepared") == true)
+        XCTAssertEqual(coverRequests, [[202]], "the second step never writes to the display's replacement numeric ID")
+    }
+
+    func testSavedActionsRefuseMissingDuplicateAndChangedIdentityWithoutWrites() async throws {
+        let cases: [(String, (inout [DisplayRecord]) -> Void, String)] = [
+            ("missing", { $0.removeAll { $0.uuid == self.targetUUID } }, "missing"),
+            ("duplicate", { $0.append(self.display(index: 5, id: 505, uuid: self.targetUUID, name: "Duplicate", main: false)) }, "ambiguous"),
+            ("changed", { records in
+                records.removeAll { $0.uuid == self.targetUUID }
+                records.append(self.display(index: 2, id: 202, uuid: self.targetUUID, name: "Changed target", main: false, serial: 999))
+            }, "identity changed")
+        ]
+        for (name, change, reason) in cases {
+            let defaults = try makeDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+            let inventory = DisplayRecordsBox(displays)
+            var coverRequests: [Set<UInt32>] = []
+            let model = makeModel(
+                defaults: defaults,
+                displayProvider: { inventory.value },
+                cover: { coverRequests.append($0); return [] }
+            )
+            let action = try saveBlackOutAction(on: model)
+            change(&inventory.value)
+            model.refreshDisplays()
+
+            let result = await run(model, id: action.id)
+            XCTAssertEqual(result.outcome, .refused, name)
+            XCTAssertTrue(result.error?.localizedCaseInsensitiveContains(reason) == true, result.error ?? name)
+            XCTAssertFalse(coverRequests.contains(where: { !$0.isEmpty }), "\(name) identity refusal must occur before any display write")
+        }
     }
 
     func testNoOpBlackOutStillRefusesAfterCleanupFailure() async throws {
@@ -1585,11 +1744,11 @@ final class DisplayActionAppTests: XCTestCase {
         "panelctl-display-actions-\(ProcessInfo.processInfo.processIdentifier)"
     }
 
-    private func display(index: Int, id: UInt32, uuid: String, name: String, main: Bool) -> DisplayRecord {
+    private func display(index: Int, id: UInt32, uuid: String, name: String, main: Bool, serial: UInt32? = nil) -> DisplayRecord {
         DisplayRecord(
             index: index, id: id, uuid: uuid, name: name, active: true, online: true,
             asleep: false, builtin: false, main: main, vendor: UInt32(index), model: UInt32(index * 10),
-            serial: UInt32(index * 100),
+            serial: serial ?? UInt32(index * 100),
             bounds: DisplayBounds(CGRect(x: CGFloat((index - 1) * 1920), y: 0, width: 1920, height: 1080)),
             pixelWidth: 1920, pixelHeight: 1080
         )

@@ -372,11 +372,11 @@ final class AppModel: ObservableObject {
         return tiles.filter { $0.status != .hidden } + tiles.filter { $0.status == .hidden }
     }
 
-    func automationDisplayIdentity(for tile: DisplayTile) -> DisplayIdentitySnapshot? {
+    func automationDisplayIdentity(for tile: DisplayTile) -> DisplayIdentityReference? {
         guard let uuid = tile.uuid, UUID(uuidString: uuid) != nil else { return nil }
-        if let display = tile.display { return DisplayIdentitySnapshot(display) }
-        return blackoutHiddenDisplays[uuid.lowercased()]
-            ?? hideDisplayConfigurations.first { $0.target.uuid.caseInsensitiveCompare(uuid) == .orderedSame }?.target
+        if let display = tile.display { return DisplayIdentityReference(display) }
+        if let hidden = blackoutHiddenDisplays[uuid.lowercased()] { return DisplayIdentityReference(hidden) }
+        return hideDisplayConfigurations.first { $0.target.uuid.caseInsensitiveCompare(uuid) == .orderedSame }?.target
     }
 
     var hideDisplayConfigurations: [DisplayHideConfiguration] {
@@ -397,15 +397,15 @@ final class AppModel: ObservableObject {
         let removals = handoffStatus?.removals.filter(\.isUnresolved) ?? []
         let recoveredTargets = removals.map(\.target) + (removals.isEmpty ? [handoffStatus?.target].compactMap { $0 } : [])
         for target in recoveredTargets where !seen.contains(target.uuid.lowercased()) {
-            let targetIdentity = DisplayIdentitySnapshot(
-                uuid: target.uuid, id: target.id, name: target.name,
-                vendor: target.vendor, model: target.model, serial: target.serial
+            let targetIdentity = DisplayIdentityReference(
+                uuid: target.uuid, name: target.name, vendor: target.vendor,
+                model: target.model, serial: target.serial
             )
             let source = removals.first(where: { $0.target.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame })?.source
                 ?? (removals.isEmpty ? handoffStatus?.source : nil)
             let sourceIdentity = source.map {
-                DisplayIdentitySnapshot(uuid: $0.uuid, id: $0.id, name: $0.name,
-                                        vendor: $0.vendor, model: $0.model, serial: $0.serial)
+                DisplayIdentityReference(uuid: $0.uuid, name: $0.name,
+                                         vendor: $0.vendor, model: $0.model, serial: $0.serial)
             }
             result.append(hidePreferences[target.uuid] ?? DisplayHideConfiguration(
                 target: targetIdentity, source: sourceIdentity
@@ -649,12 +649,12 @@ final class AppModel: ObservableObject {
             name = "New Action \(suffix)"
             suffix += 1
         }
-        var target: DisplayIdentitySnapshot?
+        var target: DisplayIdentityReference?
         if let selectedDisplayID,
            let display = automationDisplayChoices.first(where: { $0.uuid?.caseInsensitiveCompare(selectedDisplayID) == .orderedSame }) {
             target = automationDisplayIdentity(for: display)
         }
-        return DisplayAction(name: name, target: target)
+        return DisplayAction(name: name, steps: [DisplayActionStep(target: target)])
     }
 
     func makeNewDisplayActionStep(excluding action: DisplayAction? = nil) -> DisplayActionStep {
@@ -793,7 +793,11 @@ final class AppModel: ObservableObject {
         )
     }
 
-    private func manualActionValidationFailure(_ action: DisplayAction, stepIndex: Int? = nil) -> String? {
+    private func manualActionValidationFailure(
+        _ action: DisplayAction,
+        stepIndex: Int? = nil,
+        expectedTarget: DisplayIdentitySnapshot? = nil
+    ) -> String? {
         guard let saved = displayActions.actions.first(where: { $0.id == action.id }),
               saved.steps == action.steps else {
             return "This action changed before it could run. Review it in Settings → Automations, then try again."
@@ -802,8 +806,13 @@ final class AppModel: ObservableObject {
         for offset in indices {
             guard action.steps.indices.contains(offset) else { return "This action changed before it could run." }
             let step = action.steps[offset]
-            guard let target = step.target, matchingDisplay(target) != nil else {
-                return "Step \(offset + 1): This display is disconnected or changed. Reconnect that exact display."
+            guard let target = step.target else { return "Step \(offset + 1): Choose a display." }
+            if let expectedTarget {
+                guard matches(target, expectedTarget), matchingDisplay(expectedTarget) != nil else {
+                    return "Step \(offset + 1): The display changed after this Action was prepared. Run the Action again after reviewing the displays."
+                }
+            } else if let issue = savedIdentityProblem(target) {
+                return "Step \(offset + 1): \(issue)"
             }
             if step.effect == .removeFromDesktop {
                 guard experimentalFeaturesEnabled else {
@@ -888,12 +897,24 @@ final class AppModel: ObservableObject {
         projectedBlackouts: Set<String>? = nil,
         projectedRemovals: Set<String>? = nil,
         projectedSources: [String: String]? = nil,
-        actionLeaseID: UUID? = nil
+        actionLeaseID: UUID? = nil,
+        expectedTarget: DisplayIdentitySnapshot? = nil
     ) -> String? {
         let prefix = "Step \(index + 1): "
         guard let target = step.target else { return prefix + "Choose a display." }
         guard UUID(uuidString: target.uuid) != nil else { return prefix + "This action has no stable display UUID." }
-        guard let display = matchingDisplay(target) else { return prefix + "Unavailable: Display not connected or identity changed." }
+        let display: DisplayRecord
+        if let expectedTarget {
+            guard matches(target, expectedTarget), let current = matchingDisplay(expectedTarget) else {
+                return prefix + "The display changed after this Action was prepared. Run the Action again after reviewing the displays."
+            }
+            display = current
+        } else {
+            guard let current = matchingSavedDisplay(target) else {
+                return prefix + "Unavailable: \(savedIdentityProblem(target) ?? "The saved display identity is unavailable.")"
+            }
+            display = current
+        }
         if step.effect == .removeFromDesktop {
             guard experimentalFeaturesEnabled else { return prefix + "Turn on Experimental features in General to remove a display from the desktop." }
             guard step.reviewedRemoval != nil else { return prefix + "Save the current Displays setup before running this step." }
@@ -972,7 +993,7 @@ final class AppModel: ObservableObject {
             guard let configuration = hideConfiguration(for: target.uuid) else {
                 return prefix + "Turn on Remove from desktop for this display in Settings → Displays first."
             }
-            guard configuration.target == target,
+            guard sameStableIdentity(configuration.target, target),
                   let reviewed = step.reviewedRemoval,
                   reviewed == currentReviewedRemovalSetup(for: target.uuid) else {
                 return prefix + "Displays setup changed since review. Save this Action to accept the change."
@@ -1297,6 +1318,62 @@ final class AppModel: ObservableObject {
         matchingDisplay(identity) != nil
     }
 
+    func identityIsCurrent(_ identity: DisplayIdentityReference) -> Bool {
+        savedIdentityProblem(identity) == nil
+    }
+
+    private func savedIdentityProblem(_ identity: DisplayIdentityReference) -> String? {
+        let label = identity.presentationName
+        guard UUID(uuidString: identity.uuid) != nil else {
+            return "The saved display reference for \(label) has no stable UUID. Choose the display again in Settings → Displays."
+        }
+        let candidates = displays.filter { $0.uuid?.caseInsensitiveCompare(identity.uuid) == .orderedSame }
+        guard !candidates.isEmpty else {
+            return "The saved display \(label) (UUID \(identity.uuid)) is missing. Reconnect that exact display; PanelCtl won’t apply its settings to a different display."
+        }
+        guard candidates.count == 1, let display = candidates.first else {
+            return "The saved display \(label) (UUID \(identity.uuid)) is ambiguous because multiple displays report that UUID. Disconnect the duplicate before continuing."
+        }
+        guard matches(identity, display) else {
+            return "The saved display identity changed for UUID \(identity.uuid): vendor, model or serial no longer match. PanelCtl won’t apply the saved settings to it; choose the exact display again in Settings → Displays."
+        }
+        return nil
+    }
+
+    private func matchingSavedDisplay(_ identity: DisplayIdentityReference) -> DisplayRecord? {
+        guard savedIdentityProblem(identity) == nil else { return nil }
+        return displays.first { $0.uuid?.caseInsensitiveCompare(identity.uuid) == .orderedSame }
+    }
+
+    private func snapshot(for identity: DisplayIdentityReference) -> DisplayIdentitySnapshot? {
+        matchingSavedDisplay(identity).map(DisplayIdentitySnapshot.init)
+    }
+
+    private func matches(_ identity: DisplayIdentityReference, _ display: DisplayRecord) -> Bool {
+        display.uuid?.caseInsensitiveCompare(identity.uuid) == .orderedSame &&
+            display.vendor == identity.vendor && display.model == identity.model && display.serial == identity.serial
+    }
+
+    private func matches(_ identity: DisplayIdentityReference, _ snapshot: DisplayIdentitySnapshot) -> Bool {
+        snapshot.uuid.caseInsensitiveCompare(identity.uuid) == .orderedSame &&
+            snapshot.vendor == identity.vendor && snapshot.model == identity.model && snapshot.serial == identity.serial
+    }
+
+    private func sameStableIdentity(_ lhs: DisplayIdentityReference, _ rhs: DisplayIdentityReference) -> Bool {
+        lhs.uuid.caseInsensitiveCompare(rhs.uuid) == .orderedSame &&
+            lhs.vendor == rhs.vendor && lhs.model == rhs.model && lhs.serial == rhs.serial
+    }
+
+    private func sameRuntimeIdentity(_ lhs: DisplayIdentitySnapshot, _ rhs: DisplayIdentitySnapshot) -> Bool {
+        lhs.uuid.caseInsensitiveCompare(rhs.uuid) == .orderedSame && lhs.id == rhs.id &&
+            lhs.vendor == rhs.vendor && lhs.model == rhs.model && lhs.serial == rhs.serial
+    }
+
+    private func sameHideRequest(_ lhs: DisplayHideRequest, _ rhs: DisplayHideRequest) -> Bool {
+        sameRuntimeIdentity(lhs.target, rhs.target) && sameRuntimeIdentity(lhs.source, rhs.source) &&
+            lhs.awayInput == rhs.awayInput && lhs.awayInputWarning == rhs.awayInputWarning
+    }
+
     func sourceChoices(for configuration: DisplayHideConfiguration) -> [DisplayRecord] {
         guard !configuration.target.uuid.isEmpty else { return [] }
         return activeDisplays.filter { display in
@@ -1346,8 +1423,8 @@ final class AppModel: ObservableObject {
         guard configuration.enabled else {
             return .unavailable("Turn on Remove from desktop for this display first.")
         }
-        guard let target = matchingDisplay(configuration.target) else {
-            return .identityChanged("This display is disconnected or changed. Reconnect it, then try again; PanelCtl won\u{2019}t apply its settings to a different display.")
+        guard let target = matchingSavedDisplay(configuration.target) else {
+            return .identityChanged(savedIdentityProblem(configuration.target) ?? "The saved target identity is unavailable.")
         }
         guard let targetUUID = target.uuid else {
             return .identityChanged("This display no longer has its stable ID. Review it in Displays.")
@@ -1382,8 +1459,8 @@ final class AppModel: ObservableObject {
         guard let sourceIdentity = configuration.source else {
             return .unavailable("Choose a display to mirror onto.")
         }
-        guard let source = matchingDisplay(sourceIdentity) else {
-            return .identityChanged("The display it mirrors onto is disconnected or changed. Choose it again.")
+        guard let source = matchingSavedDisplay(sourceIdentity) else {
+            return .identityChanged("The saved mirror source can’t be used. \(savedIdentityProblem(sourceIdentity) ?? "Choose it again in Settings → Displays.")")
         }
         guard let sourceUUID = source.uuid else {
             return .identityChanged("The display it mirrors onto no longer has its stable ID. Choose it again.")
@@ -1640,6 +1717,7 @@ final class AppModel: ObservableObject {
         manualAction: DisplayAction? = nil,
         manualActionStepIndex: Int? = nil,
         actionLeaseID: UUID? = nil,
+        expectedTarget: DisplayIdentitySnapshot? = nil,
         completion: ((DisplayOperationResult) -> Void)?
     ) {
         guard runningDisplayAction == nil || runningDisplayAction?.id == actionLeaseID else {
@@ -1651,7 +1729,9 @@ final class AppModel: ObservableObject {
             displays = displayProvider()
             refreshHandoffStatus()
         }
-        if let manualAction, let reason = manualActionValidationFailure(manualAction, stepIndex: manualActionStepIndex) {
+        if let manualAction, let reason = manualActionValidationFailure(
+            manualAction, stepIndex: manualActionStepIndex, expectedTarget: expectedTarget
+        ) {
             refuse(.hide, targetUUID: targetUUID, error: DisplayHideError.identityChanged(reason), completion: completion)
             return
         }
@@ -1689,7 +1769,9 @@ final class AppModel: ObservableObject {
                     self.displays = self.displayProvider()
                     self.refreshHandoffStatus()
                     self.hideOperation = .idle
-                    if let manualAction, let reason = self.manualActionValidationFailure(manualAction, stepIndex: manualActionStepIndex) {
+                    if let manualAction, let reason = self.manualActionValidationFailure(
+                        manualAction, stepIndex: manualActionStepIndex, expectedTarget: expectedTarget
+                    ) {
                         self.reconcileProtection()
                         self.refuse(.hide, targetUUID: targetUUID, error: DisplayHideError.identityChanged(reason), completion: completion)
                         return
@@ -1961,7 +2043,7 @@ final class AppModel: ObservableObject {
         // Preserve the existing main-source default for non-main targets; a main target requires an explicit source.
         if enabled, !display.main, configuration.source == nil,
            let main = sourceChoices(for: configuration).first(where: \.main) {
-            configuration.source = DisplayIdentitySnapshot(main)
+            configuration.source = DisplayIdentityReference(main)
         }
         updated[uuid] = configuration
         hidePreferences = updated
@@ -1984,7 +2066,7 @@ final class AppModel: ObservableObject {
                     !isBlackoutHidden(candidate.uuid) &&
                     (!isDisplayMirrored(candidate.id) || journalVerifiedHiddenMirrorSources.contains(where: { $0.id == candidate.id }))
             }) else { return }
-            configuration.source = DisplayIdentitySnapshot(source)
+            configuration.source = DisplayIdentityReference(source)
         } else {
             configuration.source = nil
         }
@@ -2054,17 +2136,17 @@ final class AppModel: ObservableObject {
         let key = targetUUID.lowercased()
         guard !hideConfigurationFrozen(for: targetUUID),
               let configuration = hidePreferences[targetUUID], configuration.enabled,
-              let display = matchingDisplay(configuration.target),
+              let display = matchingSavedDisplay(configuration.target),
               isEligibleHideTarget(display), !isDisplayMirrored(display.id) else { return }
         defer { onStatusChange?() }
         let reading: DDCInputReading
         do {
-            reading = try checkDDCInput(coreIdentity(configuration.target))
+            reading = try checkDDCInput(coreIdentity(DisplayIdentitySnapshot(display)))
         } catch {
             macInputDetections[key] = .unavailable(Self.sentence(error.localizedDescription))
             return
         }
-        guard reading.displayID == configuration.target.id,
+        guard reading.displayID == display.id,
               reading.uuid.caseInsensitiveCompare(configuration.target.uuid) == .orderedSame,
               matches(configuration.target, display) else {
             macInputDetections[key] = .unavailable("The monitor answered as a different display. Reconnect it, then try again.")
@@ -2293,10 +2375,11 @@ final class AppModel: ObservableObject {
             completion?(response)
         }
 
-        guard let action = displayActions.actions.first(where: { $0.id == id }) else {
+        guard let savedAction = displayActions.actions.first(where: { $0.id == id }) else {
             refuse(.refused, "No saved display action has ID \(id.uuidString). Edit Actions in Settings → Automations.")
             return
         }
+        let action = savedAction
         if runningDisplayAction != nil || hideOperation.isBusy || handoffStatus?.state == .busy {
             refuse(.busy, displayActionBusyMessage, for: action)
             return
@@ -2322,7 +2405,7 @@ final class AppModel: ObservableObject {
         refreshHandoffStatus()
         preflightingDisplayAction = false
         guard let currentAction = displayActions.actions.first(where: { $0.id == id }),
-              currentAction == action else {
+              currentAction == savedAction else {
             refuse(.refused, "This action changed before it could run. Review it in Settings → Automations, then try again.", for: action)
             return
         }
@@ -2337,17 +2420,27 @@ final class AppModel: ObservableObject {
             ($0.target.uuid.lowercased(), $0.source.uuid.lowercased())
         })
         var noOpSteps = Set<Int>()
+        var frozenTargets: [Int: DisplayIdentitySnapshot] = [:]
+        var preparedHideRequests: [Int: DisplayHideRequest] = [:]
         for (offset, step) in action.steps.enumerated() {
-            guard let uuid = step.target?.uuid else {
+            guard let reference = step.target else {
                 refuse(.refused, "Step \(offset + 1): Choose a display.", for: action, atStep: offset)
                 return
             }
+            guard let targetSnapshot = snapshot(for: reference) else {
+                let issue = savedIdentityProblem(reference) ?? "The saved display identity is unavailable."
+                refuse(.refused, "Step \(offset + 1): \(issue)", for: action, atStep: offset)
+                return
+            }
+            frozenTargets[offset] = targetSnapshot
+            let uuid = reference.uuid
             if let blocker = displayActionStepRunBlocker(
                 action: action, step: step, index: offset,
                 projectedBlackouts: projectedBlackouts,
                 projectedRemovals: projectedRemovals,
                 projectedSources: projectedSources,
-                actionLeaseID: id
+                actionLeaseID: id,
+                expectedTarget: targetSnapshot
             ) {
                 let outcome: AppControlOutcome = hideOperation.isBusy || handoffStatus?.state == .busy ? .busy
                     : blocker.localizedCaseInsensitiveContains("recovery") || blocker.localizedCaseInsensitiveContains("journal") ? .recoveryNeeded : .refused
@@ -2361,7 +2454,21 @@ final class AppModel: ObservableObject {
             case .removeFromDesktop: isNoOp = projectedRemovals.contains(key) && isVerifiedRemovedDisplay(uuid)
             case .show: isNoOp = !projectedBlackouts.contains(key) && !projectedRemovals.contains(key)
             }
-            if isNoOp { noOpSteps.insert(offset) }
+            if isNoOp {
+                noOpSteps.insert(offset)
+            } else if step.effect == .removeFromDesktop {
+                do {
+                    let request = try captureHideRequest(targetUUID: uuid)
+                    guard request.target == targetSnapshot else {
+                        refuse(.refused, "Step \(offset + 1): The display changed while the Action was being prepared. Run it again after reviewing the displays.", for: action, atStep: offset)
+                        return
+                    }
+                    preparedHideRequests[offset] = request
+                } catch {
+                    refuse(.refused, "Step \(offset + 1): \(error.localizedDescription)", for: action, atStep: offset)
+                    return
+                }
+            }
             switch step.effect {
             case .blackOut:
                 projectedBlackouts.insert(key)
@@ -2485,8 +2592,16 @@ final class AppModel: ObservableObject {
                 finishRun()
                 return
             }
+            guard let expectedTarget = frozenTargets[offset] else {
+                stoppingOutcome = .refused
+                stoppingAtIndex = offset + 1
+                appendNotRun(from: offset)
+                finishRun()
+                return
+            }
             if let blocker = self.displayActionStepRunBlocker(
-                action: action, step: step, index: offset, actionLeaseID: id
+                action: action, step: step, index: offset, actionLeaseID: id,
+                expectedTarget: expectedTarget
             ) {
                 let outcome: AppControlOutcome = self.displayLifecycleTransitioning ? .refused
                     : blocker.localizedCaseInsensitiveContains("recovery") ? .recoveryNeeded : .refused
@@ -2519,8 +2634,9 @@ final class AppModel: ObservableObject {
                 runStep(offset + 1)
                 return
             }
-            guard wouldWrite else {
-                // Preflight found nothing to change, so helpers were never quiesced; don't write now.
+            guard wouldWrite, !noOpSteps.contains(offset) else {
+                // A preflight no-op has no prepared write request. Never turn it into
+                // a write (or capture a new identity) inside an already-running Action.
                 let message = "Step \(offset + 1): Display state changed after the Action was checked. Review the displays, then run it again."
                 stepResults.append(AppControlActionStepResult(index: offset + 1, targetUUID: uuid,
                     effect: step.effect.rawValue, outcome: .refused,
@@ -2573,10 +2689,13 @@ final class AppModel: ObservableObject {
             switch step.effect {
             case .blackOut:
                 self.hide(targetUUID: uuid, style: .blackOut, manualAction: action,
-                          manualActionStepIndex: offset, actionLeaseID: id, completion: complete)
+                          manualActionStepIndex: offset, actionLeaseID: id,
+                          expectedTarget: expectedTarget, completion: complete)
             case .removeFromDesktop:
                 self.hide(targetUUID: uuid, style: .removeFromDesktop, manualAction: action,
-                          manualActionStepIndex: offset, actionLeaseID: id, completion: complete)
+                          manualActionStepIndex: offset, actionLeaseID: id,
+                          preparedRequest: preparedHideRequests[offset], expectedTarget: expectedTarget,
+                          completion: complete)
             case .show:
                 self.show(targetUUID: uuid, actionLeaseID: id, completion: complete)
             }
@@ -2686,7 +2805,13 @@ final class AppModel: ObservableObject {
         guard let source = configuration.source else {
             throw DisplayHideError.unavailable("Choose a display to mirror onto.")
         }
-        return hideRequest(target: configuration.target, source: source, configuration: configuration)
+        guard let targetSnapshot = snapshot(for: configuration.target) else {
+            throw DisplayHideError.identityChanged(savedIdentityProblem(configuration.target) ?? "The saved target identity is unavailable.")
+        }
+        guard let sourceSnapshot = snapshot(for: source) else {
+            throw DisplayHideError.identityChanged("The saved mirror source can’t be used. \(savedIdentityProblem(source) ?? "Choose it again in Settings → Displays.")")
+        }
+        return hideRequest(target: targetSnapshot, source: sourceSnapshot, configuration: configuration)
     }
 
     /// Hides a display right away in its style: blacked out, or removed from
@@ -2697,6 +2822,8 @@ final class AppModel: ObservableObject {
         manualAction: DisplayAction? = nil,
         manualActionStepIndex: Int? = nil,
         actionLeaseID: UUID? = nil,
+        preparedRequest: DisplayHideRequest? = nil,
+        expectedTarget: DisplayIdentitySnapshot? = nil,
         completion: ((DisplayOperationResult) -> Void)? = nil
     ) {
         guard runningDisplayAction == nil || runningDisplayAction?.id == actionLeaseID else {
@@ -2718,7 +2845,7 @@ final class AppModel: ObservableObject {
             } else {
                 blackOut(targetUUID: targetUUID, manualAction: manualAction,
                          manualActionStepIndex: manualActionStepIndex, actionLeaseID: actionLeaseID,
-                         completion: completion)
+                         expectedTarget: expectedTarget, completion: completion)
             }
             return
         }
@@ -2734,12 +2861,20 @@ final class AppModel: ObservableObject {
         guard removesFromDesktop else {
             blackOut(targetUUID: targetUUID, manualAction: manualAction,
                      manualActionStepIndex: manualActionStepIndex, actionLeaseID: actionLeaseID,
-                     completion: completion)
+                     expectedTarget: expectedTarget, completion: completion)
             return
         }
         let request: DisplayHideRequest
         do {
-            request = try makeHideRequest(targetUUID: targetUUID, actionLeaseID: actionLeaseID)
+            if let preparedRequest {
+                request = preparedRequest
+                guard request.target.uuid.caseInsensitiveCompare(targetUUID) == .orderedSame,
+                      expectedTarget == nil || request.target == expectedTarget else {
+                    throw DisplayHideError.identityChanged("The prepared Hide request no longer matches this Action step. Run the Action again.")
+                }
+            } else {
+                request = try makeHideRequest(targetUUID: targetUUID, actionLeaseID: actionLeaseID)
+            }
         } catch {
             refuse(.hide, targetUUID: targetUUID, error: error, completion: completion)
             return
@@ -2755,6 +2890,7 @@ final class AppModel: ObservableObject {
                     manualAction: manualAction,
                     manualActionStepIndex: manualActionStepIndex,
                     actionLeaseID: actionLeaseID,
+                    expectedTarget: expectedTarget,
                     cleanupSucceeded: succeeded,
                     cleanupFailure: message,
                     completion: completion
@@ -3832,13 +3968,28 @@ final class AppModel: ObservableObject {
         guard let configuration = hidePreferences[target.uuid],
               configuration.awayInput != nil, configuration.returnInput != nil else { return (nil, nil) }
         guard configuration.target.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame,
-              configuration.target.id == target.id,
               configuration.target.vendor == target.vendor,
               configuration.target.model == target.model,
               configuration.target.serial == target.serial else {
             return (nil, "the saved input belongs to a different display.")
         }
         return validatedSavedInput(configuration.returnInput)
+    }
+
+    private func captureHideRequest(targetUUID: String) throws -> DisplayHideRequest {
+        guard let configuration = hidePreferences[targetUUID],
+              let target = snapshot(for: configuration.target) else {
+            let issue = hidePreferences[targetUUID].flatMap { savedIdentityProblem($0.target) }
+                ?? "Turn on Remove from desktop for this display first."
+            throw DisplayHideError.identityChanged(issue)
+        }
+        guard let source = configuration.source,
+              let sourceSnapshot = snapshot(for: source) else {
+            let issue = configuration.source.flatMap(savedIdentityProblem)
+                ?? "Choose a display to mirror onto."
+            throw DisplayHideError.identityChanged("The saved mirror source can’t be used. \(issue)")
+        }
+        return hideRequest(target: target, source: sourceSnapshot, configuration: configuration)
     }
 
     private func hideRequest(target: DisplayIdentitySnapshot, source: DisplayIdentitySnapshot,
@@ -3852,6 +4003,7 @@ final class AppModel: ObservableObject {
         manualAction: DisplayAction? = nil,
         manualActionStepIndex: Int? = nil,
         actionLeaseID: UUID? = nil,
+        expectedTarget: DisplayIdentitySnapshot? = nil,
         cleanupSucceeded: Bool,
         cleanupFailure: String?,
         completion: ((DisplayOperationResult) -> Void)?
@@ -3877,13 +4029,17 @@ final class AppModel: ObservableObject {
         do {
             displays = displayProvider()
             refreshHandoffStatus()
-            if let manualAction, let reason = manualActionValidationFailure(manualAction, stepIndex: manualActionStepIndex) {
+            if let manualAction, let reason = manualActionValidationFailure(
+                manualAction, stepIndex: manualActionStepIndex, expectedTarget: expectedTarget
+            ) {
                 throw DisplayHideError.identityChanged(reason)
             }
             guard let configuration = hidePreferences[request.target.uuid],
                   hideReadiness(for: configuration, allowingCurrentOperation: true, actionLeaseID: actionLeaseID) == nil,
+                  let target = snapshot(for: configuration.target),
                   let source = configuration.source,
-                  request == hideRequest(target: configuration.target, source: source, configuration: configuration) else {
+                  let sourceSnapshot = snapshot(for: source),
+                  sameHideRequest(request, hideRequest(target: target, source: sourceSnapshot, configuration: configuration)) else {
                 throw DisplayHideError.identityChanged("The displays or Hide settings changed before Hide began. Try again.")
             }
             let inputOutcome: DisplayInputOutcome

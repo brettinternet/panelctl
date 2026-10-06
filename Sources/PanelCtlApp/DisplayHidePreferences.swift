@@ -55,20 +55,68 @@ struct DisplayIdentitySnapshot: Codable, Equatable {
     var listID: String { uuid.lowercased() }
 }
 
+/// Persistent identity for saved settings. The numeric display ID is deliberately
+/// absent: it is an operation-time address, not durable monitor identity.
+struct DisplayIdentityReference: Codable, Equatable {
+    let uuid: String
+    let name: String?
+    let vendor: UInt32
+    let model: UInt32
+    let serial: UInt32
+
+    init(_ display: DisplayRecord) {
+        uuid = display.uuid ?? ""
+        name = display.name
+        vendor = display.vendor
+        model = display.model
+        serial = display.serial
+    }
+
+    init(_ snapshot: DisplayIdentitySnapshot) {
+        uuid = snapshot.uuid
+        name = snapshot.name
+        vendor = snapshot.vendor
+        model = snapshot.model
+        serial = snapshot.serial
+    }
+
+    init(uuid: String, name: String?, vendor: UInt32, model: UInt32, serial: UInt32) {
+        self.uuid = uuid
+        self.name = name
+        self.vendor = vendor
+        self.model = model
+        self.serial = serial
+    }
+
+    var presentationName: String { name ?? "Display \(uuid.prefix(8))…" }
+}
+
 struct DisplayHideConfiguration: Codable, Equatable {
-    var target: DisplayIdentitySnapshot
+    var target: DisplayIdentityReference
     var enabled: Bool
-    var source: DisplayIdentitySnapshot?
+    var source: DisplayIdentityReference?
     var awayInput: UInt8?
     var returnInput: UInt8?
 
-    init(target: DisplayIdentitySnapshot, enabled: Bool = false, source: DisplayIdentitySnapshot? = nil,
+    init(target: DisplayIdentityReference, enabled: Bool = false, source: DisplayIdentityReference? = nil,
          awayInput: UInt8? = nil, returnInput: UInt8? = nil) {
         self.target = target
         self.enabled = enabled
         self.source = source
         self.awayInput = awayInput
         self.returnInput = returnInput
+    }
+
+    init(target: DisplayIdentitySnapshot, enabled: Bool = false, source: DisplayIdentitySnapshot? = nil,
+         awayInput: UInt8? = nil, returnInput: UInt8? = nil) {
+        self.init(target: DisplayIdentityReference(target), enabled: enabled,
+                  source: source.map(DisplayIdentityReference.init), awayInput: awayInput, returnInput: returnInput)
+    }
+
+    init(target: DisplayIdentityReference, enabled: Bool = false, source: DisplayIdentitySnapshot,
+         awayInput: UInt8? = nil, returnInput: UInt8? = nil) {
+        self.init(target: target, enabled: enabled, source: DisplayIdentityReference(source),
+                  awayInput: awayInput, returnInput: returnInput)
     }
 }
 

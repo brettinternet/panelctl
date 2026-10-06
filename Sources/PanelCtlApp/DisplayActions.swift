@@ -33,17 +33,22 @@ struct ReviewedRemovalSetup: Codable, Equatable {
 }
 
 struct DisplayActionStep: Codable, Equatable, Identifiable {
-    var target: DisplayIdentitySnapshot?
+    var target: DisplayIdentityReference?
     var effect: DisplayActionEffect
     var reviewedRemoval: ReviewedRemovalSetup?
 
     var id: String { target?.uuid.lowercased() ?? "step-\(effect.rawValue)" }
 
-    init(target: DisplayIdentitySnapshot? = nil, effect: DisplayActionEffect = .blackOut,
+    init(target: DisplayIdentityReference? = nil, effect: DisplayActionEffect = .blackOut,
          reviewedRemoval: ReviewedRemovalSetup? = nil) {
         self.target = target
         self.effect = effect
         self.reviewedRemoval = reviewedRemoval
+    }
+
+    init(target: DisplayIdentitySnapshot, effect: DisplayActionEffect = .blackOut,
+         reviewedRemoval: ReviewedRemovalSetup? = nil) {
+        self.init(target: DisplayIdentityReference(target), effect: effect, reviewedRemoval: reviewedRemoval)
     }
 }
 
@@ -62,6 +67,18 @@ struct DisplayAction: Codable, Equatable, Identifiable {
     ) {
         self.id = id
         self.name = name
+        self.steps = [DisplayActionStep(target: target.map(DisplayIdentityReference.init), effect: effect, reviewedRemoval: reviewedRemoval)]
+    }
+
+    init(
+        id: UUID = UUID(),
+        name: String = "",
+        target: DisplayIdentityReference?,
+        effect: DisplayActionEffect = .blackOut,
+        reviewedRemoval: ReviewedRemovalSetup? = nil
+    ) {
+        self.id = id
+        self.name = name
         self.steps = [DisplayActionStep(target: target, effect: effect, reviewedRemoval: reviewedRemoval)]
     }
 
@@ -72,7 +89,7 @@ struct DisplayAction: Codable, Equatable, Identifiable {
     }
 
     /// Compatibility facade for one-step call sites. New workflows use `steps` directly.
-    var target: DisplayIdentitySnapshot? {
+    var target: DisplayIdentityReference? {
         get { steps.first?.target }
         set {
             if steps.isEmpty { steps = [DisplayActionStep(target: newValue)] }
@@ -109,7 +126,7 @@ struct DisplayAction: Codable, Equatable, Identifiable {
         } else {
             // TASK-36 stored a single target/effect directly on the Action.
             steps = [DisplayActionStep(
-                target: try values.decodeIfPresent(DisplayIdentitySnapshot.self, forKey: .target),
+                target: try values.decodeIfPresent(DisplayIdentityReference.self, forKey: .target),
                 effect: try values.decode(DisplayActionEffect.self, forKey: .effect),
                 reviewedRemoval: try values.decodeIfPresent(ReviewedRemovalSetup.self, forKey: .reviewedRemoval)
             )]
@@ -238,11 +255,11 @@ enum DisplayActionPresentation {
         }
     }
 
-    static func displayName(for identity: DisplayIdentitySnapshot, displays: [DisplayRecord]) -> String {
+    static func displayName(for identity: DisplayIdentityReference, displays: [DisplayRecord]) -> String {
         if let display = displays.first(where: { $0.uuid?.caseInsensitiveCompare(identity.uuid) == .orderedSame }) {
             return display.settingsName
         }
-        return identity.name ?? "\(identity.uuid.prefix(8))… (unavailable)"
+        return "\(identity.presentationName) (unavailable)"
     }
 
     static func setupChange(

@@ -254,7 +254,8 @@ struct DisplaySettingsView: View {
         let choices = model.sourceChoices(for: configuration)
         let saved = configuration.source
         let savedIsChoice = saved.map { saved in
-            choices.contains { $0.uuid?.caseInsensitiveCompare(saved.uuid) == .orderedSame }
+            model.identityIsCurrent(saved) &&
+                choices.contains { $0.uuid?.caseInsensitiveCompare(saved.uuid) == .orderedSame }
         } ?? false
         func name(_ display: DisplayRecord) -> String {
             let tileName = tiles.first { $0.id == display.uuid?.lowercased() }?.name ?? display.settingsName
@@ -271,7 +272,7 @@ struct DisplaySettingsView: View {
                 Text(name(choice)).tag(choice.uuid?.lowercased() ?? "")
             }
             if let saved, !savedIsChoice {
-                Text("\(saved.name ?? "Display \(saved.id)") (disconnected)").tag(saved.uuid.lowercased())
+                Text("\(saved.presentationName) (unavailable)").tag(saved.uuid.lowercased())
             }
         }
     }
