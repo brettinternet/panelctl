@@ -213,9 +213,12 @@ the four commands separately. Journal: session `85C32EE4-DAC4-4167-9BAC-514B7DAB
 | 3 | `back` S2721DGF, `--input dp1` | Separate and active at **(3440,0)** with its saved mode, as predicted; K272HUL and AW3423DW unchanged; AW3425DW still mirrored. Partial-Show verification passed; DP1 return verified (re-read `0x0F`). Entries: S2721DGF `restored`, AW3425DW `mirrored`; both verified |
 | 4 | `back` AW3425DW, `--input hdmi1` | Final Show restored and verified the whole baseline: S2721DGF (3440,-4), AW3425DW (0,1440), K272HUL (-1440,0), AW3423DW main (0,0), original modes, no mirrors. HDMI1 return verified. Journal `restored`, both entries `restored`; `recovery verify` passed; inputs re-read HDMI1 `0x11` and DP1 `0x0F` |
 
-No write was retried and no recovery path was needed. Raw command output, lists
-and journal copies were kept in the operator checkout under
-`.build/task32-trial3/` (diagnostic, not portable).
+No write was retried and no recovery path was needed. The resolved session
+journal, with its baseline and both pre-operation snapshots, is archived as
+`Recovery/recovery-85C32EE4-DAC4-4167-9BAC-514B7DAB2C4E.json`; the transient
+command output was not retained beyond this table. The older installed app
+cannot read v3, so after user approval a fresh v2 capture of the recovered
+desktop was verified as `current.json` (`B54CFDDC`); no display or DDC write.
 
 **Qualified:** this exact tuple only. S2721DGF then AW3425DW removed onto the
 main AW3423DW with DDC input switching, shown in the same order, on `Mac17,14`
