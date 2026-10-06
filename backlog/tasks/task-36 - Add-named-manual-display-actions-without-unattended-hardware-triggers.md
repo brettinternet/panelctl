@@ -4,12 +4,13 @@ title: Add named manual display actions without unattended hardware triggers
 status: Done
 assignee: []
 created_date: '2026-10-05 22:30'
-updated_date: '2026-10-06 15:28'
+updated_date: '2026-10-06 15:44'
 labels:
   - app
   - automation
   - display-hide
   - cli
+  - reviewed
 dependencies:
   - TASK-35
 references:

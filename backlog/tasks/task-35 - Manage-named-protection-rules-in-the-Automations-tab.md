@@ -4,11 +4,12 @@ title: Manage named protection rules in the Automations tab
 status: Done
 assignee: []
 created_date: '2026-10-05 22:29'
-updated_date: '2026-10-06 14:07'
+updated_date: '2026-10-06 15:44'
 labels:
   - app
   - automation
   - ui
+  - reviewed
 dependencies:
   - TASK-34
 references:
