@@ -224,6 +224,46 @@ final class AppControlTests: XCTestCase {
         XCTAssertEqual(try client.execute(.runAction, actionID: actionID).exitCode, 3)
     }
 
+    func testEightStepActionReplyFitsTheControlMessageBudget() throws {
+        XCTAssertEqual(AppControlClient.actionResponseTimeout, 240)
+        let targetUUIDs = (0..<8).map { _ in UUID().uuidString }
+        let steps = targetUUIDs.enumerated().map { offset, targetUUID in
+            AppControlActionStepResult(
+                index: offset + 1,
+                targetUUID: targetUUID,
+                effect: "remove-from-desktop",
+                outcome: .partial,
+                desktopSummary: String(repeating: "d", count: 64),
+                inputOutcome: .failed,
+                inputDetail: String(repeating: "i", count: 64)
+            )
+        }
+        let displays = targetUUIDs.map { targetUUID in
+            AppControlDisplayStatus(
+                targetUUID: targetUUID,
+                observedState: "unavailable",
+                operation: "idle",
+                recoveryNeeded: false,
+                lastInputOutcome: nil
+            )
+        }
+        let response = AppControlResponse(
+            ok: false,
+            running: true,
+            enabled: false,
+            state: "waiting",
+            summary: String(repeating: "s", count: 120),
+            detail: String(repeating: "i", count: 120),
+            error: String(repeating: "e", count: 120),
+            outcome: .partial,
+            displays: displays,
+            steps: steps
+        )
+        let data = try JSONEncoder().encode(response)
+        XCTAssertLessThanOrEqual(data.count + 1, AppControlSocket.messageLimit)
+        XCTAssertEqual(try JSONDecoder().decode(AppControlResponse.self, from: data), response)
+    }
+
     func testAppCommandParsing() throws {
         XCTAssertEqual(try CLIParser.parse(["app", "enable"]), .app(command: .enable, durationSeconds: nil, json: false))
         XCTAssertEqual(try CLIParser.parse(["app", "open-settings", "--json"]), .app(command: .openSettings, durationSeconds: nil, json: true))

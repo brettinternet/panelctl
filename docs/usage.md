@@ -66,10 +66,11 @@ missing saved targets remain visible, and the global display-sleep timer setting
 appears only when a rule sleeps all displays. **Black Out Now** in the menu is
 titled for the enabled rules' effects; Restore and Pause remain global.
 
-Named idle blackout/dimming rules and named manual display Actions are shipped.
-Schedules and arbitrary action chains are deferred. Rules do not support
-unattended Hide/Show, topology, monitor-input, power or private-disconnect
-actions; those hardware-changing operations are not implicit rule triggers.
+Named idle blackout/dimming rules and ordered, manually invoked display Actions
+are shipped. General scripting, conditions, delays, schedules and automatic Action
+triggers are deferred. Rules do not support unattended Hide/Show, topology,
+monitor-input, power or private-disconnect actions; those hardware-changing
+operations are not implicit rule triggers.
 
 Select a display tile to see its state, Hide/Show button, setup and inline
 results. Hide defaults to **Black out**: it leaves the desktop in place and
@@ -102,28 +103,43 @@ See [Hide styles and safety boundaries](display-hide-ux.md).
 
 ### Named manual Actions
 
-Create a named, one-display Action in **Settings → Automations → Actions**.
-Choose the exact **Hide (black out)**, **Hide (remove from desktop)** or
-**Show** effect; an Action never changes style to get around a blocker. An
-Action's Hide is the same as Hide in Displays and stays until Show, unlike a
-rule's temporary blackout. Hide (remove from desktop) uses the target's Mirror
-onto and Switch monitor to setup from Displays; the editor offers **Set Up in
-Displays…** when it's missing and won't save until it's set. **Run** invokes the saved
-effect once. The editor also provides its `run-action --action UUID` command for
-Shortcuts or Stream Deck. The ID remains stable when the name is edited; deleting
-the Action stops that command from working but does not alter the display or its
-recovery state.
+Create a named Action with 1–8 ordered steps in **Settings → Automations →
+Actions**. Each step targets a different exact display and chooses **Hide (black
+out)**, **Hide (remove from desktop)** or **Show**. An Action never changes a
+step's effect to get around a blocker. Hide is the same as Hide in Displays and
+stays until Show, unlike a rule's temporary blackout. Remove uses the target's
+Mirror onto and Switch monitor to setup from Displays; the editor offers **Set
+Up in Displays…** when it's missing and won't save until it's set. **Run** and
+the copied `run-action --action UUID` command execute the saved steps once, in
+order, only while the app is running. The Action ID remains stable when edited;
+deleting it does not alter displays or recovery state.
 
-A Remove Action records the current Remove switch, mirror source and away input
-as a reviewed setup. If one changes, the Action is disabled until it is reviewed
-and saved again. Experimental features and the target's current readiness are
-checked again before each run; a refusal never falls back to Black out. Show
-uses the existing recovery evidence and remains available with Experimental
-features off. Actions run only when you select **Run** or execute their exact
-command. If a command reports `response-lost`, inspect `panelctl app status
---json` before deciding what to do; the request is never retried or queued.
-Startup, login, wake, reconnection, Automation, Pause and Restore never run
-Actions or undo an Action's manual Hide. For current limitations, see
+Each Remove step records that display's current Remove switch, mirror source and
+away input as reviewed setup. Drift is shown per step and must be reviewed and
+saved again. Before any write, PanelCtl checks the whole workflow against one
+snapshot, including exact identities, reviewed setup, consent, recovery, cleanup,
+eligibility, mirror dependencies and visible-display safety after each projected
+step. Already-satisfied steps are no-ops only after their safety checks. A
+refusal names the step and writes nothing; there is no guessed identity or
+fallback to Black out. Show uses recorded recovery and remains available after
+setup changes or Experimental features are turned off.
+
+Runs are ordered and non-atomic: the first problem stops later steps, and earlier
+display changes stay in place. While a run holds the display lease, competing
+Hide/Show/toggle commands, other Actions, recovery cleanup, Full disconnect and
+Quit are busy; requests are never queued. JSON reports each step and text prints
+one line per step. `done` means every step reached its state (at least one
+changed); `no-op` means all steps were already there; `partial` means something
+changed but not every step finished; recovery-needed takes precedence when
+recovery is unsafe. A timed-out or `response-lost` caller does not cancel or retry
+the run. Inspect `panelctl app status --json` for its current step before acting
+again. Startup, login, wake, reconnection and Automation never run Actions or
+undo their manual Hides.
+
+Action behavior is verified offline with fake display inventories and writers;
+that coverage is not a live topology/DDC qualification. Only the existing
+TASK-32 CLI round trip is hardware-qualified; Actions qualify no new combinations.
+Every live write still requires its separate scoped approval. See
 [Named manual display actions](display-hide-ux.md#named-manual-actions).
 
 ![Displays tab with experimental removal setup](displays.png)
@@ -184,8 +200,10 @@ Replace `DISPLAY_UUID` with the UUID from `panelctl list`, or use the exact
 command copied from the app. Keep the exit status if your automation needs to
 detect failure or partial success.
 
-The command waits up to 30 seconds and is never queued or resent. A display
-already in the requested state returns `no-op` without another input switch.
+A single Hide/Show command waits up to 30 seconds. A multi-step Action waits up
+to 30 seconds per step (240 seconds for eight) and is never queued or resent.
+A display already in the requested state returns `no-op` without another input
+switch, after the Action's safety checks.
 
 | Exit | `outcome` | Meaning |
 | --- | --- | --- |
@@ -235,7 +253,8 @@ target. A disconnected removed display remains listed as unavailable/recovery
 needed instead of being silently dropped.
 
 - `state` is the protection state (`disabled`, `waiting`, …). `ok: true` means status answered, not that
-  every operation succeeded.
+  every operation succeeded. During an Action, `runningAction` identifies its stable ID, name and current
+  step so a caller can inspect progress after a lost response.
 - `observedState`: `separate`, `hidden-by-panelctl` (including blacked out),
   `mirrored-externally`, `unavailable`, `recovery-needed`,
   `unsupported-recovery` or `unknown`. `operation`: `idle`, `hiding`, `showing`.

@@ -18,7 +18,7 @@ enum DisplayActionEffect: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-/// The Displays configuration reviewed when a Remove from desktop action is saved.
+/// The Displays configuration reviewed when a Remove from desktop step is saved.
 /// Return-input detection is intentionally excluded because it is read-only and dynamic.
 struct ReviewedRemovalSetup: Codable, Equatable {
     let removeEnabled: Bool
@@ -32,13 +32,27 @@ struct ReviewedRemovalSetup: Codable, Equatable {
     }
 }
 
-struct DisplayAction: Codable, Equatable, Identifiable {
-    var id: UUID
-    var name: String
+struct DisplayActionStep: Codable, Equatable, Identifiable {
     var target: DisplayIdentitySnapshot?
     var effect: DisplayActionEffect
     var reviewedRemoval: ReviewedRemovalSetup?
 
+    var id: String { target?.uuid.lowercased() ?? "step-\(effect.rawValue)" }
+
+    init(target: DisplayIdentitySnapshot? = nil, effect: DisplayActionEffect = .blackOut,
+         reviewedRemoval: ReviewedRemovalSetup? = nil) {
+        self.target = target
+        self.effect = effect
+        self.reviewedRemoval = reviewedRemoval
+    }
+}
+
+struct DisplayAction: Codable, Equatable, Identifiable {
+    var id: UUID
+    var name: String
+    var steps: [DisplayActionStep]
+
+    /// Compatibility initializer for old one-display Actions and callers that edit their first step.
     init(
         id: UUID = UUID(),
         name: String = "",
@@ -48,14 +62,70 @@ struct DisplayAction: Codable, Equatable, Identifiable {
     ) {
         self.id = id
         self.name = name
-        self.target = target
-        self.effect = effect
-        self.reviewedRemoval = reviewedRemoval
+        self.steps = [DisplayActionStep(target: target, effect: effect, reviewedRemoval: reviewedRemoval)]
+    }
+
+    init(id: UUID = UUID(), name: String = "", steps: [DisplayActionStep]) {
+        self.id = id
+        self.name = name
+        self.steps = steps
+    }
+
+    /// Compatibility facade for one-step call sites. New workflows use `steps` directly.
+    var target: DisplayIdentitySnapshot? {
+        get { steps.first?.target }
+        set {
+            if steps.isEmpty { steps = [DisplayActionStep(target: newValue)] }
+            else { steps[0].target = newValue }
+        }
+    }
+
+    var effect: DisplayActionEffect {
+        get { steps.first?.effect ?? .blackOut }
+        set {
+            if steps.isEmpty { steps = [DisplayActionStep(effect: newValue)] }
+            else { steps[0].effect = newValue }
+        }
+    }
+
+    var reviewedRemoval: ReviewedRemovalSetup? {
+        get { steps.first?.reviewedRemoval }
+        set {
+            if steps.isEmpty { steps = [DisplayActionStep(effect: .removeFromDesktop, reviewedRemoval: newValue)] }
+            else { steps[0].reviewedRemoval = newValue }
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, steps, target, effect, reviewedRemoval
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        if values.contains(.steps) {
+            steps = try values.decode([DisplayActionStep].self, forKey: .steps)
+        } else {
+            // TASK-36 stored a single target/effect directly on the Action.
+            steps = [DisplayActionStep(
+                target: try values.decodeIfPresent(DisplayIdentitySnapshot.self, forKey: .target),
+                effect: try values.decode(DisplayActionEffect.self, forKey: .effect),
+                reviewedRemoval: try values.decodeIfPresent(ReviewedRemovalSetup.self, forKey: .reviewedRemoval)
+            )]
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(name, forKey: .name)
+        try values.encode(steps, forKey: .steps)
     }
 }
 
 struct DisplayActionSet: Codable, Equatable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     var version = currentVersion
     var actions: [DisplayAction] = []
@@ -71,13 +141,14 @@ struct DisplayActionSet: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        version = try values.decode(Int.self, forKey: .version)
-        guard version == Self.currentVersion else {
+        let storedVersion = try values.decode(Int.self, forKey: .version)
+        guard storedVersion == 1 || storedVersion == Self.currentVersion else {
             throw DecodingError.dataCorruptedError(
                 forKey: .version, in: values,
-                debugDescription: "Unsupported display action version."
+                debugDescription: "Unsupported display action version \(storedVersion)."
             )
         }
+        version = Self.currentVersion
         actions = try values.decode([DisplayAction].self, forKey: .actions)
     }
 }
@@ -86,10 +157,15 @@ enum DisplayActionValidationError: Error, Equatable, LocalizedError {
     case invalidName
     case duplicateName(String)
     case duplicateIdentity
-    case missingTarget
-    case invalidTarget
-    case removalSetupUnavailable(String)
-    case experimentalFeaturesRequired
+    case invalidStepCount
+    case duplicateDisplay(String)
+    case missingTarget(Int)
+    case invalidTarget(Int)
+    case removalSetupUnavailable(Int, String)
+    case experimentalFeaturesRequired(Int)
+    case staticConflict(Int, String)
+    case actionInProgress(String)
+    case storedActionsUnavailable(String)
 
     var errorDescription: String? {
         switch self {
@@ -99,14 +175,24 @@ enum DisplayActionValidationError: Error, Equatable, LocalizedError {
             return "Action names must be unique. “\(name)” is already in use."
         case .duplicateIdentity:
             return "This action no longer exists. Close the editor and try again."
-        case .missingTarget:
-            return "Choose a display."
-        case .invalidTarget:
-            return "Choose a display with a stable UUID."
-        case .removalSetupUnavailable(let reason):
+        case .invalidStepCount:
+            return "An Action needs 1–8 steps."
+        case .duplicateDisplay(let name):
+            return "“\(name)” can appear only once in an Action."
+        case .missingTarget(let index):
+            return "Step \(index): Choose a display."
+        case .invalidTarget(let index):
+            return "Step \(index): Choose a display with a stable UUID."
+        case .removalSetupUnavailable(let index, let reason):
+            return "Step \(index): \(reason)"
+        case .experimentalFeaturesRequired(let index):
+            return "Step \(index): Turn on Experimental features in General to review Remove from desktop."
+        case .staticConflict(let index, let reason):
+            return "Step \(index): \(reason)"
+        case .actionInProgress(let name):
+            return "“\(name)” is running. Wait for it to finish before editing it."
+        case .storedActionsUnavailable(let reason):
             return reason
-        case .experimentalFeaturesRequired:
-            return "Turn on Experimental features in General to review Remove from desktop."
         }
     }
 }
@@ -118,22 +204,30 @@ struct DisplayActionReviewChange: Equatable {
 
 enum DisplayActionPresentation {
     static func summary(for action: DisplayAction, displays: [DisplayRecord]) -> String {
-        let targetName = action.target.map { displayName(for: $0, displays: displays) } ?? "Choose a display"
-        switch action.effect {
+        let summaries = action.steps.enumerated().map { index, step in
+            let text = summary(for: step, displays: displays)
+            return action.steps.count == 1 ? text : "\(index + 1). \(text)"
+        }
+        return summaries.joined(separator: "  ·  ")
+    }
+
+    static func summary(for step: DisplayActionStep, displays: [DisplayRecord]) -> String {
+        let targetName = step.target.map { displayName(for: $0, displays: displays) } ?? "Choose a display"
+        switch step.effect {
         case .blackOut:
             return "Hide \(targetName) (black out)"
         case .show:
             return "Show \(targetName)"
         case .removeFromDesktop:
             let source: String
-            if let uuid = action.reviewedRemoval?.sourceUUID, !uuid.isEmpty {
+            if let uuid = step.reviewedRemoval?.sourceUUID, !uuid.isEmpty {
                 let name = displays.first(where: { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame })?.settingsName
                     ?? "\(uuid.prefix(8))… (unavailable)"
                 source = "mirror onto \(name)"
             } else {
                 source = "no mirror source"
             }
-            let input = action.reviewedRemoval?.awayInput.map { "switch to \(MonitorInput.name($0))" } ?? "don’t switch input"
+            let input = step.reviewedRemoval?.awayInput.map { "switch to \(MonitorInput.name($0))" } ?? "don’t switch input"
             return "Hide \(targetName) (remove from desktop) · \(source) · \(input)"
         }
     }
