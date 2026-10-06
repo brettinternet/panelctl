@@ -1,48 +1,33 @@
 # Private display disable
 
-Goal: drop this Mac's signal to one monitor so a multi-input monitor
-auto-selects another computer, then restore the Mac's display safely. Mirroring
-and DDC input select don't cover monitors without DDC, because the Mac's signal
-stays on.
+Drop the Mac's signal to one monitor so a multi-input monitor can switch to
+another computer, then reconnect it safely. Mirroring and DDC input switching
+can't do this: the Mac's signal stays on.
 
-## Status
-
-| Piece | State |
-| --- | --- |
-| Setter ABI | Verified offline for macOS `26A434` arm64 ([evidence](display-enable-abi.md)) |
-| Transaction backend, journal, helper lease, CLI | Implemented; fake-writer tests plus one supervised cycle |
-| Identity, eligibility, driver, lifecycle providers | Runtime evidence checks on Apple Silicon; no monitor/host allowlist; ABI image compatibility still required |
-| Live disable/enable cycle | One supervised DELL S2721DGF/M3T101 cycle passed on the tuple below; [evidence and limits](display-disable-trial.md) |
-| Signal drop, monitor auto-select, input return | HDMI auto-selection observed; DP return required manual input selection; electrical link state unproven |
-
-Blackout remains the safe overlay alternative.
+> [!WARNING]
+> This uses a private macOS API with no compatibility promise. Some monitors
+> don't reconnect automatically; you may need to select the Mac's input with
+> the monitor's buttons or replug the cable. Blackout is the safe alternative.
 
 ## Mechanism
-
-Every surveyed tool ([survey](display-disable-tool-survey.md)) uses the same
-private setter inside a public transaction:
 
 ```c
 CGDisplayConfigRef config;
 CGBeginDisplayConfiguration(&config);
-CGSConfigureDisplayEnabled(config, displayID, false);   // true to re-enable
+CGSConfigureDisplayEnabled(config, displayID, false);   // true to reconnect
 CGCompleteDisplayConfiguration(config, kCGConfigureForSession);
 ```
 
-- **Binding.** `dlopen` CoreGraphics and `dlsym` `CGSConfigureDisplayEnabled`;
-  fall back to SkyLight `SLSConfigureDisplayEnabled`. Both must match the
-  recorded image UUIDs and symbol origin, or the feature reports unavailable. No
-  strong import, so a changed OS disables the feature instead of breaking launch.
-  The library handle lives as long as any transaction using it.
-- **Signature.** `@convention(c) (CGDisplayConfigRef, CGDirectDisplayID, Bool) -> CGError`.
-- **Scope.** Session only. App-only scope strands displays after a force quit;
-  permanent scope turns a bad session into a bad boot. No scope undoes the
-  private flag when the process dies.
-- **Transaction.** Revalidate before begin, before staging, before completion.
-  Cancel exactly once on any error before completion. Completion consumes the
-  transaction even on error; never cancel after it. No retries.
-- **Re-enable** passes `true` with the retained display ID. The display need not
-  be enumerable; it usually isn't.
+- The setter is loaded at runtime (`CGSConfigureDisplayEnabled`, falling back
+  to SkyLight's `SLSConfigureDisplayEnabled`) with the signature
+  `@convention(c) (CGDisplayConfigRef, CGDirectDisplayID, Bool) -> CGError`.
+  If macOS changes, the feature reports unavailable instead of breaking.
+- **Session scope only.** App scope strands displays after a force quit;
+  permanent scope survives reboot. No scope reconnects a display when the
+  process dies, so a separate helper owns recovery.
+- Reconnect uses the display ID saved before disconnecting. A disconnected
+  display usually disappears from the online list, so it can't be looked up.
+- No retries. Completion consumes the transaction even on error.
 
 ## CLI
 
@@ -53,286 +38,99 @@ panelctl recovery enable
 panelctl recovery panic
 ```
 
-- Disable: one UUID, ID or `--index`; explicit consent; timeout 1–60 s. No
-  `--all`, no indefinite lease, no startup/login/wake disable.
-- The CLI stays attached until the lease ends. Exit, SIGINT/SIGTERM or parent
-  death closes the lease and the helper re-enables.
-- `enable` and `panic` take no selector; they act only on the journal's staged
-  target, even when it's offline. `status` reads only the journal.
-- Before a new disable, stranded intent in that journal is recovered (or
-  refused) and the command exits 1, requiring a fresh selection.
-- All accept `--journal <path>`; keep using the same path. Exit 2 on parse
-  errors, 1 on refusal or failed recovery, 0 on success.
-- `panic` adds no global reset. It reports refusals and leaves
-  `CGRestorePermanentDisplayConfiguration()` as a separate, unverified manual
-  step.
+- `disable` takes one display, explicit consent and a 1–60 second timeout. No
+  `--all` and no indefinite mode.
+- The command stays attached until the timeout. Exit, Ctrl-C or a killed parent
+  ends it early, and the helper reconnects the display.
+- `enable` and `panic` reconnect only the display recorded in the journal, even
+  if it's offline. `status` only reads.
+- All take `--journal <path>`. Exit 0 on success, 1 on refusal or failure, 2
+  on bad arguments.
 
 ## App controls
 
-**Settings → Displays → Full disconnect · Experimental** is a separate manual
-operation, not a Hide style or a fallback from Hide. With Experimental features
-on, the section appears for every selected display (and whenever a
-disconnect journal exists). Main and built-in displays show a refusal rather
-than being hidden. Show blacked-out/hidden displays and finish any unresolved
-recovery first, then choose **Disconnect…**. PanelCtl temporarily pauses
-automation without changing the master switch, rule settings or snooze deadline.
-It stops every managed helper and verifies cover and saved-brightness cleanup
-before showing one-use consent; pending or failed cleanup blocks the operation
-with an actionable reason. Automation stays paused through preparation, consent,
-the lease and unresolved recovery. Cancel or a pre-write refusal resumes
-eligible rules with a fresh countdown. After a performed disconnect, automation
-resumes only when the journal verifies recovery. It stays off if the master
-switch is off, and an existing snooze remains in effect. Eligibility checks are
-read-only: they never start a display transaction.
+**Settings → Displays → Full disconnect · Experimental** appears for the
+selected display while Experimental features are on (or while a disconnect is
+unresolved).
 
-Availability is based on runtime safety checks, not certification of a monitor.
-There is no exact monitor UUID, vendor/model/serial, connector or Mac-model
-allowlist. Any active non-main external physical display can proceed if strict
-identity, native-driver, physical-survivor, lifecycle and API/ABI checks pass.
-Missing or ambiguous evidence still refuses; user consent cannot override it.
-The ABI resolver still requires the inspected CoreGraphics/SkyLight image
-UUIDs and symbol origin (currently evidenced on arm64 `26A434`); merely finding
-a symbol on a newer OS is not enough. OS build labels alone do not grant or
-deny compatibility. This is broader monitor availability, not universal Mac/OS
-support.
+1. Show any hidden displays and resolve any recovery first.
+2. Choose **Disconnect…**. PanelCtl pauses automation and restores dimmed
+   brightness.
+3. Confirm you're present, a named display stays usable, and you accept manual
+   recovery. Consent expires after 30 seconds and covers one 15-second
+   disconnect.
+4. The display reconnects at the deadline, or earlier with **Reconnect…**.
+   Automation resumes once reconnection is verified.
 
-Each operation requires fresh confirmation of physical presence, the named
-usable surviving screen, no concurrent display/input changes, and acceptance
-of possible manual recovery. The warning states that the private API may not
-work on this monitor and automatic recovery is not guaranteed. Selecting the
-Mac input or physically reconnecting may be necessary and may not be sufficient.
-Consent is one-use, expires after 30 seconds, and covers only a fixed **15-second
-lease**. A refusal consumes it too. The helper owns the same session-scoped
-transaction, journal and bounded recovery engine as the CLI. No automatic DDC
-input return, lease extension or repeated disconnect is offered.
+Main and built-in displays are refused. **Reconnect…** stays available after
+relaunch, with the display absent, and with Experimental features off.
+Scripts, rules, startup and wake never disconnect a display.
 
-The app inspects the shared `Recovery/current.json` on launch and during the
-lease, without invoking recovery writes. Status and **Reconnect…** remain
-available after restart, when the target is absent, and with Experimental
-features off. Reconnect closes an owned lease to request early helper recovery,
-or explicitly runs guarded journal recovery after relaunch. An active helper may
-report busy; wait and inspect again. Expiry and helper exit are not proof of
-recovery. `needsAttention`, helper failure, and unreadable or missing journals
-remain blocking across relaunch; no evidence is deleted and no ID is guessed.
-An unreadable journal is shown with its path and the read-only
-`panelctl recovery status` command; no private recovery is attempted. A helper
-preparation failure without staged target evidence may require `recovery status`
-followed by read-only `recovery verify`; it never authorizes a private enable.
+## Safety checks
 
-Private disconnect is excluded from scripting, idle/empty-display automation,
-startup, wake and automatic re-disconnect. Global reset, logout, reboot and
-physical-replug trials are separate manual decisions, not app fallback actions.
+Every check reruns before each step. Any change cancels the operation.
 
-App integration is validated with fake writers and synthetic native UI only.
-The historical CLI cycle below is **not** a live qualification of the new app
-path, repeated reliability, electrical signal loss, or automatic input return.
-Any new live cycle needs fresh scoped approval.
-
-## Preflight
-
-Every check reruns on fresh observations before intent is saved, before begin,
-before staging and before completion. Any change invalidates the selection;
-a new selection needs a new explicit command.
-
-### Target and survivor
-
-| Requirement | Refused |
+| Required | Refused |
 | --- | --- |
-| Apple Silicon | Intel |
-| Exactly one target: non-main, external, physical | Main, built-in, mirrored, virtual, headless |
-| Another active, awake physical screen with a usable mode | Only virtual/headless/DisplayLink survivors; built-in with lid closed or unknown |
-| Non-mirrored topology | Any mirror |
-| Native-only driver inventory | DisplayLink, virtual, unknown |
-| System, console session and screens awake | Unknown or asleep (a wake notification can't upgrade unknown) |
+| Apple Silicon and a recognized macOS setter | Intel, unknown macOS builds |
+| One external, physical, non-main target | Main, built-in, mirrored, virtual, headless |
+| Another awake physical display stays usable | Only virtual, headless or DisplayLink displays left; closed lid |
+| No mirroring | Any mirror |
+| Only Apple display drivers | DisplayLink, virtual displays, third-party extensions |
+| System, session and displays awake | Asleep or unknown |
 
-A screen is `physical` only with exactly one matching IOKit DisplayPort
-transport reporting active and HPD high. Online count, UUID, `builtin == false`
-or HPD alone don't prove it.
+Sleep, wake and display changes pause the operation; if it can't settle in 5
+seconds, the journal is marked `needsAttention` instead of forcing a write.
 
 ### Identity
 
-Production matching requires Apple Silicon and complete identity evidence,
-not a particular host model or OS build. ABI compatibility is checked separately.
-The journal and current observations must match exactly:
+The display being reconnected must match the saved one exactly: vendor, model,
+serial, connector, transport, boot session, OS build and user. Missing,
+duplicate or changed evidence refuses. An offline display keeps its saved ID;
+another ID is never substituted.
 
-| Evidence | Outcome |
-| --- | --- |
-| Changed boot, OS build, user or host model | stale |
-| Missing nonzero vendor/product/serial, connector or IOKit transport | missingEvidence |
-| Unsupported architecture or provider | unsupported |
-| Duplicate IDs/UUIDs, identical vendor/product peers, incomplete inventory | ambiguous |
-| Any hardware, connector, transport or online UUID mismatch | stale |
-| Everything matches | eligible (identity only; other gates still apply) |
+PanelCtl can't detect an identical monitor swapped onto the same port, or a
+reused display ID.
 
-For an absent target, the retained hardware tuple must match exactly one
-current transport, and the journaled CG ID is kept; an enumerated ID is never
-substituted. Synthetic identity works only in fake-writer tests.
-
-**Residual risk:** UUIDs, framebuffer locations, IOKit fields and HPD can be
-cached. This contract can't detect a same-port replacement that repeats every
-field, or a reused CG ID. It is exact metadata matching, not proof of a fresh
-physical sink.
-
-### Driver inventory
-
-`nativeOnly` requires positive evidence, rerun at every writer boundary:
-
-1. A complete IOKit service-plane traversal with no DisplayLink or virtual
-   display labels.
-2. Nonempty `IOMobileFramebufferShim` inventory with unique registry IDs,
-   paths and DCP indices. Each service has matching AppleMobileDisp DCP bundle,
-   kernel-owner and publisher identifiers; chip names and slot counts may vary.
-3. Every online CG ID maps to exactly one of those services via its
-   `IODisplayLocation`, rechecked after observation.
-4. `kmutil showloaded --list-only --variant-suffix release` parses cleanly with
-   only Apple identifiers, including every observed framebuffer owner, and
-   `systemextensionsctl list` reports exactly
-   `0 extension(s)`. Each command has a 2 s deadline; any error refuses.
-
-This trusts the OS's CoreDisplay-to-IOKit mapping and Apple ownership labels;
-it isn't a signature or kernel-integrity check.
-
-### Lifecycle
-
-Sleep, wake, session and screen-parameter notifications suspend writes until
-the matching resume, then a 1 s settle. Each transition has a fixed 5 s budget;
-exhaustion leaves the journal in `needsAttention` rather than forcing a write.
-Notifications are serialized on the helper run loop, but state is also sampled
-synchronously at every writer boundary because queued notifications aren't
-enough.
-
-## Journal and lease
-
-The helper ([recovery](display-recovery.md#helper)) holds the operation and
-journal locks for the whole lease and is the only writer. The parent sends one
-`DISABLE <journal UUID> <retained ID>` line over the lease pipe; delivery is not
-acknowledgment.
+## Journal
 
 ```text
-disabling ─ setter OK ─→ staged ─ final validation ─→ commitStarted ─ complete ─→ disabled
-    │                       │                             │
-    └─ any failure: cancel ─┘                             └─ crash here: recoverable (staged + commitStarted)
+disabling ─ setter OK ─→ staged ─ final check ─→ commitStarted ─ complete ─→ disabled
+    └──────── any failure: cancel ─────────┘
 ```
 
-| Journal field | Meaning |
-| --- | --- |
-| `disabledByUsID`, `disableAttempted`, state `disabling` | Intent saved before any transaction call; alone never authorizes recovery |
-| `disableStaged` | Setter staged; alone never authorizes recovery |
-| `disableCommitStarted` | Final validation passed, saved just before completion. With `disableStaged`, authorizes one recovery attempt |
-| `disabled` | Completion returned and was saved; not proof of signal loss |
-| `reenableAttempted`, state `restoring` | Saved before the single private enable attempt |
-| `privateRecoveryClosed` | Write authority retired; later attempts are verify-only |
-| `needsAttention` | Refused or failed; evidence kept |
-
-Recovery (deadline, EOF, signal, `enable`, `panic`, startup) all use one engine:
+Every recovery path (deadline, exit, signal, `enable`, `panic`, relaunch) runs
+the same steps:
 
 ```text
-lock → reload journal → identity checks → one private enable
-     → ≤6 reads @200 ms → at most one public restore → ≤6 reads → verified | needsAttention
+lock → reload journal → check identity → one reconnect → up to 6 checks → verified | needsAttention
 ```
 
-- An interrupted enable is never replayed.
-- Seeing the retained ID online closes private authority first, then verifies.
-  So PanelCtl accepts macOS re-enabling a display (for example after wake) and
-  never disables again or rewrites layout to fight it. A recycled ID still fails
-  verification.
-- Losing the survivor requests recovery; it never relaxes identity.
-- Version-1 journals and staging-only journals never authorize private writes.
-- Journal saves and display completion aren't atomic. A crash while saving
-  `disableCommitStarted` is an uncertain boundary, not proof of a disable.
+- An interrupted reconnect is never repeated.
+- If macOS reconnects the display itself (for example on wake), PanelCtl
+  accepts it and doesn't disconnect again.
 
-## Manual failure ladder
+## If it doesn't come back
 
-1. `recovery status --journal <path>`, then `recovery enable`.
-2. `recovery panic --journal <path>` (same checks; can't bypass a refusal or
-   replay an attempted enable).
-3. Separately approved: `CGRestorePermanentDisplayConfiguration()`, logout,
-   reboot. Their effect on the private flag is unverified.
-4. Physical replug or a different port. Same-port replug may stay disabled; a
-   display on a new port may get a new ID and is not adopted as the old target.
+1. `panelctl recovery status`, then `panelctl recovery enable`.
+2. `panelctl recovery panic` (same checks, can't bypass a refusal).
+3. Select the Mac's input with the monitor's buttons.
+4. Log out or restart (not guaranteed to help).
+5. Replug the cable, or try another port. A new port may give the display a
+   new ID.
 
-Never escalate automatically. Signal removal, monitor standby and input
-switching are separate outcomes, and window placement, Spaces, HDR and color
-aren't restored.
+PanelCtl never escalates automatically. Windows, Spaces, HDR and color are not
+restored.
 
-## Test coverage
+## Tests
 
-Mutation tests in `Tests/PanelCtlCoreTests/` use injected writers; none call
-Apple's setter. A read-only real-loader test checks the verified versioned image
-paths and UUIDs without constructing a transaction.
-
-| Risk | Covered by |
-| --- | --- |
-| Symbol and ABI | `RecoveryDisplayBindingTests`: framework/symbol fallback, image UUID/origin rejection, Intel rejection before loading, unknown ABI image rejection regardless of OS label, handle lifetime |
-| Transaction lifetime | Failure before begin, at begin, at setter, before and at completion; cancel only unconsumed transactions; session scope only |
-| Disable persistence | `RecoveryLeaseTests`: save failures at each step cancel and revoke authority |
-| Process crashes | Subprocess helper killed before/after READY, at begin/setter, before/after completion |
-| Re-enable persistence | `RecoveryReenableTests`: one-shot budget across crashes; consumed completion error never cancels or replays |
-| Identity | Recycled ID, replaced sink, duplicates, missing fields, changed boot/build/user, extra/missing displays |
-| Eligibility | `RecoveryEligibilityTests`: invalidation at every boundary; virtual/headless/DisplayLink, main/built-in/mirrored, survivor loss, closed lid, Intel, sleep budget |
-| Driver inventory | Every inventory refusal before writer construction; new kexts/extensions or lost mappings at writer boundaries |
-| CLI | `RecoveryCLITests`: parsing, command-to-helper-to-writer flow, exits, journal-only enable/panic, startup recovery |
-| Races | EOF, signals, deadline, topology collapse, system re-enable during recovery |
-| Concurrency | Operation lock plus journal lock across custom journals |
-
-No-write rehearsal on the real host:
+Tests use fake writers and never call the private setter:
 
 ```sh
-swift test --disable-sandbox --filter RecoveryProductionProviderTests
+swift test --disable-sandbox --filter 'Recovery'
+swift test --disable-sandbox --filter RecoveryProductionProviderTests   # read-only checks on this Mac
 ```
 
-Result on 2026-10-05 (`Mac17,14`, `26A434`): `nativeOnly`, identity eligible,
-awake, lid unknown, no mirroring. No writer was constructed.
-
-| Display | DCP index | Transport | Verdict |
-| --- | --- | --- | --- |
-| DELL S2721DGF 1440×2560 | 4 | `Port-USB-C@3/DisplayPort` | Eligible target (no-write) |
-| K272HUL 1440×2560 | 2 | `Port-USB-C@1/DisplayPort` | Eligible target (no-write) |
-| AW3425DW 3440×1440 | 1 | `Port-HDMI@1/DisplayPort` | Eligible target (no-write) |
-| Dell AW3423DW 3440×1440 | 3 | `Port-USB-C@2/DisplayPort` | Main; survivor only |
-
-## Trial protocol
-
-Each step needs explicit approval from a person who is present. Green tests,
-consent flags and passing preflight are not approval.
-
-Before any write, record: commit and host/OS build; fresh target UUID,
-vendor/model/serial, connector and the inputs in use; preflight results; the
-user-confirmed usable survivor; exact consent (target, timeout in seconds, one
-cycle); journal path and helper READY; no concurrent topology tools; accepted
-manual fallback. Never reuse historical IDs.
-
-| Stage | Observe |
-| --- | --- |
-| Disable | Result, public enumeration, signal loss vs standby vs no-signal message, HDMI auto-select, HPD |
-| Retained-ID enable | Driver acceptance, signal and visible output, whether the monitor returns to DP or stays on HDMI |
-| Verify | Journal state, topology and exact modes, user-confirmed usable output |
-| Verdict | Qualified for that host/OS/monitor/firmware/connection only, or failed/blocked with the exact reason |
-
-Stop on the first unexplained mismatch; don't toggle again. Global restore,
-logout, reboot, hotplug, crash and sleep trials each need separate approval
-after a successful simple cycle. A refusal is a blocked result, never a
-successful cycle.
-
-## Observed result and open questions
-
-- One [supervised cycle](display-disable-trial.md) on Mac17,14 / `26A434` with
-  DELL S2721DGF / M3T101 accepted retained-ID re-enable and restored exact
-  topology/modes. Other tuples and repeated reliability remain unqualified.
-- In that cycle the monitor auto-selected HDMI; standby/no-signal indications
-  were uncertain. HPD and link-rate metadata stayed unchanged, so electrical
-  link shutdown is not proven.
-- DP did not return automatically: manual OSD selection restored usable Mac
-  output. Automatic return focus needs a separately scoped solution.
-- Does DDC still reach a disabled display, so an input-select follow-up works?
-- Does the session-scoped flag survive logout or reboot, and does
-  `CGRestorePermanentDisplayConfiguration()` alone re-enable it?
-
-## Out of scope
-
-DDC power (a [separate opt-in CLI scope](ddc-power.md), never a private-disconnect
-fallback), link stop/start, permanent scope, blind ID sweeps, automatic
-re-disconnect, gamma blackouts, and automatic logout/reboot. Full offline
-identity (fresh sink binding, identical monitors) is later hardening; the
-[feasibility research](feasibility.md#offline-identity-research) records why it
-isn't solved.
+Out of scope: DDC power as a fallback, link stop/start, permanent scope,
+scanning for IDs, and automatic logout or reboot. See the
+[tool survey](display-disable-tool-survey.md) for how other apps do this.

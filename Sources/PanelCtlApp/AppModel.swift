@@ -1572,10 +1572,6 @@ final class AppModel: ObservableObject {
               displays.filter({ $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame }).count == 1 else {
             return .unavailable("This display has no stable ID, so PanelCtl can\u{2019}t hide it.")
         }
-        guard display.active, display.online, !display.asleep,
-              display.bounds.width > 0, display.bounds.height > 0 else {
-            return .unavailable("Wake this display to hide it.")
-        }
         let hiddenBlackouts = projectedBlackouts ?? Set(blackoutHiddenDisplays.keys)
         let hiddenRemovals = projectedRemovals ?? Set(unresolvedHandoffRemovals.map { $0.target.uuid.lowercased() })
         if hiddenRemovals.contains(uuid.lowercased()) {
@@ -1587,6 +1583,10 @@ final class AppModel: ObservableObject {
                 return .unavailable("PanelCtl’s removal source needs recovery. Review display recovery before covering it.")
             }
             return .unavailable("macOS is mirroring this display. Turn off mirroring in System Settings \u{2192} Displays first.")
+        }
+        guard display.active, display.online, !display.asleep,
+              display.bounds.width > 0, display.bounds.height > 0 else {
+            return .unavailable("Wake this display to hide it.")
         }
         let anotherStaysVisible = activeDisplays.contains { other in
             guard let otherUUID = other.uuid?.lowercased() else { return false }
@@ -1852,7 +1852,9 @@ final class AppModel: ObservableObject {
         }
         let present = displays
             .filter {
-                ($0.active && $0.online && $0.bounds.width > 0 && $0.bounds.height > 0) || isJournalTarget($0)
+                // Mirror followers can be online but inactive, without a drawable desktop.
+                ($0.online && (($0.active && $0.bounds.width > 0 && $0.bounds.height > 0) ||
+                    isDisplayMirrored($0.id))) || isJournalTarget($0)
             }
             .sorted { lhs, rhs in
                 if lhs.bounds.x != rhs.bounds.x { return lhs.bounds.x < rhs.bounds.x }
@@ -1981,13 +1983,14 @@ final class AppModel: ObservableObject {
         }
         if isJournalTarget, handoffStatus?.state == .busy { return .busy }
         if isJournalTarget { return .needsRecovery }
-        guard let display, display.active, display.online else { return .unavailable }
+        guard let display, display.online else { return .unavailable }
         if display.asleep { return .asleep }
         if blackedOutDisplayIDs.contains(display.id) { return .blackedOut }
         // The source of PanelCtl's mirror is still a normal display.
         let isJournalSource = display.uuid.map { isMirrorSource($0) } == true &&
             journalVerifiedHiddenMirrorSources.contains(where: { $0.id == display.id })
         if isDisplayMirrored(display.id), !isJournalSource { return .mirrored }
+        guard display.active else { return .unavailable }
         return .on
     }
 
@@ -2215,8 +2218,9 @@ final class AppModel: ObservableObject {
             case .unknown: return "unknown"
             }
         }
-        guard let display = tile.display, display.online, display.active else { return "unavailable" }
-        return isDisplayMirrored(display.id) ? "mirrored-externally" : "separate"
+        guard let display = tile.display, display.online else { return "unavailable" }
+        if isDisplayMirrored(display.id) { return "mirrored-externally" }
+        return display.active ? "separate" : "unavailable"
     }
 
     /// Runs Hide, Show or Toggle Hide for a script, like the display's Hide or

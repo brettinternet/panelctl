@@ -2,14 +2,12 @@
 
 Requires macOS 13+ and Swift 5.9+.
 
-## Build and test
-
 ```sh
 swift test --disable-sandbox
 swift build --product panelctl
 swift build --product PanelCtlApp
 scripts/test-release-version.sh
-task build:release            # universal .build/PanelCtl.app (needs https://taskfile.dev)
+task build:release            # universal .build/PanelCtl.app (https://taskfile.dev)
 ```
 
 Tests use fake display writers and DDC channels; they never change real
@@ -17,22 +15,19 @@ displays. Opt-in environment variables:
 
 | Variable | Effect |
 | --- | --- |
-| `PANELCTL_TEST_LIVE_BLACKOUT=1` | Run the connected-screen geometry test, which briefly covers external screens with black windows |
-| `PANELCTL_ICC_EVIDENCE_DIR=<dir>` | Replay retained ICC profile artifacts (read-only); unset is a reported skip |
-| `PANELCTL_SETTINGS_FIXTURE_OUTPUT=<dir>` | Write Settings PNGs (below) |
-| `PANELCTL_DISCONNECT_FIXTURE_OUTPUT=<dir>` | Write synthetic disconnect cards and fake-backed production controls for preparation pause, cleanup failure, unreadable recovery and active lease with `--filter 'DisplayDisconnectIntegrationTests\|ExperimentalDisconnectTests'` |
-| `PANELCTL_SETTINGS_FIXTURE_WIDTH=<pt>` | Settings fixture window width; the window resizes from 440 to 680 |
-| `PANELCTL_SETTINGS_FIXTURE_HEIGHT=<pt>` | Settings fixture window height |
+| `PANELCTL_TEST_LIVE_BLACKOUT=1` | Run a geometry test that briefly covers external screens with black windows |
+| `PANELCTL_ICC_EVIDENCE_DIR=<dir>` | Replay saved ICC profiles (read-only) |
+| `PANELCTL_SETTINGS_FIXTURE_OUTPUT=<dir>` | Write Settings screenshots (below) |
+| `PANELCTL_DISCONNECT_FIXTURE_OUTPUT=<dir>` | Write Full disconnect screenshots |
+| `PANELCTL_SETTINGS_FIXTURE_WIDTH=<pt>` / `_HEIGHT=<pt>` | Screenshot window size (width 440–680) |
 
-None of these authorize private display calls or restoration trials. Recovery
-no-write subprocess checks are in [display recovery](display-recovery.md#testing).
+Recovery checks that don't change displays are in
+[display recovery](display-recovery.md#testing).
 
-## Settings fixtures
+## Settings screenshots
 
-SwiftUI builds its accessibility tree only for a connected assistive client, so
-native tests reach AppKit switches and text fields; everything else is checked
-through the model. Hide setup, input detection and Black out Hide all run
-against fakes. To review rendered states:
+Render Settings with fake displays, without launching the app or touching real
+monitors:
 
 ```sh
 mkdir -p /tmp/panelctl-settings
@@ -40,22 +35,13 @@ PANELCTL_SETTINGS_FIXTURE_OUTPUT=/tmp/panelctl-settings swift test --disable-san
   --filter 'SettingsWindowTests.test(Settings|Displays|DismissInputWarning|DisplayAction)FixtureSnapshots'
 ```
 
-`testDisplayActionFixtureSnapshots` writes both 680- and 440-point Automation
-Actions lists and production Action editor sheets. It shows one-step and
-multi-step rows, a successful result with verified input (no warning), a running
-Action, a partial result, a default Hide (black out)
-draft, missing Remove setup, and mixed steps with setup drift and a step
-conflict. `testDefaultDisplayActionEditorShowsMissingRemovalSetupAndNavigatesToSelectedDisplay`
-exercises the production editor's setup guidance and Displays navigation;
-`testDisplayActionEditorCancelSaveAndStableID` exercises Cancel/Save/rename with
-native keyboard events and verifies that a saved Action's stable ID survives
-rename. Action
-execution and refusal/recovery cases are covered by `DisplayActionAppTests` with
-fake display writers. The list fixture exercises ready, hidden, needs-review and
-unavailable statuses. These fixtures never launch the real app, contact DDC or
-touch live displays. Don't
-enable live blackout tests for this. VoiceOver and live monitor checks are
-separate, manual work.
+```sh
+PANELCTL_DISCONNECT_FIXTURE_OUTPUT=/tmp/panelctl-disconnect swift test --disable-sandbox \
+  --filter 'DisplayDisconnectIntegrationTests|ExperimentalDisconnectTests'
+```
+
+SwiftUI exposes its accessibility tree only to a connected assistive client,
+so native UI tests drive AppKit controls and check the rest through the model.
 
 ## Release
 
@@ -66,15 +52,13 @@ version (`1.2.3` for `v1.2.3-beta.1`).
 scripts/package-release.sh v1.2.3
 ```
 
-Writes universal app and CLI archives plus SHA-256 files to `dist/`. Artifacts
-are ad-hoc signed, not Developer ID signed or notarized.
+This writes universal app and CLI archives with SHA-256 files to `dist/`.
+Artifacts are ad-hoc signed, not notarized.
 
-Release builds pass the SDK to the link (`-Xclang-linker -isysroot`). Without
-it, SwiftPM can record macOS 13.0 as the SDK, and macOS then runs the app with
-macOS 13 behaviour, such as Settings rows that cut off their text.
-`scripts/package-app.sh` refuses binaries that don't record the SDK they were
-built with.
+Release builds pass the SDK to the linker (`-Xclang-linker -isysroot`).
+Without it, SwiftPM can record macOS 13.0 as the SDK and macOS runs the app
+with macOS 13 behavior (for example, truncated Settings rows).
+`scripts/package-app.sh` refuses binaries that don't record their SDK.
 
-Cross-building Intel: SwiftPM writes to `out/Products`, so use
-`swift build … --show-bin-path` rather than guessing a triple directory, and
-check with `xcrun lipo -archs`.
+When cross-building for Intel, find the output with
+`swift build … --show-bin-path` and check it with `xcrun lipo -archs`.
