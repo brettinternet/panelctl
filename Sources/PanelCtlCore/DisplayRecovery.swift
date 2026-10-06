@@ -253,44 +253,39 @@ enum RecoveryConfiguration {
         try checked(result, "commit configuration")
     }
 
-    /// Restore one public-mirror target without staging or replaying any other
-    /// removal. The caller verifies every still-hidden relationship afterward.
+    /// Restore one target; remaining mirror followers are never staged.
     static func restoreTarget(_ baseline: RecoverySnapshot, targetUUID: String,
                               revalidate: () throws -> Void = {},
-                              capture: () throws -> RecoverySnapshot = { try .capture(includePrivateMetadata: false) }) throws {
-        try revalidate()
-        let before = try capture()
-        try baseline.validateRestoration(to: before)
-        guard let target = baseline.displays.first(where: { $0.uuid == targetUUID }),
-              let currentTarget = before.displays.first(where: { $0.uuid == targetUUID }),
-              !target.builtin, currentTarget.mirrorUUID != nil || currentTarget.active else {
-            throw RecoveryError.unsafe("target is unavailable for public-mirror restoration")
+                              capture: () throws -> RecoverySnapshot = { try .capture(includePrivateMetadata: false) },
+                              transaction: TargetRestoreTransaction = TargetRestoreTransaction()) throws {
+        try transaction.apply(baseline, targetUUID: targetUUID, revalidate: revalidate, capture: capture)
+    }
+
+    /// In an unchanged main-display coordinate frame, explicitly preserve the
+    /// current independent desktops. Quartz may otherwise reposition unstaged
+    /// origins. Never set a follower's origin: that would unmirror it.
+    /// A moving main display needs its existing restoration policy instead of
+    /// blindly anchoring coordinates from the old frame.
+    static func targetRestoreAnchors(_ baseline: RecoverySnapshot, targetUUID: String,
+                                     before: RecoverySnapshot) -> [RecoveryDisplay] {
+        guard let target = baseline.displays.first(where: { $0.uuid == targetUUID }), !target.main,
+              let originalMain = baseline.displays.first(where: \.main),
+              let currentMain = before.displays.first(where: \.main),
+              originalMain.uuid == currentMain.uuid, currentMain.active, currentMain.mirrorUUID == nil else { return [] }
+        return before.displays.filter { $0.uuid != targetUUID && $0.active && $0.mirrorUUID == nil }
+    }
+
+    static func verifyTargetRestoreAnchors(_ baseline: RecoverySnapshot, targetUUID: String,
+                                          before: RecoverySnapshot, current: RecoverySnapshot) throws {
+        try before.validateRestoration(to: current)
+        for anchor in targetRestoreAnchors(baseline, targetUUID: targetUUID, before: before) {
+            guard let observed = current.displays.first(where: { $0.uuid == anchor.uuid }),
+                  observed.active == anchor.active, observed.main == anchor.main,
+                  observed.x == anchor.x, observed.y == anchor.y,
+                  observed.mode == anchor.mode, observed.mirrorUUID == anchor.mirrorUUID else {
+                throw RecoveryError.unsafe("partial Show changed an anchored desktop; keep recovery")
+            }
         }
-        let options = [kCGDisplayShowDuplicateLowResolutionModes as String: true] as CFDictionary
-        let available = CGDisplayCopyAllDisplayModes(target.id, options) as? [CGDisplayMode] ?? []
-        guard let mode = available.first(where: { RecoveryMode($0) == target.mode }) else {
-            throw RecoveryError.unsafe("original mode unavailable for \(target.uuid)")
-        }
-        try revalidate()
-        var config: CGDisplayConfigRef?
-        try checked(CGBeginDisplayConfiguration(&config), "begin target restore")
-        guard let config else { throw RecoveryError.unsafe("missing configuration transaction") }
-        var completed = false
-        defer { if !completed { CGCancelDisplayConfiguration(config) } }
-        if currentTarget.mirrorUUID != nil {
-            try checked(CGConfigureDisplayMirrorOfDisplay(config, target.id, kCGNullDirectDisplay), "restore target mirror")
-        }
-        if currentTarget.mode != target.mode {
-            try checked(CGConfigureDisplayWithDisplayMode(config, target.id, mode, nil), "restore target mode")
-        }
-        if currentTarget.x != target.x || currentTarget.y != target.y || currentTarget.main != target.main {
-            try checked(CGConfigureDisplayOrigin(config, target.id, target.x, target.y), "restore target origin")
-        }
-        try baseline.validateRestoration(to: capture())
-        try revalidate()
-        let result = CGCompleteDisplayConfiguration(config, .forSession)
-        completed = true
-        try checked(result, "commit target restore")
     }
 
     /// Read-only recoverability preflight, also exercised by rehearsal before
@@ -304,6 +299,68 @@ enum RecoveryConfiguration {
             }
             return mode
         }
+    }
+}
+
+/// The same closure-injected transaction boundary as MirrorTransaction. Mode
+/// resolution finishes before begin; tests inject a prepared fake mode writer.
+struct TargetRestoreTransaction {
+    var begin: () throws -> CGDisplayConfigRef = {
+        var config: CGDisplayConfigRef?
+        try checked(CGBeginDisplayConfiguration(&config), "begin target restore")
+        guard let config else { throw RecoveryError.unsafe("missing configuration transaction") }
+        return config
+    }
+    var prepareMode: (RecoveryDisplay) throws -> (CGDisplayConfigRef) throws -> Void = { target in
+        let options = [kCGDisplayShowDuplicateLowResolutionModes as String: true] as CFDictionary
+        let available = CGDisplayCopyAllDisplayModes(target.id, options) as? [CGDisplayMode] ?? []
+        guard let mode = available.first(where: { RecoveryMode($0) == target.mode }) else {
+            throw RecoveryError.unsafe("original mode unavailable for \(target.uuid)")
+        }
+        return { try checked(CGConfigureDisplayWithDisplayMode($0, target.id, mode, nil), "restore target mode") }
+    }
+    var clearMirror: (CGDisplayConfigRef, UInt32) throws -> Void = {
+        try checked(CGConfigureDisplayMirrorOfDisplay($0, $1, kCGNullDirectDisplay), "restore target mirror")
+    }
+    var origin: (CGDisplayConfigRef, UInt32, Int32, Int32) throws -> Void = {
+        try checked(CGConfigureDisplayOrigin($0, $1, $2, $3), "restore target origin")
+    }
+    var complete: (CGDisplayConfigRef, CGConfigureOption) throws -> Void = {
+        try checked(CGCompleteDisplayConfiguration($0, $1), "commit target restore")
+    }
+    var cancel: (CGDisplayConfigRef) -> Void = { _ = CGCancelDisplayConfiguration($0) }
+
+    func apply(_ baseline: RecoverySnapshot, targetUUID: String,
+               revalidate: () throws -> Void, capture: () throws -> RecoverySnapshot) throws {
+        try revalidate()
+        let before = try capture()
+        try baseline.validateRestoration(to: before)
+        guard let target = baseline.displays.first(where: { $0.uuid == targetUUID }),
+              let currentTarget = before.displays.first(where: { $0.uuid == targetUUID }),
+              !target.builtin, currentTarget.mirrorUUID != nil || currentTarget.active else {
+            throw RecoveryError.unsafe("target is unavailable for public-mirror restoration")
+        }
+        let stageMode = try prepareMode(target)
+        let anchors = RecoveryConfiguration.targetRestoreAnchors(baseline, targetUUID: targetUUID, before: before)
+        try before.verify(capture())
+        try revalidate()
+        let config = try begin()
+        var consumed = false
+        defer { if !consumed { cancel(config) } }
+        if currentTarget.mirrorUUID != nil { try clearMirror(config, target.id) }
+        if currentTarget.mode != target.mode { try stageMode(config) }
+        if !anchors.isEmpty {
+            // Explicitly assign even unchanged anchors; intended main is last.
+            for display in ([target] + anchors).sorted(by: { !$0.main && $1.main }) {
+                try origin(config, display.id, display.x, display.y)
+            }
+        } else if currentTarget.x != target.x || currentTarget.y != target.y || currentTarget.main != target.main {
+            try origin(config, target.id, target.x, target.y)
+        }
+        try before.verify(capture())
+        try revalidate()
+        consumed = true
+        try complete(config, .forSession)
     }
 }
 

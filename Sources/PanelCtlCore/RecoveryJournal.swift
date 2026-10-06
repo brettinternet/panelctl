@@ -22,6 +22,9 @@ struct PublicMirrorRemoval: Codable, Equatable, Identifiable {
     let beforeOperation: RecoverySnapshot
     var state: PublicMirrorRemovalState
     var failure: String?
+    // Durable pending Show evidence. Anchor postconditions must survive a
+    // crash after completion and must not disappear on read-only inspection.
+    var restoreFrom: RecoverySnapshot?
 
     init(target: RecoveryDisplay, source: RecoveryDisplay, beforeOperation: RecoverySnapshot,
          state: PublicMirrorRemovalState = .captured) {
@@ -135,6 +138,10 @@ struct RecoveryJournal: Codable {
                     throw RecoveryError.unsafe("invalid public mirror removal identity")
                 }
                 try snapshot.validateRestoration(to: removal.beforeOperation)
+                if let restoreFrom = removal.restoreFrom {
+                    try snapshot.validateRestoration(to: restoreFrom)
+                    try RecoveryJournal(snapshot: restoreFrom).validate()
+                }
                 guard let operationTarget = removal.beforeOperation.displays.first(where: { $0.uuid == removal.targetUUID }),
                       operationTarget.mirrorUUID == nil, operationTarget.active,
                       let operationSource = removal.beforeOperation.displays.first(where: { $0.uuid == removal.sourceUUID }),

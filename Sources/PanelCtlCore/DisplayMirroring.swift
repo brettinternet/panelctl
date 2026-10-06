@@ -120,7 +120,8 @@ enum MirrorSessionTopology {
         var latestByTarget: [String: PublicMirrorRemoval] = [:]
         for removal in removals { latestByTarget[removal.targetUUID] = removal }
         for removal in activeRemovals(removals) {
-            guard activeByTarget[removal.targetUUID] == nil else { return false }
+            guard activeByTarget[removal.targetUUID] == nil,
+                  pendingRestoreAnchorsMatch(removal, baseline: baseline, current: current) else { return false }
             activeByTarget[removal.targetUUID] = removal
         }
         for original in baseline.displays {
@@ -138,6 +139,14 @@ enum MirrorSessionTopology {
             }
         }
         return true
+    }
+
+    static func pendingRestoreAnchorsMatch(_ removal: PublicMirrorRemoval, baseline: RecoverySnapshot,
+                                           current: RecoverySnapshot) -> Bool {
+        guard let before = removal.restoreFrom else { return true }
+        return (try? RecoveryConfiguration.verifyTargetRestoreAnchors(
+            baseline, targetUUID: removal.targetUUID, before: before, current: current
+        )) != nil
     }
 
     /// The final *physical* Show restores the full baseline even if a previous
@@ -165,6 +174,7 @@ enum MirrorSessionTopology {
         guard activeRemovals(removals).count > 1,
               let index = removals.firstIndex(where: { $0.targetUUID == targetUUID && !$0.state.resolved }),
               removals[index].state == .needsAttention || removals[index].state == .restoring,
+              pendingRestoreAnchorsMatch(removals[index], baseline: baseline, current: current),
               let target = current.displays.first(where: { $0.uuid == targetUUID }),
               target.mirrorUUID == nil, target.active else { return false }
         var siblings = removals
@@ -509,6 +519,7 @@ struct MirrorController {
         }
         savedSession.removals[index].state = .restoring
         savedSession.removals[index].failure = nil
+        savedSession.removals[index].restoreFrom = current
         journal.publicMirrorSession = savedSession
         journal.state = .restoring
         journal.trigger = "unmirror-\(selected.targetUUID)"
@@ -527,6 +538,7 @@ struct MirrorController {
                 for index in completed.removals.indices {
                     completed.removals[index].state = .restored
                     completed.removals[index].failure = nil
+                    completed.removals[index].restoreFrom = nil
                 }
                 journal.publicMirrorSession = completed
                 journal.state = .restored
@@ -544,9 +556,13 @@ struct MirrorController {
                         throw RecoveryError.unsafe("selected removal entry disappeared")
                     }
                     observedSession.removals[index].state = .restored
+                    let observed = try engine.capture()
+                    try RecoveryConfiguration.verifyTargetRestoreAnchors(
+                        session.baseline, targetUUID: selected.targetUUID, before: restoringCurrent, current: observed
+                    )
                     guard MirrorSessionTopology.matches(baseline: session.baseline,
                                                         removals: observedSession.removals,
-                                                        current: try engine.capture()) else {
+                                                        current: observed) else {
                         throw RecoveryError.unsafe("partial Show changed another removal or failed strict target verification")
                     }
                 }
@@ -556,6 +572,7 @@ struct MirrorController {
                 }
                 completed.removals[index].state = .restored
                 completed.removals[index].failure = nil
+                completed.removals[index].restoreFrom = nil
                 journal.publicMirrorSession = completed
                 journal.state = completed.removals.contains(where: { $0.state == .needsAttention })
                     ? .needsAttention : .mirrored
@@ -638,6 +655,7 @@ struct MirrorController {
             for index in session.removals.indices {
                 session.removals[index].state = .restored
                 session.removals[index].failure = nil
+                session.removals[index].restoreFrom = nil
             }
             journal.publicMirrorSession = session
             journal.state = .verified
@@ -662,10 +680,17 @@ struct MirrorController {
         } else {
             for index in session.removals.indices where !session.removals[index].state.resolved {
                 let removal = session.removals[index]
+                guard MirrorSessionTopology.pendingRestoreAnchorsMatch(removal, baseline: session.baseline, current: current) else {
+                    session.removals[index].state = .needsAttention
+                    session.removals[index].failure = removal.failure ?? "partial Show changed an anchored desktop; keep recovery"
+                    changed = true
+                    continue
+                }
                 if MirrorSessionTopology.activeRemovals(session.removals).count > 1,
                    MirrorSessionTopology.matchesBeforeOperation(removal, current: current) {
                     session.removals[index].state = .cancelled
                     session.removals[index].failure = nil
+                    session.removals[index].restoreFrom = nil
                     changed = true
                     continue
                 }
@@ -675,6 +700,7 @@ struct MirrorController {
                    MirrorSessionTopology.matches(baseline: session.baseline, removals: proposed, current: current) {
                     session.removals[index].state = .restored
                     session.removals[index].failure = nil
+                    session.removals[index].restoreFrom = nil
                     changed = true
                     continue
                 }
@@ -699,6 +725,7 @@ struct MirrorController {
             for index in session.removals.indices {
                 session.removals[index].state = .restored
                 session.removals[index].failure = nil
+                session.removals[index].restoreFrom = nil
             }
             changed = true
         } else if unresolved.contains(where: { $0.state == .needsAttention }) {

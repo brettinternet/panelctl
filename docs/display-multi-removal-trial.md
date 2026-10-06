@@ -103,3 +103,29 @@ occurred. The partial writer staged only S2721DGF. Whether explicitly anchoring
 the already-separate survivors would prevent normalization remains a hypothesis,
 not a qualified fix. No private API, automatic retry, or weaker verification
 is authorized by that hypothesis.
+
+### Anchored partial-Show experiment (offline)
+
+The next writer explicitly stages the returning S2721DGF at its exact saved
+origin and the independent K272HUL/AW3423DW at their verified **current** origins,
+with the unchanged main display last. No mode, origin, or mirror call is made
+for AW3425DW while it remains a follower. This anchoring is limited to an
+unchanged main-display coordinate frame and a non-main returning target; it
+does not replay coordinates from another frame during main-display restoration.
+Postverification also requires each independent anchor's exact pre-operation
+mode, origin, main/activity flags and mirror relationship. Target verification,
+input-return gating and final full-baseline verification remain strict. The
+pending Show's pre-operation snapshot is saved before completion; reconciliation
+uses the same durable anchor expectations after a crash or failed verification.
+It cannot turn an anchor mismatch into success on the next inspection.
+
+The raw recorded snapshots are retained in
+`Tests/PanelCtlCoreTests/Fixtures/multi-removal-26A434.json`. Tests explicitly
+model public-only capture metadata in copies, leaving both raw evidence and
+runtime identity checks unchanged. `TargetRestoreTransactionTests` exercises
+the production staging path through fake transaction callbacks, including
+negative origins, unchanged anchors, follower exclusion, pre-commit drift,
+cancel/consumption rules and mismatching postconditions. The two recorded
+failed snapshots still fail verification. These tests cannot prove that
+WindowServer accepts the requested layout; the experiment remains unqualified
+until a separately approved cycle succeeds.
