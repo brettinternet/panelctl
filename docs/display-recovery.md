@@ -80,6 +80,27 @@ must already be separate, and every entry stays unresolved until the entire
 baseline verifies. Only the selected target's input is switched; return other
 inputs separately with explicit consent or monitor buttons.
 
+### Mirroring after reboot
+
+Hide and Show commit session-only display configuration; verified restoration
+is not a promise about the arrangement macOS will load after logout or reboot.
+PanelCtl does not persist a startup re-hide intent or change the permanent
+configuration. If macOS brings back a mirror outside an unresolved PanelCtl
+removal, the online follower stays listed as **Mirrored**, even when it has no
+active desktop. Turn off mirroring in **System Settings → Displays**; PanelCtl
+does not claim ownership or offer journal-based Show for that external mirror.
+
+For the 2026-10-06 AW3425DW report, the retained journal was `verified`, with
+both removals `restored`, last written at 16:39 local time before the 16:52
+reboot. WindowServer logged a secondary mirror at 16:53:28 and further mirror
+configuration at 16:53:33, before PanelCtl's process creation at 16:53:35.494.
+This supports macOS configuring mirroring before app launch, not a startup
+re-hide by PanelCtl. The preferences inspected afterward had already been
+updated following manual unmirroring, so they cannot establish why the startup
+arrangement contained mirroring. No reboot reproduction or display write was
+performed during this investigation. The independently reproduced app defect
+was filtering out inactive mirror followers without unresolved recovery entries.
+
 ### App sleep/wake handling
 
 For a public-mirror session that is healthy and fully verified before PanelCtl

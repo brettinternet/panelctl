@@ -2144,6 +2144,52 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(model.displayRecoveryProblem, "Couldn\u{2019}t check display recovery: unreadable journal")
     }
 
+    func testExternalMirrorFollowerStaysVisibleWithoutUnresolvedRecovery() throws {
+        for restoredJournal in [false, true] {
+            let defaults = try makeDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+            let main = displays[0]
+            let follower = Self.display(index: 2, id: 202, uuid: Self.targetUUID,
+                                        name: "External mirror", main: false, x: 0, active: false)
+            let inactive = Self.display(index: 3, id: 303, uuid: Self.sourceUUID,
+                                        name: "Inactive", main: false, active: false)
+            let offline = Self.display(index: 4, id: 404, uuid: Self.replacementUUID,
+                                       name: "Offline", main: false, online: false)
+            var connected = [main, follower, inactive, offline]
+            var mirroredIDs: Set<UInt32> = [main.id, follower.id, offline.id]
+            let status = restoredJournal ? multiHandoffStatus(
+                [sleepRemoval(id: "restored", target: follower, source: main, resolved: true)],
+                observations: [], journalID: "previous-session"
+            ) : handoffStatus(.none, target: nil, source: nil)
+            let model = makeModel(
+                defaults: defaults, displays: [], displayProvider: { connected }, status: { status },
+                isDisplayMirrored: { mirroredIDs.contains($0) },
+                hideDisplay: { _, _, _ in XCTFail("External mirrors must not be changed"); return .notRequested },
+                showDisplay: { _, _ in XCTFail("Restored journals must not authorize Show"); return .notRequested }
+            )
+            let tile = try XCTUnwrap(model.displayTiles.first { $0.id == Self.targetKey })
+            XCTAssertEqual(Set(model.displayTiles.map(\.id)), [Self.mainUUID.lowercased(), Self.targetKey])
+            XCTAssertEqual(tile.status, .mirrored)
+            XCTAssertEqual(tile.action, .hide)
+            XCTAssertEqual(tile.actionBlocker,
+                           "macOS is mirroring this display. Turn off mirroring in System Settings \u{2192} Displays first.")
+            XCTAssertNil(model.displayRecoveryProblem)
+            XCTAssertFalse(model.activeDisplays.contains { $0.id == follower.id },
+                           "Visibility must not make a mirror follower eligible for automation")
+            XCTAssertEqual(model.controlDisplayStatuses.first { $0.targetUUID == Self.targetUUID }?.observedState,
+                           "mirrored-externally")
+
+            // System Settings unmirrors it; the same tile becomes an ordinary desktop.
+            mirroredIDs = []
+            connected = [main, displays[1]]
+            model.refreshDisplays()
+            let separate = try XCTUnwrap(model.displayTiles.first { $0.id == Self.targetKey })
+            XCTAssertEqual(separate.status, .on)
+            XCTAssertEqual(separate.action, .hide)
+            XCTAssertNil(separate.actionBlocker)
+        }
+    }
+
     func testHealthyRemovalSessionKeepsPerDisplayActionsAndOtherHideSetupEditable() throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
