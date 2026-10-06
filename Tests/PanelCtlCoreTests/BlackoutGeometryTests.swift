@@ -161,8 +161,8 @@ final class BlackoutGeometryTests: XCTestCase {
         XCTAssertFalse(window.ignoresMouseEvents)
         XCTAssertEqual(window.backgroundColor, .black)
         XCTAssertEqual(window.level, .screenSaver)
-        XCTAssertTrue(window.collectionBehavior.contains(.canJoinAllSpaces))
-        XCTAssertTrue(window.collectionBehavior.contains(.fullScreenAuxiliary))
+        XCTAssertEqual(window.collectionBehavior,
+                       [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary])
         XCTAssertFalse(window.hasShadow)
         XCTAssertFalse(window.isReleasedWhenClosed)
         XCTAssertEqual(window.animationBehavior, .none)

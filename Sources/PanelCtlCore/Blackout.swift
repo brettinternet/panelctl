@@ -1795,7 +1795,9 @@ public final class BlackoutController {
         window.isOpaque = mode == .blocking && overlayOpacityPercent == 100
         window.hasShadow = false
         window.level = .screenSaver
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // Non-normal-level windows otherwise default to transient and are
+        // hidden by Mission Control, even when ordering animations are disabled.
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         window.ignoresMouseEvents = mode == .working
         window.isReleasedWhenClosed = false
         window.animationBehavior = .none
