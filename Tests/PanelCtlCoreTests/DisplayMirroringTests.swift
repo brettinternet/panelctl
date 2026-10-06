@@ -1413,8 +1413,8 @@ final class DisplayMirroringTests: XCTestCase {
                                          selector: "00000000-0000-0000-0000-000000000008", journalPath: nil))
         for command in ["mirror", "unmirror"] {
             XCTAssertEqual(try CLIParser.parse([command, "--help"]), .help(command: command))
-            XCTAssertTrue(CLIHelp.text(for: command).contains("only documented cycles are qualified"))
-            XCTAssertTrue(CLIHelp.text(for: command).contains("untested combinations remain unsupported"))
+            XCTAssertTrue(CLIHelp.text(for: command).contains("Experimental public, session-scoped mirroring"))
+            XCTAssertTrue(CLIHelp.text(for: command).contains("do not make untested hardware safe"))
         }
     }
 }

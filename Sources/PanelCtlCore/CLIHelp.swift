@@ -85,16 +85,14 @@ public enum CLIHelp {
             Usage: panelctl mirror --display <selector> --source <selector> --consent-mirror [--journal <path>]
             Usage: panelctl unmirror [--display <selector>] --consent-unmirror [--journal <path>]
 
-            Experimental public, session-scoped mirroring; only documented cycles are qualified.
+            Experimental public, session-scoped mirroring.
             Both selectors are explicit UUIDs, decimal/hex IDs or index:<n> from list.
             Refuses built-in targets, inactive/asleep displays, existing mirrors,
             ambiguous identities and recovery needing attention. A healthy public-mirror
             session may accept additional targets. Show only one with `unmirror --display`;
             multiple removals require an explicit selector. A main external target is
             accepted; macOS may keep it main, move main to the source or report another
-            display as main. Only the documented AW3423DW-to-AW3425DW main-target
-            mirror/unmirror cycle is qualified; untested combinations remain unsupported.
-            Captures topology before writes.
+            display as main. Captures topology before writes.
             Mirroring removes a separate desktop, NOT the signal; modes/HDR/refresh,
             windows and Spaces may change. No gamma, DDC or private display setters.
             unmirror --display restores only that target; while others stay removed macOS
@@ -104,10 +102,9 @@ public enum CLIHelp {
             entry. Explicit fallback: panelctl recovery restore --display <UUID>
             [--journal <path>]; changed identity/rotation/color requires manual action.
             No automatic restore on exit, watchdog, or promise of crash recovery.
-            Each real mirror/unmirror requires fresh scoped human approval for each write.
-            Consent flags acknowledge writes; tests and prior trials do not supply approval.
+            Consent flags acknowledge risk; they do not make untested hardware safe.
             Uses the recovery default journal unless --journal is supplied. See
-            docs/display-mirroring.md for restrictions, observed cycles and trial protocol.
+            docs/display-mirroring.md.
             """
         case "away", "back":
             return """
@@ -128,10 +125,6 @@ public enum CLIHelp {
             Errors retain evidence and print recovery commands; no automatic rollback,
             retry, watchdog or disruptive fallback. Stop on unexpected behavior.
             away can add a target beside healthy removals; status lists every target.
-            Each hardware handoff requires fresh scoped approval for each write. Consent
-            flags do not replace approval. Only the documented non-main S2721DGF round trip
-            is hardware-qualified for input switching; the main-target mirror/unmirror
-            cycle did not qualify main-target input switching.
             See docs/display-handoff.md.
             """
         case "blackout":
