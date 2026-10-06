@@ -19,6 +19,23 @@ final class DisplayActionAppTests: XCTestCase {
         ]
     }
 
+    func testIdleActionEditorDoesNotTreatNewOrExistingActionAsRunning() throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let model = makeModel(defaults: defaults)
+        let draft = model.makeNewDisplayAction(selectedDisplayID: targetUUID)
+        XCTAssertNil(model.runningDisplayAction)
+        XCTAssertNil(model.displayActionValidation(for: draft))
+
+        for existingID: UUID? in [nil, draft.id] {
+            let editor = DisplayActionEditor(
+                model: model, navigation: SettingsNavigation(), action: draft,
+                existingID: existingID, isNew: existingID == nil
+            )
+            XCTAssertFalse(editor.editingActionIsRunning, "An idle editor must not disable Save as if its Action were running")
+        }
+    }
+
     func testNewActionDefaultsToUniqueNameWithoutSavingDraft() throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
@@ -801,6 +818,16 @@ final class DisplayActionAppTests: XCTestCase {
         XCTAssertEqual(model.runningDisplayAction?.id, active.id)
         XCTAssertEqual(model.runningDisplayAction?.currentStep, 1)
         XCTAssertEqual(model.runningDisplayAction?.totalSteps, 2)
+        for (action, existingID, shouldBlock): (DisplayAction, UUID?, Bool) in [
+            (active, active.id, true), (other, other.id, false), (other, nil, false)
+        ] {
+            let editor = DisplayActionEditor(
+                model: model, navigation: SettingsNavigation(), action: action,
+                existingID: existingID, isNew: existingID == nil
+            )
+            XCTAssertEqual(editor.editingActionIsRunning, shouldBlock,
+                           "Only editing the running Action should disable Save")
+        }
         XCTAssertEqual(quiesceCalls, 1)
 
         let statusDelegate = AppDelegate()

@@ -302,7 +302,10 @@ struct DisplayActionEditor: View {
     }
 
     private var canSave: Bool { validation == nil }
-    private var editingActionIsRunning: Bool { existingID == model.runningDisplayAction?.id }
+    var editingActionIsRunning: Bool {
+        guard let existingID else { return false }
+        return existingID == model.runningDisplayAction?.id
+    }
 
     private var commandLine: String? {
         guard let executable = try? ProtectionService.helperExecutableURL() else { return nil }
