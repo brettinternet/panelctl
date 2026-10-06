@@ -79,7 +79,7 @@ all rules until verified cleanup succeeds.
 ### Named manual actions
 
 **Settings → Automations → Actions** stores named, one-display commands with a
-stable ID. Choose exactly **Black out**, **Remove from desktop** or **Show**,
+stable ID. Choose exactly **Hide (black out)**, **Hide (remove from desktop)** or **Show**,
 then deliberately select **Run** or invoke the action's copied
 `panelctl app run-action --action UUID` command. Rename keeps the ID. Deleting an
 Action does not change the target's state or discard its recovery evidence.
@@ -87,7 +87,7 @@ Action does not change the target's state or discard its recovery evidence.
 The selected effect is fixed for each run. A blocked Remove Action is refused,
 never converted to Black out. Remove requires Experimental features and records
 the target's current Remove switch, mirror source and away input when saved. A
-change to any reviewed field marks the Action **Needs review**; save the Action
+change to any reviewed field shows **Display setup changed** and disables Run; save the Action
 after inspecting the current Displays setup. Dynamic return-input detection is
 not a reviewed field. Each run rechecks the target's full stable identity,
 current setup, safety readiness, recovery state and automation cleanup before

@@ -54,8 +54,10 @@ Move `PanelCtl.app` to `/Applications` and open it. Settings has three tabs:
 (named idle protection rules and manual Actions) and **General** (launch at login,
 menu icon, Experimental features).
 
-The Automations tab keeps the master switch and global pause, and lists named
-rules with their effect, displays, Afterward behavior and current status. A
+The Automations tab has two sections. **Rules** run on their own when you're
+idle; **Actions** run only when you trigger them. The master Automation switch
+and global pause sit at the top of Rules and govern rules only. Rules are listed
+with their effect, displays, Afterward behavior and current status. A
 migrated **Display protection** rule appears without changing its settings.
 **Add Rule…**
 and **Edit…** open a draft sheet; **Save** applies changes and **Cancel**
@@ -101,8 +103,12 @@ See [Hide styles and safety boundaries](display-hide-ux.md).
 ### Named manual Actions
 
 Create a named, one-display Action in **Settings → Automations → Actions**.
-Choose the exact **Black out**, **Remove from desktop** or **Show** effect; an
-Action never changes style to get around a blocker. **Run** invokes the saved
+Choose the exact **Hide (black out)**, **Hide (remove from desktop)** or
+**Show** effect; an Action never changes style to get around a blocker. An
+Action's Hide is the same as Hide in Displays and stays until Show, unlike a
+rule's temporary blackout. Hide (remove from desktop) uses the target's Mirror
+onto and Switch monitor to setup from Displays; the editor offers **Set Up in
+Displays…** when it's missing and won't save until it's set. **Run** invokes the saved
 effect once. The editor also provides its `run-action --action UUID` command for
 Shortcuts or Stream Deck. The ID remains stable when the name is edited; deleting
 the Action stops that command from working but does not alter the display or its
@@ -122,7 +128,7 @@ Actions or undo an Action's manual Hide. For current limitations, see
 
 ![Displays tab with experimental removal setup](displays.png)
 
-![Automations tab with named protection rules and aggregate status](automations.png)
+![Automations tab with rules and actions](automations.png)
 
 *Rendered from fake display and helper fixtures, not a live hardware trial.*
 

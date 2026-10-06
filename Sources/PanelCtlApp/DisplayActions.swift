@@ -11,8 +11,8 @@ enum DisplayActionEffect: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .blackOut: return "Black out"
-        case .removeFromDesktop: return "Remove from desktop"
+        case .blackOut: return "Hide (black out)"
+        case .removeFromDesktop: return "Hide (remove from desktop)"
         case .show: return "Show"
         }
     }
@@ -117,25 +117,24 @@ struct DisplayActionReviewChange: Equatable {
 }
 
 enum DisplayActionPresentation {
-    static let runsDescription = "Only when you choose Run or run its command"
-
     static func summary(for action: DisplayAction, displays: [DisplayRecord]) -> String {
         let targetName = action.target.map { displayName(for: $0, displays: displays) } ?? "Choose a display"
         switch action.effect {
         case .blackOut:
-            return "Black out \(targetName)"
+            return "Hide \(targetName) (black out)"
         case .show:
             return "Show \(targetName)"
         case .removeFromDesktop:
             let source: String
             if let uuid = action.reviewedRemoval?.sourceUUID, !uuid.isEmpty {
-                source = displays.first(where: { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame })?.settingsName
+                let name = displays.first(where: { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame })?.settingsName
                     ?? "\(uuid.prefix(8))… (unavailable)"
+                source = "mirror onto \(name)"
             } else {
                 source = "no mirror source"
             }
-            let input = action.reviewedRemoval?.awayInput.map(MonitorInput.name) ?? "Don’t switch input"
-            return "Remove \(targetName) from desktop onto \(source) · \(input == "Don’t switch input" ? input.lowercased() : "switch to \(input)")"
+            let input = action.reviewedRemoval?.awayInput.map { "switch to \(MonitorInput.name($0))" } ?? "don’t switch input"
+            return "Hide \(targetName) (remove from desktop) · \(source) · \(input)"
         }
     }
 

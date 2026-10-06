@@ -44,9 +44,6 @@ struct AutomationSettingsView: View {
                         Button("Resume", action: model.resumeProtection)
                     }
                 }
-            }
-
-            Section {
                 if model.automationPreferences.rules.isEmpty {
                     Text("No rules.")
                         .foregroundStyle(.secondary)
@@ -60,7 +57,7 @@ struct AutomationSettingsView: View {
             } header: {
                 Text("Rules")
             } footer: {
-                SectionFooter("Rules run automatically. A display can be in only one rule that’s on.")
+                SectionFooter("Rules run on their own when you’re idle. Each display can be in only one rule that’s on.")
             }
 
             Section {
@@ -80,7 +77,7 @@ struct AutomationSettingsView: View {
             } header: {
                 Text("Actions")
             } footer: {
-                SectionFooter("Actions run only when you choose Run or run their command. Automation, startup, wake and reconnection never run them.")
+                SectionFooter("Run an action here, or from Shortcuts or Stream Deck. Actions never run on their own.")
             }
 
             if model.automationPreferences.rules.contains(where: { $0.settings.followUpAction == .sleepDisplays }) {
@@ -118,6 +115,7 @@ struct AutomationSettingsView: View {
     private func displayActionRow(_ action: DisplayAction) -> some View {
         let blocker = model.displayActionRunBlocker(for: action)
         let status = model.displayActionStatus(for: action)
+        let running = model.runningDisplayActionIDs.contains(action.id)
         return VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
                 Text(action.name)
@@ -131,7 +129,7 @@ struct AutomationSettingsView: View {
                 Button("Run") {
                     model.runDisplayAction(id: action.id)
                 }
-                .disabled(blocker != nil || model.runningDisplayActionIDs.contains(action.id))
+                .disabled(blocker != nil || running)
                 .accessibilityLabel("Run \(action.name)")
             }
             Text(DisplayActionPresentation.summary(for: action, displays: model.displays))
@@ -140,19 +138,11 @@ struct AutomationSettingsView: View {
                 .lineLimit(2)
                 .truncationMode(.tail)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(status)
-                .foregroundStyle(status.contains("Needs review") || blocker != nil ? Color.orange : Color.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+            rowStatus(status, warning: blocker != nil && !running)
             if let result = model.displayActionResults[action.id] {
-                HStack(alignment: .top, spacing: 5) {
-                    if result.outcome == .recoveryNeeded {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                    }
-                    Text(result.summary)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+                // A plain success is already reflected by the status line.
+                if result.outcome != .done, result.summary != status {
+                    rowStatus(result.summary, warning: result.outcome == .recoveryNeeded)
                 }
                 if let detail = result.detail {
                     Text(detail)
@@ -198,19 +188,7 @@ struct AutomationSettingsView: View {
                 .truncationMode(.tail)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(alignment: .top, spacing: 8) {
-                if status.isBlocked {
-                    Label {
-                        Text(status.text).textSelection(.enabled)
-                    } icon: {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                    }
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text(status.text)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                rowStatus(status.text, warning: status.isBlocked)
                 Spacer(minLength: 4)
                 if model.protectionRuleNeedsDisplayReview(rule) {
                     Button("Review in Displays…") {
@@ -223,6 +201,23 @@ struct AutomationSettingsView: View {
         .padding(.vertical, 3)
     }
 
+    @ViewBuilder
+    private func rowStatus(_ text: String, warning: Bool) -> some View {
+        if warning {
+            Label {
+                Text(text).textSelection(.enabled)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill")
+            }
+            .foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
+        } else {
+            Text(text)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
 }
 
 struct RuleEditorPresentation: Identifiable {
@@ -269,9 +264,21 @@ struct DisplayActionEditor: View {
 
     private var canSave: Bool { validation == nil }
 
+    /// Shown inline under Remove from desktop, once a display is chosen.
     private var removalSetupReason: String? {
-        guard let target = draft.target else { return "Choose a display first." }
+        guard draft.effect == .removeFromDesktop, let target = draft.target else { return nil }
         return model.displayActionRemovalSetupReason(for: target.uuid)
+    }
+
+    /// The validation below the form, without repeating the inline setup reason.
+    private var validationMessage: String? {
+        guard let validation else { return nil }
+        if removalSetupReason != nil, saveFailure == nil,
+           validation == removalSetupReason ||
+            validation == DisplayActionValidationError.experimentalFeaturesRequired.localizedDescription {
+            return nil
+        }
+        return validation
     }
 
     private var commandLine: String? {
@@ -285,14 +292,9 @@ struct DisplayActionEditor: View {
                 Section {
                     TextField("Name", text: $draft.name)
                         .onSubmit { save() }
-                    LabeledContent("Runs") {
-                        Text(DisplayActionPresentation.runsDescription)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
                 }
 
-                Section("Display") {
+                Section {
                     Picker("Display", selection: Binding(
                         get: { draft.target?.uuid ?? "" },
                         set: { selectDisplay($0) }
@@ -309,27 +311,19 @@ struct DisplayActionEditor: View {
                                 .tag(target.uuid)
                         }
                     }
-                }
 
-                Section("Effect") {
-                    Menu {
-                        ForEach(DisplayActionEffect.allCases) { effect in
-                            Button {
-                                draft.effect = effect
-                                if effect != .removeFromDesktop { draft.reviewedRemoval = nil }
-                            } label: {
-                                if draft.effect == effect {
-                                    Label(effect.title, systemImage: "checkmark")
-                                } else {
-                                    Text(effect.title)
-                                }
-                            }
-                            .disabled(effect == .removeFromDesktop && removalSetupReason != nil)
+                    Picker("Effect", selection: Binding(
+                        get: { draft.effect },
+                        set: { effect in
+                            draft.effect = effect
+                            if effect != .removeFromDesktop { draft.reviewedRemoval = nil }
+                            saveFailure = nil
                         }
-                    } label: {
-                        LabeledContent("Effect", value: draft.effect.title)
+                    )) {
+                        ForEach(DisplayActionEffect.allCases) { effect in
+                            Text(effect.title).tag(effect)
+                        }
                     }
-                    .accessibilityLabel("Effect: \(draft.effect.title)")
 
                     if draft.effect == .removeFromDesktop {
                         let configuration = draft.target.flatMap { model.hidePreferences[$0.uuid] }
@@ -343,19 +337,24 @@ struct DisplayActionEditor: View {
                                 .fixedSize(horizontal: false, vertical: true)
                                 .textSelection(.enabled)
                         }
-                    }
-                    if let removalSetupReason {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(removalSetupReason)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Button("Set Up in Displays…") {
-                                let uuid = draft.target?.uuid
-                                dismiss()
-                                DispatchQueue.main.async { navigation.showDisplays(selecting: uuid) }
+                        if let removalSetupReason {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(removalSetupReason)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if model.experimentalFeaturesEnabled {
+                                    Button("Set Up in Displays…") {
+                                        let uuid = draft.target?.uuid
+                                        dismiss()
+                                        DispatchQueue.main.async { navigation.showDisplays(selecting: uuid) }
+                                    }
+                                }
                             }
-                            .disabled(draft.target == nil)
                         }
+                    }
+                } footer: {
+                    if draft.effect == .removeFromDesktop {
+                        SectionFooter("Mirror onto and Switch monitor to are set in Displays.")
                     }
                 }
 
@@ -381,13 +380,13 @@ struct DisplayActionEditor: View {
                 } header: {
                     Text("Command")
                 } footer: {
-                    SectionFooter("For Shortcuts or Stream Deck. PanelCtl must be running; requests are never queued or retried.")
+                    SectionFooter("Use in Shortcuts or Stream Deck. PanelCtl must be running.")
                 }
             }
             .formStyle(.grouped)
 
-            if let validation {
-                Label(validation, systemImage: "exclamationmark.triangle.fill")
+            if let validationMessage {
+                Label(validationMessage, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -524,8 +523,8 @@ struct ProtectionRuleEditor: View {
                     }
                 }
 
-                Section("Action") {
-                    Picker("Action", selection: setting(\.mode)) {
+                Section("Effect") {
+                    Picker("Effect", selection: setting(\.mode)) {
                         Text("Black out").tag(BlackoutMode.blocking)
                         Text("Dim").tag(BlackoutMode.working)
                     }

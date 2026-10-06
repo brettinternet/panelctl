@@ -377,9 +377,11 @@ final class SettingsWindowTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: Self.suiteName) }
         let navigation = SettingsNavigation()
         navigation.tab = .automation
-        let action = model.makeNewDisplayAction(selectedDisplayID: Self.sideUUID)
+        var action = model.makeNewDisplayAction(selectedDisplayID: Self.sideUUID)
         XCTAssertEqual(action.effect, .blackOut, "new actions start with the default effect")
         XCTAssertNil(model.hidePreferences[Self.sideUUID], "this is the first-use state with no Remove setup")
+        action.effect = .removeFromDesktop
+        XCTAssertNotNil(model.displayActionValidation(for: action), "Remove without Displays setup can't be saved")
         let (parent, sheet) = try presentProductionDisplayActionEditor(
             model: model, navigation: navigation, action: action, existingID: nil, isNew: true
         )
@@ -390,7 +392,7 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(model.displayActionRemovalSetupReason(for: Self.sideUUID), guidance)
         content.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
-        let setupY = content.isFlipped ? content.bounds.minY + 332 : content.bounds.maxY - 332
+        let setupY = content.isFlipped ? content.bounds.minY + 260 : content.bounds.maxY - 260
         let setupPoint = content.convert(NSPoint(x: 100, y: setupY), to: nil)
         let down = try XCTUnwrap(NSEvent.mouseEvent(
             with: .leftMouseDown, location: setupPoint, modifierFlags: [],
@@ -490,6 +492,15 @@ final class SettingsWindowTests: XCTestCase {
             )
             try writeSnapshot(of: firstUseEditor, to: output, name: "action-editor-first-use-\(width)")
             window.endSheet(firstUseEditor)
+            spin { window.attachedSheet == nil }
+            var setupAction = firstUseAction
+            setupAction.effect = .removeFromDesktop
+            let setupEditor = try presentStandaloneDisplayActionEditor(
+                in: window, model: firstUseModel, navigation: SettingsNavigation(),
+                action: setupAction, existingID: nil, isNew: true
+            )
+            try writeSnapshot(of: setupEditor, to: output, name: "action-editor-remove-setup-\(width)")
+            window.endSheet(setupEditor)
             spin { window.attachedSheet == nil }
             firstUseDefaults.removePersistentDomain(forName: firstUseSuite)
 

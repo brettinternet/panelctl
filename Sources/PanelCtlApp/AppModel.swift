@@ -778,7 +778,7 @@ final class AppModel: ObservableObject {
         guard let target = action.target else { return "Unavailable: Choose a display." }
         guard UUID(uuidString: target.uuid) != nil else { return "Unavailable: This action has no stable display UUID." }
         guard matchingDisplay(target) != nil else {
-            return "Unavailable: This display is disconnected or changed. Reconnect that exact display."
+            return "Unavailable: Display not connected."
         }
         if action.effect == .removeFromDesktop {
             if action.reviewedRemoval == nil {
@@ -822,7 +822,7 @@ final class AppModel: ObservableObject {
                 return "Display recovery needs attention. Review it in Displays before hiding another display. \(problem)"
             }
             guard let display = displays.first(where: { $0.uuid?.caseInsensitiveCompare(target.uuid) == .orderedSame }) else {
-                return "Unavailable: This display is disconnected."
+                return "Unavailable: Display not connected."
             }
             return blackoutReadiness(for: display)?.localizedDescription
         case .removeFromDesktop:
@@ -849,15 +849,16 @@ final class AppModel: ObservableObject {
 
     func displayActionStatus(for action: DisplayAction) -> String {
         if runningDisplayActionIDs.contains(action.id) { return "Running…" }
-        if let review = displayActionReviewChange(for: action) {
-            return "⚠ Needs review: \(review.message)"
+        if displayActionReviewChange(for: action) != nil {
+            return "Display setup changed. Edit to review."
         }
         if let blocker = displayActionRunBlocker(for: action) {
-            return blocker.hasPrefix("Unavailable:") ? blocker : "Unavailable: \(blocker)"
+            let prefix = "Unavailable: "
+            return blocker.hasPrefix(prefix) ? String(blocker.dropFirst(prefix.count)) : blocker
         }
-        guard let target = action.target else { return "Unavailable: Choose a display." }
+        guard let target = action.target else { return "Choose a display." }
         if isBlackoutHidden(target.uuid) || isRemovedDisplay(target.uuid) { return "Hidden" }
-        return "Display is on"
+        return "Shown"
     }
 
     private func protectionRuleAdmissionValidation(
