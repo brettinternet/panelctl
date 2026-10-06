@@ -470,6 +470,57 @@ final class BlackoutHideTests: XCTestCase {
         await fulfillment(of: [stopped], timeout: 3)
     }
 
+    func testAutomationRestartsOnceAfterMultiStepAction() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panelctl-action-rearm-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let log = directory.appendingPathComponent("helper.log")
+        let script = """
+        #!/bin/bash
+        printf 'launch:%s\\n' "$*" >> "$PANELCTL_TEST_LOG"
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
+        trap 'printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":true}\\n"; exit 0' TERM
+        while IFS= read -r command; do
+            printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
+        done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        defer { unsetenv("PANELCTL_HELPER"); unsetenv("PANELCTL_TEST_LOG") }
+        let model = try makeModel(configure: { defaults in
+            var preferences = ProtectionPreferences()
+            preferences.isEnabled = true
+            preferences.didChooseDisplays = true
+            preferences.selectedDisplayUUIDs = [Self.mainUUID, Self.sideUUID]
+            preferences.idleSeconds = 120
+            preferences.followUpAction = .restore
+            preferences.followUpSeconds = 15
+            defaults.set(try JSONEncoder().encode(preferences), forKey: "blackoutPreferences")
+        })
+        _ = try await waitForLines(1, at: log)
+        let side = try XCTUnwrap(displays.first { $0.uuid == Self.sideUUID })
+        let third = try XCTUnwrap(displays.first { $0.uuid == Self.thirdUUID })
+        let action = DisplayAction(name: "Two blackouts", steps: [
+            DisplayActionStep(target: DisplayIdentitySnapshot(side), effect: .blackOut),
+            DisplayActionStep(target: DisplayIdentitySnapshot(third), effect: .blackOut)
+        ])
+        try model.saveDisplayAction(action)
+        let finished = expectation(description: "run")
+        model.runDisplayAction(id: action.id) { response in
+            XCTAssertEqual(response.outcome, .done, response.error ?? "")
+            finished.fulfill()
+        }
+        await fulfillment(of: [finished], timeout: 5)
+        // Helpers stay stopped across steps and the run reconciles automation once afterward.
+        let lines = try await waitForLines(2, at: log)
+        XCTAssertTrue(lines.last?.contains("--panelctl-hidden-display \(Self.sideUUID)") == true, "\(lines)")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(try String(contentsOf: log, encoding: .utf8).split(separator: "\n").count, 2)
+    }
+
     // MARK: Helpers
 
     private func makeModel(

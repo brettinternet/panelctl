@@ -670,6 +670,41 @@ final class DisplayActionAppTests: XCTestCase {
         XCTAssertEqual(quiesceCount, 0, "the run does not stop helpers or write before complete preflight")
     }
 
+    func testNoOpPreflightNeverWritesWhenStateChangesBeforeTheStep() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let box = StatusBox(noneStatus())
+        var armed = false
+        var quiesceCount = 0
+        let model = AppModel(
+            defaults: defaults, displayProvider: { self.displays }, idleSecondsProvider: { nil },
+            isDisplayMirrored: { _ in false },
+            inspectHandoff: {
+                let status = box.value
+                // The preflight read sees nothing hidden; the step's fresh read sees a removal.
+                if armed { armed = false; box.value = self.hiddenStatus() }
+                return status
+            },
+            showDisplay: { _, _ in
+                XCTFail("a step must not write when preflight skipped helper quiescence")
+                return .notRequested
+            },
+            quiesceProtection: { completion in quiesceCount += 1; completion(true, nil) }
+        )
+        await settleQuiescence(model)
+        let before = quiesceCount
+        let action = DisplayAction(name: "Show target", steps: [
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == targetUUID })), effect: .show)
+        ])
+        try model.saveDisplayAction(action)
+        armed = true
+
+        let result = await run(model, id: action.id)
+        XCTAssertEqual(result.outcome, .refused)
+        XCTAssertEqual(result.steps?.map(\.outcome), [.refused])
+        XCTAssertEqual(quiesceCount, before)
+    }
+
     func testMultiStepShowThenBlackOutRunsInOrderAndQuiescesOnce() async throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }

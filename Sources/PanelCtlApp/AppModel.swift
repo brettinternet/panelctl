@@ -656,41 +656,39 @@ final class AppModel: ObservableObject {
     }
 
     func displayActionValidation(for draft: DisplayAction, replacing existingID: UUID? = nil) -> String? {
-        if let displayActionStorageFailure { return displayActionStorageFailure }
+        displayActionValidationError(for: draft, replacing: existingID)?.localizedDescription
+    }
+
+    private func displayActionValidationError(
+        for draft: DisplayAction, replacing existingID: UUID?
+    ) -> DisplayActionValidationError? {
+        if let displayActionStorageFailure { return .storedActionsUnavailable(displayActionStorageFailure) }
         let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return DisplayActionValidationError.invalidName.localizedDescription }
+        guard !name.isEmpty else { return .invalidName }
         guard !displayActions.actions.contains(where: { $0.id != existingID && $0.id != draft.id &&
             $0.name.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(name) == .orderedSame
         }) else {
-            return DisplayActionValidationError.duplicateName(name).localizedDescription
+            return .duplicateName(name)
         }
         if let existingID {
             guard draft.id == existingID, displayActions.actions.contains(where: { $0.id == existingID }) else {
-                return DisplayActionValidationError.duplicateIdentity.localizedDescription
+                return .duplicateIdentity
             }
             if runningDisplayAction?.id == existingID {
-                return DisplayActionValidationError.actionInProgress(runningDisplayAction?.name ?? draft.name).localizedDescription
+                return .actionInProgress(runningDisplayAction?.name ?? draft.name)
             }
         } else if displayActions.actions.contains(where: { $0.id == draft.id }) {
-            return DisplayActionValidationError.duplicateIdentity.localizedDescription
+            return .duplicateIdentity
         }
-        guard (1...8).contains(draft.steps.count) else {
-            return DisplayActionValidationError.invalidStepCount.localizedDescription
-        }
+        guard (1...8).contains(draft.steps.count) else { return .invalidStepCount }
         let previous = existingID.flatMap { id in displayActions.actions.first(where: { $0.id == id }) }
         var seen = Set<String>()
         for (offset, step) in draft.steps.enumerated() {
             let number = offset + 1
-            guard let target = step.target else {
-                return DisplayActionValidationError.missingTarget(number).localizedDescription
-            }
-            guard UUID(uuidString: target.uuid) != nil else {
-                return DisplayActionValidationError.invalidTarget(number).localizedDescription
-            }
+            guard let target = step.target else { return .missingTarget(number) }
+            guard UUID(uuidString: target.uuid) != nil else { return .invalidTarget(number) }
             guard seen.insert(target.uuid.lowercased()).inserted else {
-                return DisplayActionValidationError.duplicateDisplay(
-                    DisplayActionPresentation.displayName(for: target, displays: displays)
-                ).localizedDescription
+                return .duplicateDisplay(DisplayActionPresentation.displayName(for: target, displays: displays))
             }
             if step.effect == .removeFromDesktop {
                 let previousStep = previous?.steps.first(where: {
@@ -699,18 +697,18 @@ final class AppModel: ObservableObject {
                 })
                 let unchangedReview = previousStep?.reviewedRemoval == step.reviewedRemoval
                 if !experimentalFeaturesEnabled, !unchangedReview {
-                    return DisplayActionValidationError.experimentalFeaturesRequired(number).localizedDescription
+                    return .experimentalFeaturesRequired(number)
                 }
                 if experimentalFeaturesEnabled,
                    let reason = displayActionRemovalSetupReason(for: target.uuid) {
-                    return DisplayActionValidationError.removalSetupUnavailable(number, reason).localizedDescription
+                    return .removalSetupUnavailable(number, reason)
                 }
             }
         }
         return staticDisplayActionConflict(in: draft)
     }
 
-    private func staticDisplayActionConflict(in action: DisplayAction) -> String? {
+    private func staticDisplayActionConflict(in action: DisplayAction) -> DisplayActionValidationError? {
         var hidden = Set<String>()
         var removalSources: [String: String] = [:]
         for (offset, step) in action.steps.enumerated() {
@@ -721,15 +719,15 @@ final class AppModel: ObservableObject {
                     ? currentReviewedRemovalSetup(for: target.uuid)
                     : step.reviewedRemoval
                 guard let source = setup?.sourceUUID else {
-                    return DisplayActionValidationError.removalSetupUnavailable(offset + 1, "Choose a mirror source in Displays first.").localizedDescription
+                    return .removalSetupUnavailable(offset + 1, "Choose a mirror source in Displays first.")
                 }
                 let sourceKey = source.lowercased()
                 if hidden.contains(sourceKey) {
                     let sourceName = displays.first(where: { $0.uuid?.lowercased() == sourceKey })?.settingsName ?? source
-                    return DisplayActionValidationError.staticConflict(offset + 1, "its mirror source \(sourceName) is hidden by an earlier step.").localizedDescription
+                    return .staticConflict(offset + 1, "its mirror source \(sourceName) is hidden by an earlier step.")
                 }
                 if removalSources.values.contains(targetKey) {
-                    return DisplayActionValidationError.staticConflict(offset + 1, "this display is a mirror source for an earlier Remove step.").localizedDescription
+                    return .staticConflict(offset + 1, "this display is a mirror source for an earlier Remove step.")
                 }
                 removalSources[targetKey] = sourceKey
             }
@@ -745,61 +743,15 @@ final class AppModel: ObservableObject {
     }
 
     func saveDisplayAction(_ draft: DisplayAction, replacing existingID: UUID? = nil) throws {
-        if let displayActionStorageFailure { throw DisplayActionValidationError.storedActionsUnavailable(displayActionStorageFailure) }
-        if let existingID, runningDisplayAction?.id == existingID {
-            throw DisplayActionValidationError.actionInProgress(runningDisplayAction?.name ?? draft.name)
-        }
         var candidate = draft
         candidate.name = candidate.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let reason = displayActionValidation(for: candidate, replacing: existingID) {
-            if reason == DisplayActionValidationError.invalidName.localizedDescription {
-                throw DisplayActionValidationError.invalidName
-            }
-            if let duplicate = displayActions.actions.first(where: {
-                $0.id != existingID && $0.name.trimmingCharacters(in: .whitespacesAndNewlines)
-                    .caseInsensitiveCompare(candidate.name) == .orderedSame
-            }) { throw DisplayActionValidationError.duplicateName(duplicate.name) }
-            if reason == DisplayActionValidationError.invalidStepCount.localizedDescription { throw DisplayActionValidationError.invalidStepCount }
-            if let error = candidate.steps.enumerated().compactMap({ offset, step -> DisplayActionValidationError? in
-                guard let target = step.target else { return .missingTarget(offset + 1) }
-                guard UUID(uuidString: target.uuid) != nil else { return .invalidTarget(offset + 1) }
-                return nil
-            }).first { throw error }
-            if let duplicate = firstDuplicateStepDisplay(in: candidate) { throw DisplayActionValidationError.duplicateDisplay(duplicate) }
-            if let error = candidate.steps.enumerated().compactMap({ offset, step -> DisplayActionValidationError? in
-                guard step.effect == .removeFromDesktop else { return nil }
-                let previous = existingID.flatMap { id in displayActions.actions.first(where: { $0.id == id }) }
-                    .flatMap { prior in prior.steps.first(where: { $0.effect == .removeFromDesktop && $0.target?.uuid.caseInsensitiveCompare(step.target?.uuid ?? "") == .orderedSame }) }
-                if !experimentalFeaturesEnabled, previous?.reviewedRemoval != step.reviewedRemoval {
-                    return .experimentalFeaturesRequired(offset + 1)
-                }
-                if experimentalFeaturesEnabled, let uuid = step.target?.uuid,
-                   let setupReason = displayActionRemovalSetupReason(for: uuid) {
-                    return .removalSetupUnavailable(offset + 1, setupReason)
-                }
-                return nil
-            }).first { throw error }
-            if let conflict = staticDisplayActionConflict(in: candidate) {
-                let match = candidate.steps.indices.first { index in conflict.hasPrefix("Step \(index + 1):") }
-                throw DisplayActionValidationError.staticConflict(match.map { $0 + 1 } ?? 1, String(conflict.drop(while: { $0 != ":" }).dropFirst()))
-            }
-            if reason == DisplayActionValidationError.duplicateIdentity.localizedDescription { throw DisplayActionValidationError.duplicateIdentity }
-            if let existingID, runningDisplayAction?.id == existingID {
-                throw DisplayActionValidationError.actionInProgress(runningDisplayAction?.name ?? candidate.name)
-            }
-            throw DisplayActionValidationError.invalidName
-        }
-        let previous = existingID.flatMap { id in displayActions.actions.first(where: { $0.id == id }) }
-        for index in candidate.steps.indices where candidate.steps[index].effect == .removeFromDesktop {
-            guard let target = candidate.steps[index].target else { continue }
-            if experimentalFeaturesEnabled, displayActionRemovalSetupReason(for: target.uuid) == nil {
+        if let error = displayActionValidationError(for: candidate, replacing: existingID) { throw error }
+        // Validation guarantees a usable current setup when Experimental is on;
+        // with it off, only an unchanged accepted setup reaches this point and is kept.
+        if experimentalFeaturesEnabled {
+            for index in candidate.steps.indices where candidate.steps[index].effect == .removeFromDesktop {
+                guard let target = candidate.steps[index].target else { continue }
                 candidate.steps[index].reviewedRemoval = currentReviewedRemovalSetup(for: target.uuid)
-            } else if previous?.steps.first(where: {
-                $0.effect == .removeFromDesktop && $0.target?.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame
-            })?.reviewedRemoval == candidate.steps[index].reviewedRemoval {
-                // Keep the accepted setup when the Experimental gate is later turned off.
-            } else if !experimentalFeaturesEnabled {
-                throw DisplayActionValidationError.experimentalFeaturesRequired(index + 1)
             }
         }
         var updated = displayActions
@@ -812,17 +764,6 @@ final class AppModel: ObservableObject {
             updated.actions.append(candidate)
         }
         displayActions = updated
-    }
-
-    private func firstDuplicateStepDisplay(in action: DisplayAction) -> String? {
-        var seen = Set<String>()
-        for step in action.steps {
-            guard let target = step.target else { continue }
-            guard seen.insert(target.uuid.lowercased()).inserted else {
-                return DisplayActionPresentation.displayName(for: target, displays: displays)
-            }
-        }
-        return nil
     }
 
     func deleteDisplayAction(id: UUID) {
@@ -1630,7 +1571,10 @@ final class AppModel: ObservableObject {
             lastDisplayActionFinished = .now
             return
         }
-        _ = reconcileDeferredActionHiddenDisplays()
+        // Helpers stayed stopped across steps; reconcile automation once for the final state.
+        if !reconcileDeferredActionHiddenDisplays(), !protectionQuiescencePending {
+            reconcileProtection()
+        }
         lastDisplayActionFinished = .now
     }
 
@@ -2512,6 +2456,18 @@ final class AppModel: ObservableObject {
                     effect: step.effect.rawValue, outcome: .noOp,
                     desktopSummary: action.steps.count > 1 ? Self.boundedActionStepText(summary) : Self.bounded(summary)))
                 runStep(offset + 1)
+                return
+            }
+            guard wouldWrite else {
+                // Preflight found nothing to change, so helpers were never quiesced; don't write now.
+                let message = "Step \(offset + 1): Display state changed after the Action was checked. Review the displays, then run it again."
+                stepResults.append(AppControlActionStepResult(index: offset + 1, targetUUID: uuid,
+                    effect: step.effect.rawValue, outcome: .refused,
+                    desktopSummary: action.steps.count > 1 ? Self.boundedActionStepText(message) : Self.bounded(message)))
+                stoppingOutcome = .refused
+                stoppingAtIndex = offset + 1
+                appendNotRun(from: offset + 1)
+                finishRun()
                 return
             }
 
