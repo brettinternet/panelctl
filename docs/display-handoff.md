@@ -75,11 +75,11 @@ The reported S2721DGF empty-HDMI case (2026-10-05) failed with
 is covered by fake-channel tests only, not a fresh hardware qualification.
 Standalone `ddc-input --set` and Hide/away retain their read-first requirement.
 
-The later [multi-display trial](display-multi-removal-trial.md) did not qualify
-same-order independent Show: macOS normalized S2721DGF's saved y=-4 to y=0
-while AW3425DW remained mirrored. Both inputs and the exact original desktop
-were recovered with separately approved final-layout and input writes. Do not
-interpret that recovery as a successful multi-display handoff cycle.
+In the later [multi-display trials](display-multi-removal-trial.md), macOS
+placed S2721DGF at y=0 instead of its saved y=-4 while AW3425DW remained
+mirrored. A partial `back` now accepts that placement (mode, survivors and
+remaining removals still verify) and the last `back` restores the exact
+original desktop. That same-order cycle is qualified only by its recorded trial.
 
 ## Observed round trip, 2026-10-04
 
