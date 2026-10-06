@@ -33,21 +33,21 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         var clock: TimeInterval = 100
         var pending = false
         var finish: (() throws -> Void)?
-        let uuid = "09084682-3c42-4455-aab8-126a7431125b"
+        let uuid = "00000000-0000-0000-0000-000000000002"
 
         init(url: URL) throws {
             store = RecoveryStore(url: url)
             let uuid = self.uuid
-            let connector = "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext3@4000000/IOMobileFramebufferShim"
-            let data: [String: Any] = ["bootSession": "fake-boot", "osBuild": "26A434", "userID": getuid(), "hostModel": "Mac17,14",
+            let connector = "IOService:/synthetic-native-framebuffer"
+            let data: [String: Any] = ["bootSession": "fake-boot", "osBuild": "synthetic-build", "userID": getuid(), "hostModel": "Mac99,1",
                 "displays": (1...2).map { id -> [String: Any] in
                     let location = id == 2 ? connector : "fake-survivor-port"
                     return ["uuid": id == 2 ? uuid : "00000000-0000-0000-0000-000000000001", "id": id,
-                     "name": id == 2 ? "Synthetic qualified Dell" : "Synthetic survivor",
-                     "vendor": id == 2 ? 4268 : 1, "model": id == 2 ? 16857 : 1, "serial": id == 2 ? 1094800204 : 1,
+                     "name": id == 2 ? "Synthetic external monitor" : "Synthetic survivor",
+                     "vendor": id, "model": id, "serial": id * 100,
                      "builtin": false, "main": id == 1, "active": true, "x": (id - 1) * 1920, "y": 0, "rotation": 0,
                      "connector": location, "identityEvidence": ["source": "cgAndCoreDisplay", "capturedAt": 0,
-                         "transport": "DisplayPort", "transportLocation": id == 2 ? "Port-USB-C@3/DisplayPort" : "fake-survivor",
+                         "transport": "HDMI", "transportLocation": id == 2 ? "Port-HDMI/HDMI" : "fake-survivor",
                          "framebufferLocation": location],
                      "mode": ["id": 1, "width": 1920, "height": 1080, "pixelWidth": 1920, "pixelHeight": 1080, "refreshRate": 60, "flags": 0]]
                 }]
@@ -164,7 +164,7 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         app.prepareDisconnect(f.uuid)
         let request = try XCTUnwrap(app.disconnectRequest)
         XCTAssertEqual(request.timeout, 15)
-        for phrase in ["M3T101", "Synthetic survivor", "at this Mac", "DisplayPort by hand", "15 seconds", "can prevent"] {
+        for phrase in ["private macOS API", "Synthetic survivor", "at this Mac", "recover the monitor manually", "15 seconds", "not guaranteed"] {
             XCTAssertTrue(ExperimentalDisconnectControls.consentMessage(request).contains(phrase), phrase)
         }
         app.cancelDisconnect(); app.confirmDisconnect()
@@ -177,31 +177,48 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         XCTAssertEqual(f.arms, 0)
         app.prepareDisconnect("00000000-0000-0000-0000-000000000001")
         XCTAssertNil(app.disconnectRequest)
-        XCTAssertTrue(app.disconnectFailure?.contains("only the recorded") == true)
+        XCTAssertTrue(app.disconnectFailure?.contains("non-main external") == true)
         XCTAssertEqual(f.writes, [])
     }
 
-    func testQualificationRejectsChangedHostBuildUnitAndConnectionBeforeBackend() throws {
+    func testUnsafeSelectionRefusesBeforeBackend() throws {
         let f = try fixture()
         let original = try JSONSerialization.jsonObject(with: JSONEncoder().encode(f.baseline)) as! [String: Any]
-        for field in ["hostModel", "osBuild", "serial", "connector", "transportLocation", "uuid"] {
+        for field in ["main", "builtin", "active", "mirrorUUID", "duplicate", "uuid"] {
             var object = original
-            if field == "hostModel" || field == "osBuild" { object[field] = "unqualified" }
-            else {
-                var displays = object["displays"] as! [[String: Any]]
-                if field == "transportLocation" {
-                    var evidence = displays[1]["identityEvidence"] as! [String: Any]
-                    evidence[field] = "another-port"; displays[1]["identityEvidence"] = evidence
-                } else { displays[1][field] = field == "serial" ? 123 : "unqualified" }
-                object["displays"] = displays
+            var displays = object["displays"] as! [[String: Any]]
+            switch field {
+            case "main", "builtin": displays[1][field] = true
+            case "active": displays[1][field] = false
+            case "mirrorUUID": displays[1][field] = displays[0]["uuid"]
+            case "duplicate": displays.append(displays[1])
+            default: displays[1][field] = "invalid"
             }
+            object["displays"] = displays
             let snapshot = try JSONDecoder().decode(RecoverySnapshot.self, from: JSONSerialization.data(withJSONObject: object))
             var controller = f.controller
             controller.capture = { snapshot }
-            controller.preflight = { _, _ in XCTFail("unqualified selection reached backend: \(field)") }
-            XCTAssertThrowsError(try controller.prepare(targetUUID: f.uuid), field)
+            controller.preflight = { _, _ in XCTFail("unsafe selection reached backend: \(field)") }
+            XCTAssertThrowsError(try controller.prepare(targetUUID: field == "uuid" ? "invalid" : f.uuid), field)
         }
         XCTAssertEqual(f.arms, 0)
+        XCTAssertEqual(f.writes, [])
+    }
+
+    func testEveryDisplayExposesExperimentalControlsWithoutGrantingConsent() throws {
+        let f = try fixture(), app = model(f)
+        for display in app.displays {
+            XCTAssertTrue(ExperimentalDisconnectControls.isVisible(model: app, targetUUID: display.uuid))
+        }
+        XCTAssertFalse(ExperimentalDisconnectControls.isVisible(model: app, targetUUID: nil))
+        app.setExperimentalFeaturesEnabled(false)
+        XCTAssertFalse(ExperimentalDisconnectControls.isVisible(model: app, targetUUID: f.uuid))
+        XCTAssertEqual(f.arms, 0)
+        app.acceptExperimentalConsent()
+        app.prepareDisconnect(f.uuid); app.confirmDisconnect()
+        app.setExperimentalFeaturesEnabled(false)
+        XCTAssertTrue(ExperimentalDisconnectControls.isVisible(model: app, targetUUID: nil))
+        try f.finish?()
     }
 
     func testAppToCoreFakeLeaseWatchdogAndReadOnlyRelaunch() throws {
@@ -282,6 +299,52 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         XCTAssertEqual(f.writes, [])
     }
 
+    func testConfirmationKeepsConsentTimeIdentityBaseline() throws {
+        for drift in [false, true] {
+            let f = try fixture(drift ? "drift" : "unchanged")
+            var controller = f.controller
+            var writerConstructions = 0
+            // Like production, construct a new preflight session from the
+            // supplied snapshot, rather than fixing it to the fixture baseline.
+            controller.preflight = { snapshot, target in
+                let session = RecoveryPrivateSession(snapshot: snapshot, capture: { f.current }, inventory: {
+                    RecoveryEnableInventory(bootSession: f.current.bootSession, osBuild: f.current.osBuild,
+                        userID: f.current.userID, identities: f.current.displays.map(RecoveryEnableIdentity.init),
+                        onlineIDs: Set(f.current.displays.map(\.id)), hostModel: f.current.hostModel,
+                        architecture: "arm64", binding: .captureMatch)
+                }, environment: { try f.session.environment() }, transaction: {
+                    writerConstructions += 1
+                    return try f.session.transaction()
+                }, initiallyAwake: true)
+                _ = try session.prepareDisable(targetID: target)
+            }
+            let request = try controller.prepare(targetUUID: f.uuid)
+            XCTAssertEqual(writerConstructions, 1)
+            if drift {
+                var target = f.baseline.displays[1]
+                target.identityEvidence?.transportLocation = "another-port"
+                f.current = RecoverySnapshot(bootSession: f.baseline.bootSession, osBuild: f.baseline.osBuild,
+                    userID: f.baseline.userID, displays: [f.baseline.displays[0], target], hostModel: f.baseline.hostModel)
+                try f.baseline.verify(f.current) // Public topology comparison alone misses this.
+                XCTAssertThrowsError(try controller.disconnect(request, consent: true,
+                    executable: URL(fileURLWithPath: "/unused"))) {
+                    XCTAssertTrue($0.localizedDescription.contains("transport/location"))
+                }
+                XCTAssertEqual(writerConstructions, 1, "drift must refuse before writer construction")
+                XCTAssertEqual(f.arms, 0, "drift must refuse before helper arming")
+                XCTAssertEqual(f.writes, [])
+            } else {
+                let lease = try controller.disconnect(request, consent: true, executable: URL(fileURLWithPath: "/unused"))
+                XCTAssertEqual(writerConstructions, 2)
+                XCTAssertEqual(f.arms, 1)
+                XCTAssertEqual(f.writes, [false])
+                XCTAssertEqual(try f.store.load().snapshot, f.baseline)
+                try lease.reconnect()
+                XCTAssertEqual(f.writes, [false, true])
+            }
+        }
+    }
+
     func testReconnectIgnoresExperimentalGateButRejectsChangedConsentJournal() throws {
         let f = try fixture(), app = model(f)
         app.prepareDisconnect(f.uuid); app.confirmDisconnect()
@@ -333,25 +396,31 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
     func testNativeProductionControlsWithFakeStatusRender() throws {
         _ = NSApplication.shared
         let f = try fixture(), app = model(f)
+        func render(_ name: String, targetUUID: String?) throws {
+            let host = NSHostingView(rootView: Form {
+                ExperimentalDisconnectControls(model: app, targetUUID: targetUUID)
+            }.formStyle(.grouped))
+            host.sizingOptions = []
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 700),
+                styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.contentView = host; window.orderFront(nil)
+            defer { window.close() }
+            host.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            XCTAssertGreaterThan(bitmap.pixelsWide, 0)
+            if let output = ProcessInfo.processInfo.environment["PANELCTL_DISCONNECT_FIXTURE_OUTPUT"] {
+                try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                    .write(to: URL(fileURLWithPath: output).appendingPathComponent("\(name).png"))
+            }
+        }
+        try render("generic-monitor-ready", targetUUID: f.uuid)
+        try render("main-display-refused", targetUUID: f.baseline.displays[0].uuid)
+        XCTAssertEqual(f.writes, [])
         app.prepareDisconnect(f.uuid); app.confirmDisconnect()
         app.refreshDisplays()
-        let host = NSHostingView(rootView: Form {
-            ExperimentalDisconnectControls(model: app, targetUUID: nil)
-        }.formStyle(.grouped))
-        host.sizingOptions = []
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 1000),
-            styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.contentView = host; window.orderFront(nil)
-        defer { window.close() }
-        host.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-        host.cacheDisplay(in: host.bounds, to: bitmap)
-        XCTAssertGreaterThan(bitmap.pixelsWide, 0)
-        if let output = ProcessInfo.processInfo.environment["PANELCTL_DISCONNECT_FIXTURE_OUTPUT"] {
-            try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-                .write(to: URL(fileURLWithPath: output).appendingPathComponent("integrated-lease.png"))
-        }
+        try render("integrated-lease", targetUUID: nil)
         try f.finish?()
     }
 }

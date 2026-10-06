@@ -1,7 +1,7 @@
 import Foundation
 
 /// A one-use, short-lived selection. General experimental consent is not consent
-/// to this operation. Firmware is not observable through the production provider.
+/// to this operation. Runtime checks are not a guarantee of hardware recovery.
 public final class DisplayDisconnectRequest {
     public let target: DisplayHideIdentity
     public let survivor: DisplayHideIdentity
@@ -109,7 +109,7 @@ public struct DisplayDisconnectController {
     public func prepare(targetUUID: String) throws -> DisplayDisconnectRequest {
         try requireClearJournal()
         let snapshot = try capture()
-        let target = try Self.qualifiedTarget(snapshot, uuid: targetUUID)
+        let target = try Self.eligibleTarget(snapshot, uuid: targetUUID)
         // Read-only policy checks; prepareDisable resolves the verified ABI but
         // does not begin a transaction. The helper repeats all writer boundaries.
         try preflight(snapshot, target.id)
@@ -123,14 +123,16 @@ public struct DisplayDisconnectController {
         guard !request.consumed else { throw RecoveryError.unsafe("consent already consumed; select and confirm again") }
         request.consumed = true // A refusal also consumes this operation's consent.
         guard consent else { throw RecoveryError.unsafe("explicit scoped disconnect consent required") }
-        guard now() < request.expires else { throw RecoveryError.unsafe("selection expired; check qualification and confirm again") }
+        guard now() < request.expires else { throw RecoveryError.unsafe("selection expired; check eligibility and confirm again") }
         try requireClearJournal()
         let current = try capture()
         try request.snapshot.verify(current)
-        let target = try Self.qualifiedTarget(current, uuid: request.target.uuid)
+        let target = try Self.eligibleTarget(current, uuid: request.target.uuid)
         guard target.id == request.target.displayID else { throw RecoveryError.unsafe("selected identity changed") }
-        try preflight(current, target.id)
-        return try arm(store, executable, request.timeout, current, target.id)
+        // Preserve consent-time transport evidence through preflight and helper
+        // recapture. Public topology verification alone does not compare it.
+        try preflight(request.snapshot, target.id)
+        return try arm(store, executable, request.timeout, request.snapshot, target.id)
     }
 
     public func reconnect(expectedJournalID: String) throws {
@@ -138,28 +140,16 @@ public struct DisplayDisconnectController {
         try recover(store, id)
     }
 
-    /// The only display unit with recorded qualification. A UUID match alone
-    /// qualifies nothing; `qualifiedTarget` checks every recorded property.
-    public static let qualifiedDisplayUUID = "09084682-3c42-4455-aab8-126a7431125b"
-
-    /// TASK-9: one physical unit, firmware M3T101 (confirmed per operation),
-    /// Mac17,14/26A434, USB-C@3/DP. No numeric ID is persisted as qualification.
-    static func qualifiedTarget(_ snapshot: RecoverySnapshot, uuid: String) throws -> RecoveryDisplay {
-        guard snapshot.hostModel == "Mac17,14", snapshot.osBuild == "26A434" else {
-            throw RecoveryError.unsafe("unavailable: recorded qualification covers only Mac17,14 / 26A434")
-        }
+    /// Selection is capability-based, not a list of previously tested hardware.
+    /// The production preflight still verifies identity, physical eligibility,
+    /// native drivers, lifecycle and ABI before a helper can be armed.
+    static func eligibleTarget(_ snapshot: RecoverySnapshot, uuid: String) throws -> RecoveryDisplay {
         let matches = snapshot.displays.filter { $0.uuid.caseInsensitiveCompare(uuid) == .orderedSame }
-        guard matches.count == 1, let target = matches.first,
-              target.uuid.lowercased() == qualifiedDisplayUUID,
-              target.vendor == 4268, target.model == 16857, target.serial == 1094800204,
-              !target.main, !target.builtin, target.active, target.mirrorUUID == nil else {
-            throw RecoveryError.unsafe("unavailable: only the recorded non-main DELL S2721DGF unit is qualified (vendor 4268, model 16857, serial 1094800204)")
+        guard UUID(uuidString: uuid) != nil, matches.count == 1, let target = matches.first else {
+            throw RecoveryError.unsafe("unavailable: select one display with an unambiguous stable identity")
         }
-        guard target.connector == "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext3@4000000/IOMobileFramebufferShim",
-              target.identityEvidence?.source == .cgAndCoreDisplay,
-              target.identityEvidence?.transport == "DisplayPort",
-              target.identityEvidence?.transportLocation == "Port-USB-C@3/DisplayPort" else {
-            throw RecoveryError.unsafe("unavailable: the recorded unit must use the qualified USB-C@3 / DisplayPort connection")
+        guard !target.main, !target.builtin, target.active, target.mirrorUUID == nil else {
+            throw RecoveryError.unsafe("unavailable: select an active, non-main external display that is not mirrored")
         }
         return target
     }

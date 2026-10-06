@@ -7,18 +7,18 @@ struct ExperimentalDisconnectControls: View {
     @State private var reconnectConsent = false
     @State private var reconnectJournalID: String?
 
-    /// Shown for the qualified display with Experimental on, and whenever a
+    /// Shown for every selected display with Experimental on, and whenever a
     /// disconnect journal exists so reconnect stays reachable.
     static func isVisible(model: AppModel, targetUUID: String?) -> Bool {
         model.disconnectStatus != nil || (model.experimentalFeaturesEnabled
-            && targetUUID?.caseInsensitiveCompare(DisplayDisconnectController.qualifiedDisplayUUID) == .orderedSame)
+            && targetUUID != nil)
     }
 
     var body: some View {
         Section {
             if let status = model.disconnectStatus {
                 if status.resolved {
-                    Text("Reconnected. If the screen stays dark, switch the monitor to DisplayPort.")
+                    Text("Reconnected. If the screen stays dark, select this Mac’s input on the monitor.")
                 } else if let presentation = presentation(status) {
                     ExperimentalDisconnectView(presentation: presentation)
                 } else {
@@ -59,14 +59,14 @@ struct ExperimentalDisconnectControls: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("PanelCtl restores the display recorded in its recovery journal. If the screen stays dark, switch the monitor to DisplayPort.")
+            Text("PanelCtl restores the display recorded in its recovery journal. If the screen stays dark, select this Mac’s input on the monitor.")
         }
     }
 
     /// One row: what the action does (or what blocks it) beside the action itself.
     /// When Automation is the blocker, offer to turn it off in place.
     private var disconnectRow: some View {
-        let blocker = model.disconnectBlocker
+        let blocker = model.disconnectBlocker ?? targetBlocker
         return HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Unplug for 15 seconds")
@@ -93,9 +93,20 @@ struct ExperimentalDisconnectControls: View {
         }
     }
 
+    private var targetBlocker: String? {
+        guard let targetUUID,
+              let display = model.displays.first(where: { $0.uuid?.caseInsensitiveCompare(targetUUID) == .orderedSame }) else {
+            return "Select a connected display with a stable identity."
+        }
+        if display.builtin { return "Built-in displays cannot be disconnected." }
+        if display.main { return "The main display cannot be disconnected. Choose another main display first." }
+        if !display.active || !display.online { return "Select an active, connected display." }
+        return nil
+    }
+
     /// Consent is one-use and per operation; it confirms what PanelCtl can't read.
     static func consentMessage(_ request: DisplayDisconnectRequest) -> String {
-        "\(request.target.name) turns off for 15 seconds; \(request.survivor.name) stays on.\n\nContinue only if this is the tested Dell (firmware M3T101) on USB-C@3 DisplayPort, you\u{2019}re at this Mac, and you can switch the monitor back to DisplayPort by hand. A helper or driver failure can prevent the automatic reconnect."
+        "\(request.target.name) turns off for 15 seconds; \(request.survivor.name) stays on.\n\nThis uses a private macOS API and may not work with your monitor. Continue only if you\u{2019}re at this Mac, the named remaining screen is usable, and you can recover the monitor manually. Do not unplug displays or change inputs during the operation. A helper or driver failure can prevent automatic reconnect; selecting this Mac’s input or physically reconnecting the monitor may be necessary and may not be sufficient. Automatic recovery is not guaranteed."
     }
 
     private func presentation(_ status: DisplayDisconnectStatus) -> ExperimentalDisconnectPresentation? {

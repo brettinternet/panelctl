@@ -30,9 +30,6 @@ struct RecoveryIdentityDecision {
 /// for the retained ID. This intentionally does not claim resistance to cached
 /// metadata, same-port replacement, or numeric-ID reuse.
 enum RecoveryIdentityPolicy {
-    static let supportedOSBuild = "26A434"
-    static let supportedHostModel = "Mac17,14"
-
     static func evaluate(snapshot: RecoverySnapshot, evidence: RecoveryEnableInventory) -> RecoveryIdentityDecision {
         func result(_ outcome: RecoveryIdentityOutcome, _ reason: String) -> RecoveryIdentityDecision {
             RecoveryIdentityDecision(outcome: outcome, diagnostic: reason)
@@ -112,12 +109,10 @@ enum RecoveryIdentityPolicy {
         case .stale:
             return result(.stale, "provider reports stale metadata")
         case .captureMatch:
-            guard capturedModel == supportedHostModel else {
-                return result(.unsupported, "hardware model is outside the TASK-1 qualified host")
-            }
-            guard capturedModel == supportedHostModel, evidence.architecture == "arm64",
-                  evidence.osBuild == supportedOSBuild, snapshot.osBuild == supportedOSBuild else {
-                return result(.unsupported, "private identity contract is limited to \(supportedHostModel) arm64 OS build \(supportedOSBuild)")
+            // ABI compatibility is enforced by RecoveryDisplayBinding, not by
+            // treating an identity match as hardware certification.
+            guard evidence.architecture == "arm64" else {
+                return result(.unsupported, "private identity matching requires Apple Silicon")
             }
             guard snapshot.displays.allSatisfy({ display in
                 guard let identity = display.identityEvidence,
@@ -127,7 +122,7 @@ enum RecoveryIdentityPolicy {
             }) else {
                 return result(.missingEvidence, "production matching requires capture-time IOKit transport locations")
             }
-            return result(.eligible, "complete capture/current identity evidence matches the retained IDs on the supported host/build")
+            return result(.eligible, "complete capture/current identity evidence matches the retained IDs on the same host/build")
         case .syntheticPhysicalFixture:
             guard snapshot.displays.allSatisfy({ $0.identityEvidence?.source == .syntheticFixture }),
                   evidence.architecture == "synthetic" else {

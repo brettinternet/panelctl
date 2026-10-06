@@ -70,15 +70,21 @@ final class RecoveryDisplayBindingTests: XCTestCase {
         }
     }
 
-    func testUnsupportedArchitectureAndBuildDoNotLoad() {
-        for (architecture, build, diagnostic) in [("x86_64", "26A434", "unsupported architecture"),
-                                                  ("arm64", "other", "unverified ABI")] {
-            let fixture = Fixture()
-            XCTAssertThrowsError(try fixture.resolve(architecture: architecture, build: build)) {
-                XCTAssertTrue(String(describing: $0).contains(diagnostic))
-            }
-            XCTAssertTrue(fixture.opens.isEmpty)
-            XCTAssertTrue(fixture.symbols.isEmpty)
+    func testUnsupportedArchitectureDoesNotLoad() {
+        let fixture = Fixture()
+        XCTAssertThrowsError(try fixture.resolve(architecture: "x86_64")) {
+            XCTAssertTrue(String(describing: $0).contains("unsupported architecture"))
+        }
+        XCTAssertTrue(fixture.opens.isEmpty)
+        XCTAssertTrue(fixture.symbols.isEmpty)
+    }
+
+    func testBuildLabelDoesNotOverrideBinaryCompatibility() throws {
+        let fixture = Fixture()
+        XCTAssertNoThrow(try fixture.resolve(build: "another-build"))
+        fixture.uuids[Binding.skyLight] = "unverified-image"
+        XCTAssertThrowsError(try fixture.resolve(build: "another-build")) {
+            XCTAssertTrue(String(describing: $0).contains("unverified ABI image"))
         }
     }
 

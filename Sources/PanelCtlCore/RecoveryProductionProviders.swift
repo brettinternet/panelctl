@@ -211,9 +211,9 @@ enum RecoveryProductionProviders {
 
     static func driverObservation(current: RecoverySnapshot) -> RecoveryDriverInventory.Observation {
         do {
-            guard current.hostModel == RecoveryIdentityPolicy.supportedHostModel,
-                  architecture() == "arm64", current.osBuild == RecoveryIdentityPolicy.supportedOSBuild else {
-                throw RecoveryError.unsafe("driver inventory is outside Mac17,14/arm64/26A434 qualification")
+            guard current.hostModel?.isEmpty == false, !current.osBuild.isEmpty,
+                  architecture() == "arm64" else {
+                throw RecoveryError.unsafe("driver inventory requires a known Apple Silicon host and OS build")
             }
             let before = try onlineDisplayIDs()
             guard Set(before) == Set(current.displays.map(\.id)), before.count == current.displays.count else {

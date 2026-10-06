@@ -61,9 +61,7 @@ final class RecoveryDisplayBinding {
         guard architecture == "arm64" else {
             throw RecoveryError.unsafe("private display backend unavailable: unsupported architecture \(architecture)")
         }
-        guard osBuild == "26A434" else {
-            throw RecoveryError.unsafe("private display backend unavailable: unverified ABI for OS build \(osBuild)")
-        }
+        // The inspected binary images, not the OS marketing/build string, define ABI compatibility.
         var failures: [String] = []
         for (path, name, uuid) in [(coreGraphics, "CGSConfigureDisplayEnabled", coreGraphicsUUID),
                                    (skyLight, "SLSConfigureDisplayEnabled", skyLightUUID)] {
@@ -80,7 +78,7 @@ final class RecoveryDisplayBinding {
             guard loader.imageUUID(path) == uuid,
                   loader.symbolImage(pointer) == skyLight,
                   loader.imageUUID(skyLight) == skyLightUUID else {
-                throw RecoveryError.unsafe("private display backend unavailable: unverified ABI image for \(name)")
+                throw RecoveryError.unsafe("private display backend unavailable: unverified ABI image for \(name) on OS build \(osBuild)")
             }
             let result = RecoveryDisplayBinding(handle: handle, pointer: pointer, loader: loader)
             retained = true

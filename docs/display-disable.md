@@ -11,7 +11,7 @@ stays on.
 | --- | --- |
 | Setter ABI | Verified offline for macOS `26A434` arm64 ([evidence](display-enable-abi.md)) |
 | Transaction backend, journal, helper lease, CLI | Implemented; fake-writer tests plus one supervised cycle |
-| Identity, eligibility, driver, lifecycle providers | Pass a no-write rehearsal on `Mac17,14` / arm64 / `26A434`; refuse everywhere else |
+| Identity, eligibility, driver, lifecycle providers | Runtime evidence checks on Apple Silicon; no monitor/host allowlist; ABI image compatibility still required |
 | Live disable/enable cycle | One supervised DELL S2721DGF/M3T101 cycle passed on the tuple below; [evidence and limits](display-disable-trial.md) |
 | Signal drop, monitor auto-select, input return | HDMI auto-selection observed; DP return required manual input selection; electrical link state unproven |
 
@@ -71,23 +71,30 @@ panelctl recovery panic
 
 **Settings → Displays → Full disconnect · Experimental** is a separate manual
 operation, not a Hide style or a fallback from Hide. With Experimental features
-on, the section appears only for the recorded display (and whenever a
-disconnect journal exists). Turn off automation, show blacked-out/hidden
+on, the section appears for every selected display (and whenever a
+disconnect journal exists). Main and built-in displays show a refusal rather
+than being hidden. Turn off automation, show blacked-out/hidden
 displays, and finish any unresolved recovery first (the row names the current
 blocker and offers **Turn Off Automation** when that is it), then choose
-**Disconnect…**. Its qualification check is read-only: it never starts a display
+**Disconnect…**. Its eligibility check is read-only: it never starts a display
 transaction.
 
-The app permits only the recorded physical DELL S2721DGF unit (UUID
-`09084682-3c42-4455-aab8-126a7431125b`, vendor 4268, model 16857, serial
-1094800204), on `Mac17,14` / `26A434` at the recorded USB-C@3/DisplayPort
-connector. Other targets, hosts, builds and connections report unavailable;
-normal private identity, native-driver, physical-survivor and lifecycle checks
-still apply. No historical numeric display ID is used for selection.
+Availability is based on runtime safety checks, not certification of a monitor.
+There is no exact monitor UUID, vendor/model/serial, connector or Mac-model
+allowlist. Any active non-main external physical display can proceed if strict
+identity, native-driver, physical-survivor, lifecycle and API/ABI checks pass.
+Missing or ambiguous evidence still refuses; user consent cannot override it.
+The ABI resolver still requires the inspected CoreGraphics/SkyLight image
+UUIDs and symbol origin (currently evidenced on arm64 `26A434`); merely finding
+a symbol on a newer OS is not enough. OS build labels alone do not grant or
+deny compatibility. This is broader monitor availability, not universal Mac/OS
+support.
 
-Each operation requires fresh confirmation of firmware **M3T101** (not readable
-by the provider), physical presence, the named usable surviving screen, no
-concurrent display/input changes, and the manual-DP-selection/stop fallback.
+Each operation requires fresh confirmation of physical presence, the named
+usable surviving screen, no concurrent display/input changes, and acceptance
+of possible manual recovery. The warning states that the private API may not
+work on this monitor and automatic recovery is not guaranteed. Selecting the
+Mac input or physically reconnecting may be necessary and may not be sufficient.
 Consent is one-use, expires after 30 seconds, and covers only a fixed **15-second
 lease**. A refusal consumes it too. The helper owns the same session-scoped
 transaction, journal and bounded recovery engine as the CLI. No automatic DDC
@@ -136,14 +143,15 @@ or HPD alone don't prove it.
 
 ### Identity
 
-Supported only on host model `Mac17,14`, arm64, build `26A434`. The journal and
-current observations must match exactly:
+Production matching requires Apple Silicon and complete identity evidence,
+not a particular host model or OS build. ABI compatibility is checked separately.
+The journal and current observations must match exactly:
 
 | Evidence | Outcome |
 | --- | --- |
 | Changed boot, OS build, user or host model | stale |
 | Missing nonzero vendor/product/serial, connector or IOKit transport | missingEvidence |
-| Other host model, build or architecture | unsupported |
+| Unsupported architecture or provider | unsupported |
 | Duplicate IDs/UUIDs, identical vendor/product peers, incomplete inventory | ambiguous |
 | Any hardware, connector, transport or online UUID mismatch | stale |
 | Everything matches | eligible (identity only; other gates still apply) |
@@ -163,12 +171,14 @@ physical sink.
 
 1. A complete IOKit service-plane traversal with no DisplayLink or virtual
    display labels.
-2. Exactly five `IOMobileFramebufferShim` services, DCP indices 0–4, all owned
-   by `com.apple.driver.AppleMobileDispT605X-DCP`.
+2. Nonempty `IOMobileFramebufferShim` inventory with unique registry IDs,
+   paths and DCP indices. Each service has matching AppleMobileDisp DCP bundle,
+   kernel-owner and publisher identifiers; chip names and slot counts may vary.
 3. Every online CG ID maps to exactly one of those services via its
    `IODisplayLocation`, rechecked after observation.
 4. `kmutil showloaded --list-only --variant-suffix release` parses cleanly with
-   only Apple identifiers, and `systemextensionsctl list` reports exactly
+   only Apple identifiers, including every observed framebuffer owner, and
+   `systemextensionsctl list` reports exactly
    `0 extension(s)`. Each command has a 2 s deadline; any error refuses.
 
 This trusts the OS's CoreDisplay-to-IOKit mapping and Apple ownership labels;
@@ -245,7 +255,7 @@ paths and UUIDs without constructing a transaction.
 
 | Risk | Covered by |
 | --- | --- |
-| Symbol and ABI | `RecoveryDisplayBindingTests`: framework/symbol fallback, image UUID/origin rejection, Intel/unknown OS rejection before loading, handle lifetime |
+| Symbol and ABI | `RecoveryDisplayBindingTests`: framework/symbol fallback, image UUID/origin rejection, Intel rejection before loading, unknown ABI image rejection regardless of OS label, handle lifetime |
 | Transaction lifetime | Failure before begin, at begin, at setter, before and at completion; cancel only unconsumed transactions; session scope only |
 | Disable persistence | `RecoveryLeaseTests`: save failures at each step cancel and revoke authority |
 | Process crashes | Subprocess helper killed before/after READY, at begin/setter, before/after completion |

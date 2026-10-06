@@ -126,8 +126,8 @@ final class RecoveryReenableTests: XCTestCase {
 
     private func productionFixture(_ modify: (inout [String: Any]) -> Void = { _ in }) throws -> RecoverySnapshot {
         try fixture { data in
-            data["osBuild"] = RecoveryIdentityPolicy.supportedOSBuild
-            data["hostModel"] = RecoveryIdentityPolicy.supportedHostModel
+            data["osBuild"] = "26A434"
+            data["hostModel"] = "Mac17,14"
             var displays = data["displays"] as! [[String: Any]]
             for index in displays.indices {
                 displays[index]["identityEvidence"] = ["source": "cgAndCoreDisplay", "capturedAt": 0,
@@ -201,10 +201,11 @@ final class RecoveryReenableTests: XCTestCase {
             hostModel: snapshot.hostModel, architecture: "arm64", binding: .captureMatch)
         let unsupportedBuild = RecoverySnapshot(bootSession: snapshot.bootSession, osBuild: "26A435",
             userID: snapshot.userID, displays: snapshot.displays, hostModel: snapshot.hostModel)
-        XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: unsupportedBuild, evidence: wrongBuild).outcome, .unsupported)
+        // Identity matches across hosts/builds; the separate ABI resolver still refuses unverified binaries.
+        XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: unsupportedBuild, evidence: wrongBuild).outcome, .eligible)
         let unsupportedHost = try productionFixture { $0["hostModel"] = "Mac14,13" }
         XCTAssertEqual(RecoveryIdentityPolicy.evaluate(snapshot: unsupportedHost,
-            evidence: productionEvidence(unsupportedHost)).outcome, .unsupported)
+            evidence: productionEvidence(unsupportedHost)).outcome, .eligible)
         var changedHost = matched
         changedHost = RecoveryEnableInventory(bootSession: matched.bootSession, osBuild: matched.osBuild,
             userID: matched.userID, identities: matched.identities, onlineIDs: matched.onlineIDs,

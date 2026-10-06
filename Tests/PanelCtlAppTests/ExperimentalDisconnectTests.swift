@@ -28,7 +28,7 @@ final class ExperimentalDisconnectTests: XCTestCase {
         XCTAssertFalse(production.canDisconnect)
         XCTAssertFalse(production.canReconnect)
         XCTAssertTrue(production.detail.contains("private macOS API"))
-        XCTAssertTrue(production.detail.contains("only for the tested Dell"))
+        XCTAssertTrue(production.detail.contains("automatic recovery is not guaranteed"))
         for command in ["disconnect", "reconnect", "experimental-disconnect"] {
             let payload = Data("{\"protocol\":1,\"command\":\"\(command)\"}".utf8)
             XCTAssertThrowsError(try JSONDecoder().decode(AppControlRequest.self, from: payload))

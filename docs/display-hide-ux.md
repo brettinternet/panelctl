@@ -224,9 +224,12 @@ software results, visible behavior, DDC wake and physical recovery.
 ### Full disconnect
 
 The separate **Full disconnect · Experimental** section in Displays does
-not change either Hide style. It appears only for the qualified display while
-Experimental features are on, or while a disconnect journal exists. It supports only the recorded Dell/firmware/host/
-build/connection, requires fresh per-operation consent, and holds a fixed
+not change either Hide style. It appears for every selected display while
+Experimental features are on, or while a disconnect journal exists. Runtime
+checks permit eligible non-main external physical displays without a monitor
+allowlist; main/built-in displays show a refusal. Strict identity, native-driver,
+survivor and verified ABI requirements remain. Each operation warns that this
+monitor may not recover automatically, requires fresh consent, and holds a fixed
 15-second watchdog lease. General experimental consent is insufficient. Turn
 off automation and show hidden displays first. Journal-driven reconnect stays
 available without an enumerable target or the experimental gate. No script,

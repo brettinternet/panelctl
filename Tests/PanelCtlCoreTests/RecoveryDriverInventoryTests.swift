@@ -3,13 +3,14 @@ import XCTest
 
 // Shared by pure policy tests and real session-boundary tests with fake writers.
 enum DriverInventoryFixture {
+    static let owner = "com.apple.driver.AppleMobileDispT605X-DCP"
     static var valid: RecoveryDriverInventory.Evidence {
-        .init(onlineIDs: [1, 2], paths: [1: "IOService:/frame-1", 2: "IOService:/frame-2"],
+        .init(host: "Mac17,14", architecture: "arm64", build: "26A434", onlineIDs: [1, 2], paths: [1: "IOService:/frame-1", 2: "IOService:/frame-2"],
             framebuffers: (0..<5).map { .init(registryID: UInt64($0 + 1), path: "IOService:/frame-\($0)",
-                index: UInt32($0), bundle: RecoveryDriverInventory.owner,
-                kernelBundle: RecoveryDriverInventory.owner, publisher: RecoveryDriverInventory.owner) },
+                index: UInt32($0), bundle: DriverInventoryFixture.owner,
+                kernelBundle: DriverInventoryFixture.owner, publisher: DriverInventoryFixture.owner) },
             serviceLabels: ["IOMobileFramebufferShim"],
-            loadedKexts: ["com.apple.kpi.iokit", RecoveryDriverInventory.owner], systemExtensions: "0 extension(s)\n")
+            loadedKexts: ["com.apple.kpi.iokit", DriverInventoryFixture.owner], systemExtensions: "0 extension(s)\n")
     }
 
     static var refusals: [(String, (inout RecoveryDriverInventory.Evidence) -> Void)] {
@@ -27,11 +28,11 @@ enum DriverInventoryFixture {
             ("Apple-lookalike kext", { $0.loadedKexts.append("com.appleevil.driver") }),
             ("missing loaded driver", { $0.loadedKexts.removeLast() }),
             ("empty kext inventory", { $0.loadedKexts = [] }),
-            ("duplicate loaded driver", { $0.loadedKexts.append(RecoveryDriverInventory.owner) }),
+            ("duplicate loaded driver", { $0.loadedKexts.append(DriverInventoryFixture.owner) }),
             ("active system extension", { $0.systemExtensions = "1 extension(s)\n* * TEAM org.vendor.driver [activated enabled]" }),
             ("unrecognized extension output", { $0.systemExtensions = "0 extension(s)\npartial output" }),
             ("unreadable extension inventory", { $0.systemExtensions = "" }),
-            ("partial framebuffer inventory", { $0.framebuffers.removeLast() }),
+            ("missing mapped framebuffer", { $0.framebuffers.remove(at: 2) }),
             ("extra framebuffer", { $0.framebuffers.append($0.framebuffers[0]) }),
             ("duplicate registry ID", { $0.framebuffers[1].registryID = $0.framebuffers[0].registryID }),
             ("duplicate path", { $0.framebuffers[1].path = $0.framebuffers[0].path }),
@@ -40,9 +41,8 @@ enum DriverInventoryFixture {
             ("unreadable owner", { $0.framebuffers[1].bundle = "" }),
             ("wrong publisher", { $0.framebuffers[1].publisher = "com.apple.unqualified" }),
             ("wrong kernel owner", { $0.framebuffers[1].kernelBundle = "org.vendor.driver" }),
-            ("unsupported host", { $0.host = "Mac99,1" }),
             ("unknown host", { $0.host = nil }),
-            ("unsupported build", { $0.build = "26A435" }),
+            ("unknown build", { $0.build = "" }),
             ("unsupported architecture", { $0.architecture = "x86_64" })
         ]
     }
@@ -63,9 +63,26 @@ final class RecoveryDriverInventoryTests: XCTestCase {
         XCTAssertEqual(RecoveryDriverInventory.evaluate(absent).drivers, .nativeOnly)
     }
 
+    func testOtherHostsBuildsNativeDriversAndSlotCounts() {
+        for count in [3, 4, 6] {
+            var evidence = DriverInventoryFixture.valid
+            evidence.host = "Mac14,13"
+            evidence.build = "another-build"
+            let owner = "com.apple.driver.AppleMobileDispT8112-DCP"
+            evidence.framebuffers = (0..<count).map {
+                .init(registryID: UInt64($0 + 1), path: "IOService:/frame-\($0)", index: UInt32($0),
+                      bundle: owner, kernelBundle: owner, publisher: owner)
+            }
+            evidence.loadedKexts = ["com.apple.kpi.iokit", owner]
+            XCTAssertEqual(RecoveryDriverInventory.evaluate(evidence).drivers, .nativeOnly)
+            evidence.framebuffers[0].bundle = "com.appleevil.driver.AppleMobileDispT8112-DCP"
+            XCTAssertEqual(RecoveryDriverInventory.evaluate(evidence).drivers, .unknown)
+        }
+    }
+
     func testLoadedKextParserRequiresCompleteRecognizedRows() throws {
         let row = " 3 221 0 0 0 com.apple.kpi.iokit (27.0.0) 25FECA3D-AD9D-3958-B633-A14EC36D3BE7 <>\n"
-        let driver = " 4 0 0xfffffe0007144000 0x7098 0x7098 \(RecoveryDriverInventory.owner) (1.0.0) 25FECA3D-AD9D-3958-B633-A14EC36D3BE7 <3>\n"
+        let driver = " 4 0 0xfffffe0007144000 0x7098 0x7098 \(DriverInventoryFixture.owner) (1.0.0) 25FECA3D-AD9D-3958-B633-A14EC36D3BE7 <3>\n"
         XCTAssertEqual(try RecoveryDriverInventory.parseLoadedKexts(row + driver), DriverInventoryFixture.valid.loadedKexts)
         for text in ["", "permission denied", row + "truncated", row + row,
                      row.replacingOccurrences(of: "<>", with: ""), row + "Index Refs Address Size"] {
