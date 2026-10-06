@@ -162,3 +162,11 @@ the test passed in isolation and the complete suite passed after the user
 confirmed a quiet desktop. The scoped transaction review found a missing durable
 anchor postcondition; that was fixed with pre-Show snapshot persistence and
 relaunch/inspection regressions before this live trial.
+
+The older running app cannot read v3 journals. After user approval, the resolved
+second-trial journal was preserved as
+`Recovery/recovery-EAF4A192-C31C-44A8-BF7D-0265042130C6.json`, and a fresh v2
+capture of the recovered desktop was verified as
+`3FE2CCE5-E5B1-4F4B-80B4-03208D81585C` in `current.json`. Capture/verify made no
+display or DDC writes. This restores journal compatibility without changing the
+existing snooze deadline or automation preferences.
