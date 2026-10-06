@@ -6,8 +6,49 @@ enum RecoveryState: String, Codable {
     var resolved: Bool { self == .verified || self == .restored }
 }
 
-struct RecoveryJournal: Codable {
+enum PublicMirrorRemovalState: String, Codable {
+    case captured, mirrored, restoring, restored, cancelled, needsAttention
+    // An exact pre-operation match retires an unchanged Hide, not a claim
+    // that this display has returned to the session's original coordinates.
+    var resolved: Bool { self == .restored || self == .cancelled }
+}
+
+struct PublicMirrorRemoval: Codable, Equatable, Identifiable {
+    let id: UUID
+    let targetUUID: String
+    let targetID: UInt32
+    let sourceUUID: String
+    let sourceID: UInt32
+    let beforeOperation: RecoverySnapshot
+    var state: PublicMirrorRemovalState
+    var failure: String?
+
+    init(target: RecoveryDisplay, source: RecoveryDisplay, beforeOperation: RecoverySnapshot,
+         state: PublicMirrorRemovalState = .captured) {
+        id = UUID()
+        targetUUID = target.uuid
+        targetID = target.id
+        sourceUUID = source.uuid
+        sourceID = source.id
+        self.beforeOperation = beforeOperation
+        self.state = state
+    }
+}
+
+struct PublicMirrorSession: Codable, Equatable {
     let version: Int
+    let baseline: RecoverySnapshot
+    var removals: [PublicMirrorRemoval]
+
+    init(baseline: RecoverySnapshot, removals: [PublicMirrorRemoval]) {
+        version = 1
+        self.baseline = baseline
+        self.removals = removals
+    }
+}
+
+struct RecoveryJournal: Codable {
+    var version: Int
     let id: UUID
     let createdAt: Date
     let snapshot: RecoverySnapshot
@@ -36,11 +77,17 @@ struct RecoveryJournal: Codable {
     // Public mirror intent only; original topology remains in snapshot.
     var mirrorTargetID: UInt32?
     var mirrorSourceID: UInt32?
+    // Versioned atomic multi-display public-mirror session. Absent in legacy
+    // journals and private-disable transactions.
+    var publicMirrorSession: PublicMirrorSession?
 
     init(snapshot: RecoverySnapshot, verifyOnly: Bool = false, timeout: TimeInterval? = nil,
-         disabledByUsID: UInt32? = nil, disableStaged: Bool? = nil, disableCommitStarted: Bool? = nil) {
+         disabledByUsID: UInt32? = nil, disableStaged: Bool? = nil, disableCommitStarted: Bool? = nil,
+         publicMirrorSession: PublicMirrorSession? = nil) {
         let now = Date()
-        version = 2; id = UUID(); createdAt = now; self.snapshot = snapshot
+        version = publicMirrorSession == nil ? 2 : 3
+        id = UUID(); createdAt = now; self.snapshot = snapshot
+        self.publicMirrorSession = publicMirrorSession
         self.disabledByUsID = disabledByUsID
         self.disableStaged = disableStaged
         self.disableCommitStarted = disableCommitStarted
@@ -50,7 +97,7 @@ struct RecoveryJournal: Codable {
     }
 
     func validate() throws {
-        guard version == 1 || version == 2 else { throw RecoveryError.unsafe("unsupported journal version \(version)") }
+        guard version == 1 || version == 2 || version == 3 else { throw RecoveryError.unsafe("unsupported journal version \(version)") }
         let displays = snapshot.displays
         guard !snapshot.bootSession.isEmpty, !snapshot.osBuild.isEmpty,
               snapshot.userID == getuid(), !displays.isEmpty, displays.count <= 128,
@@ -60,7 +107,56 @@ struct RecoveryJournal: Codable {
               createdAt.timeIntervalSince1970.isFinite else {
             throw RecoveryError.unsafe("invalid snapshot identity or display set")
         }
-        if mirrorTargetID != nil || mirrorSourceID != nil || state == .mirrored {
+        if version == 3 || publicMirrorSession != nil {
+            guard version == 3, let publicMirrorSession,
+                  publicMirrorSession.version == 1,
+                  publicMirrorSession.baseline == snapshot,
+                  !publicMirrorSession.removals.isEmpty,
+                  publicMirrorSession.removals.count <= 128,
+                  disabledByUsID == nil, disableAttempted == nil, disableStaged == nil,
+                  disableCommitStarted == nil, disableCompleted == nil, privateLease != true,
+                  !verifyOnly, deadline == nil, reenableAttempted == nil,
+                  Set(publicMirrorSession.removals.map(\.id)).count == publicMirrorSession.removals.count else {
+                throw RecoveryError.unsafe("invalid public mirror session")
+            }
+            var activeTargets = Set<String>()
+            for removal in publicMirrorSession.removals {
+                guard UUID(uuidString: removal.targetUUID) != nil,
+                      UUID(uuidString: removal.sourceUUID) != nil,
+                      removal.targetUUID == removal.targetUUID.lowercased(),
+                      removal.sourceUUID == removal.sourceUUID.lowercased(),
+                      removal.targetUUID != removal.sourceUUID,
+                      let target = displays.first(where: { $0.uuid == removal.targetUUID && $0.id == removal.targetID }),
+                      let source = displays.first(where: { $0.uuid == removal.sourceUUID && $0.id == removal.sourceID }),
+                      !target.builtin, target.active, source.active, target.mirrorUUID == nil,
+                      source.mirrorUUID == nil,
+                      removal.beforeOperation.displays.count == displays.count,
+                      Set(removal.beforeOperation.displays.map(\.uuid)) == Set(displays.map(\.uuid)) else {
+                    throw RecoveryError.unsafe("invalid public mirror removal identity")
+                }
+                try snapshot.validateRestoration(to: removal.beforeOperation)
+                guard let operationTarget = removal.beforeOperation.displays.first(where: { $0.uuid == removal.targetUUID }),
+                      operationTarget.mirrorUUID == nil, operationTarget.active,
+                      let operationSource = removal.beforeOperation.displays.first(where: { $0.uuid == removal.sourceUUID }),
+                      operationSource.active, operationSource.mirrorUUID == nil else {
+                    throw RecoveryError.unsafe("invalid public mirror pre-operation topology")
+                }
+                if !removal.state.resolved {
+                    guard activeTargets.insert(removal.targetUUID).inserted else {
+                        throw RecoveryError.unsafe("multiple unresolved removals for one target")
+                    }
+                }
+            }
+            if publicMirrorSession.removals.count == 1,
+               mirrorTargetID != nil || mirrorSourceID != nil {
+                guard mirrorTargetID == publicMirrorSession.removals[0].targetID,
+                      mirrorSourceID == publicMirrorSession.removals[0].sourceID else {
+                    throw RecoveryError.unsafe("public mirror compatibility fields mismatch")
+                }
+            } else if mirrorTargetID != nil || mirrorSourceID != nil {
+                throw RecoveryError.unsafe("multi-display session cannot have singleton mirror fields")
+            }
+        } else if mirrorTargetID != nil || mirrorSourceID != nil || state == .mirrored {
             guard let target = displays.first(where: { $0.id == mirrorTargetID }),
                   let source = displays.first(where: { $0.id == mirrorSourceID }),
                   target.id != source.id, !target.builtin, target.active, source.active,

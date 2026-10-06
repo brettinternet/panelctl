@@ -36,6 +36,43 @@ final class DisplayHideTests: XCTestCase {
         try FileManager.default.removeItem(at: directory)
     }
 
+    func testStatusReportsEveryRemovalAndAvoidsGuessingForSessionRecovery() throws {
+        let baseline = topology.snapshot
+        let firstHidden = try snapshot { displays in
+            displays[1]["mirrorUUID"] = self.sourceUUID
+            displays[1]["active"] = false
+        }
+        let bothHidden = try snapshot { displays in
+            displays[1]["mirrorUUID"] = self.sourceUUID
+            displays[1]["active"] = false
+            displays[2]["mirrorUUID"] = self.sourceUUID
+            displays[2]["active"] = false
+        }
+        let removals = [
+            PublicMirrorRemoval(target: baseline.displays[1], source: baseline.displays[0],
+                                beforeOperation: baseline, state: .mirrored),
+            PublicMirrorRemoval(target: baseline.displays[2], source: baseline.displays[0],
+                                beforeOperation: firstHidden, state: .mirrored)
+        ]
+        var journal = RecoveryJournal(snapshot: baseline,
+                                      publicMirrorSession: PublicMirrorSession(baseline: baseline, removals: removals))
+        journal.state = .mirrored
+        try save(journal)
+        topology.snapshot = bothHidden
+
+        let inspected = try controller().inspect()
+        XCTAssertEqual(inspected.removals.count, 2)
+        XCTAssertEqual(Set(inspected.removals.map(\.target.uuid)), Set([targetUUID, otherUUID]))
+        XCTAssertTrue(inspected.removals.allSatisfy { $0.isUnresolved && $0.canShow && $0.topologyVerified })
+        XCTAssertEqual(inspected.observations.filter(\.isJournalTarget).count, 2)
+        let status = DisplayHandoff.handoffStatus(from: inspected)
+        XCTAssertEqual(status.removals.count, 2)
+        XCTAssertEqual(Set(status.removals.map { $0.target.uuid }), Set([targetUUID, otherUUID]))
+        XCTAssertTrue(status.removals.allSatisfy(\.canShow))
+        XCTAssertTrue(status.recoveryCommand?.contains("recovery status") == true,
+                      "session-level guidance inspects the journal instead of guessing a target")
+    }
+
     func testHideAndShowUseSharedJournalAndFakePublicWriter() throws {
         let original = topology.snapshot
         let mirrored = try snapshot { displays in

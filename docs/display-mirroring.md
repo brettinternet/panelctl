@@ -7,14 +7,20 @@ DDC and monitor input are untouched.
 ```sh
 panelctl list
 panelctl mirror --display TARGET_UUID --source SOURCE_UUID --consent-mirror
-panelctl unmirror --consent-unmirror
+panelctl unmirror --display TARGET_UUID --consent-unmirror
+panelctl recovery status
+panelctl recovery verify --display TARGET_UUID
+panelctl recovery restore --display TARGET_UUID
 ```
+
+These selector examples document the multi-removal API; they do not authorize a
+live write. Each hardware write still needs fresh scoped approval.
 
 | Role | Requirements |
 | --- | --- |
 | Target | External, not built-in, online, active, awake, with a stable identity (main is permitted) |
 | Source | Explicit, distinct, online, active, awake |
-| Refused | Existing mirror group, ambiguous identity, changed inventory, unavailable original mode, unresolved journal |
+| Refused | External mirror group, ambiguous identity, changed inventory, unavailable original mode, recovery needing attention, source/target conflicts |
 
 Both commands accept `--journal <path>` (default
 `~/Library/Application Support/PanelCtl/Recovery/current.json`, shared with
@@ -41,20 +47,45 @@ unmirror: lock → restore captured modes, origins, mirroring, main display
   macOS may keep it main, move main to the source or report another display as
   main; that flag is exempted while the target/source relationship and all other
   existing checks remain strict. Modes and origins may change.
-- The journal stays unresolved while mirrored and blocks a new capture.
-  Resolved journals are archived by the next capture.
+- The versioned public-mirror session stores one immutable baseline from before
+  the first Hide and a separate, identified entry for each removal. Before each
+  new target changes, its exact pre-operation topology is saved durably.
+- `mirror` can append a target while all existing removals remain healthy and
+  the observed session still matches. Several targets may share one source or
+  use distinct sources. A target already removed, or a source serving another
+  removed target, cannot be reused in the opposite role. Recovery needing
+  attention blocks new removals.
+- `unmirror --display UUID` restores only that target and leaves every other
+  entry removed. Without a selector it works only when one target is unresolved;
+  multiple targets are ambiguous and refuse without writing. The final Show
+  strictly restores and verifies the immutable original arrangement, modes and
+  main display. Any mismatch keeps recovery. Failure/interruption marks only the
+  selected entry and preserves its siblings.
+- The journal stays unresolved while any target remains removed and blocks a
+  new capture. Resolved journals are archived by the next capture.
 
-## Recovery
+## Recovery and selectors
 
 ```sh
-panelctl recovery status  [--journal <path>]   # inspect, no writes
-panelctl recovery verify  [--journal <path>]   # compare, no writes
-panelctl recovery restore [--journal <path>]   # restore with the same checks
+panelctl recovery status [--journal <path>]                        # list every entry, no writes
+panelctl recovery verify --display TARGET_UUID [--journal <path>]   # verify entry/session, no Show
+panelctl recovery restore --display TARGET_UUID [--journal <path>]  # Show only that target
+panelctl back --display TARGET_UUID --consent-back [--journal <path>]
 ```
 
-Errors print the restore command with the actual journal path. Changed or
-missing identities, rotation, color profile or unavailable modes need manual
-correction first. Keep the journal. If restoration cannot be verified, turn off
+`recovery verify` and `recovery restore` may omit `--display` only when one
+unresolved removal makes the target unambiguous. For several removals the CLI
+refuses an omitted selector. `unmirror` and `back` accept an explicit target;
+use the exact UUID from `recovery status`. Verify does not Show an active
+removal. It confirms the current session or, after Show/system restoration,
+verifies that target against its baseline. Sibling entries are never replayed
+to recover the selected target. Legacy singleton journals retain their original
+commands.
+
+Errors print a restore command with the actual journal path and explicit target
+when needed. Changed or missing identities, rotation, color profile or
+unavailable modes need manual correction first. Keep every session entry. If
+restoration cannot be verified, turn off
 mirroring and drag the menu bar back to the original display in System Settings
 → Displays, then verify the captured layout. There is no restore on exit, no
 watchdog for an indefinite mirror, no global reset, and no protection from
@@ -139,6 +170,9 @@ unsupported. Every future topology write still requires fresh scoped approval.
 swift test --disable-sandbox --filter DisplayMirroringTests -Xswiftc -warnings-as-errors
 ```
 
-Synthetic inventories, real temporary journals and fake transactions cover
-refusals, journal ordering, session-only commit, pre-completion cancel,
-completion-error ownership, verification mismatch and exact-snapshot recovery.
+Synthetic inventories, private temporary journals and fake writers cover
+2/3-target Hide and Show permutations, shared/distinct sources, main-target
+removal, macOS rearrangement, second-Hide/Show interruption, wake self-restore,
+disconnection, selector ambiguity, status, legacy journals, strict verification
+and exact final-baseline recovery. New combinations remain offline-only and
+unqualified until separately approved live trials.

@@ -23,6 +23,8 @@ struct PanelCtlMain {
                 try DisplayMirroring.mirror(selector: selector, source: source, journalPath: journalPath)
             case .unmirror(let journalPath):
                 try DisplayMirroring.unmirror(journalPath: journalPath)
+            case .unmirrorTarget(let selector, let journalPath):
+                try DisplayMirroring.unmirror(selector: selector, journalPath: journalPath)
             case .away(let selector, let source, let input, let journalPath):
                 try DisplayHandoff.run(selector: selector, source: source, input: input, journalPath: journalPath)
             case .back(let selector, let input, let journalPath):
@@ -32,6 +34,12 @@ struct PanelCtlMain {
                     throw RecoveryError.unsafe("cannot locate watchdog executable")
                 }
                 try DisplayRecovery.run(action: action, timeout: timeout, journalPath: journalPath, executable: executable)
+            case .recoverySelected(let action, let timeout, let selector, let journalPath):
+                guard let executable = Bundle.main.executableURL else {
+                    throw RecoveryError.unsafe("cannot locate watchdog executable")
+                }
+                try DisplayRecovery.run(action: action, timeout: timeout, journalPath: journalPath,
+                                       displaySelector: selector, executable: executable)
             case .recoveryDisable(let selector, let timeout, let journalPath):
                 guard let executable = Bundle.main.executableURL else {
                     throw RecoveryError.unsafe("cannot locate watchdog executable")

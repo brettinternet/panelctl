@@ -62,13 +62,22 @@ Only awake, active external displays with a stable ID are eligible for removal;
 built-in displays remain ineligible, including when main. A main display has no
 default mirror source: choose another available, awake source before Hide. Other
 displays retain their existing default source, and saved configurations are not
-rewritten. When mirroring the main display, macOS decides where the menu bar,
-Dock, windows and Spaces go; the main display may stay, move to the source or
-move elsewhere. Observe the result rather than assuming which display becomes
-main. One [main-target CLI cycle](display-mirroring.md#observed-main-target-cycle-2026-10-05)
-qualified AW3423DW onto AW3425DW and exact restoration; other combinations
-and live app/script paths remain unqualified. Setup is frozen while
-a removal journal is unresolved or an operation/cleanup is pending.
+rewritten. Multiple eligible targets can be removed in one session, in any
+order and onto shared or distinct sources. A removed target cannot be another
+removal's source, and a display already serving as a source cannot itself be
+removed until those targets are shown. When macOS moves the main display or
+rearranges origins, PanelCtl records each pre-operation topology and preserves
+the original pre-first-Hide baseline. Setup for other displays stays editable;
+only the removed target or the display whose Hide/Show is in progress is frozen.
+A recovery-needed entry blocks new removals until recovery is resolved.
+
+When mirroring the main display, macOS decides where the menu bar, Dock, windows
+and Spaces go; the main display may stay, move to the source or move elsewhere.
+Observe the result rather than assuming which display becomes main. One
+[main-target CLI cycle](display-mirroring.md#observed-main-target-cycle-2026-10-05)
+qualified AW3423DW onto AW3425DW and exact restoration; it does not qualify
+multi-display sessions. New combinations, app/script multi-removal and source
+arrangements remain unqualified until separately approved live trials.
 
 - Hide captures recovery, switches the input if requested, then mirrors. Show
   restores and verifies the saved layout first, then switches back when a valid
@@ -160,24 +169,32 @@ idle, startup or wake path disconnects a display. See
 
 ## Coexistence and safety boundaries
 
-- Only one display can be removed from the desktop at a time. An unresolved
-  journal blocks another removal; it is never overwritten to start one.
-- Other independent displays can still use Black out. A verified PanelCtl
-  removal source can also be blacked out when another display remains visible;
-  its cover is copied to the removed target on the Mac's input. Displays mirrored
-  outside PanelCtl still refuse Black out, and removing onto a blacked-out source
-  is refused.
-- Removed and blacked-out displays do not count as visible for Black out's
-  last-visible check. Showing the removed display leaves its source's manual
-  cover in place; showing the source removes only its manual cover and leaves the
-  removal intact.
+- Healthy removals can coexist in one atomically saved session; each target has
+  its own write-ahead topology, tile/menu/script action and status. Show acts on
+  only the selected target; other removals remain hidden. Final Show verifies
+  the immutable pre-first-Hide arrangement, modes and main display exactly.
+  A recovery-needed entry blocks new Hides; entries are never discarded or
+  replayed to restore another target.
+- In every order, Hide requires another visible desktop to remain. Removed or
+  blacked-out displays never count as visible. A removed target cannot be used
+  as another target's source; a display serving as a source cannot be removed
+  until its dependent removals are shown; and removal onto a removed or
+  blacked-out source is refused. Black out applies the same survivor guard.
+- Independent displays can still use Black out. A verified PanelCtl source can
+  be blacked out only while another visible display remains; its cover also
+  covers the corresponding removed desktop on the Mac's input. Displays
+  mirrored outside PanelCtl still refuse Black out. Showing a removed target
+  leaves its source's manual cover in place; showing the source removes only
+  its manual cover and leaves other removals intact.
 - Only an explicit person or script action starts Hide. Idle, startup, login,
   wake and reconnection never initiate a new removal or input switch. Re-covering
   a Black out Hide within the same session preserves an existing explicit Hide.
 - **Restore** only removes automation blackout/dimming; it never shows a hidden
   display or switches inputs. **Show** acts on the selected hidden display.
-- A removed desktop can survive quitting. The quit prompt offers **Show and
-  Quit**; failed restoration keeps the app running rather than reporting success.
+- Several removed desktops can survive quitting. **Show and Quit** shows each
+  restorable target in turn and quits only after the last Show verifies; a
+  blocked or failed entry keeps the app open for recovery instead of reporting
+  success.
 - External CLI watchers and other display apps are not coordinated; stop them
   before topology work. No automatic logout, reboot or guessed identity is a
   recovery strategy.
@@ -195,18 +212,20 @@ idle, startup or wake path disconnects a display. See
 | Needs recovery | Read the reason and recovery details; Show only when checks permit it |
 
 Removal state comes from observations and the journal, not the saved switch.
-A journaled target remains visible as a tile even when disconnected. Reconnect
-the same hardware, then **Check Again**; PanelCtl does not rebind recovery to a
-different monitor. If macOS restores the captured layout itself, PanelCtl
-verifies it and resolves the journal without mirroring again.
+Every journaled target remains visible as its own tile even when disconnected.
+Reconnect that exact hardware, then **Check Again**; PanelCtl does not rebind
+recovery to another monitor. If macOS restores one display itself, PanelCtl
+resolves only the entry whose topology matches; other entries remain intact.
 
-A healthy removed display has recovery details on its selected tile, not an
-error banner. Problems appear on the affected tile, or above the tiles if no
-target can represent them. **Automation** and **General** show a recovery banner
-with **Review…**. The menu offers **Review Display Recovery…**; reopening the app
-from Finder focuses recovery even when the menu icon is hidden. Login launch
-only reports it. Custom CLI journals are not scanned: use
-`panelctl recovery restore --journal <path>` and the [recovery guide](display-recovery.md).
+A healthy removed display has its own recovery details on its selected tile,
+not an error banner. Problems appear on the affected tile, or above the tiles if
+no target can represent them. **Automation** and **General** show a recovery
+banner with **Review…**. The menu offers **Review Display Recovery…**; reopening
+the app from Finder focuses the affected recovery tile even when the menu icon
+is hidden. Login launch only reports recovery. Custom CLI journals are not
+scanned: use `panelctl recovery status --journal <path>` and an explicit
+`panelctl recovery restore --display <UUID> --journal <path>` selector; see the
+[recovery guide](display-recovery.md).
 
 ## Inline results and failures
 
@@ -260,14 +279,17 @@ helper omitted its final status report.
 
 ## Automation while hidden
 
-While a display is removed, automation pauses except for a source-only overlay:
-if the source is selected in Automation and automation is enabled and not
-snoozed, it may be blacked out. The removed target also looks black on the Mac's
-input; it is never itself an overlay target. Manual Hide can independently
-black out a verified PanelCtl source when another display remains visible. That
-session-only Hide owns the cover instead of Automation; its overlay is stopped
-while the source is hidden and cannot show or double-cover it. Showing the source
-removes only Hide's cover; any eligible source overlay can resume separately.
+While any display is removed, normal automation pauses. A bounded source-only
+overlay is allowed only when every currently visible journaled mirror source is
+selected in Automation or already covered by a manual Hide; an incomplete source
+selection does not partially cover the session. Shared sources receive one
+overlay, and distinct sources each receive one. Removed targets are never
+overlay targets. Manual Hide can independently black out a verified PanelCtl
+source when another display remains visible. That session-only Hide owns its
+cover instead of Automation; its overlay is stopped while that source is hidden
+and cannot show or double-cover it. Showing a source removes only its manual
+cover; eligible overlays for remaining sources can resume while other removals
+remain.
 
 | Event | Behavior |
 | --- | --- |

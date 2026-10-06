@@ -117,6 +117,7 @@ struct DisplayHideRequest: Equatable {
 
 struct DisplayShowRequest: Equatable {
     let status: DisplayHandoffStatus
+    let targetUUID: String
     let returnInput: UInt8?
     let returnInputWarning: String?
 }
@@ -213,6 +214,13 @@ enum DisplayHideOperation: Equatable {
     var isBusy: Bool {
         if case .idle = self { return false }
         return true
+    }
+
+    var targetUUID: String? {
+        switch self {
+        case .idle: return nil
+        case .hiding(let uuid), .showing(let uuid): return uuid
+        }
     }
 }
 

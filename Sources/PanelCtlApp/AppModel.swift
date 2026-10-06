@@ -151,8 +151,12 @@ final class AppModel: ObservableObject {
         hideDisplay: @escaping (DisplayHideIdentity, DisplayHideIdentity, UInt8?) throws -> DisplayInputOutcome = {
             try DisplayHideController().hide(target: $0, source: $1, awayInput: $2)
         },
-        showDisplay: @escaping (String, UInt8?) throws -> DisplayInputOutcome = {
-            try DisplayHideController().show(expectedJournalID: $0, returnInput: $1)
+        showDisplay: @escaping (String, UInt8?) throws -> DisplayInputOutcome = { key, input in
+            let pieces = key.split(separator: "|", maxSplits: 1).map(String.init)
+            if pieces.count == 2 {
+                return try DisplayHideController().show(expectedJournalID: pieces[0], targetUUID: pieces[1], returnInput: input)
+            }
+            return try DisplayHideController().show(expectedJournalID: key, returnInput: input)
         },
         checkDDCInput: @escaping (DisplayHideIdentity) throws -> DDCInputReading = {
             try DisplayHideController().checkInputAvailability(target: $0)
@@ -264,29 +268,23 @@ final class AppModel: ObservableObject {
             result.append(configuration)
             seen.insert(configuration.target.uuid.lowercased())
         }
-        if let target = handoffStatus?.target, !seen.contains(target.uuid.lowercased()) {
+        let removals = handoffStatus?.removals.filter(\.isUnresolved) ?? []
+        let recoveredTargets = removals.map(\.target) + (removals.isEmpty ? [handoffStatus?.target].compactMap { $0 } : [])
+        for target in recoveredTargets where !seen.contains(target.uuid.lowercased()) {
             let targetIdentity = DisplayIdentitySnapshot(
-                uuid: target.uuid,
-                id: target.id,
-                name: target.name,
-                vendor: target.vendor,
-                model: target.model,
-                serial: target.serial
+                uuid: target.uuid, id: target.id, name: target.name,
+                vendor: target.vendor, model: target.model, serial: target.serial
             )
-            let sourceIdentity = handoffStatus?.source.map {
-                DisplayIdentitySnapshot(
-                    uuid: $0.uuid,
-                    id: $0.id,
-                    name: $0.name,
-                    vendor: $0.vendor,
-                    model: $0.model,
-                    serial: $0.serial
-                )
+            let source = removals.first(where: { $0.target.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame })?.source
+                ?? (removals.isEmpty ? handoffStatus?.source : nil)
+            let sourceIdentity = source.map {
+                DisplayIdentitySnapshot(uuid: $0.uuid, id: $0.id, name: $0.name,
+                                        vendor: $0.vendor, model: $0.model, serial: $0.serial)
             }
             result.append(hidePreferences[target.uuid] ?? DisplayHideConfiguration(
-                target: targetIdentity,
-                source: sourceIdentity
+                target: targetIdentity, source: sourceIdentity
             ))
+            seen.insert(target.uuid.lowercased())
         }
         return result
     }
@@ -296,51 +294,55 @@ final class AppModel: ObservableObject {
             protectionQuiescencePending || protectionQuiescenceFailure != nil || hideOperation.isBusy
     }
 
-    /// The currently observed source identity for a verified, showable PanelCtl
-    /// removal. Sleep does not invalidate this identity for cover reconciliation.
-    private var journalVerifiedHiddenMirrorSource: DisplayRecord? {
+    /// Exact source identities in the verified session. Sleep does not
+    /// invalidate them for cover reconciliation.
+    private var journalVerifiedHiddenMirrorSources: [DisplayRecord] {
         guard handoffInspectionFailure == nil,
-              let status = handoffStatus,
-              status.state == .hidden,
-              status.canShow,
-              status.mirrorTopologyVerified,
-              status.journalID != nil,
-              let source = status.source else { return nil }
-        let matches = activeDisplays.filter {
-            $0.uuid?.caseInsensitiveCompare(source.uuid) == .orderedSame
+              let status = handoffStatus, status.state == .hidden,
+              status.canShow, status.mirrorTopologyVerified, status.journalID != nil else { return [] }
+        let sources = status.removals.filter(\.isUnresolved).map(\.source)
+        let requested = sources.isEmpty ? status.source.map { [$0] } ?? [] : sources
+        var seen = Set<String>()
+        var result: [DisplayRecord] = []
+        for source in requested where seen.insert(source.uuid.lowercased()).inserted {
+            let matches = activeDisplays.filter { $0.uuid?.caseInsensitiveCompare(source.uuid) == .orderedSame }
+            guard matches.count == 1, let display = matches.first,
+                  display.id == source.id, display.vendor == source.vendor,
+                  display.model == source.model, display.serial == source.serial,
+                  display.online, display.active else { return [] }
+            result.append(display)
         }
-        guard matches.count == 1, let display = matches.first,
-              display.id == source.id,
-              display.vendor == source.vendor,
-              display.model == source.model,
-              display.serial == source.serial,
-              display.online, display.active else { return nil }
-        return display
+        return result
     }
 
-    var verifiedHiddenMirrorSource: DisplayRecord? {
-        guard !protectionQuiescencePending,
-              protectionQuiescenceFailure == nil,
-              !hideOperation.isBusy,
-              !displayLifecycleTransitioning,
-              let source = journalVerifiedHiddenMirrorSource,
-              !source.asleep else { return nil }
-        return source
+    private var journalVerifiedHiddenMirrorSource: DisplayRecord? {
+        journalVerifiedHiddenMirrorSources.first
     }
 
-    var selectedHiddenMirrorSource: DisplayRecord? {
-        guard let source = verifiedHiddenMirrorSource,
-              let uuid = source.uuid,
-              !isBlackoutHidden(uuid),
-              preferences.allDisplays || preferences.selectedDisplayUUIDs.contains(where: {
-                  $0.caseInsensitiveCompare(uuid) == .orderedSame
-              }) else { return nil }
-        return source
+    var verifiedHiddenMirrorSources: [DisplayRecord] {
+        guard !protectionQuiescencePending, protectionQuiescenceFailure == nil,
+              !hideOperation.isBusy, !displayLifecycleTransitioning else { return [] }
+        return journalVerifiedHiddenMirrorSources.filter { !$0.asleep }
     }
+
+    var verifiedHiddenMirrorSource: DisplayRecord? { verifiedHiddenMirrorSources.first }
+
+    var selectedHiddenMirrorSources: [DisplayRecord] {
+        let sources = verifiedHiddenMirrorSources
+        guard !sources.isEmpty, sources.count == journalVerifiedHiddenMirrorSources.count,
+              sources.allSatisfy({ source in
+                  guard let uuid = source.uuid else { return false }
+                  return isBlackoutHidden(uuid) || preferences.allDisplays ||
+                      preferences.selectedDisplayUUIDs.contains(where: { $0.caseInsensitiveCompare(uuid) == .orderedSame })
+              }) else { return [] }
+        return sources.filter { !isBlackoutHidden($0.uuid) }
+    }
+
+    var selectedHiddenMirrorSource: DisplayRecord? { selectedHiddenMirrorSources.first }
 
     var hiddenMirrorOverlayPolicyEligible: Bool {
         protectionPausedForDisplayRecovery && preferences.isEnabled &&
-            snoozedUntil == nil && selectedHiddenMirrorSource != nil
+            snoozedUntil == nil && !selectedHiddenMirrorSources.isEmpty
     }
 
     var effectiveBlackoutMode: BlackoutMode {
@@ -358,29 +360,29 @@ final class AppModel: ObservableObject {
         if displayLifecycleTransitioning {
             return "Automation suspended while desktop is hidden · display transition in progress"
         }
-        if hiddenMirrorOverlayPolicyEligible, let source = selectedHiddenMirrorSource {
-            let name = source.name ?? "Display \(source.id)"
+        if hiddenMirrorOverlayPolicyEligible, !selectedHiddenMirrorSources.isEmpty {
+            let names = selectedHiddenMirrorSources.map { $0.name ?? "Display \($0.id)" }.joined(separator: ", ")
             switch runtimeState {
             case .blackedOut:
-                return "Desktop hidden · \(name) blacked out by automation"
+                return "Desktop hidden · \(names) blacked out by automation"
             case .starting:
-                return "Desktop hidden · automation starting on \(name)"
+                return "Desktop hidden · automation starting on \(names)"
             case .waiting:
-                return "Desktop hidden · automation watching \(name)"
+                return "Desktop hidden · automation watching \(names)"
             case .waitingForInput:
-                return "Desktop hidden · automation waiting for fresh activity on \(name)"
+                return "Desktop hidden · automation waiting for fresh activity on \(names)"
             case .waitingForPlayback:
-                return "Desktop hidden · automation paused for media or camera activity on \(name)"
+                return "Desktop hidden · automation paused for media or camera activity on \(names)"
             case .sleeping:
                 return "Desktop hidden · automation paused while displays sleep"
             case .stopping:
-                return "Desktop hidden · automation is stopping on \(name)"
+                return "Desktop hidden · automation is stopping on \(names)"
             case .waitingForDisplays(let message):
                 return "Desktop hidden · automation waiting for displays: \(message)"
             case .failed(let message):
-                return "Desktop hidden · automation failed on \(name): \(message)"
+                return "Desktop hidden · automation failed on \(names): \(message)"
             case .disabled:
-                return "Desktop hidden · automation is off on \(name)"
+                return "Desktop hidden · automation is off on \(names)"
             case .snoozed:
                 return "Automation paused while desktop is hidden"
             }
@@ -401,8 +403,21 @@ final class AppModel: ObservableObject {
 
     var hideConfigurationFrozen: Bool {
         disconnectLease != nil || disconnectStatus?.resolved == false ||
-        handoffStatus?.hasUnresolvedJournal == true || handoffInspectionFailure != nil ||
+            handoffStatus?.hasUnresolvedJournal == true || handoffInspectionFailure != nil ||
             hideOperation.isBusy || displayLifecycleTransitioning
+    }
+
+    func hideConfigurationFrozen(for targetUUID: String) -> Bool {
+        disconnectLease != nil || disconnectStatus?.resolved == false ||
+            displayLifecycleTransitioning ||
+            (hideOperation.targetUUID?.caseInsensitiveCompare(targetUUID) == .orderedSame) ||
+            isJournalTarget(targetUUID)
+    }
+
+    func isJournalTarget(_ uuid: String?) -> Bool {
+        guard let uuid, let status = handoffStatus, status.hasUnresolvedJournal else { return false }
+        return status.removal(for: uuid) != nil ||
+            status.target?.uuid.caseInsensitiveCompare(uuid) == .orderedSame
     }
 
     var unavailableSelectedDisplayUUIDs: [String] {
@@ -429,9 +444,9 @@ final class AppModel: ObservableObject {
     }
 
     /// The source-only overlay counts displays Hide blacked out as covered.
-    private func hiddenMirrorArguments(for source: DisplayRecord) throws -> [String]? {
+    private func hiddenMirrorArguments(for sources: [DisplayRecord]) throws -> [String]? {
         try preferences.hiddenMirrorOverlayArguments(
-            for: source,
+            for: sources,
             hiddenDisplays: activeDisplays.filter { isBlackoutHidden($0.uuid) }
         )
     }
@@ -443,8 +458,11 @@ final class AppModel: ObservableObject {
     func sourceChoices(for configuration: DisplayHideConfiguration) -> [DisplayRecord] {
         guard !configuration.target.uuid.isEmpty else { return [] }
         return activeDisplays.filter { display in
-            display.online && display.active && !display.asleep &&
-                display.uuid.map { $0.caseInsensitiveCompare(configuration.target.uuid) != .orderedSame } == true
+            guard let uuid = display.uuid else { return false }
+            return display.online && display.active && !display.asleep &&
+                uuid.caseInsensitiveCompare(configuration.target.uuid) != .orderedSame &&
+                !isRemovedDisplay(uuid) && !isBlackoutHidden(uuid) &&
+                (!isDisplayMirrored(display.id) || journalVerifiedHiddenMirrorSources.contains(where: { $0.id == display.id }))
         }
     }
 
@@ -462,8 +480,8 @@ final class AppModel: ObservableObject {
         if status.state == .busy {
             return .recoveryBlocksHide("Another display operation is running. Try again in a moment.")
         }
-        if status.hasUnresolvedJournal {
-            return .recoveryBlocksHide("Only one display can be removed at a time. Show the hidden display or finish its recovery first.")
+        if status.hasUnresolvedJournal, status.state != .hidden {
+            return .recoveryBlocksHide("Display recovery needs attention. Resolve it before starting another removal.")
         }
         if !allowingCurrentOperation, hideOperation.isBusy { return .actionInProgress }
         if displayLifecycleTransitioning { return .sleeping }
@@ -480,6 +498,12 @@ final class AppModel: ObservableObject {
         }
         if isBlackoutHidden(target.uuid) {
             return .unavailable("This display is hidden. Show it first.")
+        }
+        if isRemovedDisplay(target.uuid) {
+            return .unavailable("PanelCtl removed this display from the desktop. Show it first.")
+        }
+        if isMirrorSource(target.uuid) {
+            return .unavailable("Another removed display mirrors onto this display. Show that display first.")
         }
         if let reason = removalIneligibleReason(for: target) {
             return .unavailable(reason)
@@ -498,6 +522,18 @@ final class AppModel: ObservableObject {
         }
         guard !isBlackoutHidden(source.uuid) else {
             return .unavailable("The display it mirrors onto is hidden. Show it first.")
+        }
+        guard !isRemovedDisplay(source.uuid) else {
+            return .unavailable("The display it mirrors onto is removed. Show it first.")
+        }
+        if isDisplayMirrored(source.id), !journalVerifiedHiddenMirrorSources.contains(where: { $0.id == source.id }) {
+            return .unavailable("macOS is already mirroring this display. Choose a separate display as the mirror source.")
+        }
+        let visibleAfterHide = activeDisplays.filter { other in
+            other.id != target.id && !isRemovedDisplay(other.uuid) && !isBlackoutHidden(other.uuid)
+        }
+        guard !visibleAfterHide.isEmpty else {
+            return .unavailable("PanelCtl keeps at least one visible display, so it won’t remove this one.")
         }
         guard target.id != source.id else {
             return .unavailable("Choose a different display to mirror onto.")
@@ -536,6 +572,19 @@ final class AppModel: ObservableObject {
         uuid.map { blackoutHiddenDisplays[$0.lowercased()] != nil } ?? false
     }
 
+    func isRemovedDisplay(_ uuid: String?) -> Bool {
+        uuid.flatMap { handoffStatus?.removal(for: $0) } != nil
+    }
+
+    private func isMirrorSource(_ uuid: String?) -> Bool {
+        guard let uuid else { return false }
+        if let removals = handoffStatus?.removals, !removals.isEmpty {
+            return removals.contains { $0.isUnresolved && $0.source.uuid.caseInsensitiveCompare(uuid) == .orderedSame }
+        }
+        return handoffStatus?.source?.uuid.caseInsensitiveCompare(uuid) == .orderedSame &&
+            handoffStatus?.hasUnresolvedJournal == true
+    }
+
     /// Why Hide can't black out this display right now, or nil when it can.
     func blackoutReadiness(for display: DisplayRecord) -> DisplayHideError? {
         if hideOperation.isBusy { return .actionInProgress }
@@ -552,23 +601,18 @@ final class AppModel: ObservableObject {
               display.bounds.width > 0, display.bounds.height > 0 else {
             return .unavailable("Wake this display to hide it.")
         }
-        let journal = handoffStatus?.hasUnresolvedJournal == true ? handoffStatus : nil
-        if journal?.target?.uuid.caseInsensitiveCompare(uuid) == .orderedSame {
+        if isRemovedDisplay(uuid) {
             return .unavailable("PanelCtl removed this display from the desktop. Show it first.")
         }
-        if isDisplayMirrored(display.id), journalVerifiedHiddenMirrorSource?.id != display.id {
-            if journal?.source?.uuid.caseInsensitiveCompare(uuid) == .orderedSame {
-                return .unavailable("PanelCtl is mirroring \(journal?.target?.name ?? "another display") onto this display. Show it first.")
+        let verifiedSource = journalVerifiedHiddenMirrorSources.contains { $0.id == display.id }
+        if isDisplayMirrored(display.id), !verifiedSource {
+            if isMirrorSource(uuid) {
+                return .unavailable("PanelCtl’s removal source needs recovery. Review display recovery before covering it.")
             }
             return .unavailable("macOS is mirroring this display. Turn off mirroring in System Settings \u{2192} Displays first.")
         }
-        let anotherStaysVisible = displays.contains { other in
-            guard other.id != display.id, other.active, other.online, !other.asleep,
-                  other.bounds.width > 0, other.bounds.height > 0,
-                  !isBlackoutHidden(other.uuid) else { return false }
-            // A display removed from the desktop shows the other computer.
-            guard let target = journal?.target else { return true }
-            return other.uuid?.caseInsensitiveCompare(target.uuid) != .orderedSame
+        let anotherStaysVisible = activeDisplays.contains { other in
+            other.id != display.id && !other.asleep && !isRemovedDisplay(other.uuid) && !isBlackoutHidden(other.uuid)
         }
         guard anotherStaysVisible else {
             return .unavailable("PanelCtl keeps at least one display visible, so it won\u{2019}t hide this one.")
@@ -615,15 +659,18 @@ final class AppModel: ObservableObject {
         var shown: [String: String] = [:]
         if !blackoutHiddenDisplays.isEmpty, !displayLifecycleTransitioning {
             for (id, key) in connectedHiddenDisplays
-            where isDisplayMirrored(id) && journalVerifiedHiddenMirrorSource?.id != id {
+            where isDisplayMirrored(id) && !journalVerifiedHiddenMirrorSources.contains(where: { $0.id == id }) {
                 shown[key] = "Shown because macOS started mirroring it."
             }
             let stillHidden = Set(blackoutHiddenDisplays.keys).subtracting(shown.keys)
-            let removedTargetUUID = handoffStatus?.hasUnresolvedJournal == true
-                ? handoffStatus?.target?.uuid.lowercased() : nil
-            if !stillHidden.isEmpty, !displays.contains(where: {
-                $0.online && !stillHidden.contains($0.uuid?.lowercased() ?? "") &&
-                    (removedTargetUUID == nil || $0.uuid?.lowercased() != removedTargetUUID)
+            var removedTargetUUIDs = Set(handoffStatus?.removals.filter(\.isUnresolved).map { $0.target.uuid.lowercased() } ?? [])
+            if removedTargetUUIDs.isEmpty, handoffStatus?.hasUnresolvedJournal == true,
+               let targetUUID = handoffStatus?.target?.uuid.lowercased() {
+                removedTargetUUIDs.insert(targetUUID)
+            }
+            if !stillHidden.isEmpty, !activeDisplays.contains(where: {
+                !$0.asleep && !stillHidden.contains($0.uuid?.lowercased() ?? "") &&
+                    !removedTargetUUIDs.contains($0.uuid?.lowercased() ?? "")
             }) {
                 for key in stillHidden { shown[key] = "Shown because no other display was connected." }
             }
@@ -663,7 +710,7 @@ final class AppModel: ObservableObject {
             return
         }
         let identity = DisplayIdentitySnapshot(display)
-        if journalVerifiedHiddenMirrorSource?.id == display.id,
+        if journalVerifiedHiddenMirrorSources.contains(where: { $0.id == display.id }),
            service.hasManagedProcess || protectionQuiescencePending || hiddenMirrorOverlayPolicyEligible {
             hideOperation = .hiding(targetUUID)
             onStatusChange?()
@@ -748,12 +795,15 @@ final class AppModel: ObservableObject {
         hideDisplayConfigurations.first { $0.target.uuid.caseInsensitiveCompare(uuid) == .orderedSame }
     }
 
-    /// Displays in arrangement order, plus a journaled display that is no longer connected.
+    /// Displays in arrangement order, plus every journaled display that is no longer connected.
     var displayTiles: [DisplayTile] {
-        let journalTarget = handoffStatus?.hasUnresolvedJournal == true ? handoffStatus?.target : nil
+        let removals = handoffStatus?.removals.filter(\.isUnresolved) ?? []
+        let journalTargets = removals.map(\.target) +
+            (removals.isEmpty && handoffStatus?.hasUnresolvedJournal == true
+                ? [handoffStatus?.target].compactMap { $0 } : [])
         func isJournalTarget(_ display: DisplayRecord) -> Bool {
-            guard let journalTarget, let uuid = display.uuid else { return false }
-            return uuid.caseInsensitiveCompare(journalTarget.uuid) == .orderedSame
+            guard let uuid = display.uuid else { return false }
+            return journalTargets.contains { $0.uuid.caseInsensitiveCompare(uuid) == .orderedSame }
         }
         let present = displays
             .filter {
@@ -775,12 +825,11 @@ final class AppModel: ObservableObject {
                 display: display
             )
         }
-        if let journalTarget, !tiles.contains(where: { $0.id == journalTarget.uuid.lowercased() }) {
+        for journalTarget in journalTargets where !tiles.contains(where: { $0.id == journalTarget.uuid.lowercased() }) {
             tiles.append(DisplayTile(
-                id: journalTarget.uuid.lowercased(),
-                uuid: journalTarget.uuid,
+                id: journalTarget.uuid.lowercased(), uuid: journalTarget.uuid,
                 name: journalTarget.name,
-                status: tileStatus(for: nil, isJournalTarget: true),
+                status: tileStatus(for: nil, isJournalTarget: true, journalTargetUUID: journalTarget.uuid),
                 display: nil
             ))
         }
@@ -811,15 +860,19 @@ final class AppModel: ObservableObject {
     /// The tile with this ID, else the display that is hidden or needs recovery, else the first.
     func tile(selecting id: String?) -> DisplayTile? {
         let tiles = displayTiles
-        let journalTargetID = handoffStatus?.hasUnresolvedJournal == true
-            ? handoffStatus?.target?.uuid.lowercased() : nil
-        return tiles.first { $0.id == id } ?? tiles.first { $0.id == journalTargetID } ?? tiles.first
+        let journalTargetIDs = handoffStatus?.removals.filter(\.isUnresolved).map { $0.target.uuid.lowercased() } ?? []
+        let fallbackTarget = handoffStatus?.hasUnresolvedJournal == true ? handoffStatus?.target?.uuid.lowercased() : nil
+        return tiles.first { $0.id == id } ?? tiles.first { journalTargetIDs.contains($0.id) } ??
+            tiles.first { $0.id == fallbackTarget } ?? tiles.first
     }
 
     /// Whether PanelCtl's hidden display can be shown: its saved layout is restorable.
     var canShowHiddenDisplay: Bool {
-        guard handoffInspectionFailure == nil, let status = handoffStatus else { return false }
-        return (status.state == .hidden || status.state == .recovery) && status.canShow
+        guard handoffInspectionFailure == nil, let status = handoffStatus,
+              status.state == .hidden || status.state == .recovery else { return false }
+        let unresolved = status.removals.filter(\.isUnresolved)
+        if unresolved.isEmpty { return status.canShow }
+        return unresolved.allSatisfy(\.canShow)
     }
 
     private static let automationStopping = DisplayHideError.recoveryBlocksAction(
@@ -843,7 +896,7 @@ final class AppModel: ObservableObject {
                 tile.action = .show
                 return
             }
-            guard canShowHiddenDisplay else { return }
+            guard let uuid = tile.uuid, let removal = handoffStatus?.removal(for: uuid), removal.canShow else { return }
             tile.action = .show
             tile.actionBlocker = showWait?.localizedDescription
         case .on, .blackedOut, .asleep, .mirrored, .unavailable:
@@ -858,8 +911,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func tileStatus(for display: DisplayRecord?, isJournalTarget: Bool) -> DisplayTile.Status {
-        let uuid = isJournalTarget ? handoffStatus?.target?.uuid : display?.uuid
+    private func tileStatus(for display: DisplayRecord?, isJournalTarget: Bool,
+                            journalTargetUUID: String? = nil) -> DisplayTile.Status {
+        let uuid = display?.uuid ?? (isJournalTarget ? journalTargetUUID ?? handoffStatus?.target?.uuid : nil)
         switch hideOperation {
         case .hiding(let target) where uuid?.caseInsensitiveCompare(target) == .orderedSame:
             return .hiding
@@ -869,19 +923,18 @@ final class AppModel: ObservableObject {
             break
         }
         if isBlackoutHidden(uuid) { return .hidden }
-        if isJournalTarget, let status = handoffStatus {
-            switch status.state {
-            case .busy: return .busy
-            case .hidden where status.canShow: return .hidden
-            default: return .needsRecovery
-            }
+        if isJournalTarget, let uuid, let removal = handoffStatus?.removal(for: uuid) {
+            if removal.state == "mirrored", removal.topologyVerified, removal.canShow { return .hidden }
+            return .needsRecovery
         }
+        if isJournalTarget, handoffStatus?.state == .busy { return .busy }
+        if isJournalTarget { return .needsRecovery }
         guard let display, display.active, display.online else { return .unavailable }
         if display.asleep { return .asleep }
         if blackedOutDisplayIDs.contains(display.id) { return .blackedOut }
         // The source of PanelCtl's mirror is still a normal display.
-        let isJournalSource = handoffStatus?.hasUnresolvedJournal == true &&
-            display.uuid.map { handoffStatus?.source?.uuid.caseInsensitiveCompare($0) == .orderedSame } == true
+        let isJournalSource = display.uuid.map { isMirrorSource($0) } == true &&
+            journalVerifiedHiddenMirrorSources.contains(where: { $0.id == display.id })
         if isDisplayMirrored(display.id), !isJournalSource { return .mirrored }
         return .on
     }
@@ -912,8 +965,13 @@ final class AppModel: ObservableObject {
 
     /// What Show will do with the monitor input of the journaled display.
     var showReturnInputNote: String? {
-        guard let status = handoffStatus, status.hasUnresolvedJournal else { return nil }
-        let input = configuredReturnInput(for: status)
+        showReturnInputNote(for: handoffStatus?.target?.uuid)
+    }
+
+    func showReturnInputNote(for targetUUID: String?) -> String? {
+        guard let status = handoffStatus, status.hasUnresolvedJournal,
+              let removalStatus = targetUUID.flatMap({ status.removal(for: $0) }) else { return nil }
+        let input = configuredReturnInput(for: removalStatus.target)
         if let warning = input.warning {
             return "Show won\u{2019}t switch the monitor input: \(warning)"
         }
@@ -922,7 +980,8 @@ final class AppModel: ObservableObject {
 
     /// Turns Remove from desktop on or off for a display.
     func setHideEnabled(_ enabled: Bool, for display: DisplayRecord) {
-        guard !hideConfigurationFrozen,
+        guard let targetUUID = display.uuid,
+              !hideConfigurationFrozen(for: targetUUID),
               isEligibleHideTarget(display),
               let uuid = display.uuid else { return }
         var updated = hidePreferences
@@ -940,7 +999,7 @@ final class AppModel: ObservableObject {
     }
 
     func setHideSource(_ sourceUUID: String?, for targetUUID: String) {
-        guard !hideConfigurationFrozen,
+        guard !hideConfigurationFrozen(for: targetUUID),
               let target = displays.first(where: {
                   $0.uuid?.caseInsensitiveCompare(targetUUID) == .orderedSame
               }),
@@ -949,9 +1008,11 @@ final class AppModel: ObservableObject {
         var configuration = updated[uuid] ?? DisplayHideConfiguration(target: DisplayIdentitySnapshot(target))
         guard matches(configuration.target, target) else { return }
         if let sourceUUID {
-            guard let source = activeDisplays.first(where: {
-                $0.uuid?.caseInsensitiveCompare(sourceUUID) == .orderedSame &&
-                    $0.id != target.id && !$0.asleep
+            guard let source = activeDisplays.first(where: { candidate in
+                candidate.uuid?.caseInsensitiveCompare(sourceUUID) == .orderedSame &&
+                    candidate.id != target.id && !candidate.asleep && !isRemovedDisplay(candidate.uuid) &&
+                    !isBlackoutHidden(candidate.uuid) &&
+                    (!isDisplayMirrored(candidate.id) || journalVerifiedHiddenMirrorSources.contains(where: { $0.id == candidate.id }))
             }) else { return }
             configuration.source = DisplayIdentitySnapshot(source)
         } else {
@@ -965,7 +1026,7 @@ final class AppModel: ObservableObject {
     /// Sets the input the monitor switches to on Hide. Nil switches nothing,
     /// on Show too; the input Show switches back to is detected, not chosen.
     func setHideSwitchInput(_ value: UInt8?, for targetUUID: String) {
-        guard !hideConfigurationFrozen,
+        guard !hideConfigurationFrozen(for: targetUUID),
               let target = displays.first(where: { $0.uuid?.caseInsensitiveCompare(targetUUID) == .orderedSame }),
               let uuid = target.uuid else { return }
         var updated = hidePreferences
@@ -1008,7 +1069,7 @@ final class AppModel: ObservableObject {
     /// keeps it as the input Show switches back to.
     func detectMacInput(for targetUUID: String) {
         let key = targetUUID.lowercased()
-        guard !hideConfigurationFrozen,
+        guard !hideConfigurationFrozen(for: targetUUID),
               let configuration = hidePreferences[targetUUID], configuration.enabled,
               let display = matchingDisplay(configuration.target),
               isEligibleHideTarget(display), !isDisplayMirrored(display.id) else { return }
@@ -1054,12 +1115,14 @@ final class AppModel: ObservableObject {
 
     /// Every display with a UUID, as the Displays tab shows it.
     var controlDisplayStatuses: [AppControlDisplayStatus] {
-        let recoveryNeeded = displayRecoveryProblem != nil
         return displayTiles.compactMap { tile in
             guard let uuid = tile.uuid else { return nil }
+            let state = controlState(of: tile)
+            let recoveryNeeded = ["recovery-needed", "unsupported-recovery", "unknown"].contains(state) ||
+                handoffStatus?.removal(for: uuid)?.canShow == false
             return AppControlDisplayStatus(
                 targetUUID: uuid,
-                observedState: controlState(of: tile),
+                observedState: state,
                 operation: tile.status == .hiding ? "hiding" : tile.status == .showing ? "showing" : "idle",
                 recoveryNeeded: recoveryNeeded,
                 lastInputOutcome: displayResults[tile.id]?.inputOutcome
@@ -1075,7 +1138,11 @@ final class AppModel: ObservableObject {
         }) {
             switch observation.state {
             case .separate: return "separate"
-            case .hiddenByPanelCtl: return "hidden-by-panelctl"
+            case .hiddenByPanelCtl:
+                if let uuid = tile.uuid, let removal = handoffStatus?.removal(for: uuid), !removal.canShow {
+                    return "recovery-needed"
+                }
+                return "hidden-by-panelctl"
             case .unavailable: return "unavailable"
             case .mirroredExternally: return "mirrored-externally"
             case .recoveryNeeded: return "recovery-needed"
@@ -1222,7 +1289,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func makeShowRequest() throws -> DisplayShowRequest {
+    func makeShowRequest(targetUUID: String? = nil) throws -> DisplayShowRequest {
         if let showWait { throw showWait }
         refreshHandoffStatus()
         guard handoffInspectionFailure == nil,
@@ -1232,13 +1299,18 @@ final class AppModel: ObservableObject {
                 handoffInspectionFailure ?? handoffStatus?.reason ?? "No display is hidden by PanelCtl."
             )
         }
-        guard handoffStatus.canShow else {
+        guard let target = targetUUID ?? handoffStatus.target?.uuid,
+              let removal = handoffStatus.removal(for: target) else {
+            throw DisplayHideError.recoveryBlocksAction("This display isn’t hidden by PanelCtl.")
+        }
+        guard removal.canShow else {
             throw DisplayHideError.recoveryBlocksAction(
-                handoffStatus.reason ?? "PanelCtl can\u{2019}t restore the saved layout right now."
+                removal.reason ?? "PanelCtl can’t restore this display right now."
             )
         }
-        let input = configuredReturnInput(for: handoffStatus)
-        return DisplayShowRequest(status: handoffStatus, returnInput: input.value, returnInputWarning: input.warning)
+        let input = configuredReturnInput(for: removal.target)
+        return DisplayShowRequest(status: handoffStatus, targetUUID: removal.target.uuid,
+                                  returnInput: input.value, returnInputWarning: input.warning)
     }
 
     /// Shows a hidden display right away. Refuses when the journal belongs to
@@ -1250,8 +1322,8 @@ final class AppModel: ObservableObject {
         }
         let request: DisplayShowRequest
         do {
-            request = try makeShowRequest()
-            guard request.status.target?.uuid.caseInsensitiveCompare(targetUUID) == .orderedSame else {
+            request = try makeShowRequest(targetUUID: targetUUID)
+            guard request.targetUUID.caseInsensitiveCompare(targetUUID) == .orderedSame else {
                 throw DisplayHideError.recoveryBlocksAction("This display isn\u{2019}t hidden by PanelCtl.")
             }
         } catch {
@@ -1298,9 +1370,7 @@ final class AppModel: ObservableObject {
         handoffStatus = inspectHandoff()
         handoffInspectionFailure = handoffStatus?.inspectionFailure
         let isUnresolved = handoffStatus?.hasUnresolvedJournal == true || handoffInspectionFailure != nil
-        let enteredHidden = handoffStatus?.state == .hidden &&
-            (previous?.state != .hidden || previous?.journalID != handoffStatus?.journalID ||
-             previous?.source?.uuid != handoffStatus?.source?.uuid)
+        let enteredHidden = handoffStatus?.state == .hidden && !wasUnresolved
         if enteredHidden {
             manualActivityDate = now()
             protectionRearmRequired = true
@@ -1399,24 +1469,24 @@ final class AppModel: ObservableObject {
     }
 
     func blackoutNow() throws {
-        let hiddenOverlaySource: DisplayRecord?
+        let hiddenOverlaySources: [DisplayRecord]?
         if protectionPausedForDisplayRecovery {
-            hiddenOverlaySource = selectedHiddenMirrorSource
-            guard hiddenOverlaySource != nil else {
+            hiddenOverlaySources = selectedHiddenMirrorSources
+            guard hiddenOverlaySources?.isEmpty == false else {
                 throw DisplayHideError.recoveryBlocksAction(
                     "Black Out Now is unavailable during display recovery unless the shared journal verifies Hidden by PanelCtl and its exact mirror source is in the idle display list. Show or review recovery; no display change was requested."
                 )
             }
         } else {
-            hiddenOverlaySource = nil
+            hiddenOverlaySources = nil
         }
         let wasSnoozed = cancelSnooze()
         displays = displayProvider()
         let arguments: [String]
         do {
-            if let hiddenOverlaySource {
-                guard let overlayArguments = try hiddenMirrorArguments(for: hiddenOverlaySource) else {
-                    throw DisplayHideError.recoveryBlocksAction("Add the journaled mirror source to the idle display list before using Black Out Now.")
+            if let hiddenOverlaySources {
+                guard let overlayArguments = try hiddenMirrorArguments(for: hiddenOverlaySources) else {
+                    throw DisplayHideError.recoveryBlocksAction("Add every journaled mirror source to the idle display list before using Black Out Now.")
                 }
                 arguments = overlayArguments
             } else {
@@ -1630,8 +1700,9 @@ final class AppModel: ObservableObject {
     /// display, neither the source nor hidden, stays usable.
     var hiddenMirrorOverlayResetsLimitOnInput: Bool {
         guard preferences.mode == .working || preferences.keepBlackoutOnInput,
-              let source = selectedHiddenMirrorSource else { return false }
-        return activeDisplays.contains { $0.id != source.id && !isBlackoutHidden($0.uuid) }
+              !selectedHiddenMirrorSources.isEmpty else { return false }
+        let sourceIDs = Set(selectedHiddenMirrorSources.map(\.id))
+        return activeDisplays.contains { !sourceIDs.contains($0.id) && !isRemovedDisplay($0.uuid) && !isBlackoutHidden($0.uuid) }
     }
 
     /// Matches the helper, which counts hidden displays as covered.
@@ -1671,12 +1742,13 @@ final class AppModel: ObservableObject {
                 service.disable()
                 return
             }
-            guard let source = selectedHiddenMirrorSource else {
+            let sources = selectedHiddenMirrorSources
+            guard !sources.isEmpty else {
                 service.disable()
                 return
             }
             do {
-                guard let arguments = try hiddenMirrorArguments(for: source) else {
+                guard let arguments = try hiddenMirrorArguments(for: sources) else {
                     service.disable()
                     return
                 }
@@ -1732,8 +1804,8 @@ final class AppModel: ObservableObject {
 
         do {
             if hiddenMirrorOverlayPolicyEligible {
-                guard let source = selectedHiddenMirrorSource,
-                      try hiddenMirrorArguments(for: source) != nil else {
+                guard !selectedHiddenMirrorSources.isEmpty,
+                      try hiddenMirrorArguments(for: selectedHiddenMirrorSources) != nil else {
                     return .disabled
                 }
                 return serviceState
@@ -1843,9 +1915,8 @@ final class AppModel: ObservableObject {
     }
 
     /// Show switches the input back only when Hide switched it.
-    private func configuredReturnInput(for status: DisplayHandoffStatus) -> (value: UInt8?, warning: String?) {
-        guard let target = status.target,
-              let configuration = hidePreferences[target.uuid],
+    private func configuredReturnInput(for target: DisplayHandoffIdentity) -> (value: UInt8?, warning: String?) {
+        guard let configuration = hidePreferences[target.uuid],
               configuration.awayInput != nil, configuration.returnInput != nil else { return (nil, nil) }
         guard configuration.target.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame,
               configuration.target.id == target.id,
@@ -1900,6 +1971,7 @@ final class AppModel: ObservableObject {
                 coreIdentity(request.target), coreIdentity(request.source), request.awayInput
             )
             returnedInputOutcome = inputOutcome
+            displays = displayProvider()
             refreshHandoffStatus()
             guard handoffStatus?.state == .hidden else {
                 throw DisplayHideError.recoveryBlocksAction(
@@ -1950,25 +2022,39 @@ final class AppModel: ObservableObject {
             return
         }
         refreshHandoffStatus()
+        let capturedRemoval = request.status.removal(for: request.targetUUID)
+        let currentRemoval = handoffStatus?.removal(for: request.targetUUID)
         guard handoffStatus?.hasUnresolvedJournal == true,
-              handoffStatus?.canShow == true,
+              currentRemoval?.canShow == true,
+              capturedRemoval?.id == currentRemoval?.id,
               handoffStatus?.journalID == request.status.journalID,
-              handoffStatus?.target?.uuid == request.status.target?.uuid,
-              handoffStatus?.source?.uuid == request.status.source?.uuid,
               let expectedJournalID = request.status.journalID else {
             notStarted("The displays changed before Show began. Try again.")
             return
         }
         var returnedInputOutcome: DisplayInputOutcome?
         do {
-            let inputOutcome = try showDisplay(expectedJournalID, request.returnInput)
+            let showKey = request.status.removals.count > 1
+                ? "\(expectedJournalID)|\(request.targetUUID)" : expectedJournalID
+            let inputOutcome = try showDisplay(showKey, request.returnInput)
             returnedInputOutcome = inputOutcome
+            displays = displayProvider()
             refreshHandoffStatus()
-            guard handoffStatus?.hasUnresolvedJournal != true,
-                  handoffInspectionFailure == nil else {
+            guard let currentStatus = handoffStatus, handoffInspectionFailure == nil else {
                 throw DisplayHideError.recoveryBlocksAction(
-                    handoffStatus?.reason ?? handoffInspectionFailure ??
-                        "PanelCtl couldn\u{2019}t confirm the display is back. Check its recovery details."
+                    handoffInspectionFailure ?? "PanelCtl couldn’t confirm this display is back. Check its recovery details."
+                )
+            }
+            let selectedStillRemoved = currentStatus.removal(for: request.targetUUID) != nil
+            let selectedRestored = currentStatus.removals.contains(where: {
+                $0.target.uuid.caseInsensitiveCompare(request.targetUUID) == .orderedSame &&
+                    !$0.isUnresolved && $0.state == "restored"
+            })
+            let sameSession = currentStatus.journalID == request.status.journalID || !currentStatus.hasUnresolvedJournal
+            guard !selectedStillRemoved, sameSession,
+                  (!currentStatus.hasUnresolvedJournal || selectedRestored) else {
+                throw DisplayHideError.recoveryBlocksAction(
+                    currentStatus.reason ?? "PanelCtl couldn’t confirm this display is back. Check its recovery details."
                 )
             }
             hideOperation = .idle

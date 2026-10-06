@@ -40,6 +40,44 @@ final class DisplayMirroringTests: XCTestCase {
         String(format: "00000000-0000-0000-0000-%012d", index)
     }
 
+    private func changedSnapshot(_ snapshot: RecoverySnapshot,
+                                 _ change: (inout [[String: Any]]) -> Void) throws -> RecoverySnapshot {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot)) as? [String: Any])
+        var displays = try XCTUnwrap(object["displays"] as? [[String: Any]])
+        change(&displays)
+        object["displays"] = displays
+        return try JSONDecoder().decode(RecoverySnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+
+    private func withoutDisplay(_ snapshot: RecoverySnapshot, uuid: String) throws -> RecoverySnapshot {
+        try changedSnapshot(snapshot) { displays in
+            displays.removeAll { ($0["uuid"] as? String)?.caseInsensitiveCompare(uuid) == .orderedSame }
+        }
+    }
+
+    private func sessionSnapshot(_ active: [Int: Int], includeFourth: Bool = false,
+                                originalMain: Int = 1) throws -> RecoverySnapshot {
+        try snapshot { displays in
+            if includeFourth, displays.count == 3 {
+                displays.append([
+                    "uuid": self.snapshotUUID(4), "id": 10, "vendor": 1, "model": 4, "serial": 4,
+                    "builtin": false, "main": false, "active": true, "x": 5760, "y": 0, "rotation": 0,
+                    "mode": ["id": 4, "width": 1920, "height": 1080, "pixelWidth": 1920,
+                             "pixelHeight": 1080, "refreshRate": 60, "flags": 0]
+                ])
+            }
+            let currentMain = active[originalMain] ?? originalMain
+            for index in displays.indices {
+                let displayIndex = index + 1
+                displays[index]["main"] = displayIndex == currentMain
+                if let sourceIndex = active[displayIndex] {
+                    displays[index]["mirrorUUID"] = self.snapshotUUID(sourceIndex)
+                    displays[index]["active"] = false
+                }
+            }
+        }
+    }
+
     private func records(_ snapshot: RecoverySnapshot) -> [DisplayRecord] {
         snapshot.displays.enumerated().map { index, display in
             DisplayRecord(index: index + 1, id: display.id, uuid: display.uuid, name: "fake",
@@ -128,6 +166,392 @@ final class DisplayMirroringTests: XCTestCase {
         XCTAssertNil(result.disabledByUsID)
         XCTAssertEqual(try store.load().snapshot, original)
         XCTAssertThrowsError(try sut.mirror(selector: "8", source: "7", store: store))
+    }
+
+    func testMultiRemovalSessionRestoresTwoAndThreeDisplaysInEveryShowOrder() throws {
+        let baseline = try sessionSnapshot([:], includeFourth: true)
+        let targetIndexes = [2, 3, 4]
+        let orders = [[2, 3], [3, 2], [2, 3, 4], [2, 4, 3], [3, 2, 4], [3, 4, 2],
+                      [4, 2, 3], [4, 3, 2]]
+        for hideOrder in orders {
+            for showOrder in orders where showOrder.count == hideOrder.count {
+                let scenarioStore = RecoveryStore(url: directory.appendingPathComponent(
+                    "session-\(hideOrder.map(String.init).joined())-\(showOrder.map(String.init).joined()).json"
+                ))
+                var active: [Int: Int] = [:]
+                var current = baseline
+                let operation = RecoveryStore(url: directory.appendingPathComponent("operation"))
+                var stagedTarget: UInt32 = 0
+                var stagedSource: UInt32 = 0
+                let sut = MirrorController(
+                    records: { self.records(current) }, operationLock: { operation },
+                    engine: RecoveryEngine(
+                        capture: { current },
+                        apply: { _ in active.removeAll(); current = baseline },
+                        convergencePause: {}
+                    ),
+                    preflightModes: { _ in },
+                    transaction: MirrorTransaction(
+                        begin: { OpaquePointer(bitPattern: 1)! },
+                        stage: { _, target, source in stagedTarget = target; stagedSource = source },
+                        complete: { _, _ in
+                            active[Int(stagedTarget) - 6] = Int(stagedSource) - 6
+                            current = try self.sessionSnapshot(active, includeFourth: true)
+                        }, cancel: { _ in XCTFail("successful fake transaction must not cancel") }
+                    ),
+                    restoreTarget: { _, targetUUID, revalidate, _ in
+                        try revalidate()
+                        guard let target = targetIndexes.first(where: { self.snapshotUUID($0) == targetUUID }) else {
+                            throw RecoveryError.unsafe("unknown fake target")
+                        }
+                        active.removeValue(forKey: target)
+                        current = try self.sessionSnapshot(active, includeFourth: true)
+                    }
+                )
+                for target in hideOrder {
+                    _ = try sut.mirror(selector: self.snapshotUUID(target), source: self.snapshotUUID(1), store: scenarioStore)
+                }
+                var saved = try scenarioStore.load()
+                XCTAssertEqual(saved.publicMirrorSession?.baseline, baseline)
+                XCTAssertEqual(saved.publicMirrorSession?.removals.count, hideOrder.count)
+                for (position, target) in hideOrder.enumerated() {
+                    let removal = try XCTUnwrap(saved.publicMirrorSession?.removals.first(where: {
+                        $0.targetUUID == self.snapshotUUID(target)
+                    }))
+                    XCTAssertEqual(removal.beforeOperation, try self.sessionSnapshot(
+                        Dictionary(uniqueKeysWithValues: hideOrder.prefix(position).map { ($0, 1) }), includeFourth: true
+                    ))
+                    XCTAssertEqual(removal.state, .mirrored)
+                }
+                for target in showOrder {
+                    saved = try sut.unmirror(store: scenarioStore, selector: self.snapshotUUID(target))
+                    let entries = try XCTUnwrap(saved.publicMirrorSession?.removals)
+                    XCTAssertEqual(entries.first(where: { $0.targetUUID == self.snapshotUUID(target) })?.state, .restored)
+                    XCTAssertEqual(entries.filter { !$0.state.resolved }.count,
+                                   showOrder.suffix(from: (showOrder.firstIndex(of: target) ?? 0) + 1).count)
+                }
+                XCTAssertEqual(current, baseline, "hide order \(hideOrder), Show order \(showOrder)")
+                XCTAssertEqual(saved.state, .restored)
+                XCTAssertTrue(saved.publicMirrorSession?.removals.allSatisfy { $0.state == .restored } == true)
+            }
+        }
+    }
+
+    func testSecondHideFailurePreservesFirstRemovalAndSelectedShowFailurePreservesOthers() throws {
+        let baseline = try sessionSnapshot([:], includeFourth: true)
+        var active: [Int: Int] = [:]
+        var current = baseline
+        let scenarioStore = RecoveryStore(url: directory.appendingPathComponent("multi-failure.json"))
+        let operation = RecoveryStore(url: directory.appendingPathComponent("multi-operation"))
+        var completionCount = 0
+        var stagedTarget: UInt32 = 0
+        var stagedSource: UInt32 = 0
+        let sut = MirrorController(
+            records: { self.records(current) }, operationLock: { operation },
+            engine: RecoveryEngine(capture: { current }, apply: { _ in current = baseline }, convergencePause: {}),
+            preflightModes: { _ in },
+            transaction: MirrorTransaction(
+                begin: { OpaquePointer(bitPattern: 1)! },
+                stage: { _, targetID, sourceID in stagedTarget = targetID; stagedSource = sourceID },
+                complete: { _, _ in
+                    completionCount += 1
+                    if completionCount == 2 { throw RecoveryError.unsafe("fake interrupted second Hide") }
+                    active[Int(stagedTarget) - 6] = Int(stagedSource) - 6
+                    current = try self.sessionSnapshot(active, includeFourth: true)
+                }, cancel: { _ in XCTFail("fake public writer never has a private rollback") }
+            ),
+            restoreTarget: { _, targetUUID, revalidate, _ in
+                try revalidate()
+                guard let index = [2, 3, 4].first(where: { self.snapshotUUID($0) == targetUUID }) else {
+                    throw RecoveryError.unsafe("unknown fake target")
+                }
+                active.removeValue(forKey: index)
+                current = try self.sessionSnapshot(active, includeFourth: true)
+                throw RecoveryError.unsafe("fake interrupted first Show")
+            }
+        )
+        _ = try sut.mirror(selector: snapshotUUID(2), source: snapshotUUID(1), store: scenarioStore)
+        XCTAssertThrowsError(try sut.mirror(selector: snapshotUUID(3), source: snapshotUUID(1), store: scenarioStore))
+        var saved = try scenarioStore.load()
+        XCTAssertEqual(saved.publicMirrorSession?.removals.first(where: { $0.targetUUID == snapshotUUID(2) })?.state, .mirrored)
+        XCTAssertEqual(saved.publicMirrorSession?.removals.first(where: { $0.targetUUID == snapshotUUID(3) })?.state, .needsAttention)
+        XCTAssertEqual(saved.publicMirrorSession?.baseline, baseline)
+
+        // The second Hide left the exact pre-operation topology, so it can be
+        // reconciled as untouched before a later independent Show failure.
+        _ = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(3))
+        XCTAssertEqual(try scenarioStore.load().publicMirrorSession?.removals.last?.state, .cancelled)
+        _ = try sut.mirror(selector: snapshotUUID(3), source: snapshotUUID(1), store: scenarioStore)
+        XCTAssertThrowsError(try sut.unmirror(store: scenarioStore, selector: snapshotUUID(3)))
+        saved = try scenarioStore.load()
+        XCTAssertEqual(saved.publicMirrorSession?.removals.first(where: { $0.targetUUID == snapshotUUID(2) })?.state, .mirrored)
+        XCTAssertEqual(saved.publicMirrorSession?.removals.last?.state, .needsAttention)
+    }
+
+    func testFailedFinalShowRetainsRecoveryUntilWholeBaselineVerifies() throws {
+        for mismatch in ["origin", "mode"] {
+            let baseline = try sessionSnapshot([:], includeFourth: true)
+            var current = try sessionSnapshot([3: 1], includeFourth: true)
+            var earlier = PublicMirrorRemoval(target: baseline.displays[1], source: baseline.displays[0],
+                                              beforeOperation: baseline, state: .restored)
+            earlier.failure = nil
+            let last = PublicMirrorRemoval(target: baseline.displays[2], source: baseline.displays[0],
+                                           beforeOperation: baseline, state: .mirrored)
+            var journal = RecoveryJournal(snapshot: baseline, publicMirrorSession:
+                PublicMirrorSession(baseline: baseline, removals: [earlier, last]))
+            journal.state = .mirrored
+            let scenarioStore = RecoveryStore(url: directory.appendingPathComponent("final-\(mismatch).json"))
+            try scenarioStore.lock(); try scenarioStore.create(journal); scenarioStore.unlock()
+            let operation = RecoveryStore(url: directory.appendingPathComponent("final-\(mismatch)-operation"))
+            var repair = false
+            var writes = 0
+            let sut = MirrorController(
+                records: { self.records(current) }, operationLock: { operation },
+                engine: RecoveryEngine(capture: { current }, apply: { _ in
+                    writes += 1
+                    current = baseline
+                    if !repair {
+                        current = try self.changedSnapshot(current) { displays in
+                            if mismatch == "origin" { displays[0]["y"] = 42 }
+                            else {
+                                var mode = displays[0]["mode"] as! [String: Any]
+                                mode["refreshRate"] = 59
+                                displays[0]["mode"] = mode
+                            }
+                        }
+                    }
+                }, convergencePause: {}), preflightModes: { _ in })
+            XCTAssertThrowsError(try sut.unmirror(store: scenarioStore, selector: snapshotUUID(3)))
+            let inspector = DisplayHideController(store: scenarioStore, mirror: sut, operationLock: { operation })
+            let status = try inspector.inspect()
+            XCTAssertTrue(status.hasUnresolvedRecovery)
+            XCTAssertEqual(status.removals.filter(\.isUnresolved).map { $0.target.uuid }, [snapshotUUID(3)])
+            XCTAssertTrue(try XCTUnwrap(status.removals.last).canShow, "final layout remains explicitly repairable")
+            XCTAssertThrowsError(try sut.verifyRemoval(store: scenarioStore, selector: snapshotUUID(3)))
+            XCTAssertThrowsError(try sut.verifyRemoval(store: scenarioStore, selector: snapshotUUID(2)))
+            XCTAssertEqual(writes, 1, "inspection and verify never retry the writer")
+            repair = true
+            let repaired = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(3))
+            XCTAssertEqual(repaired.state, .restored)
+            XCTAssertEqual(writes, 2)
+            try baseline.verify(current)
+            XCTAssertEqual(try sut.verifyRemoval(store: scenarioStore, selector: snapshotUUID(3)).state, .verified)
+        }
+    }
+
+    func testUntouchedSecondHideAfterMainOriginShiftDoesNotBlockFirstShow() throws {
+        let baseline = try sessionSnapshot([:], includeFourth: true)
+        var current = baseline
+        var commits = 0
+        let operation = RecoveryStore(url: directory.appendingPathComponent("shifted-operation"))
+        let scenarioStore = RecoveryStore(url: directory.appendingPathComponent("shifted-failure.json"))
+        let sut = MirrorController(
+            records: { self.records(current) }, operationLock: { operation },
+            engine: RecoveryEngine(capture: { current }, apply: { _ in current = baseline }, convergencePause: {}),
+            preflightModes: { _ in }, transaction: MirrorTransaction(
+                begin: { OpaquePointer(bitPattern: 1)! }, stage: { _, _, _ in },
+                complete: { _, _ in
+                    commits += 1
+                    if commits == 2 { throw RecoveryError.unsafe("interrupted before second mirror applied") }
+                    current = try self.sessionSnapshot([1: 2], includeFourth: true)
+                    current = try self.changedSnapshot(current) { displays in
+                        for index in displays.indices {
+                            displays[index]["x"] = (displays[index]["x"] as! Int) - 1920
+                        }
+                    }
+                }, cancel: { _ in XCTFail("completion consumes transaction") }))
+        _ = try sut.mirror(selector: snapshotUUID(1), source: snapshotUUID(2), store: scenarioStore)
+        let shifted = current
+        XCTAssertThrowsError(try sut.mirror(selector: snapshotUUID(3), source: snapshotUUID(2), store: scenarioStore))
+        let inspector = DisplayHideController(store: scenarioStore, mirror: sut, operationLock: { operation })
+        _ = try inspector.inspect()
+        let saved = try scenarioStore.load()
+        XCTAssertEqual(saved.publicMirrorSession?.removals.last?.state, .cancelled)
+        XCTAssertEqual(current, shifted)
+        XCTAssertEqual(saved.publicMirrorSession?.baseline, baseline)
+        XCTAssertEqual(try sut.verifyRemoval(store: scenarioStore, selector: snapshotUUID(3)).state, .mirrored)
+        let shown = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(1))
+        XCTAssertEqual(shown.state, .restored)
+        try baseline.verify(current)
+    }
+
+    func testVerifySelectionSelfRestoreAndDisconnectPreserveOtherRemoval() throws {
+        let baseline = try sessionSnapshot([:], includeFourth: true)
+        var active: [Int: Int] = [:]
+        var current = baseline
+        var stagedTarget: UInt32 = 0
+        var stagedSource: UInt32 = 0
+        var writerCalls = 0
+        let scenarioStore = RecoveryStore(url: directory.appendingPathComponent("verify-disconnect-session.json"))
+        let operation = RecoveryStore(url: directory.appendingPathComponent("verify-disconnect-operation"))
+        let sut = MirrorController(
+            records: { self.records(current) }, operationLock: { operation },
+            engine: RecoveryEngine(capture: { current }, apply: { _ in XCTFail("verify never applies a layout") }, convergencePause: {}),
+            preflightModes: { _ in },
+            transaction: MirrorTransaction(
+                begin: { OpaquePointer(bitPattern: 1)! },
+                stage: { _, target, source in stagedTarget = target; stagedSource = source },
+                complete: { _, _ in
+                    writerCalls += 1
+                    active[Int(stagedTarget) - 6] = Int(stagedSource) - 6
+                    current = try self.sessionSnapshot(active, includeFourth: true)
+                }, cancel: { _ in XCTFail("successful fake transaction must not cancel") }
+            )
+        )
+        _ = try sut.mirror(selector: snapshotUUID(2), source: snapshotUUID(1), store: scenarioStore)
+        _ = try sut.mirror(selector: snapshotUUID(3), source: snapshotUUID(1), store: scenarioStore)
+        XCTAssertEqual(writerCalls, 2)
+        XCTAssertThrowsError(try sut.verifyRemoval(store: scenarioStore, selector: nil)) { error in
+            XCTAssertTrue(String(describing: error).contains("several displays are removed"))
+        }
+        XCTAssertThrowsError(try sut.unmirror(store: scenarioStore, selector: nil)) { error in
+            XCTAssertTrue(String(describing: error).contains("several displays are removed"))
+        }
+        XCTAssertEqual(writerCalls, 2, "ambiguous recovery requests never write")
+        XCTAssertEqual(try sut.verifyRemoval(store: scenarioStore, selector: snapshotUUID(2)).state, .mirrored,
+                       "verify is a no-write check; it does not Show")
+
+        active.removeValue(forKey: 2)
+        current = try sessionSnapshot(active, includeFourth: true)
+        let selfRestored = try sut.verifyRemoval(store: scenarioStore, selector: snapshotUUID(2))
+        XCTAssertEqual(selfRestored.publicMirrorSession?.removals.first(where: {
+            $0.targetUUID == snapshotUUID(2)
+        })?.state, .restored)
+        XCTAssertEqual(selfRestored.publicMirrorSession?.removals.first(where: {
+            $0.targetUUID == snapshotUUID(3)
+        })?.state, .mirrored, "macOS resolving one display never resolves its sibling")
+
+        current = try withoutDisplay(current, uuid: snapshotUUID(3))
+        XCTAssertThrowsError(try sut.unmirror(store: scenarioStore, selector: snapshotUUID(3)))
+        let disconnected = try scenarioStore.load()
+        XCTAssertEqual(disconnected.publicMirrorSession?.removals.first(where: {
+            $0.targetUUID == snapshotUUID(2)
+        })?.state, .restored)
+        XCTAssertEqual(disconnected.publicMirrorSession?.removals.first(where: {
+            $0.targetUUID == snapshotUUID(3)
+        })?.state, .needsAttention, "a disconnected target keeps only its own recovery-needed entry")
+        XCTAssertEqual(writerCalls, 2, "verify and disconnected refusal never write a display layout")
+
+        current = baseline
+        let fullyRestored = try sut.verifyRemoval(store: scenarioStore, selector: snapshotUUID(3))
+        XCTAssertEqual(fullyRestored.state, .verified)
+        XCTAssertTrue(fullyRestored.publicMirrorSession?.removals.allSatisfy { $0.state == .restored } == true)
+        XCTAssertEqual(writerCalls, 2, "macOS self-restoration is observed, never replayed")
+    }
+
+    func testAwayAddsBesideHealthyRemovalAndPrintsSelectedBackCommand() throws {
+        let baseline = try sessionSnapshot([:], includeFourth: true)
+        var active: [Int: Int] = [:]
+        var current = baseline
+        var stagedTarget: UInt32 = 0
+        var stagedSource: UInt32 = 0
+        let operation = RecoveryStore(url: directory.appendingPathComponent("away-session-operation"))
+        let mirror = MirrorController(
+            records: { self.records(current) }, operationLock: { operation },
+            engine: RecoveryEngine(capture: { current }, apply: { _ in current = baseline }, convergencePause: {}),
+            preflightModes: { _ in },
+            transaction: MirrorTransaction(
+                begin: { OpaquePointer(bitPattern: 1)! },
+                stage: { _, target, source in stagedTarget = target; stagedSource = source },
+                complete: { _, _ in
+                    active[Int(stagedTarget) - 6] = Int(stagedSource) - 6
+                    current = try self.sessionSnapshot(active, includeFourth: true)
+                }, cancel: { _ in XCTFail("successful fake mirror must not cancel") }
+            ),
+            restoreTarget: { _, targetUUID, revalidate, _ in
+                try revalidate()
+                guard let target = [2, 3].first(where: { self.snapshotUUID($0) == targetUUID }) else {
+                    throw RecoveryError.unsafe("unknown fake target")
+                }
+                active.removeValue(forKey: target)
+                current = try self.sessionSnapshot(active, includeFourth: true)
+            }
+        )
+        let scenarioStore = RecoveryStore(url: directory.appendingPathComponent("away-session.json"))
+        _ = try mirror.mirror(selector: snapshotUUID(2), source: snapshotUUID(1), store: scenarioStore)
+        var reports: [String] = []
+        var handoff = HandoffController(mirror: mirror, report: { reports.append($0) })
+        handoff.open = { _ in throw RecoveryError.unsafe("DDC must not open when input is omitted") }
+        for selector in [snapshotUUID(3), "9", "0x9", "index:3"] {
+            reports.removeAll()
+            try handoff.away(selector: selector, source: snapshotUUID(1), input: nil, store: scenarioStore)
+            XCTAssertTrue(reports.contains { $0.contains("panelctl back --display '\(snapshotUUID(3))'") }, selector)
+            try handoff.back(selector: snapshotUUID(3), input: nil, store: scenarioStore)
+        }
+        try handoff.away(selector: snapshotUUID(3), source: snapshotUUID(1), input: nil, store: scenarioStore)
+
+        let journal = try scenarioStore.load()
+        XCTAssertNil(journal.mirrorTargetID, "multi-display sessions do not carry singleton compatibility selectors")
+        XCTAssertEqual(journal.publicMirrorSession?.removals.filter { !$0.state.resolved }.map(\.targetUUID),
+                       [snapshotUUID(2), snapshotUUID(3)])
+        XCTAssertTrue(reports.contains { $0.contains("panelctl back --display '\(snapshotUUID(3))'") },
+                      "away reports a back command for the target just added")
+        XCTAssertEqual(active.count, 2)
+        try handoff.back(selector: snapshotUUID(3), input: nil, store: scenarioStore)
+        XCTAssertEqual(active.count, 1, "back Shows only its selected target")
+        XCTAssertTrue(reports.contains { $0.contains("selected display restored and verified; 1 removal(s) remain hidden") })
+    }
+
+    func testDistinctSourcesAndMainTargetSurviveObservedMacRearrangement() throws {
+        let baseline = try sessionSnapshot([:], includeFourth: true, originalMain: 2)
+        var active: [Int: Int] = [:]
+        var current = baseline
+        var stagedTarget: UInt32 = 0
+        var stagedSource: UInt32 = 0
+        let scenarioStore = RecoveryStore(url: directory.appendingPathComponent("distinct-source-main-target.json"))
+        let operation = RecoveryStore(url: directory.appendingPathComponent("distinct-operation"))
+        let sut = MirrorController(
+            records: { self.records(current) }, operationLock: { operation },
+            engine: RecoveryEngine(
+                capture: { current },
+                apply: { _ in active.removeAll(); current = baseline },
+                convergencePause: {}
+            ),
+            preflightModes: { _ in },
+            transaction: MirrorTransaction(
+                begin: { OpaquePointer(bitPattern: 1)! },
+                stage: { _, target, source in stagedTarget = target; stagedSource = source },
+                complete: { _, _ in
+                    active[Int(stagedTarget) - 6] = Int(stagedSource) - 6
+                    current = try self.sessionSnapshot(active, includeFourth: true, originalMain: 2)
+                    // macOS is allowed to move the menu bar and survivor origins
+                    // when the first (main) display joins a mirror set.
+                    if active[2] != nil {
+                        current = try self.changedSnapshot(current) { displays in
+                            displays[0]["main"] = false
+                            displays[2]["main"] = true
+                            displays[3]["x"] = 7200
+                        }
+                    }
+                },
+                cancel: { _ in XCTFail("successful fake transaction must not cancel") }
+            ),
+            restoreTarget: { _, targetUUID, revalidate, _ in
+                try revalidate()
+                guard let target = [2, 4].first(where: { self.snapshotUUID($0) == targetUUID }) else {
+                    throw RecoveryError.unsafe("unknown fake target")
+                }
+                active.removeValue(forKey: target)
+                current = try self.sessionSnapshot(active, includeFourth: true, originalMain: 2)
+            }
+        )
+        _ = try sut.mirror(selector: snapshotUUID(2), source: snapshotUUID(1), store: scenarioStore)
+        _ = try sut.mirror(selector: snapshotUUID(4), source: snapshotUUID(3), store: scenarioStore)
+        XCTAssertEqual(try scenarioStore.load().publicMirrorSession?.removals.map(\.sourceUUID),
+                       [snapshotUUID(1), snapshotUUID(3)])
+        XCTAssertTrue(MirrorSessionTopology.matches(
+            baseline: baseline,
+            removals: try XCTUnwrap(scenarioStore.load().publicMirrorSession?.removals), current: current
+        ), "observed macOS origin/main rearrangement remains a verified hidden session")
+
+        _ = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(4))
+        XCTAssertEqual(current.displays.first(where: { $0.uuid == snapshotUUID(4) })?.active, true)
+        XCTAssertEqual(try scenarioStore.load().publicMirrorSession?.removals.first(where: {
+            $0.targetUUID == snapshotUUID(2)
+        })?.state, .mirrored)
+        let final = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(2))
+        XCTAssertEqual(current, baseline, "final Show strictly restores the original main, modes and arrangement")
+        XCTAssertEqual(final.state, .restored)
     }
 
     func testMainTargetMirrorsWhenTargetSourceOrAnotherDisplayRemainsMain() throws {
@@ -713,14 +1137,22 @@ final class DisplayMirroringTests: XCTestCase {
                        .mirror(selector: "8", source: "7", journalPath: nil))
         XCTAssertEqual(try CLIParser.parse(["unmirror", "--consent-unmirror", "--journal", "/private/test.json"]),
                        .unmirror(journalPath: "/private/test.json"))
+        XCTAssertEqual(try CLIParser.parse(["unmirror", "--display", "00000000-0000-0000-0000-000000000008", "--consent-unmirror"]),
+                       .unmirrorTarget(selector: "00000000-0000-0000-0000-000000000008", journalPath: nil))
         for args in [["mirror"], ["mirror", "--display", "8", "--consent-mirror"],
                      ["mirror", "--display", "8", "--source", "7"], ["unmirror"],
-                     ["unmirror", "--consent-mirror"], ["unmirror", "--display", "8", "--consent-unmirror"],
+                     ["unmirror", "--consent-mirror"],
                      ["mirror", "--source", "7", "--source", "9"],
                      ["mirror", "--display", ""], ["mirror", "--source", "--consent-mirror"],
                      ["unmirror", "--consent-unmirror", "--consent-unmirror"]] {
             XCTAssertThrowsError(try CLIParser.parse(args), args.joined(separator: " "))
         }
+        XCTAssertEqual(try CLIParser.parse(["recovery", "verify", "--display", "00000000-0000-0000-0000-000000000008"]),
+                       .recoverySelected(action: .verify, timeout: nil,
+                                         selector: "00000000-0000-0000-0000-000000000008", journalPath: nil))
+        XCTAssertEqual(try CLIParser.parse(["recovery", "restore", "--display", "00000000-0000-0000-0000-000000000008"]),
+                       .recoverySelected(action: .restore, timeout: nil,
+                                         selector: "00000000-0000-0000-0000-000000000008", journalPath: nil))
         for command in ["mirror", "unmirror"] {
             XCTAssertEqual(try CLIParser.parse([command, "--help"]), .help(command: command))
             XCTAssertTrue(CLIHelp.text(for: command).contains("only documented cycles are qualified"))

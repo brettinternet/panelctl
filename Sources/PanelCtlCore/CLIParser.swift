@@ -21,7 +21,8 @@ public struct BlackoutOptions: Equatable {
     public let hardwareBrightnessPercent: Int?
     public let deferPlayback: Bool
     public let deferCamera: Bool
-    public let hiddenMirrorSourceUUID: String?
+    public let hiddenMirrorSourceUUIDs: [String]
+    public var hiddenMirrorSourceUUID: String? { hiddenMirrorSourceUUIDs.first }
     /// Displays PanelCtl has hidden: blackout never covers them, but counts
     /// them as covered for the all-screens safety rules.
     public let hiddenDisplayUUIDs: [String]
@@ -57,6 +58,7 @@ public struct BlackoutOptions: Equatable {
         deferPlayback: Bool = true,
         deferCamera: Bool = false,
         hiddenMirrorSourceUUID: String? = nil,
+        hiddenMirrorSourceUUIDs: [String] = [],
         hiddenDisplayUUIDs: [String] = []
     ) {
         self.selectors = selectors
@@ -74,7 +76,8 @@ public struct BlackoutOptions: Equatable {
         self.hardwareBrightnessPercent = hardwareBrightnessPercent
         self.deferPlayback = deferPlayback
         self.deferCamera = deferCamera
-        self.hiddenMirrorSourceUUID = hiddenMirrorSourceUUID
+        self.hiddenMirrorSourceUUIDs = hiddenMirrorSourceUUIDs.isEmpty
+            ? hiddenMirrorSourceUUID.map { [$0] } ?? [] : hiddenMirrorSourceUUIDs
         self.hiddenDisplayUUIDs = hiddenDisplayUUIDs
     }
 }
@@ -84,9 +87,11 @@ public enum PanelCommand: Equatable {
     case probe(json: Bool)
     case mirror(selector: String, source: String, journalPath: String?)
     case unmirror(journalPath: String?)
+    case unmirrorTarget(selector: String, journalPath: String?)
     case away(selector: String, source: String, input: UInt8?, journalPath: String?)
     case back(selector: String, input: UInt8?, journalPath: String?)
     case recovery(action: RecoveryAction, timeout: TimeInterval?, journalPath: String?)
+    case recoverySelected(action: RecoveryAction, timeout: TimeInterval?, selector: String, journalPath: String?)
     case recoveryHelper(journalPath: String, id: UUID)
     case recoveryDisable(selector: String, timeout: TimeInterval, journalPath: String?)
     case blackout(BlackoutOptions)
@@ -293,7 +298,7 @@ public enum CLIParser {
         var values: [String: String] = [:]
         var consent = false
         let consentFlag = restore ? "--consent-unmirror" : "--consent-mirror"
-        let valueFlags = restore ? ["--journal"] : ["--display", "--source", "--journal"]
+        let valueFlags = restore ? ["--journal", "--display"] : ["--display", "--source", "--journal"]
         var i = 0
         while i < args.count {
             let option = args[i]
@@ -314,6 +319,9 @@ public enum CLIParser {
         }
         if restore {
             guard consent else { throw CLIParseError.unmirrorRequirements }
+            if let selector = values["--display"] {
+                return .unmirrorTarget(selector: selector, journalPath: values["--journal"])
+            }
             return .unmirror(journalPath: values["--journal"])
         }
         guard consent, let target = values["--display"], let source = values["--source"] else {
@@ -328,6 +336,7 @@ public enum CLIParser {
         guard let action = RecoveryAction(rawValue: raw) else { throw CLIParseError.unknownCommand(raw) }
         var timeout: TimeInterval?
         var journal: String?
+        var selector: String?
         var i = 1
         while i < args.count {
             switch args[i] {
@@ -343,9 +352,20 @@ public enum CLIParser {
                     throw CLIParseError.missingValue("--journal")
                 }
                 journal = args[i]
+            case "--display":
+                guard action == .verify || action == .restore else { throw CLIParseError.unknownOption(args[i]) }
+                guard selector == nil else { throw CLIParseError.duplicateOption(args[i]) }
+                i += 1
+                guard i < args.count, !args[i].hasPrefix("--"), !args[i].isEmpty else {
+                    throw CLIParseError.missingValue("--display")
+                }
+                selector = args[i]
             default: throw CLIParseError.unknownOption(args[i])
             }
             i += 1
+        }
+        if let selector {
+            return .recoverySelected(action: action, timeout: timeout, selector: selector, journalPath: journal)
         }
         return .recovery(action: action, timeout: timeout, journalPath: journal)
     }
@@ -484,7 +504,7 @@ public enum CLIParser {
         var hardwareBrightnessPercent: Int?
         var deferPlayback = true
         var deferCamera = false
-        var hiddenMirrorSourceUUID: String?
+        var hiddenMirrorSourceUUIDs: [String] = []
         var hiddenDisplayUUIDs: [String] = []
         var i = 0
         while i < args.count {
@@ -572,14 +592,11 @@ public enum CLIParser {
                 guard !deferCamera else { throw CLIParseError.duplicateOption("--defer-camera") }
                 deferCamera = true
             case "--panelctl-hidden-mirror-source":
-                guard hiddenMirrorSourceUUID == nil else {
-                    throw CLIParseError.duplicateOption("--panelctl-hidden-mirror-source")
-                }
                 i += 1
                 guard i < args.count, !args[i].hasPrefix("--") else {
                     throw CLIParseError.missingValue("--panelctl-hidden-mirror-source")
                 }
-                hiddenMirrorSourceUUID = args[i]
+                hiddenMirrorSourceUUIDs.append(args[i])
             case "--panelctl-hidden-display":
                 i += 1
                 guard i < args.count, !args[i].hasPrefix("--") else {
@@ -607,10 +624,12 @@ public enum CLIParser {
         if timeout != nil && sleepAfter != nil { throw CLIParseError.conflictingBlackoutLimits }
         if keepDisplaysAwake && sleepAfter == nil { throw CLIParseError.keepDisplaysAwakeRequiresSleepAfter }
         if all && timeout == nil && sleepAfter == nil { throw CLIParseError.allRequiresLimit }
-        if let hiddenMirrorSourceUUID {
-            guard UUID(uuidString: hiddenMirrorSourceUUID) != nil,
-                  !all, selectors.count == 1,
-                  selectors[0].caseInsensitiveCompare(hiddenMirrorSourceUUID) == .orderedSame,
+        if !hiddenMirrorSourceUUIDs.isEmpty {
+            let sourceKeys = hiddenMirrorSourceUUIDs.map { $0.lowercased() }
+            guard sourceKeys.allSatisfy({ UUID(uuidString: $0) != nil }),
+                  Set(sourceKeys).count == sourceKeys.count,
+                  !all, selectors.count == sourceKeys.count,
+                  selectors.allSatisfy({ selector in sourceKeys.contains(where: { selector.caseInsensitiveCompare($0) == .orderedSame }) }),
                   watch, idleAfter != nil, timeout != nil, sleepAfter == nil,
                   !caffeinate, !keepDisplaysAwake, !blackoutEmptyDisplays,
                   mode == .blocking, overlayOpacityPercent == 100,
@@ -634,7 +653,7 @@ public enum CLIParser {
             hardwareBrightnessPercent: hardwareBrightnessPercent,
             deferPlayback: deferPlayback,
             deferCamera: deferCamera,
-            hiddenMirrorSourceUUID: hiddenMirrorSourceUUID,
+            hiddenMirrorSourceUUIDs: hiddenMirrorSourceUUIDs,
             hiddenDisplayUUIDs: hiddenDisplayUUIDs
         )
         guard options.hiddenDisplaysAreValid else { throw CLIParseError.invalidHiddenDisplay }

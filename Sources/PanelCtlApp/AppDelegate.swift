@@ -106,14 +106,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if model.handoffStatus?.hasUnresolvedJournal == true || model.protectionQuiescenceFailure != nil {
             let status = model.handoffStatus
             let target = status?.hasUnresolvedJournal == true ? status?.target : nil
+            let removalCount = status?.removals.filter(\.isUnresolved).count ?? (target == nil ? 0 : 1)
             let canShow = model.canShowHiddenDisplay
             let alert = NSAlert()
             alert.alertStyle = .warning
             if status?.hasUnresolvedJournal == true {
                 alert.messageText = status?.state == .hidden && canShow
-                    ? "\(target?.name ?? "A display") is still hidden"
+                    ? (removalCount > 1 ? "\(removalCount) displays are still removed" : "\(target?.name ?? "A display") is still hidden")
                     : "Display recovery isn\u{2019}t finished"
-                alert.informativeText = "PanelCtl won\u{2019}t show it or switch the monitor input after quitting. Open PanelCtl again to show it."
+                alert.informativeText = "PanelCtl won\u{2019}t show removed displays or switch monitor inputs after quitting. Open PanelCtl again to show them."
             } else {
                 alert.messageText = "Automation cleanup needs attention"
                 alert.informativeText = "PanelCtl couldn\u{2019}t confirm automation stopped: \(model.protectionQuiescenceFailure ?? "unknown error")"
@@ -126,14 +127,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             switch alert.runModal() {
             case .alertSecondButtonReturn:
-                if canShow, let uuid = target?.uuid {
-                    model.show(targetUUID: uuid) { [weak self] result in
-                        if result.succeeded {
-                            NSApp.terminate(nil)
-                        } else {
-                            self?.showSettings(displayUUID: uuid)
-                        }
-                    }
+                if canShow, status?.hasUnresolvedJournal == true {
+                    showAndQuitRemainingDisplays()
                 } else if let uuid = target?.uuid {
                     showSettings(displayUUID: uuid)
                 } else {
@@ -552,6 +547,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openGitHub() {
         model.openGitHub()
+    }
+
+    private func showAndQuitRemainingDisplays() {
+        guard let model else { return }
+        model.refreshHandoffStatus()
+        guard let status = model.handoffStatus, status.hasUnresolvedJournal else {
+            NSApp.terminate(nil)
+            return
+        }
+        let unresolved = status.removals.filter(\.isUnresolved)
+        let target = unresolved.first?.target.uuid ?? status.target?.uuid
+        guard let target, model.canShowHiddenDisplay else {
+            showSettings(tab: .displays, displayUUID: target)
+            return
+        }
+        model.show(targetUUID: target) { [weak self] result in
+            guard let self else { return }
+            if result.succeeded {
+                self.showAndQuitRemainingDisplays()
+            } else {
+                self.showSettings(tab: .displays, displayUUID: target)
+            }
+        }
     }
 
     /// Opens Settings on a tab or display; a display recovery problem opens

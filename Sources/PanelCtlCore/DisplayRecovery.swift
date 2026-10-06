@@ -253,6 +253,44 @@ enum RecoveryConfiguration {
         try checked(result, "commit configuration")
     }
 
+    /// Restore one public-mirror target without staging or replaying any other
+    /// removal. The caller verifies every still-hidden relationship afterward.
+    static func restoreTarget(_ baseline: RecoverySnapshot, targetUUID: String,
+                              revalidate: () throws -> Void = {},
+                              capture: () throws -> RecoverySnapshot = { try .capture(includePrivateMetadata: false) }) throws {
+        try revalidate()
+        let before = try capture()
+        try baseline.validateRestoration(to: before)
+        guard let target = baseline.displays.first(where: { $0.uuid == targetUUID }),
+              let currentTarget = before.displays.first(where: { $0.uuid == targetUUID }),
+              !target.builtin, currentTarget.mirrorUUID != nil else {
+            throw RecoveryError.unsafe("target is not currently removed by the public-mirror session")
+        }
+        let options = [kCGDisplayShowDuplicateLowResolutionModes as String: true] as CFDictionary
+        let available = CGDisplayCopyAllDisplayModes(target.id, options) as? [CGDisplayMode] ?? []
+        guard let mode = available.first(where: { RecoveryMode($0) == target.mode }) else {
+            throw RecoveryError.unsafe("original mode unavailable for \(target.uuid)")
+        }
+        try revalidate()
+        var config: CGDisplayConfigRef?
+        try checked(CGBeginDisplayConfiguration(&config), "begin target restore")
+        guard let config else { throw RecoveryError.unsafe("missing configuration transaction") }
+        var completed = false
+        defer { if !completed { CGCancelDisplayConfiguration(config) } }
+        try checked(CGConfigureDisplayMirrorOfDisplay(config, target.id, kCGNullDirectDisplay), "restore target mirror")
+        if currentTarget.mode != target.mode {
+            try checked(CGConfigureDisplayWithDisplayMode(config, target.id, mode, nil), "restore target mode")
+        }
+        if currentTarget.x != target.x || currentTarget.y != target.y || currentTarget.main != target.main {
+            try checked(CGConfigureDisplayOrigin(config, target.id, target.x, target.y), "restore target origin")
+        }
+        try baseline.validateRestoration(to: capture())
+        try revalidate()
+        let result = CGCompleteDisplayConfiguration(config, .forSession)
+        completed = true
+        try checked(result, "commit target restore")
+    }
+
     /// Read-only recoverability preflight, also exercised by rehearsal before
     /// READY. This establishes mode availability, not successful restoration.
     static func resolveModes(_ snapshot: RecoverySnapshot) throws -> [CGDisplayMode] {

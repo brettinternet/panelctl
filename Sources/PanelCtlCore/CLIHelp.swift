@@ -38,13 +38,17 @@ public enum CLIHelp {
         case "recovery":
             return """
             Usage: panelctl recovery <capture|status|verify|restore|enable|panic|rehearse|guard> [--journal <path>]
+            Usage: panelctl recovery <verify|restore> [--display <UUID>] [--journal <path>]
             Usage: panelctl recovery disable (--display <selector> | --index <n>) --consent-disable --timeout <1s...60s> [--journal <path>]
             Usage: panelctl recovery <rehearse|guard> [--timeout <1s...60s>] [--journal <path>]
 
             capture journals the current display identities, modes, rotation, origins,
-            mirroring, main display, and available color-space/ICC profile identity. status prints the journal;
-            verify compares without display writes. restore explicitly restores public
-            modes, origins, mirroring and the captured main display for the same online
+            mirroring, main display, and available color-space/ICC profile identity. status prints
+            every removal in a public-mirror session. For several unresolved entries,
+            verify and restore require --display <UUID>; one unambiguous entry may omit it.
+            Verify is read-only and never Shows;
+            restore Shows only the selected target and leaves siblings removed. The final
+            Show restores public modes, origins, mirroring and the original main display for the same online
             displays, then verifies. If a main-target restore mismatches, keep the journal;
             turn off mirroring and drag the menu bar back in System Settings → Displays.
             Missing/ambiguous displays or changed rotation/color space require manual
@@ -79,21 +83,24 @@ public enum CLIHelp {
         case "mirror", "unmirror":
             return """
             Usage: panelctl mirror --display <selector> --source <selector> --consent-mirror [--journal <path>]
-            Usage: panelctl unmirror --consent-unmirror [--journal <path>]
+            Usage: panelctl unmirror [--display <selector>] --consent-unmirror [--journal <path>]
 
             Experimental public, session-scoped mirroring; only documented cycles are qualified.
             Both selectors are explicit UUIDs, decimal/hex IDs or index:<n> from list.
             Refuses built-in targets, inactive/asleep displays, existing mirrors,
-            ambiguous identities and unresolved journals. A main external target is
+            ambiguous identities and recovery needing attention. A healthy public-mirror
+            session may accept additional targets. Show only one with `unmirror --display`;
+            multiple removals require an explicit selector. A main external target is
             accepted; macOS may keep it main, move main to the source or report another
             display as main. Only the documented AW3423DW-to-AW3425DW main-target
             mirror/unmirror cycle is qualified; untested combinations remain unsupported.
             Captures topology before writes.
             Mirroring removes a separate desktop, NOT the signal; modes/HDR/refresh,
             windows and Spaces may change. No gamma, DDC or private display setters.
-            unmirror restores captured modes, origins, mirroring and main display,
-            then verifies; it does not restore window/Spaces placement or HDR settings.
-            Failures keep the journal. Explicit fallback: panelctl recovery restore
+            unmirror --display restores only that target; the final Show restores and
+            verifies the immutable pre-first-Hide modes, origins, mirroring and main display.
+            It does not restore window/Spaces placement or HDR settings. Failures keep every
+            entry. Explicit fallback: panelctl recovery restore --display <UUID>
             [--journal <path>]; changed identity/rotation/color requires manual action.
             No automatic restore on exit, watchdog, or promise of crash recovery.
             Each real mirror/unmirror requires fresh scoped human approval for each write.
@@ -108,8 +115,9 @@ public enum CLIHelp {
 
             away captures a durable mirror journal, optionally selects the monitor input,
             then hides its separate desktop by public session-scoped mirroring.
-            back requires the same journal target, restores and verifies the captured
-            topology FIRST, then optionally selects the input. No DDC failure blocks unhide.
+            back requires the selected target, Shows only that entry and verifies the
+            topology FIRST, then optionally selects that target's input. Other removals
+            remain hidden; the final back verifies the original session baseline. No DDC failure blocks unhide.
             --input accepts dp1, dp2, hdmi1, hdmi2, decimal 1..255 or hex 0x01..0xFF.
             DDC is attempted only with --input and a successful pre-read. Otherwise use
             the monitor's input button. Mirroring keeps the Mac signal on: no automatic
@@ -118,6 +126,7 @@ public enum CLIHelp {
             Defaults to the shared recovery journal; use the same --journal for back.
             Errors retain evidence and print recovery commands; no automatic rollback,
             retry, watchdog or disruptive fallback. Stop on unexpected behavior.
+            away can add a target beside healthy removals; status lists every target.
             Each hardware handoff requires fresh scoped approval for each write. Consent
             flags do not replace approval. Only the documented non-main S2721DGF round trip
             is hardware-qualified for input switching; the main-target mirror/unmirror
