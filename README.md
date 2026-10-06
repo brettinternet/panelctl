@@ -4,6 +4,8 @@
 
 <h1 align="center">panelctl</h1>
 
+[![CI](https://github.com/brettinternet/panelctl/actions/workflows/ci.yml/badge.svg)](https://github.com/brettinternet/panelctl/actions/workflows/ci.yml)
+
 A macOS CLI and menu-bar app for per-display Hide/Show, idle blackout,
 click-through dimming, display sleep and experimental monitor controls.
 
