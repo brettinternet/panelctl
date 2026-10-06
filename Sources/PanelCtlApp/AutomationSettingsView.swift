@@ -156,8 +156,9 @@ struct AutomationSettingsView: View {
                 rowStatus(status, warning: blocker != nil && !running)
             }
             if let result {
-                // A plain success is already reflected by each step's result.
-                if result.outcome != .done, result.summary != status {
+                // Each step already shows its own result and any problem.
+                let stepShowsProblem = stepResults?.contains(where: DisplayActionPresentation.stepNeedsAttention) ?? false
+                if result.outcome != .done, result.summary != status, !stepShowsProblem {
                     rowStatus(result.summary, warning: result.outcome == .recoveryNeeded)
                 }
                 if stepResults == nil, let steps = result.steps, !steps.isEmpty {
@@ -333,7 +334,7 @@ struct AutomationSettingsView: View {
                 .accessibilityLabel(ProtectionRulePresentation.ruleSwitchAccessibilityLabel(for: rule.name))
             }
             VStack(alignment: .leading, spacing: 4) {
-                factLine(settings.mode == .working ? "sun.min" : "moon", summary.trigger)
+                factLine("timer", summary.trigger)
                 factLine(settings.allDisplays || settings.selectedDisplayUUIDs.count > 1 ? "display.2" : "display",
                          summary.targets)
                 factLine(afterwardSymbol(settings.followUpAction), summary.afterward)
