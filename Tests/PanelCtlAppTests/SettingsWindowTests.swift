@@ -617,6 +617,22 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertNoThrow(try model.makeShowRequest())
     }
 
+    func testMenuStatusTextWrapsToFixedWidth() throws {
+        let font = NSFont.menuFont(ofSize: 0)
+        let long = String(repeating: "Display recovery needs attention before automation resumes. ", count: 6)
+        let lines = AppDelegate.wrap(long, width: 240, font: font, maxLines: 3)
+        XCTAssertEqual(lines.count, 3)
+        XCTAssertTrue(lines[2].hasSuffix("\u{2026}"))
+        XCTAssertTrue(lines.allSatisfy { ($0 as NSString).size(withAttributes: [.font: font]).width <= 240 })
+        XCTAssertEqual(AppDelegate.wrap("Short", width: 240, font: font, maxLines: 3), ["Short"])
+
+        let (model, defaults) = try makeModel()
+        defer { defaults.removePersistentDomain(forName: Self.suiteName) }
+        let delegate = AppDelegate()
+        delegate.model = model
+        XCTAssertEqual(delegate.makeMenu().size.width, AppDelegate.menuWidth)
+    }
+
     func testRecoveryDetailsDisclosureRespondsAcrossItsFullRowAndToKeyboard() throws {
         let status = DisplayHandoffStatus(
             state: .recovery,

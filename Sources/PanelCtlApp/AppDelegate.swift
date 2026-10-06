@@ -353,27 +353,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = makeMenu()
     }
 
+    /// The menu keeps this width; status text wraps instead of widening it.
+    static let menuWidth: CGFloat = 300
+    /// Room for the menu's insets and image column, so wrapped text never widens it.
+    private static let menuTextWidth = menuWidth - 60
+
     func makeMenu() -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        menu.minimumWidth = Self.menuWidth
         menu.delegate = self
 
-        let status = NSMenuItem(title: model.statusSummary, action: nil, keyEquivalent: "")
+        let status = infoItem(model.statusSummary)
         status.image = NSImage(
             systemSymbolName: model.statusSystemImage,
             accessibilityDescription: nil
         )
-        status.isEnabled = false
         menu.addItem(status)
 
         if let message = model.runtimeState.detailMessage {
-            let detail = NSMenuItem(
-                title: message.replacingOccurrences(of: "\n", with: " "),
-                action: nil,
-                keyEquivalent: ""
-            )
-            detail.isEnabled = false
-            menu.addItem(detail)
+            menu.addItem(infoItem(message, maxLines: 3))
         }
 
         menu.addItem(.separator())
@@ -462,8 +461,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             items.append(display)
             if let line = model.displayResults[tile.id]?.menuLine {
-                let result = disabledItem(line.count > 72 ? String(line.prefix(71)) + "…" : line)
-                result.toolTip = line
+                let result = infoItem(line, maxLines: 2)
                 result.indentationLevel = 1
                 items.append(result)
             }
@@ -476,7 +474,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         model.refreshHandoffStatus()
         guard let status = menu.items.first else { return }
-        status.title = model.statusSummary
+        setInfoTitle(model.statusSummary, of: status)
         status.image = NSImage(
             systemSymbolName: model.statusSystemImage,
             accessibilityDescription: nil
@@ -499,6 +497,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let restore = item("Restore", action: #selector(restoreNow))
         restore.toolTip = "Ends blackout or dimming from every rule. Hidden displays stay hidden."
         return restore
+    }
+
+    /// A disabled line of status text, wrapped to the menu's fixed width.
+    private func infoItem(_ text: String, maxLines: Int = 2) -> NSMenuItem {
+        let item = disabledItem("")
+        setInfoTitle(text, of: item, maxLines: maxLines)
+        return item
+    }
+
+    /// Menu titles don't wrap on their own, but an attributed title renders
+    /// its line breaks, so break the text where it would pass the fixed width.
+    private func setInfoTitle(_ text: String, of item: NSMenuItem, maxLines: Int = 2) {
+        let font = NSFont.menuFont(ofSize: 0)
+        let lines = Self.wrap(text, width: Self.menuTextWidth, font: font, maxLines: maxLines)
+        item.attributedTitle = NSAttributedString(
+            string: lines.joined(separator: "\n"),
+            attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+        )
+        item.toolTip = lines.joined(separator: " ") == text ? nil : text
+    }
+
+    static func wrap(_ text: String, width: CGFloat, font: NSFont, maxLines: Int) -> [String] {
+        let flat = text.split(whereSeparator: \.isNewline).joined(separator: " ")
+        let storage = NSTextStorage(string: flat, attributes: [.font: font])
+        let layout = NSLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        layout.addTextContainer(container)
+        storage.addLayoutManager(layout)
+        var lines: [String] = []
+        layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { _, _, _, glyphs, _ in
+            let range = layout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+            lines.append((flat as NSString).substring(with: range).trimmingCharacters(in: .whitespaces))
+        }
+        guard lines.count > maxLines else { return lines }
+        lines = Array(lines.prefix(maxLines))
+        var last = lines[maxLines - 1]
+        let fits = { (line: String) in
+            ((line + "…") as NSString).size(withAttributes: [.font: font]).width <= width
+        }
+        while !last.isEmpty, !fits(last) { last.removeLast() }
+        lines[maxLines - 1] = last.trimmingCharacters(in: .whitespaces) + "…"
+        return lines
     }
 
     private func disabledItem(_ title: String) -> NSMenuItem {

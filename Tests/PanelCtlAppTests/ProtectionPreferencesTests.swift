@@ -567,7 +567,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         try await waitUntil { service.state == .waitingForPlayback }
         XCTAssertEqual(
             service.state.label,
-            "Active media or camera detected — blackout paused"
+            "Paused for media or camera"
         )
 
         let stopped = expectation(description: "watcher stopped")
