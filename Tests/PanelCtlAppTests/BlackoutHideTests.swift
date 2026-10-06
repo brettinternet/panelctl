@@ -39,6 +39,10 @@ final class BlackoutHideTests: XCTestCase {
         XCTAssertEqual(tile(Self.sideUUID, model).action, .show)
         XCTAssertNil(tile(Self.sideUUID, model).actionBlocker)
         XCTAssertEqual(model.coveredHiddenDisplayIDs, [202])
+        XCTAssertEqual(model.automationDisplayChoices.map(\.uuid), [Self.mainUUID, Self.thirdUUID, Self.sideUUID])
+        XCTAssertEqual(model.automationDisplayChoices.last?.automationChoiceLabel, "Side (Hidden)")
+        XCTAssertEqual(model.makeNewDisplayAction(selectedDisplayID: Self.sideUUID).target?.uuid, Self.sideUUID)
+        XCTAssertEqual(model.coveredHiddenDisplayIDs, [202], "configuration does not show hidden displays")
         let showSide = try XCTUnwrap(delegate.makeMenu().items.first { $0.title == "Show Side" })
         XCTAssertTrue(showSide.isEnabled)
         if #available(macOS 14.4, *) {

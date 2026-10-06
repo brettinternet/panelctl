@@ -201,6 +201,10 @@ struct DisplayTile: Identifiable, Equatable {
 
     var isMain: Bool { display?.main == true }
 
+    var automationChoiceLabel: String {
+        status == .hidden ? "\(name) (Hidden)" : name
+    }
+
     /// Width over height, clamped to a drawable range.
     var aspectRatio: Double {
         guard let display, display.pixelWidth > 0, display.pixelHeight > 0 else { return 16.0 / 9.0 }

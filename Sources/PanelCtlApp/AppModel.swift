@@ -365,6 +365,19 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Configuration choices, not runtime eligibility. Hidden displays stay selectable.
+    var automationDisplayChoices: [DisplayTile] {
+        let tiles = displayTiles
+        return tiles.filter { $0.status != .hidden } + tiles.filter { $0.status == .hidden }
+    }
+
+    func automationDisplayIdentity(for tile: DisplayTile) -> DisplayIdentitySnapshot? {
+        guard let uuid = tile.uuid, UUID(uuidString: uuid) != nil else { return nil }
+        if let display = tile.display { return DisplayIdentitySnapshot(display) }
+        return blackoutHiddenDisplays[uuid.lowercased()]
+            ?? hideDisplayConfigurations.first { $0.target.uuid.caseInsensitiveCompare(uuid) == .orderedSame }?.target
+    }
+
     var hideDisplayConfigurations: [DisplayHideConfiguration] {
         var result: [DisplayHideConfiguration] = []
         var seen = Set<String>()
@@ -591,7 +604,7 @@ final class AppModel: ObservableObject {
 
     func unavailableSelectedDisplayUUIDs(for settings: ProtectionPreferences) -> [String] {
         guard !settings.allDisplays else { return [] }
-        let available = Set(activeDisplays.compactMap(\.uuid).map { $0.uppercased() })
+        let available = Set(automationDisplayChoices.compactMap(\.uuid).map { $0.uppercased() })
         return settings.selectedDisplayUUIDs
             .map { $0.uppercased() }
             .filter { !available.contains($0) }
@@ -637,20 +650,18 @@ final class AppModel: ObservableObject {
         }
         var target: DisplayIdentitySnapshot?
         if let selectedDisplayID,
-           let display = activeDisplays.first(where: { $0.uuid?.caseInsensitiveCompare(selectedDisplayID) == .orderedSame }),
-           let uuid = display.uuid, UUID(uuidString: uuid) != nil {
-            target = DisplayIdentitySnapshot(display)
+           let display = automationDisplayChoices.first(where: { $0.uuid?.caseInsensitiveCompare(selectedDisplayID) == .orderedSame }) {
+            target = automationDisplayIdentity(for: display)
         }
         return DisplayAction(name: name, target: target)
     }
 
     func makeNewDisplayActionStep(excluding action: DisplayAction? = nil) -> DisplayActionStep {
         let used = Set((action?.steps.compactMap(\.target?.uuid) ?? []).map { $0.lowercased() })
-        let display = activeDisplays.first { record in
-            guard let uuid = record.uuid, UUID(uuidString: uuid) != nil else { return false }
-            return !used.contains(uuid.lowercased())
+        let target = automationDisplayChoices.compactMap { automationDisplayIdentity(for: $0) }.first {
+            !used.contains($0.uuid.lowercased())
         }
-        return DisplayActionStep(target: display.map(DisplayIdentitySnapshot.init))
+        return DisplayActionStep(target: target)
     }
 
     func displayActionValidation(for draft: DisplayAction, replacing existingID: UUID? = nil) -> String? {

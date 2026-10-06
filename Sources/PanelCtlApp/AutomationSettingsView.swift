@@ -419,7 +419,7 @@ struct DisplayActionEditor: View {
         )) {
             Text("Choose a display").tag("")
             ForEach(availableDisplays(for: index), id: \.id) { display in
-                if let uuid = display.uuid { Text(display.settingsName).tag(uuid) }
+                if let uuid = display.uuid { Text(display.automationChoiceLabel).tag(uuid) }
             }
             if let target = step.target,
                !stableDisplays.contains(where: { $0.uuid?.caseInsensitiveCompare(target.uuid) == .orderedSame }) {
@@ -491,14 +491,11 @@ struct DisplayActionEditor: View {
         }
     }
 
-    private var stableDisplays: [DisplayRecord] {
-        model.activeDisplays.filter { display in
-            guard let uuid = display.uuid else { return false }
-            return UUID(uuidString: uuid) != nil
-        }
+    private var stableDisplays: [DisplayTile] {
+        model.automationDisplayChoices.filter { model.automationDisplayIdentity(for: $0) != nil }
     }
 
-    private func availableDisplays(for index: Int) -> [DisplayRecord] {
+    private func availableDisplays(for index: Int) -> [DisplayTile] {
         let current = draft.steps[index].target?.uuid.lowercased()
         let used = Set(draft.steps.enumerated().compactMap { offset, step in
             offset == index ? nil : step.target?.uuid.lowercased()
@@ -513,7 +510,7 @@ struct DisplayActionEditor: View {
         guard draft.steps.indices.contains(index) else { return }
         let display = stableDisplays.first(where: { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame })
         updateStep(at: index) { step in
-            step.target = display.map(DisplayIdentitySnapshot.init)
+            step.target = display.flatMap { model.automationDisplayIdentity(for: $0) }
             step.reviewedRemoval = nil
         }
     }
@@ -611,7 +608,7 @@ struct ProtectionRuleEditor: View {
 
                 Section {
                     Toggle("All displays", isOn: setting(\.allDisplays))
-                    ForEach(model.activeDisplays, id: \.id) { display in
+                    ForEach(model.automationDisplayChoices) { display in
                         displayRow(display)
                     }
                     ForEach(model.unavailableSelectedDisplayUUIDs(for: draft.settings), id: \.self) { uuid in
@@ -622,8 +619,8 @@ struct ProtectionRuleEditor: View {
                 } footer: {
                     if draft.settings.allDisplays {
                         SectionFooter("Includes displays you connect later.")
-                    } else if model.activeDisplays.isEmpty {
-                        SectionFooter("No active displays found.")
+                    } else if model.automationDisplayChoices.isEmpty {
+                        SectionFooter("No displays found.")
                     }
                 }
 
@@ -752,7 +749,7 @@ struct ProtectionRuleEditor: View {
         }
     }
 
-    private func displayRow(_ display: DisplayRecord) -> some View {
+    private func displayRow(_ display: DisplayTile) -> some View {
         let uuid = display.uuid
         return Toggle(isOn: Binding(
             get: {
@@ -774,19 +771,19 @@ struct ProtectionRuleEditor: View {
                 draft.settings = settings
             }
         )) {
-            Text(display.settingsName)
+            Text(display.automationChoiceLabel)
             Text(displaySubtitle(for: display))
         }
         .disabled(draft.settings.allDisplays || uuid == nil)
     }
 
-    private func displaySubtitle(for display: DisplayRecord) -> String {
+    private func displaySubtitle(for display: DisplayTile) -> String {
         guard let uuid = display.uuid,
               let other = ProtectionRuleValidator.conflictingEnabledRule(
                 for: draft,
                 in: model.automationPreferences,
                 sharing: uuid
-              ) else { return display.settingsDetail }
+              ) else { return display.display?.settingsDetail ?? display.status.label }
         return "Also in “\(other.name)”"
     }
 

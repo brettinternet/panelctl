@@ -226,13 +226,37 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(navigation.selectedDisplayID, Self.sideUUID.lowercased())
     }
 
+    func testHiddenAutomationChoicesIncludeInactiveAndDisconnectedTargets() throws {
+        for inventory in [hiddenDisplays, [displays[0], displays[2]]] {
+            let (model, defaults) = try makeModel(displays: inventory, status: { self.hiddenStatus() })
+            defer { defaults.removePersistentDomain(forName: Self.suiteName) }
+            let choices = model.automationDisplayChoices
+            XCTAssertEqual(choices.compactMap { $0.uuid?.uppercased() }, [Self.mainUUID, Self.laptopUUID, Self.sideUUID])
+            let hidden = try XCTUnwrap(choices.last)
+            XCTAssertEqual(hidden.automationChoiceLabel, "DELL S2721DGF (Hidden)")
+            XCTAssertEqual(model.automationDisplayIdentity(for: hidden)?.uuid.uppercased(), Self.sideUUID)
+            XCTAssertFalse(model.activeDisplays.contains { $0.uuid == Self.sideUUID })
+            var rule = model.makeNewProtectionRule()
+            rule.settings.selectedDisplayUUIDs = [Self.sideUUID]
+            XCTAssertTrue(model.unavailableSelectedDisplayUUIDs(for: rule.settings).isEmpty)
+            try model.saveProtectionRule(rule)
+            XCTAssertEqual(model.automationPreferences.rules.last?.settings.selectedDisplayUUIDs, [Self.sideUUID])
+            var action = model.makeNewDisplayAction(selectedDisplayID: Self.sideUUID)
+            action.name = "Show hidden monitor"
+            action.steps[0].effect = .show
+            try model.saveDisplayAction(action)
+            XCTAssertEqual(model.displayActions.actions.last?.target?.uuid.uppercased(), Self.sideUUID)
+            XCTAssertEqual(model.handoffStatus?.state, .hidden)
+        }
+    }
+
     func testRuleEditorCancelSaveAndKeyboardShortcuts() throws {
         let app = NSApplication.shared
         let originalPolicy = app.activationPolicy()
         app.setActivationPolicy(.accessory)
         defer { app.setActivationPolicy(originalPolicy) }
         app.activate(ignoringOtherApps: true)
-        let (model, defaults) = try makeModel(configure: { defaults in
+        let (model, defaults) = try makeModel(displays: hiddenDisplays, status: { self.hiddenStatus() }, configure: { defaults in
             let existing = ProtectionRule(name: "Existing", isEnabled: false)
             defaults.set(
                 try JSONEncoder().encode(AutomationPreferences(isEnabled: false, rules: [existing])),
@@ -268,7 +292,7 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(defaults.data(forKey: "automationRules"), originalData, "Cancel does not persist")
 
         var savedDraft = model.makeNewProtectionRule()
-        savedDraft.settings.selectedDisplayUUIDs = [Self.mainUUID]
+        savedDraft.settings.selectedDisplayUUIDs = [Self.sideUUID]
         savedDraft.settings.followUpAction = .restore
         let (saveParent, saveSheet) = try presentProductionRuleEditor(
             model: model, rule: savedDraft, isNew: true
@@ -288,6 +312,8 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertNil(saveParent.attachedSheet, "Return must dismiss the production sheet after Save")
         let saved = try XCTUnwrap(model.automationPreferences.rule(namedID: savedDraft.id))
         XCTAssertEqual(saved.name, "Saved draft")
+        XCTAssertEqual(saved.settings.selectedDisplayUUIDs, [Self.sideUUID])
+        XCTAssertEqual(model.handoffStatus?.state, .hidden)
         XCTAssertNotEqual(model.automationPreferences, original)
         XCTAssertEqual(
             try JSONDecoder().decode(AutomationPreferences.self, from: XCTUnwrap(defaults.data(forKey: "automationRules"))),
@@ -303,7 +329,7 @@ final class SettingsWindowTests: XCTestCase {
         app.activate(ignoringOtherApps: true)
         defer { app.setActivationPolicy(originalPolicy) }
 
-        let (model, defaults) = try makeModel()
+        let (model, defaults) = try makeModel(displays: hiddenDisplays, status: { self.hiddenStatus() })
         defer { defaults.removePersistentDomain(forName: Self.suiteName) }
         let navigation = SettingsNavigation()
         navigation.selectedDisplayID = Self.sideUUID.lowercased()
@@ -344,6 +370,7 @@ final class SettingsWindowTests: XCTestCase {
         let saved = try XCTUnwrap(model.displayActions.actions.first)
         XCTAssertEqual(saved.target?.uuid.lowercased(), Self.sideUUID.lowercased())
         XCTAssertEqual(saved.effect, .blackOut)
+        XCTAssertEqual(model.handoffStatus?.state, .hidden)
         XCTAssertEqual(
             try JSONDecoder().decode(DisplayActionSet.self, from: XCTUnwrap(defaults.data(forKey: AppModel.displayActionsKey))),
             model.displayActions,
@@ -1537,6 +1564,11 @@ final class SettingsWindowTests: XCTestCase {
         return switches.count == 1 ? switches[0] : nil
     }
 
+    private var hiddenDisplays: [DisplayRecord] {
+        [displays[0], Self.display(index: 2, id: 12, uuid: Self.sideUUID,
+                                  name: "DELL S2721DGF", main: false, active: false), displays[2]]
+    }
+
     private func hiddenStatus() -> DisplayHandoffStatus {
         let identity: (DisplayRecord) -> DisplayHideIdentity = {
             DisplayHideIdentity(uuid: $0.uuid!, displayID: $0.id, name: $0.name, vendor: $0.vendor, model: $0.model, serial: $0.serial)
@@ -1603,14 +1635,14 @@ final class SettingsWindowTests: XCTestCase {
 
     private static func display(
         index: Int, id: UInt32, uuid: String, name: String, main: Bool, builtin: Bool = false,
-        portrait: Bool = false
+        portrait: Bool = false, active: Bool = true
     ) -> DisplayRecord {
         DisplayRecord(
             index: index,
             id: id,
             uuid: uuid,
             name: name,
-            active: true,
+            active: active,
             online: true,
             asleep: false,
             builtin: builtin,
