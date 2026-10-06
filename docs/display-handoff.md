@@ -79,7 +79,8 @@ In the later [multi-display trials](display-multi-removal-trial.md), macOS
 placed S2721DGF at y=0 instead of its saved y=-4 while AW3425DW remained
 mirrored. A partial `back` now accepts that placement (mode, survivors and
 remaining removals still verify) and the last `back` restores the exact
-original desktop. That same-order cycle is qualified only by its recorded trial.
+original desktop. The third trial qualified that same-order cycle with input
+switching; it qualifies only that tuple.
 
 ## Observed round trip, 2026-10-04
 

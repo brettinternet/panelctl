@@ -206,8 +206,9 @@ idle, startup or wake path disconnects a display. See
 S2721DGF while AW3425DW remains removed places it at y=0 instead of its saved
 y=-4; two hardware trials reproduced this. Such a Show succeeds and returns
 the input; the last Show restores the exact original arrangement, which both
-trials verified. The complete same-order round trip still needs a new
-supervised trial. See [trial evidence](display-multi-removal-trial.md).
+trials verified. A third trial qualified the same-order CLI round trip with
+input switching; other combinations and app/menu-driven multi-removal remain
+unqualified. See [trial evidence](display-multi-removal-trial.md).
 
 ## States and recovery
 

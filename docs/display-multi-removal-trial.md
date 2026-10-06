@@ -13,7 +13,9 @@ global reset, logout, reboot, or automatic retry was used.
 origin verification. Guarded final-layout recovery succeeded, but this was not
 a successful independent same-order round trip or evidence for other combinations.
 The partial-Show requirement was later changed; see
-[Scope decision](#scope-decision-partial-show-placement). A new trial is required.
+[Scope decision](#scope-decision-partial-show-placement), and the
+[third trial](#third-trial-qualified-same-order-round-trip-2026-10-06-0329)
+qualified the same-order round trip.
 
 ## Captured baseline
 
@@ -195,7 +197,28 @@ Offline evidence: the recorded `failedPartial`/`failedRepair` snapshots in
 partial-Show postcondition, still fail baseline verification, and are refused
 as a final-Show result. No hardware write was made for this change.
 
-**Still not qualified.** AC8 needs a new supervised same-order trial on the
-original layout (S2721DGF at (3440,-4)), with every DDC and topology write
-separately approved, recording the partial placement, input returns and exact
-final verification.
+## Third trial: qualified same-order round trip, 2026-10-06 03:29
+
+Build `07721e6` (partial-Show placement change `1cd7b80` plus the DDC/CI 40 ms
+reply wait `202002f`). Same host, build, displays and baseline as above,
+including S2721DGF at (3440,-4); fresh IDs 1, 2, 3, 5 matched. Read-only
+preflight found journal `3FE2CCE5` verified. The user approved a one-hour app
+snooze, confirmed presence, inputs and manual fallback, and approved each of
+the four commands separately. Journal: session `85C32EE4-DAC4-4167-9BAC-514B7DAB2C4E`.
+
+| Step | Command | Result |
+| --- | --- | --- |
+| 1 | `away` S2721DGF → AW3423DW, `--input hdmi1` | Read DP1 `0x0F`; HDMI1 **verified** (first verified S2721DGF readback); mirror verified. User confirmed the other computer's picture and usable Mac displays |
+| 2 | `away` AW3425DW → AW3423DW, `--input dp1` | Read HDMI1 `0x11`; DP1 verified; mirror verified. Both entries `mirrored`; both `recovery verify --display` passed. K272HUL (-1440,0) and AW3423DW (main, 0,0) unchanged |
+| 3 | `back` S2721DGF, `--input dp1` | Separate and active at **(3440,0)** with its saved mode, as predicted; K272HUL and AW3423DW unchanged; AW3425DW still mirrored. Partial-Show verification passed; DP1 return verified (re-read `0x0F`). Entries: S2721DGF `restored`, AW3425DW `mirrored`; both verified |
+| 4 | `back` AW3425DW, `--input hdmi1` | Final Show restored and verified the whole baseline: S2721DGF (3440,-4), AW3425DW (0,1440), K272HUL (-1440,0), AW3423DW main (0,0), original modes, no mirrors. HDMI1 return verified. Journal `restored`, both entries `restored`; `recovery verify` passed; inputs re-read HDMI1 `0x11` and DP1 `0x0F` |
+
+No write was retried and no recovery path was needed. Raw command output, lists
+and journal copies were kept in the operator checkout under
+`.build/task32-trial3/` (diagnostic, not portable).
+
+**Qualified:** this exact tuple only. S2721DGF then AW3425DW removed onto the
+main AW3423DW with DDC input switching, shown in the same order, on `Mac17,14`
+`26A434`, with these ports and this layout. Other orders, sources, main-display
+removal in a multi-session, app/menu/script-driven multi-removal and other
+layouts remain unqualified.

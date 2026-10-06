@@ -71,8 +71,9 @@ position; the final Show verifies the exact pre-first-Hide arrangement, modes
 and main display. Every Show verifies before switching back to the Mac's
 detected input. Turning Experimental features off makes new
 Hides black out instead, but never removes Show or recovery for a removed
-display. Multi-display combinations remain unqualified until a supervised
-same-order round trip passes; see [the trial record](display-multi-removal-trial.md).
+display. Only the recorded S2721DGF-then-AW3425DW CLI round trip is qualified;
+other multi-display combinations remain unqualified. See
+[the trial record](display-multi-removal-trial.md).
 Each new live write still needs separate approval.
 
 The menu also offers per-display Hide/Show; each Show leaves other removed

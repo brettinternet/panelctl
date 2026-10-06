@@ -81,9 +81,11 @@ placed S2721DGF at (3440,0) instead of its saved (3440,-4) when it returned
 while AW3425DW remained mirrored, even with the other desktops explicitly
 anchored. Exact mode, survivors and the remaining mirror verified. The last
 Show restored the full baseline, including (3440,-4), exactly both times.
-Partial Show therefore no longer requires the saved origin (see above). The
-same-order round trip with input return is not yet qualified; it needs a new
-supervised trial. See [trial evidence and recovery](display-multi-removal-trial.md).
+Partial Show therefore no longer requires the saved origin (see above). A third
+supervised trial then qualified that same-order round trip with input switching:
+the partial Show placed S2721DGF at (3440,0) and passed, and the last Show
+restored (3440,-4) exactly. Only that tuple is qualified. See
+[trial evidence and recovery](display-multi-removal-trial.md).
 
 ## Recovery and selectors
 
