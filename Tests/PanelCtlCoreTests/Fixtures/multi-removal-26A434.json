@@ -1,0 +1,723 @@
+{
+  "provenance": {
+    "journal": "BC156BFD-BA21-4367-BB0D-4D06A16274D7",
+    "hideAndPartialShowCommit": "829e2ce",
+    "repairCommit": "4d11d9e",
+    "finalRecoveryCommit": "bb6c5c1",
+    "note": "Raw recorded snapshots. Diagnostic captures include CoreDisplay connector metadata; baseline is the public-only session capture. Test normalization must be explicit, never change runtime identity checks. Historical display IDs are evidence, not live selection."
+  },
+  "snapshots": {
+    "baseline": {
+      "bootSession": "9D95EE40-D277-457A-8A81-A2BCBB7F1CF5",
+      "displays": [
+        {
+          "active": true,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "f2fc8655a3e182e2ff47b8d2b4c8bd0b3af461b694f3494a0ecdc2a1a5a5a117",
+          "colorProfileDigest": "8a9243f3c6a443f933d7ec3b12ab05d67f8dbef50437f9bc9389ffd359a185a8",
+          "id": 1,
+          "identityEvidence": {
+            "capturedAt": 812944423.585301,
+            "hpd": "High",
+            "source": "cgAndIOKit",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-USB-C@3/DisplayPort"
+          },
+          "main": false,
+          "mode": {
+            "flags": 33554439,
+            "height": 2560,
+            "id": 75,
+            "pixelHeight": 2560,
+            "pixelWidth": 1440,
+            "refreshRate": 165,
+            "width": 1440
+          },
+          "model": 16857,
+          "name": "DELL S2721DGF",
+          "rotation": 270,
+          "serial": 1094800204,
+          "uuid": "09084682-3c42-4455-aab8-126a7431125b",
+          "vendor": 4268,
+          "x": 3440,
+          "y": -4
+        },
+        {
+          "active": true,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "d8de7372c06220b9a1fec3ca2a9058049bd2f6c09c1d1a5d3344666b0deeb5c9",
+          "colorProfileDigest": "dea4353cd58d5f6accb10f76327197c6b30faceb84d3eeb49ef75c6798ccb56c",
+          "id": 5,
+          "identityEvidence": {
+            "capturedAt": 812944423.584734,
+            "hpd": "High",
+            "source": "cgAndIOKit",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-USB-C@2/DisplayPort"
+          },
+          "main": true,
+          "mode": {
+            "flags": 33554439,
+            "height": 1440,
+            "id": 76,
+            "pixelHeight": 1440,
+            "pixelWidth": 3440,
+            "refreshRate": 175,
+            "width": 3440
+          },
+          "model": 41444,
+          "name": "Dell AW3423DW",
+          "rotation": 0,
+          "serial": 809906515,
+          "uuid": "1fc57e99-de7c-4daf-b896-3b512cee064f",
+          "vendor": 4268,
+          "x": 0,
+          "y": 0
+        },
+        {
+          "active": true,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "8cd540d3f3ae65400c716db9fcd6e6e55d3b319ef5a687dd9418d7116cf372ab",
+          "colorProfileDigest": "2963b126ea7aaa2e010d31d8695043ec5dd84ebe357e0b1a34ab90866ad4dbcb",
+          "id": 3,
+          "identityEvidence": {
+            "capturedAt": 812944423.585883,
+            "hpd": "High",
+            "source": "cgAndIOKit",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-USB-C@1/DisplayPort"
+          },
+          "main": false,
+          "mode": {
+            "flags": 33554439,
+            "height": 2560,
+            "id": 32,
+            "pixelHeight": 2560,
+            "pixelWidth": 1440,
+            "refreshRate": 60,
+            "width": 1440
+          },
+          "model": 1316,
+          "name": "K272HUL",
+          "rotation": 270,
+          "serial": 1952494047,
+          "uuid": "98402864-2a3e-4b75-92e6-0f801b89c132",
+          "vendor": 1138,
+          "x": -1440,
+          "y": 0
+        },
+        {
+          "active": true,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "89662554fbbf20b78af501b91cd026b26a2e0ddfd6e9997a999a2e2abe2a4187",
+          "colorProfileDigest": "4878170cb416bd1fdf657277dd852791d779f29bd410c4376b6368adfbf5505b",
+          "id": 2,
+          "identityEvidence": {
+            "capturedAt": 812944423.585591,
+            "hpd": "High",
+            "source": "cgAndIOKit",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-HDMI@1/DisplayPort"
+          },
+          "main": false,
+          "mode": {
+            "flags": 33554439,
+            "height": 1440,
+            "id": 100,
+            "pixelHeight": 1440,
+            "pixelWidth": 3440,
+            "refreshRate": 240,
+            "width": 3440
+          },
+          "model": 41613,
+          "name": "AW3425DW",
+          "rotation": 0,
+          "serial": 809650259,
+          "uuid": "a8d3635b-35ec-4171-bbe2-95fb8cf76111",
+          "vendor": 4268,
+          "x": 0,
+          "y": 1440
+        }
+      ],
+      "hostModel": "Mac17,14",
+      "osBuild": "26A434",
+      "userID": 501
+    },
+    "bothHidden": {
+      "bootSession": "9D95EE40-D277-457A-8A81-A2BCBB7F1CF5",
+      "displays": [
+        {
+          "active": false,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "f2fc8655a3e182e2ff47b8d2b4c8bd0b3af461b694f3494a0ecdc2a1a5a5a117",
+          "colorProfileDigest": "8a9243f3c6a443f933d7ec3b12ab05d67f8dbef50437f9bc9389ffd359a185a8",
+          "connector": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext3@4000000/IOMobileFramebufferShim",
+          "id": 1,
+          "identityEvidence": {
+            "capturedAt": 812944522.996762,
+            "framebufferLocation": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext3@4000000/IOMobileFramebufferShim",
+            "hpd": "High",
+            "source": "cgAndCoreDisplay",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-USB-C@3/DisplayPort"
+          },
+          "main": false,
+          "mirrorUUID": "1fc57e99-de7c-4daf-b896-3b512cee064f",
+          "mode": {
+            "flags": 2097155,
+            "height": 1440,
+            "id": 176,
+            "pixelHeight": 1440,
+            "pixelWidth": 3440,
+            "refreshRate": 165,
+            "width": 3440
+          },
+          "model": 16857,
+          "rotation": 270,
+          "serial": 1094800204,
+          "uuid": "09084682-3c42-4455-aab8-126a7431125b",
+          "vendor": 4268,
+          "x": 0,
+          "y": 0
+        },
+        {
+          "active": true,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "d8de7372c06220b9a1fec3ca2a9058049bd2f6c09c1d1a5d3344666b0deeb5c9",
+          "colorProfileDigest": "5fe4ede580fd6ebe7d988c7524d9a873e5f2e94e49703f3dc695dfdcbd8cb4e1",
+          "connector": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext2@0/IOMobileFramebufferShim",
+          "id": 5,
+          "identityEvidence": {
+            "capturedAt": 812944522.986876,
+            "framebufferLocation": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext2@0/IOMobileFramebufferShim",
+            "hpd": "High",
+            "source": "cgAndCoreDisplay",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-USB-C@2/DisplayPort"
+          },
+          "main": true,
+          "mode": {
+            "flags": 33554439,
+            "height": 1440,
+            "id": 76,
+            "pixelHeight": 1440,
+            "pixelWidth": 3440,
+            "refreshRate": 175,
+            "width": 3440
+          },
+          "model": 41444,
+          "name": "Dell AW3423DW",
+          "rotation": 0,
+          "serial": 809906515,
+          "uuid": "1fc57e99-de7c-4daf-b896-3b512cee064f",
+          "vendor": 4268,
+          "x": 0,
+          "y": 0
+        },
+        {
+          "active": true,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "8cd540d3f3ae65400c716db9fcd6e6e55d3b319ef5a687dd9418d7116cf372ab",
+          "colorProfileDigest": "2963b126ea7aaa2e010d31d8695043ec5dd84ebe357e0b1a34ab90866ad4dbcb",
+          "connector": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext1@90000000/IOMobileFramebufferShim",
+          "id": 3,
+          "identityEvidence": {
+            "capturedAt": 812944522.998151,
+            "framebufferLocation": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext1@90000000/IOMobileFramebufferShim",
+            "hpd": "High",
+            "source": "cgAndCoreDisplay",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-USB-C@1/DisplayPort"
+          },
+          "main": false,
+          "mode": {
+            "flags": 33554439,
+            "height": 2560,
+            "id": 32,
+            "pixelHeight": 2560,
+            "pixelWidth": 1440,
+            "refreshRate": 60,
+            "width": 1440
+          },
+          "model": 1316,
+          "name": "K272HUL",
+          "rotation": 270,
+          "serial": 1952494047,
+          "uuid": "98402864-2a3e-4b75-92e6-0f801b89c132",
+          "vendor": 1138,
+          "x": -1440,
+          "y": 0
+        },
+        {
+          "active": false,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "89662554fbbf20b78af501b91cd026b26a2e0ddfd6e9997a999a2e2abe2a4187",
+          "colorProfileDigest": "7933566da7fa96d0d5f9f1fc9a9fd50117772d6963e2d521d6a2dfcd945e61c6",
+          "connector": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext0@B0000000/IOMobileFramebufferShim",
+          "id": 2,
+          "identityEvidence": {
+            "capturedAt": 812944522.99779,
+            "framebufferLocation": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext0@B0000000/IOMobileFramebufferShim",
+            "hpd": "High",
+            "source": "cgAndCoreDisplay",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-HDMI@1/DisplayPort"
+          },
+          "main": false,
+          "mirrorUUID": "1fc57e99-de7c-4daf-b896-3b512cee064f",
+          "mode": {
+            "flags": 2097155,
+            "height": 1440,
+            "id": 208,
+            "pixelHeight": 1440,
+            "pixelWidth": 3440,
+            "refreshRate": 240,
+            "width": 3440
+          },
+          "model": 41613,
+          "rotation": 0,
+          "serial": 809650259,
+          "uuid": "a8d3635b-35ec-4171-bbe2-95fb8cf76111",
+          "vendor": 4268,
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "hostModel": "Mac17,14",
+      "osBuild": "26A434",
+      "userID": 501
+    },
+    "failedPartial": {
+      "bootSession": "9D95EE40-D277-457A-8A81-A2BCBB7F1CF5",
+      "displays": [
+        {
+          "active": true,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "f2fc8655a3e182e2ff47b8d2b4c8bd0b3af461b694f3494a0ecdc2a1a5a5a117",
+          "colorProfileDigest": "8a9243f3c6a443f933d7ec3b12ab05d67f8dbef50437f9bc9389ffd359a185a8",
+          "connector": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext3@4000000/IOMobileFramebufferShim",
+          "id": 1,
+          "identityEvidence": {
+            "capturedAt": 812944567.324427,
+            "framebufferLocation": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext3@4000000/IOMobileFramebufferShim",
+            "hpd": "High",
+            "source": "cgAndCoreDisplay",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-USB-C@3/DisplayPort"
+          },
+          "main": false,
+          "mode": {
+            "flags": 33554439,
+            "height": 2560,
+            "id": 75,
+            "pixelHeight": 2560,
+            "pixelWidth": 1440,
+            "refreshRate": 165,
+            "width": 1440
+          },
+          "model": 16857,
+          "name": "DELL S2721DGF",
+          "rotation": 270,
+          "serial": 1094800204,
+          "uuid": "09084682-3c42-4455-aab8-126a7431125b",
+          "vendor": 4268,
+          "x": 3440,
+          "y": 0
+        },
+        {
+          "active": true,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "d8de7372c06220b9a1fec3ca2a9058049bd2f6c09c1d1a5d3344666b0deeb5c9",
+          "colorProfileDigest": "c3ea5b87539b5631dbec4c1e23aba50c286762d8201a13bb0e1994c2a57c6796",
+          "connector": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext2@0/IOMobileFramebufferShim",
+          "id": 5,
+          "identityEvidence": {
+            "capturedAt": 812944567.324043,
+            "framebufferLocation": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext2@0/IOMobileFramebufferShim",
+            "hpd": "High",
+            "source": "cgAndCoreDisplay",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-USB-C@2/DisplayPort"
+          },
+          "main": true,
+          "mode": {
+            "flags": 33554439,
+            "height": 1440,
+            "id": 76,
+            "pixelHeight": 1440,
+            "pixelWidth": 3440,
+            "refreshRate": 175,
+            "width": 3440
+          },
+          "model": 41444,
+          "name": "Dell AW3423DW",
+          "rotation": 0,
+          "serial": 809906515,
+          "uuid": "1fc57e99-de7c-4daf-b896-3b512cee064f",
+          "vendor": 4268,
+          "x": 0,
+          "y": 0
+        },
+        {
+          "active": true,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "8cd540d3f3ae65400c716db9fcd6e6e55d3b319ef5a687dd9418d7116cf372ab",
+          "colorProfileDigest": "2963b126ea7aaa2e010d31d8695043ec5dd84ebe357e0b1a34ab90866ad4dbcb",
+          "connector": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext1@90000000/IOMobileFramebufferShim",
+          "id": 3,
+          "identityEvidence": {
+            "capturedAt": 812944567.327405,
+            "framebufferLocation": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext1@90000000/IOMobileFramebufferShim",
+            "hpd": "High",
+            "source": "cgAndCoreDisplay",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-USB-C@1/DisplayPort"
+          },
+          "main": false,
+          "mode": {
+            "flags": 33554439,
+            "height": 2560,
+            "id": 32,
+            "pixelHeight": 2560,
+            "pixelWidth": 1440,
+            "refreshRate": 60,
+            "width": 1440
+          },
+          "model": 1316,
+          "name": "K272HUL",
+          "rotation": 270,
+          "serial": 1952494047,
+          "uuid": "98402864-2a3e-4b75-92e6-0f801b89c132",
+          "vendor": 1138,
+          "x": -1440,
+          "y": 0
+        },
+        {
+          "active": false,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "89662554fbbf20b78af501b91cd026b26a2e0ddfd6e9997a999a2e2abe2a4187",
+          "colorProfileDigest": "d910a785f4ef613316f1b5854687ce14abc4f4a2d308136db2f0a58c75e224a1",
+          "connector": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext0@B0000000/IOMobileFramebufferShim",
+          "id": 2,
+          "identityEvidence": {
+            "capturedAt": 812944567.327048,
+            "framebufferLocation": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext0@B0000000/IOMobileFramebufferShim",
+            "hpd": "High",
+            "source": "cgAndCoreDisplay",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-HDMI@1/DisplayPort"
+          },
+          "main": false,
+          "mirrorUUID": "1fc57e99-de7c-4daf-b896-3b512cee064f",
+          "mode": {
+            "flags": 2097155,
+            "height": 1440,
+            "id": 208,
+            "pixelHeight": 1440,
+            "pixelWidth": 3440,
+            "refreshRate": 240,
+            "width": 3440
+          },
+          "model": 41613,
+          "rotation": 0,
+          "serial": 809650259,
+          "uuid": "a8d3635b-35ec-4171-bbe2-95fb8cf76111",
+          "vendor": 4268,
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "hostModel": "Mac17,14",
+      "osBuild": "26A434",
+      "userID": 501
+    },
+    "failedRepair": {
+      "bootSession": "9D95EE40-D277-457A-8A81-A2BCBB7F1CF5",
+      "displays": [
+        {
+          "active": true,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "f2fc8655a3e182e2ff47b8d2b4c8bd0b3af461b694f3494a0ecdc2a1a5a5a117",
+          "colorProfileDigest": "8a9243f3c6a443f933d7ec3b12ab05d67f8dbef50437f9bc9389ffd359a185a8",
+          "connector": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext3@4000000/IOMobileFramebufferShim",
+          "id": 1,
+          "identityEvidence": {
+            "capturedAt": 812944877.864856,
+            "framebufferLocation": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext3@4000000/IOMobileFramebufferShim",
+            "hpd": "High",
+            "source": "cgAndCoreDisplay",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-USB-C@3/DisplayPort"
+          },
+          "main": false,
+          "mode": {
+            "flags": 33554439,
+            "height": 2560,
+            "id": 75,
+            "pixelHeight": 2560,
+            "pixelWidth": 1440,
+            "refreshRate": 165,
+            "width": 1440
+          },
+          "model": 16857,
+          "name": "DELL S2721DGF",
+          "rotation": 270,
+          "serial": 1094800204,
+          "uuid": "09084682-3c42-4455-aab8-126a7431125b",
+          "vendor": 4268,
+          "x": 3440,
+          "y": 0
+        },
+        {
+          "active": true,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "d8de7372c06220b9a1fec3ca2a9058049bd2f6c09c1d1a5d3344666b0deeb5c9",
+          "colorProfileDigest": "c3ea5b87539b5631dbec4c1e23aba50c286762d8201a13bb0e1994c2a57c6796",
+          "connector": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext2@0/IOMobileFramebufferShim",
+          "id": 5,
+          "identityEvidence": {
+            "capturedAt": 812944877.864342,
+            "framebufferLocation": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext2@0/IOMobileFramebufferShim",
+            "hpd": "High",
+            "source": "cgAndCoreDisplay",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-USB-C@2/DisplayPort"
+          },
+          "main": true,
+          "mode": {
+            "flags": 33554439,
+            "height": 1440,
+            "id": 76,
+            "pixelHeight": 1440,
+            "pixelWidth": 3440,
+            "refreshRate": 175,
+            "width": 3440
+          },
+          "model": 41444,
+          "name": "Dell AW3423DW",
+          "rotation": 0,
+          "serial": 809906515,
+          "uuid": "1fc57e99-de7c-4daf-b896-3b512cee064f",
+          "vendor": 4268,
+          "x": 0,
+          "y": 0
+        },
+        {
+          "active": true,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "8cd540d3f3ae65400c716db9fcd6e6e55d3b319ef5a687dd9418d7116cf372ab",
+          "colorProfileDigest": "2963b126ea7aaa2e010d31d8695043ec5dd84ebe357e0b1a34ab90866ad4dbcb",
+          "connector": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext1@90000000/IOMobileFramebufferShim",
+          "id": 3,
+          "identityEvidence": {
+            "capturedAt": 812944877.866553,
+            "framebufferLocation": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext1@90000000/IOMobileFramebufferShim",
+            "hpd": "High",
+            "source": "cgAndCoreDisplay",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-USB-C@1/DisplayPort"
+          },
+          "main": false,
+          "mode": {
+            "flags": 33554439,
+            "height": 2560,
+            "id": 32,
+            "pixelHeight": 2560,
+            "pixelWidth": 1440,
+            "refreshRate": 60,
+            "width": 1440
+          },
+          "model": 1316,
+          "name": "K272HUL",
+          "rotation": 270,
+          "serial": 1952494047,
+          "uuid": "98402864-2a3e-4b75-92e6-0f801b89c132",
+          "vendor": 1138,
+          "x": -1440,
+          "y": 0
+        },
+        {
+          "active": false,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "89662554fbbf20b78af501b91cd026b26a2e0ddfd6e9997a999a2e2abe2a4187",
+          "colorProfileDigest": "d910a785f4ef613316f1b5854687ce14abc4f4a2d308136db2f0a58c75e224a1",
+          "connector": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext0@B0000000/IOMobileFramebufferShim",
+          "id": 2,
+          "identityEvidence": {
+            "capturedAt": 812944877.866095,
+            "framebufferLocation": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext0@B0000000/IOMobileFramebufferShim",
+            "hpd": "High",
+            "source": "cgAndCoreDisplay",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-HDMI@1/DisplayPort"
+          },
+          "main": false,
+          "mirrorUUID": "1fc57e99-de7c-4daf-b896-3b512cee064f",
+          "mode": {
+            "flags": 2097155,
+            "height": 1440,
+            "id": 208,
+            "pixelHeight": 1440,
+            "pixelWidth": 3440,
+            "refreshRate": 240,
+            "width": 3440
+          },
+          "model": 41613,
+          "rotation": 0,
+          "serial": 809650259,
+          "uuid": "a8d3635b-35ec-4171-bbe2-95fb8cf76111",
+          "vendor": 4268,
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "hostModel": "Mac17,14",
+      "osBuild": "26A434",
+      "userID": 501
+    },
+    "restored": {
+      "bootSession": "9D95EE40-D277-457A-8A81-A2BCBB7F1CF5",
+      "displays": [
+        {
+          "active": true,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "f2fc8655a3e182e2ff47b8d2b4c8bd0b3af461b694f3494a0ecdc2a1a5a5a117",
+          "colorProfileDigest": "8a9243f3c6a443f933d7ec3b12ab05d67f8dbef50437f9bc9389ffd359a185a8",
+          "connector": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext3@4000000/IOMobileFramebufferShim",
+          "id": 1,
+          "identityEvidence": {
+            "capturedAt": 812945140.338343,
+            "framebufferLocation": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext3@4000000/IOMobileFramebufferShim",
+            "hpd": "High",
+            "source": "cgAndCoreDisplay",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-USB-C@3/DisplayPort"
+          },
+          "main": false,
+          "mode": {
+            "flags": 33554439,
+            "height": 2560,
+            "id": 75,
+            "pixelHeight": 2560,
+            "pixelWidth": 1440,
+            "refreshRate": 165,
+            "width": 1440
+          },
+          "model": 16857,
+          "name": "DELL S2721DGF",
+          "rotation": 270,
+          "serial": 1094800204,
+          "uuid": "09084682-3c42-4455-aab8-126a7431125b",
+          "vendor": 4268,
+          "x": 3440,
+          "y": -4
+        },
+        {
+          "active": true,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "d8de7372c06220b9a1fec3ca2a9058049bd2f6c09c1d1a5d3344666b0deeb5c9",
+          "colorProfileDigest": "68d6d013e6ae80fe1723e7935e556d9de99309f4624b7c737eea26f3d8229bc3",
+          "connector": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext2@0/IOMobileFramebufferShim",
+          "id": 5,
+          "identityEvidence": {
+            "capturedAt": 812945140.337896,
+            "framebufferLocation": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext2@0/IOMobileFramebufferShim",
+            "hpd": "High",
+            "source": "cgAndCoreDisplay",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-USB-C@2/DisplayPort"
+          },
+          "main": true,
+          "mode": {
+            "flags": 33554439,
+            "height": 1440,
+            "id": 76,
+            "pixelHeight": 1440,
+            "pixelWidth": 3440,
+            "refreshRate": 175,
+            "width": 3440
+          },
+          "model": 41444,
+          "name": "Dell AW3423DW",
+          "rotation": 0,
+          "serial": 809906515,
+          "uuid": "1fc57e99-de7c-4daf-b896-3b512cee064f",
+          "vendor": 4268,
+          "x": 0,
+          "y": 0
+        },
+        {
+          "active": true,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "8cd540d3f3ae65400c716db9fcd6e6e55d3b319ef5a687dd9418d7116cf372ab",
+          "colorProfileDigest": "2963b126ea7aaa2e010d31d8695043ec5dd84ebe357e0b1a34ab90866ad4dbcb",
+          "connector": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext1@90000000/IOMobileFramebufferShim",
+          "id": 3,
+          "identityEvidence": {
+            "capturedAt": 812945140.339116,
+            "framebufferLocation": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext1@90000000/IOMobileFramebufferShim",
+            "hpd": "High",
+            "source": "cgAndCoreDisplay",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-USB-C@1/DisplayPort"
+          },
+          "main": false,
+          "mode": {
+            "flags": 33554439,
+            "height": 2560,
+            "id": 32,
+            "pixelHeight": 2560,
+            "pixelWidth": 1440,
+            "refreshRate": 60,
+            "width": 1440
+          },
+          "model": 1316,
+          "name": "K272HUL",
+          "rotation": 270,
+          "serial": 1952494047,
+          "uuid": "98402864-2a3e-4b75-92e6-0f801b89c132",
+          "vendor": 1138,
+          "x": -1440,
+          "y": 0
+        },
+        {
+          "active": true,
+          "builtin": false,
+          "colorProfileDateIndependentDigest": "89662554fbbf20b78af501b91cd026b26a2e0ddfd6e9997a999a2e2abe2a4187",
+          "colorProfileDigest": "aa0b9e3a8fdf1f1364b616957fd1e42d3378f77d122cb4ca438802438e02fc87",
+          "connector": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext0@B0000000/IOMobileFramebufferShim",
+          "id": 2,
+          "identityEvidence": {
+            "capturedAt": 812945140.338733,
+            "framebufferLocation": "IOService:/AppleARMPE/arm-io@10F00000/AppleSoCIO/dispext0@B0000000/IOMobileFramebufferShim",
+            "hpd": "High",
+            "source": "cgAndCoreDisplay",
+            "transport": "DisplayPort",
+            "transportLocation": "Port-HDMI@1/DisplayPort"
+          },
+          "main": false,
+          "mode": {
+            "flags": 33554439,
+            "height": 1440,
+            "id": 100,
+            "pixelHeight": 1440,
+            "pixelWidth": 3440,
+            "refreshRate": 240,
+            "width": 3440
+          },
+          "model": 41613,
+          "name": "AW3425DW",
+          "rotation": 0,
+          "serial": 809650259,
+          "uuid": "a8d3635b-35ec-4171-bbe2-95fb8cf76111",
+          "vendor": 4268,
+          "x": 0,
+          "y": 1440
+        }
+      ],
+      "hostModel": "Mac17,14",
+      "osBuild": "26A434",
+      "userID": 501
+    }
+  }
+}

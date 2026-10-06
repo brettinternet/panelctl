@@ -37,7 +37,7 @@ struct DisplaySettingsView: View {
                     hideSection(selected, tiles: tiles)
                     if pageProblem == nil, isJournalTarget(selected), let status = model.handoffStatus {
                         Section {
-                            recoveryDetails(status)
+                            recoveryDetails(status, targetUUID: selected.uuid)
                         }
                     }
                     scriptSection(selected)
@@ -115,7 +115,8 @@ struct DisplaySettingsView: View {
             }
             return "Blacked out until you show it"
         case .hidden:
-            return "Removed from the desktop · mirrored onto \(model.handoffStatus?.source?.name ?? "another display")"
+            let source = tile.uuid.flatMap { model.handoffStatus?.removal(for: $0)?.source.name }
+            return "Removed from the desktop · mirrored onto \(source ?? "another display")"
         case .hiding:
             return "Removing from the desktop…"
         case .showing:
@@ -165,7 +166,7 @@ struct DisplaySettingsView: View {
         case .show? where model.isBlackoutHidden(tile.uuid):
             return tile.display == nil ? nil : "Or point at it and press Esc."
         case .show?:
-            return model.showReturnInputNote
+            return model.showReturnInputNote(for: tile.uuid)
         case .hide?:
             guard let display = tile.display, !model.hideRemovesFromDesktop(display) else { return nil }
             return "Hide blacks out this display until you show it."
@@ -206,7 +207,7 @@ struct DisplaySettingsView: View {
                 }
             } else {
                 let configuration = tile.uuid.flatMap(model.hideConfiguration)
-                let frozen = model.hideConfigurationFrozen
+                let frozen = tile.uuid.map(model.hideConfigurationFrozen(for:)) ?? true
                 Section {
                     Toggle(isOn: Binding(
                         get: { reason == nil && configuration?.enabled == true },
@@ -351,8 +352,9 @@ struct DisplaySettingsView: View {
     private func hideFooter(_ configuration: DisplayHideConfiguration?, reason: String?, tileID: String,
                             isMain: Bool) -> String? {
         if let reason { return reason }
-        if model.hideConfigurationFrozen, model.handoffStatus?.hasUnresolvedJournal == true {
-            return "Show the hidden display to change these settings."
+        if model.hideConfigurationFrozen(for: configuration?.target.uuid ?? ""),
+           model.handoffStatus?.removal(for: configuration?.target.uuid ?? "") != nil {
+            return "Show this display to change its removal settings."
         }
         let mainDisplayNote = "macOS decides where the menu bar, Dock, windows and Spaces go when the main display is mirrored; the main display may stay, move to the source or move elsewhere. Observe the result."
         guard let configuration, configuration.enabled else { return isMain ? mainDisplayNote : nil }
@@ -422,26 +424,54 @@ struct DisplaySettingsView: View {
         }
     }
 
-    private func recoveryDetails(_ status: DisplayHandoffStatus) -> some View {
+    private func recoveryDetails(_ status: DisplayHandoffStatus, targetUUID: String? = nil) -> some View {
         DisclosureGroup("Recovery details") {
             copyRow("Journal", status.journalPath)
-            if let target = status.target {
-                LabeledContent("Hidden display") {
-                    Text("\(target.name)\n\(target.identityDetail)")
-                        .textSelection(.enabled)
+            if let selected = targetUUID.flatMap({ status.removal(for: $0) }) {
+                removalDetails(selected)
+                let command = "panelctl recovery restore --display \(shellQuote(selected.target.uuid)) --journal \(shellQuote(status.journalPath))"
+                copyRow("Recovery command", command, monospaced: true)
+            } else if !status.removals.isEmpty {
+                ForEach(status.removals.filter(\.isUnresolved)) { removal in
+                    removalDetails(removal)
+                    let command = "panelctl recovery restore --display \(shellQuote(removal.target.uuid)) --journal \(shellQuote(status.journalPath))"
+                    copyRow("Restore \(removal.target.name)", command, monospaced: true)
                 }
-            }
-            if let source = status.source {
-                LabeledContent("Mirrored onto") {
-                    Text("\(source.name)\n\(source.identityDetail)")
-                        .textSelection(.enabled)
+                copyRow("Status command", status.inspectionCommand, monospaced: true)
+            } else {
+                if let target = status.target {
+                    LabeledContent("Hidden display") {
+                        Text("\(target.name)\n\(target.identityDetail)").textSelection(.enabled)
+                    }
                 }
+                if let source = status.source {
+                    LabeledContent("Mirrored onto") {
+                        Text("\(source.name)\n\(source.identityDetail)").textSelection(.enabled)
+                    }
+                }
+                let command = status.state == .unsupported || status.inspectionFailure != nil
+                    ? status.inspectionCommand : status.recoveryCommand ?? status.inspectionCommand
+                copyRow("Recovery command", command, monospaced: true)
             }
-            let command = status.state == .unsupported || status.inspectionFailure != nil
-                ? status.inspectionCommand
-                : status.recoveryCommand ?? status.inspectionCommand
-            copyRow("Recovery command", command, monospaced: true)
         }
+    }
+
+    private func removalDetails(_ removal: DisplayHandoffRemoval) -> some View {
+        Group {
+            LabeledContent("Hidden display") {
+                Text("\(removal.target.name)\n\(removal.target.identityDetail)").textSelection(.enabled)
+            }
+            LabeledContent("Mirrored onto") {
+                Text("\(removal.source.name)\n\(removal.source.identityDetail)").textSelection(.enabled)
+            }
+            if let reason = removal.reason {
+                Text(reason).foregroundStyle(.orange).textSelection(.enabled)
+            }
+        }
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private func copyRow(_ title: String, _ value: String, monospaced: Bool = false) -> some View {
@@ -468,9 +498,7 @@ struct DisplaySettingsView: View {
     // MARK: Helpers
 
     private func isJournalTarget(_ tile: DisplayTile) -> Bool {
-        guard let status = model.handoffStatus, status.hasUnresolvedJournal,
-              let target = status.target else { return false }
-        return target.uuid.lowercased() == tile.id
+        model.isJournalTarget(tile.uuid)
     }
 }
 

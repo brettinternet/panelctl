@@ -12,7 +12,7 @@ let package = Package(
         .target(name: "PanelCtlCore"),
         .executableTarget(name: "panelctl", dependencies: ["PanelCtlCore"]),
         .executableTarget(name: "PanelCtlApp", dependencies: ["PanelCtlCore"]),
-        .testTarget(name: "PanelCtlCoreTests", dependencies: ["PanelCtlCore"]),
+        .testTarget(name: "PanelCtlCoreTests", dependencies: ["PanelCtlCore"], resources: [.copy("Fixtures")]),
         .testTarget(name: "PanelCtlAppTests", dependencies: ["PanelCtlApp", "PanelCtlCore"])
     ]
 )

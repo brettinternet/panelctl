@@ -59,14 +59,26 @@ results. Hide defaults to **Black out**: it leaves the desktop in place and
 stays black until Show or Escape with the pointer on that display. It is not
 the same as an automation blackout: **Restore** does not show a hidden display.
 
-To move windows off an eligible external non-main display, enable **General →
-Experimental features**, accept the configuration-time prompt, then turn on
-**Remove from desktop** for that display. Choose **Mirror onto** and optionally
-**Switch monitor to**. Show restores the saved layout before switching back to
-the Mac's detected input. Turning Experimental features off makes new Hides
-black out instead, but never removes Show or recovery for a removed display.
+To move windows off eligible external displays, enable **General → Experimental
+features**, accept the configuration-time prompt, then turn on **Remove from
+desktop** for each target. Choose **Mirror onto** and optionally **Switch
+monitor to**. Multiple healthy removals can coexist, including several targets
+onto one source. Each tile, menu item and scripted status is per target; setup
+for other displays stays editable. Show any target in any order: it returns only
+that display, and the remaining targets stay removed. While other targets stay
+removed, macOS may place the returning display slightly away from its saved
+position; the final Show verifies the exact pre-first-Hide arrangement, modes
+and main display. Every Show verifies before switching back to the Mac's
+detected input. Turning Experimental features off makes new
+Hides black out instead, but never removes Show or recovery for a removed
+display. Only the recorded S2721DGF-then-AW3425DW CLI round trip is qualified;
+other multi-display combinations remain unqualified. See
+[the trial record](display-multi-removal-trial.md).
+Each new live write still needs separate approval.
 
-The menu also offers per-display Hide/Show. Results stay inline, including
+The menu also offers per-display Hide/Show; each Show leaves other removed
+displays untouched. **Show and Quit** restores each healthy removed target in
+turn and quits only after all succeed. Results stay inline, including
 input-switch warnings; ordinary Hide/Show has no per-operation confirmation.
 Private disconnect is separate and requires its own scoped consent each time.
 See [Hide styles and safety boundaries](display-hide-ux.md).
@@ -141,13 +153,16 @@ On `response-lost`, check `app status --json` before doing anything else.
 {
   "ok": true, "running": true, "enabled": true, "state": "waiting",
   "summary": "…", "nextAction": "blackout", "secondsRemaining": 240,
-  "displays": [{
-    "targetUUID": "…", "observedState": "hidden-by-panelctl",
-    "operation": "idle", "recoveryNeeded": false,
-    "lastInputOutcome": { "state": "verified", "requestedInput": 17, "observedInput": 17 }
-  }]
+  "displays": [
+    { "targetUUID": "…", "observedState": "hidden-by-panelctl", "operation": "idle", "recoveryNeeded": false },
+    { "targetUUID": "…", "observedState": "hidden-by-panelctl", "operation": "idle", "recoveryNeeded": false }
+  ]
 }
 ```
+
+The `displays` array includes one status entry per discovered or journaled
+target. A disconnected removed display remains listed as unavailable/recovery
+needed instead of being silently dropped.
 
 - `state` is the protection state (`disabled`, `waiting`, …). `ok: true` means status answered, not that
   every operation succeeded.
@@ -170,13 +185,26 @@ never do. For a persistent CLI watcher, edit the
 | --- | --- | --- |
 | `ddc-input` | Read or switch a monitor's input over DDC | [DDC input](ddc-input.md) |
 | `ddc-power` | Explicit experimental monitor On/Off; manual recovery may be required | [Power semantics, consent and qualification](ddc-power.md) |
-| `mirror` / `unmirror` | Hide a desktop by public mirroring | [Mirroring](display-mirroring.md) |
-| `away` / `back` | Mirror plus optional input switch, as one command | [Handoff](display-handoff.md) |
-| `recovery …` | Journal, verify and restore display topology | [Recovery](display-recovery.md) |
+| `mirror` / `unmirror` | Add a public-mirror removal or Show one target | [Mirroring](display-mirroring.md) |
+| `away` / `back` | Add a removal plus optional input switch, or Show one target | [Handoff](display-handoff.md) |
+| `recovery …` | List, verify and restore journal entries | [Recovery](display-recovery.md) |
 | `recovery disable` | Private signal removal; **currently always refuses** | [Display disable](display-disable.md) |
 
+For one removed display, `unmirror --consent-unmirror` and `back --display
+UUID` retain the legacy one-target behavior. With several removals, use
+`unmirror --display UUID`, `back --display UUID`, or
+`recovery restore --display UUID` to Show exactly one. `recovery status` reports
+each entry; `recovery verify --display UUID` is read-only and never Shows. An
+omitted selector for ambiguous multi-entry verify/restore/unmirror requests is
+refused. `mirror` and `away` can add a new removal only beside a healthy session.
+The last Show verifies the original pre-first-Hide layout, modes and main
+display. Private disable refuses while removals remain, and removals refuse an
+unresolved private-disable journal.
+
 Each live topology or DDC write needs a deliberate decision on untested
-hardware; consent flags acknowledge risk, they are not qualification.
+hardware; consent flags acknowledge risk, they are not qualification. The
+recorded CLI cycles qualify only their stated single-target setups; no
+multi-display combination is hardware-qualified.
 
 `ddc-power --display UUID --set off --accept-power-risk` acknowledges that
 software wake may fail, the physical button may not suffice, and unplugging

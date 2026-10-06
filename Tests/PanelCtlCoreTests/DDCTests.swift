@@ -40,6 +40,15 @@ final class DDCTests: XCTestCase {
         }
     }
 
+    func testNullMessageFromAnEarlyReadIsRejectedAndReplyWaitMeetsDDCCI() {
+        // DDC/CI null message: source 0x6E, length 0x80, checksum 0xBE.
+        let null: [UInt8] = [0x6E, 0x80, 0xBE, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        XCTAssertThrowsError(try DDCLuminance.validateReply(null, expectedCode: 0x60)) { error in
+            XCTAssertEqual(error as? DDCError, .invalidReply("invalid payload length"))
+        }
+        XCTAssertGreaterThanOrEqual(DDC.replyWait, 40_000, "DDC/CI host wait before reading a Get VCP reply")
+    }
+
     func testPathMapsToExternalController() {
         let location = "IOService:/AppleARMPE/arm-io/AppleT600xIO/dispext0@88000000/AppleCLCD2"
         let candidates: [(path: String, external: Bool)] = [

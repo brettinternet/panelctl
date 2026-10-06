@@ -184,16 +184,37 @@ struct ProtectionPreferences: Codable, Equatable {
         for source: DisplayRecord,
         hiddenDisplays: [DisplayRecord] = []
     ) throws -> [String]? {
-        guard let uuid = source.uuid,
-              UUID(uuidString: uuid) != nil,
-              source.online, source.active, !source.asleep,
-              source.bounds.width > 0, source.bounds.height > 0 else {
-            throw ProtectionConfigurationError.selectedDisplayUnavailable(source.name ?? String(source.id))
+        try hiddenMirrorOverlayArguments(for: [source], hiddenDisplays: hiddenDisplays)
+    }
+
+    func hiddenMirrorOverlayArguments(
+        for sources: [DisplayRecord],
+        hiddenDisplays: [DisplayRecord] = []
+    ) throws -> [String]? {
+        guard !sources.isEmpty else { return nil }
+        var sourceUUIDs: [String] = []
+        var sourcesByUUID: [String: DisplayRecord] = [:]
+        for source in sources {
+            guard let uuid = source.uuid,
+                  UUID(uuidString: uuid) != nil,
+                  source.online, source.active, !source.asleep,
+                  source.bounds.width > 0, source.bounds.height > 0 else {
+                throw ProtectionConfigurationError.selectedDisplayUnavailable(source.name ?? String(source.id))
+            }
+            let selected = allDisplays || selectedDisplayUUIDs.contains {
+                $0.caseInsensitiveCompare(uuid) == .orderedSame
+            }
+            guard selected else { return nil }
+            let key = uuid.lowercased()
+            if let existing = sourcesByUUID[key] {
+                guard existing == source else {
+                    throw ProtectionConfigurationError.selectedDisplayUnavailable("conflicting mirror source identities")
+                }
+                continue
+            }
+            sourcesByUUID[key] = source
+            sourceUUIDs.append(uuid)
         }
-        let selected = allDisplays || selectedDisplayUUIDs.contains {
-            $0.caseInsensitiveCompare(uuid) == .orderedSame
-        }
-        guard selected else { return nil }
         guard Self.isValidDuration(idleSeconds) else {
             throw ProtectionConfigurationError.invalidIdleDuration
         }
@@ -205,12 +226,13 @@ struct ProtectionPreferences: Codable, Equatable {
             followUpAction == .untilActivity ? Self.hiddenMirrorOverlayMaximumDuration : followUpSeconds,
             Self.hiddenMirrorOverlayMaximumDuration
         )
-        var arguments = [
-            "blackout", "--display", uuid,
-            "--panelctl-hidden-mirror-source", uuid
-        ]
-        let hidden = hiddenDisplays.compactMap(\.uuid).filter { $0.caseInsensitiveCompare(uuid) != .orderedSame }
-        for hiddenUUID in hidden.sorted() {
+        var arguments = ["blackout"]
+        for uuid in sourceUUIDs.sorted() {
+            arguments += ["--display", uuid, "--panelctl-hidden-mirror-source", uuid]
+        }
+        let sourceKeys = Set(sourceUUIDs.map { $0.lowercased() })
+        let hidden = hiddenDisplays.compactMap(\.uuid).filter { !sourceKeys.contains($0.lowercased()) }
+        for hiddenUUID in Set(hidden).sorted() {
             arguments += ["--panelctl-hidden-display", hiddenUUID]
         }
         arguments += [

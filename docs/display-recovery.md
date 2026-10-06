@@ -12,10 +12,10 @@ Run from the logged-in console user's GUI session.
 | Command | Writes displays? | Effect |
 | --- | --- | --- |
 | `recovery capture` | No | Snapshot all online displays into the journal |
-| `recovery status` | No | Print the journal as JSON (works with absent targets) |
-| `recovery verify` | No | Compare current topology with the snapshot; resolves the journal on match |
+| `recovery status` | No | Print the journal and every public-mirror removal as JSON (works with absent targets) |
+| `recovery verify [--display UUID]` | No | Verify a public-mirror removal/session or exact restored baseline; resolves only proven system restorations |
 | `recovery rehearse --timeout 5s` | No | Capture, start the helper, verify on deadline. Ends `verified`, **not** "safe to disconnect" |
-| `recovery restore` | **Yes** | Restore public modes, origins and mirroring (session scope), then verify |
+| `recovery restore [--display UUID]` | **Yes** | Restore the selected public-mirror removal, or a legacy single snapshot, then verify |
 | `recovery guard --timeout 15s` | **Yes** | Capture, arm the helper, restore + verify on deadline, parent exit or signal |
 
 All accept `--journal <path>`. Default:
@@ -30,6 +30,59 @@ All accept `--journal <path>`. Default:
 - A per-user operation lock serializes all recovery actions, even across custom
   journals; each journal has its own lock too. Other display apps ignore both.
 - Parse errors exit 2; unsafe or failed operations exit 1.
+
+## Public-mirror removal sessions
+
+A v3 journal can contain one versioned public-mirror session with an immutable
+pre-first-Hide baseline and independently identified removal entries. Each entry
+records the full topology immediately before that target's operation before
+any DDC or topology change. The existing file lock and atomic save cover the
+baseline and all entries together; private-disable journals remain single
+transactions and older mirror journals remain readable.
+
+Healthy entries can be added with `mirror` or `away` while the session remains
+verified. `recovery status` reports every target, source, operation state and
+recovery reason. `back --display UUID` and `unmirror --display UUID` restore
+only that target; other removals stay in their recorded mirror groups. The last
+Show verifies the exact pre-first-Hide arrangement, modes and main display.
+`recovery restore --display UUID` has the same selected-target behavior. A
+selector is required when more than one entry is unresolved; unselected
+multi-entry restore refuses without changing siblings. `recovery verify
+--display UUID` is a read-only verification of the selected removal/session and
+does not Show it. When exactly one entry is unresolved, `verify`/`restore` may
+omit `--display`; explicit UUIDs are preferred. If a display becomes needs
+attention or disconnects, new removals are blocked until it is repaired or
+safely reconciled. Show never replays another target's operation.
+
+macOS may restore a display on wake. PanelCtl resolves only an entry that
+matches its recorded pre-operation or baseline topology; a disconnected or
+ambiguous target retains its recovery entry. Failures during a new Hide or a
+selected Show keep every sibling entry durable. Manual recovery must not edit
+the journal; correct the exact identity/topology, then inspect status and run
+selected `verify` or `restore` as documented. An exact pre-operation match
+can retire an unchanged Hide as `cancelled` while other displays remain
+removed; this does not claim its shifted coordinates match the original layout.
+The last recovery entry is retained until the **whole** baseline verifies. If
+a failed final Show has already cleared mirroring but left a mode or origin
+wrong, explicit Show or selected `restore` can repair that layout after the
+same identity checks; inspection and `verify` never retry the display writer.
+A partial Show requests, but does not verify, the target's saved origin:
+macOS may place it nearby while other displays are mirrored (see the
+[multi-display trial](display-multi-removal-trial.md)). Its exact identity,
+mode and main role, the other visible displays and the remaining removals are
+verified against the durable pre-Show snapshot before input return; a mismatch
+keeps recovery. A failed partial Show that already cleared its target's mirror
+permits an explicit target-only repair, but only while those survivors and
+sibling topology still verify. Do not retry repeatedly. An explicit
+Show of the last physically mirrored target may restore the full baseline while
+an earlier, already-separate target retains recovery. All other displays
+must already be separate, and every entry stays unresolved until the entire
+baseline verifies. Only the selected target's input is switched; return other
+inputs separately with explicit consent or monitor buttons.
+
+Private disable refuses while any public removal is unresolved, and a public
+removal refuses while a private-disable journal is unresolved. Legacy
+single-display mirror journals retain their original Show/recovery behavior.
 
 ## Restore
 
@@ -59,7 +112,9 @@ Restore refuses, without writing, on any of:
 It never retries writes, searches IDs, changes power, resets firmware, restarts
 WindowServer, deletes preferences, writes permanent configuration or reboots.
 A `verifyOnly` journal (from `rehearse`) can't be restored. Failures keep the
-snapshot in `needsAttention`; after fixing things by hand, `verify` resolves it.
+snapshot or selected removal in `needsAttention`; after fixing things by hand,
+run `verify` with `--display UUID` when several entries remain. A single legacy
+snapshot is resolved only when its full exact baseline verifies.
 There is no force or discard flag. If the boot or OS changed, keep the old
 journal as evidence and use a new `--journal` path; never edit its identity
 fields.
@@ -115,9 +170,11 @@ helper: lock journal → verify baseline, modes → arm deadline + parent pipe �
 `swift test --filter DisplayRecoveryTests` covers locking, archives,
 permissions, corruption, identity rejection, write-ahead ordering, failed
 writes, verification failure, idempotence and CLI parsing with fake displays.
-Public mirror tests also exercise main-target main reassignment and exact-main
-restoration using fake topologies and writers; no live main-target trial is
-qualified by offline tests.
+Public mirror tests exercise two- and three-target Show permutations, shared
+and distinct sources, main-target reassignment, observed macOS rearrangement,
+write interruption, disconnect, wake self-restoration, status selection and
+exact final-baseline verification with fake topologies and writers. They do not
+qualify live multi-display combinations or authorize any topology/DDC write.
 
 Opt-in **no-write** subprocess checks against a built CLI (GUI session
 required):

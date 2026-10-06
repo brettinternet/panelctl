@@ -253,6 +253,16 @@ enum RecoveryConfiguration {
         try checked(result, "commit configuration")
     }
 
+    /// Restore one target, requesting its saved origin. Remaining mirror
+    /// followers and other desktops are never staged. macOS may place the
+    /// target elsewhere; callers verify with MirrorSessionTopology.verifyPartialShow.
+    static func restoreTarget(_ baseline: RecoverySnapshot, targetUUID: String,
+                              revalidate: () throws -> Void = {},
+                              capture: () throws -> RecoverySnapshot = { try .capture(includePrivateMetadata: false) },
+                              transaction: TargetRestoreTransaction = TargetRestoreTransaction()) throws {
+        try transaction.apply(baseline, targetUUID: targetUUID, revalidate: revalidate, capture: capture)
+    }
+
     /// Read-only recoverability preflight, also exercised by rehearsal before
     /// READY. This establishes mode availability, not successful restoration.
     static func resolveModes(_ snapshot: RecoverySnapshot) throws -> [CGDisplayMode] {
@@ -264,6 +274,62 @@ enum RecoveryConfiguration {
             }
             return mode
         }
+    }
+}
+
+/// The same closure-injected transaction boundary as MirrorTransaction. Mode
+/// resolution finishes before begin; tests inject a prepared fake mode writer.
+struct TargetRestoreTransaction {
+    var begin: () throws -> CGDisplayConfigRef = {
+        var config: CGDisplayConfigRef?
+        try checked(CGBeginDisplayConfiguration(&config), "begin target restore")
+        guard let config else { throw RecoveryError.unsafe("missing configuration transaction") }
+        return config
+    }
+    var prepareMode: (RecoveryDisplay) throws -> (CGDisplayConfigRef) throws -> Void = { target in
+        let options = [kCGDisplayShowDuplicateLowResolutionModes as String: true] as CFDictionary
+        let available = CGDisplayCopyAllDisplayModes(target.id, options) as? [CGDisplayMode] ?? []
+        guard let mode = available.first(where: { RecoveryMode($0) == target.mode }) else {
+            throw RecoveryError.unsafe("original mode unavailable for \(target.uuid)")
+        }
+        return { try checked(CGConfigureDisplayWithDisplayMode($0, target.id, mode, nil), "restore target mode") }
+    }
+    var clearMirror: (CGDisplayConfigRef, UInt32) throws -> Void = {
+        try checked(CGConfigureDisplayMirrorOfDisplay($0, $1, kCGNullDirectDisplay), "restore target mirror")
+    }
+    var origin: (CGDisplayConfigRef, UInt32, Int32, Int32) throws -> Void = {
+        try checked(CGConfigureDisplayOrigin($0, $1, $2, $3), "restore target origin")
+    }
+    var complete: (CGDisplayConfigRef, CGConfigureOption) throws -> Void = {
+        try checked(CGCompleteDisplayConfiguration($0, $1), "commit target restore")
+    }
+    var cancel: (CGDisplayConfigRef) -> Void = { _ = CGCancelDisplayConfiguration($0) }
+
+    func apply(_ baseline: RecoverySnapshot, targetUUID: String,
+               revalidate: () throws -> Void, capture: () throws -> RecoverySnapshot) throws {
+        try revalidate()
+        let before = try capture()
+        try baseline.validateRestoration(to: before)
+        guard let target = baseline.displays.first(where: { $0.uuid == targetUUID }),
+              let currentTarget = before.displays.first(where: { $0.uuid == targetUUID }),
+              !target.builtin, currentTarget.mirrorUUID != nil || currentTarget.active else {
+            throw RecoveryError.unsafe("target is unavailable for public-mirror restoration")
+        }
+        let stageMode = try prepareMode(target)
+        try before.verify(capture())
+        try revalidate()
+        let config = try begin()
+        var consumed = false
+        defer { if !consumed { cancel(config) } }
+        if currentTarget.mirrorUUID != nil { try clearMirror(config, target.id) }
+        if currentTarget.mode != target.mode { try stageMode(config) }
+        if currentTarget.x != target.x || currentTarget.y != target.y || currentTarget.main != target.main {
+            try origin(config, target.id, target.x, target.y)
+        }
+        try before.verify(capture())
+        try revalidate()
+        consumed = true
+        try complete(config, .forSession)
     }
 }
 

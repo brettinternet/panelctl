@@ -93,6 +93,11 @@ struct DDCChannel {
 /// The framing and transport are based on the MIT-licensed waydabber/m1ddc
 /// implementation (protocol reference).
 enum DDC {
+    /// DDC/CI requires the host to wait 40 ms after a Get VCP Feature request
+    /// before reading its reply. Earlier, the monitor answers with a null
+    /// message (length 0), observed on the DELL S2721DGF at 10 ms.
+    static let replyWait: useconds_t = 40_000
+
     static func makeGetVCPRequest(code: UInt8) -> [UInt8] {
         let body: [UInt8] = [0x82, 0x01, code]
         return body + [0x6E ^ body[0] ^ body[1] ^ body[2]]
@@ -156,7 +161,7 @@ enum DDC {
                     transport.write(service, address: 0x51, bytes: bytes.baseAddress!, count: UInt32(bytes.count))
                 }
                 guard writeStatus == KERN_SUCCESS else { throw DDCError.requestFailed(writeStatus) }
-                usleep(10_000)
+                usleep(replyWait)
 
                 var reply = [UInt8](repeating: 0, count: 12)
                 let readStatus = reply.withUnsafeMutableBytes { bytes in

@@ -22,6 +22,7 @@ final class DisplayHideAppTests: XCTestCase {
     }
 
     private func dispatchNativeEvents() {
+        _ = NSApplication.shared
         // XCTest services the run loop but is not an NSApplication event loop.
         // Dispatch pending app-local lifecycle events before asserting focus.
         for _ in 0..<100 {
@@ -964,7 +965,7 @@ final class DisplayHideAppTests: XCTestCase {
 
         XCTAssertEqual(shownInput, 15)
         XCTAssertFalse(result.succeeded)
-        XCTAssertTrue(result.message.contains("post-Show observation failed"), result.message)
+        XCTAssertTrue(result.message.contains("fake post-Show inspection failure"), result.message)
         XCTAssertEqual(result.inputMessage, "Switched the monitor to DisplayPort 1.")
         XCTAssertEqual(result.inputOutcome?.recoveryCommand, command, "the returned input outcome survives inspection failure")
         XCTAssertNotNil(model.displayRecoveryProblem)
@@ -1493,13 +1494,13 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.status, .needsRecovery)
         XCTAssertEqual(model.displayRecoveryProblem, "fake writer interrupted; journal retained")
         for uuid in [Self.targetUUID, Self.sourceUUID] {
-            XCTAssertThrowsError(try model.makeHideRequest(targetUUID: uuid), "one removed display at a time") { error in
-                XCTAssertTrue(error.localizedDescription.contains("Only one display can be removed at a time"))
+            XCTAssertThrowsError(try model.makeHideRequest(targetUUID: uuid), "recovery attention blocks new removals") { error in
+                XCTAssertTrue(error.localizedDescription.contains("Display recovery needs attention"))
             }
         }
         let other = try XCTUnwrap(model.displayTiles.first { $0.id == Self.sourceUUID.lowercased() })
         XCTAssertEqual(other.action, .hide)
-        XCTAssertTrue(other.actionBlocker?.contains("Only one display can be removed at a time") == true,
+        XCTAssertTrue(other.actionBlocker?.contains("Display recovery needs attention") == true,
                       other.actionBlocker ?? "no blocker")
         let delegate = AppDelegate()
         delegate.model = model
@@ -1656,6 +1657,191 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(model.displayRecoveryProblem, "Couldn\u{2019}t check display recovery: unreadable journal")
     }
 
+    func testHealthyRemovalSessionKeepsPerDisplayActionsAndOtherHideSetupEditable() throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let main = displays[0]
+        let firstTarget = Self.display(index: 2, id: 202, uuid: Self.targetUUID, name: "First", main: false, active: false)
+        let secondTarget = Self.display(index: 3, id: 303, uuid: Self.sourceUUID, name: "Second", main: false, active: false)
+        let survivor = Self.display(index: 4, id: 404, uuid: Self.replacementUUID, name: "Survivor", main: false)
+        let first = DisplayHandoffRemoval(
+            id: "entry-one", target: handoffIdentity(firstTarget), source: handoffIdentity(main),
+            state: "mirrored", isUnresolved: true, canShow: true, reason: nil, topologyVerified: true
+        )
+        let second = DisplayHandoffRemoval(
+            id: "entry-two", target: handoffIdentity(secondTarget), source: handoffIdentity(main),
+            state: "mirrored", isUnresolved: true, canShow: true, reason: nil, topologyVerified: true
+        )
+        let observations = [
+            observation(firstTarget, state: .hiddenByPanelCtl, source: main, journalTarget: true),
+            observation(secondTarget, state: .hiddenByPanelCtl, source: main, journalTarget: true),
+            observation(main, state: .separate), observation(survivor, state: .separate)
+        ]
+        let status = multiHandoffStatus([first, second], observations: observations, journalID: "shared-session")
+        let model = makeModel(
+            defaults: defaults, displays: [main, firstTarget, secondTarget, survivor], status: { status },
+            isDisplayMirrored: { $0 == main.id || $0 == firstTarget.id || $0 == secondTarget.id }
+        )
+        spin { !model.protectionQuiescencePending }
+
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.status, .hidden)
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.sourceUUID.lowercased() }?.status, .hidden)
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.action, .show)
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.sourceUUID.lowercased() }?.action, .show)
+        XCTAssertTrue(model.hideConfigurationFrozen, "disconnect remains blocked for the unresolved session")
+        XCTAssertFalse(model.hideConfigurationFrozen(for: Self.replacementUUID))
+        model.setHideEnabled(true, for: survivor)
+        model.setHideSource(Self.mainUUID, for: Self.replacementUUID)
+        let configuration = try XCTUnwrap(model.hideConfiguration(for: Self.replacementUUID))
+        XCTAssertTrue(configuration.enabled)
+        XCTAssertEqual(configuration.source?.uuid, Self.mainUUID)
+        XCTAssertNil(model.hideReadiness(for: configuration), "healthy removals do not block another Hide")
+        XCTAssertEqual(model.controlDisplayStatuses.first { $0.targetUUID == Self.targetUUID }?.recoveryNeeded, false)
+        XCTAssertEqual(model.controlDisplayStatuses.first { $0.targetUUID == Self.sourceUUID }?.recoveryNeeded, false)
+    }
+
+    func testDisconnectedRemovalKeepsItsOwnRecoveryStateBesideHealthyRemoval() throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let main = displays[0]
+        let firstTarget = Self.display(index: 2, id: 202, uuid: Self.targetUUID, name: "Connected target", main: false, active: false)
+        let disconnectedTarget = Self.display(index: 3, id: 303, uuid: Self.sourceUUID, name: "Disconnected target", main: false, active: false)
+        let healthy = DisplayHandoffRemoval(
+            id: "healthy-entry", target: handoffIdentity(firstTarget), source: handoffIdentity(main),
+            state: "mirrored", isUnresolved: true, canShow: true, reason: nil, topologyVerified: true
+        )
+        let disconnected = DisplayHandoffRemoval(
+            id: "disconnected-entry", target: handoffIdentity(disconnectedTarget), source: handoffIdentity(main),
+            state: "needsAttention", isUnresolved: true, canShow: false,
+            reason: "Reconnect the exact target.", topologyVerified: false
+        )
+        let observations = [
+            observation(firstTarget, state: .hiddenByPanelCtl, source: main, journalTarget: true),
+            observation(disconnectedTarget, state: .unavailable, source: main, journalTarget: true),
+            observation(main, state: .separate)
+        ]
+        let status = multiHandoffStatus(
+            [healthy, disconnected], observations: observations, journalID: "one-disconnected",
+            state: .recovery
+        )
+        let model = makeModel(defaults: defaults, displays: [main, firstTarget], status: { status })
+
+        let healthyTile = try XCTUnwrap(model.displayTiles.first { $0.id == Self.targetKey })
+        let disconnectedTile = try XCTUnwrap(model.displayTiles.first { $0.id == Self.sourceUUID.lowercased() })
+        XCTAssertEqual(healthyTile.status, .hidden)
+        XCTAssertEqual(healthyTile.action, .show)
+        XCTAssertEqual(disconnectedTile.status, .needsRecovery)
+        XCTAssertNil(disconnectedTile.display)
+        XCTAssertEqual(model.controlDisplayStatuses.first { $0.targetUUID == Self.sourceUUID }?.observedState, "unavailable")
+        XCTAssertEqual(model.controlDisplayStatuses.first { $0.targetUUID == Self.sourceUUID }?.recoveryNeeded, true)
+    }
+
+    func testHiddenMirrorOverlayRequiresEveryCurrentSourceToBeSelected() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let main = displays[0]
+        let firstTarget = Self.display(index: 2, id: 202, uuid: Self.targetUUID, name: "First", main: false, active: false)
+        let secondTarget = Self.display(index: 3, id: 303, uuid: Self.sourceUUID, name: "Second", main: false, active: false)
+        let secondSource = Self.display(index: 4, id: 404, uuid: Self.replacementUUID, name: "Other source", main: false)
+        let survivor = Self.display(index: 5, id: 505, uuid: "00000000-0000-0000-0000-000000000005", name: "Survivor", main: false)
+        let first = DisplayHandoffRemoval(
+            id: "entry-one", target: handoffIdentity(firstTarget), source: handoffIdentity(main),
+            state: "mirrored", isUnresolved: true, canShow: true, reason: nil, topologyVerified: true
+        )
+        let second = DisplayHandoffRemoval(
+            id: "entry-two", target: handoffIdentity(secondTarget), source: handoffIdentity(secondSource),
+            state: "mirrored", isUnresolved: true, canShow: true, reason: nil, topologyVerified: true
+        )
+        let observations = [
+            observation(firstTarget, state: .hiddenByPanelCtl, source: main, journalTarget: true),
+            observation(secondTarget, state: .hiddenByPanelCtl, source: secondSource, journalTarget: true),
+            observation(main, state: .separate), observation(secondSource, state: .separate),
+            observation(survivor, state: .separate)
+        ]
+        var preferences = ProtectionPreferences()
+        preferences.selectedDisplayUUIDs = [Self.mainUUID]
+        defaults.set(try JSONEncoder().encode(preferences), forKey: "blackoutPreferences")
+        let box = StatusBox(multiHandoffStatus([first, second], observations: observations, journalID: "distinct-sources"))
+        let model = makeModel(
+            defaults: defaults, displays: [main, firstTarget, secondTarget, secondSource, survivor], status: { box.value },
+            isDisplayMirrored: { [main.id, firstTarget.id, secondTarget.id, secondSource.id].contains($0) }
+        )
+        try await waitUntil { !model.protectionQuiescencePending }
+        XCTAssertTrue(model.selectedHiddenMirrorSources.isEmpty,
+                      "an incomplete selection cannot authorize a partial source overlay")
+        model.preferences.selectedDisplayUUIDs = [Self.mainUUID, Self.replacementUUID]
+        XCTAssertEqual(Set(model.selectedHiddenMirrorSources.compactMap(\.uuid)),
+                       Set([Self.mainUUID, Self.replacementUUID]))
+    }
+
+    func testShowingOneRemovalLeavesOthersAndAutomationPausedUntilTheLastShow() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let main = displays[0]
+        let firstTarget = Self.display(index: 2, id: 202, uuid: Self.targetUUID, name: "First", main: false, active: false)
+        let secondTarget = Self.display(index: 3, id: 303, uuid: Self.sourceUUID, name: "Second", main: false, active: false)
+        let survivor = Self.display(index: 4, id: 404, uuid: Self.replacementUUID, name: "Survivor", main: false)
+        let first = DisplayHandoffRemoval(
+            id: "entry-one", target: handoffIdentity(firstTarget), source: handoffIdentity(main),
+            state: "mirrored", isUnresolved: true, canShow: true, reason: nil, topologyVerified: true
+        )
+        let second = DisplayHandoffRemoval(
+            id: "entry-two", target: handoffIdentity(secondTarget), source: handoffIdentity(main),
+            state: "mirrored", isUnresolved: true, canShow: true, reason: nil, topologyVerified: true
+        )
+        let bothObservations = [
+            observation(firstTarget, state: .hiddenByPanelCtl, source: main, journalTarget: true),
+            observation(secondTarget, state: .hiddenByPanelCtl, source: main, journalTarget: true),
+            observation(main, state: .separate), observation(survivor, state: .separate)
+        ]
+        let box = StatusBox(multiHandoffStatus([first, second], observations: bothObservations, journalID: "shared-session"))
+        var connected = [main, firstTarget, secondTarget, survivor]
+        var showKeys: [String] = []
+        let model = makeModel(
+            defaults: defaults, displays: [], displayProvider: { connected }, status: { box.value },
+            isDisplayMirrored: { id in
+                id == main.id || box.value.removals.contains(where: {
+                    $0.isUnresolved && $0.target.id == id
+                })
+            },
+            showDisplay: { key, _ in
+                showKeys.append(key)
+                if key.hasSuffix(Self.targetUUID) {
+                    connected = [main, Self.display(index: 2, id: 202, uuid: Self.targetUUID, name: "First", main: false),
+                                 secondTarget, survivor]
+                    let restored = DisplayHandoffRemoval(
+                        id: "entry-one", target: self.handoffIdentity(firstTarget), source: self.handoffIdentity(main),
+                        state: "restored", isUnresolved: false, canShow: false, reason: nil, topologyVerified: true
+                    )
+                    let remainingObservations = [
+                        self.observation(Self.display(index: 2, id: 202, uuid: Self.targetUUID, name: "First", main: false), state: .separate),
+                        self.observation(secondTarget, state: .hiddenByPanelCtl, source: main, journalTarget: true),
+                        self.observation(main, state: .separate), self.observation(survivor, state: .separate)
+                    ]
+                    box.value = self.multiHandoffStatus([restored, second], observations: remainingObservations, journalID: "shared-session")
+                } else {
+                    connected = [main, Self.display(index: 2, id: 202, uuid: Self.targetUUID, name: "First", main: false),
+                                 Self.display(index: 3, id: 303, uuid: Self.sourceUUID, name: "Second", main: false), survivor]
+                    box.value = self.handoffStatus(.none, target: nil, source: nil)
+                }
+                return .notRequested
+            }
+        )
+        try await waitUntil { !model.protectionQuiescencePending }
+
+        let firstShow = try await showAndWait(model, Self.targetUUID)
+        XCTAssertTrue(firstShow.succeeded, firstShow.message)
+        XCTAssertEqual(showKeys, ["shared-session|\(Self.targetUUID)"])
+        XCTAssertTrue(model.protectionPausedForDisplayRecovery)
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.status, .on)
+        XCTAssertEqual(model.displayTiles.first { $0.id == Self.sourceUUID.lowercased() }?.status, .hidden)
+
+        let finalShow = try await showAndWait(model, Self.sourceUUID)
+        XCTAssertTrue(finalShow.succeeded, finalShow.message)
+        XCTAssertEqual(showKeys, ["shared-session|\(Self.targetUUID)", "shared-session|\(Self.sourceUUID)"])
+        XCTAssertFalse(model.protectionPausedForDisplayRecovery)
+    }
+
     func testNativeHideSetupDefaultsSourceAndDetectsTheMacInput() throws {
         let defaults = try makeDefaults()
         defer {
@@ -1740,7 +1926,7 @@ final class DisplayHideAppTests: XCTestCase {
         }
     }
 
-    func testNativeMissingJournalTargetStaysSelectedAndFreezesSetup() throws {
+    func testNativeMissingJournalTargetStaysSelectedAndKeepsOtherSetupEditable() throws {
         let defaults = try makeDefaults()
         defer {
             defaults.removePersistentDomain(forName: suiteName(defaults))
@@ -1779,7 +1965,7 @@ final class DisplayHideAppTests: XCTestCase {
         controller.selectDisplay(uuid: Self.sourceUUID)
         settle(window)
         let toggle = try XCTUnwrap(removalSwitch(in: window), controlSummary(window))
-        XCTAssertFalse(toggle.isEnabled, "settings stay frozen until recovery finishes")
+        XCTAssertTrue(toggle.isEnabled, "a separate display’s Hide setup stays editable during another display’s recovery")
     }
 
     func testNativeMenuArrowEventsReachShowAction() throws {
@@ -2535,6 +2721,48 @@ final class DisplayHideAppTests: XCTestCase {
             coverDisplays: coverDisplays,
             quiesceProtection: useManagedProtectionService ? nil : quiesceProtection,
             protectionService: protectionService
+        )
+    }
+
+    private func handoffIdentity(_ display: DisplayRecord) -> DisplayHandoffIdentity {
+        DisplayHandoffIdentity(DisplayHideIdentity(
+            uuid: display.uuid ?? "unavailable-\(display.id)", displayID: display.id,
+            name: display.name, vendor: display.vendor, model: display.model, serial: display.serial
+        ))
+    }
+
+    private func observation(_ display: DisplayRecord, state: DisplayHideObservedState,
+                             source: DisplayRecord? = nil, journalTarget: Bool = false) -> DisplayHideObservation {
+        DisplayHideObservation(
+            identity: DisplayHideIdentity(
+                uuid: display.uuid ?? "unavailable-\(display.id)", displayID: display.id,
+                name: display.name, vendor: display.vendor, model: display.model, serial: display.serial
+            ),
+            state: state,
+            source: source.map { DisplayHideIdentity(
+                uuid: $0.uuid ?? "unavailable-\($0.id)", displayID: $0.id,
+                name: $0.name, vendor: $0.vendor, model: $0.model, serial: $0.serial
+            ) },
+            detail: nil,
+            isJournalTarget: journalTarget
+        )
+    }
+
+    private func multiHandoffStatus(_ removals: [DisplayHandoffRemoval],
+                                   observations: [DisplayHideObservation], journalID: String,
+                                   state: DisplayHandoffStatus.State? = nil) -> DisplayHandoffStatus {
+        let unresolved = removals.filter(\.isUnresolved)
+        let primary = unresolved.first ?? removals.first
+        return DisplayHandoffStatus(
+            state: state ?? (unresolved.isEmpty ? .none : .hidden),
+            target: primary?.target, source: primary?.source,
+            journalPath: "/tmp/panelctl-multi-display-fixture/current.json",
+            journalID: journalID, reason: nil,
+            canShow: unresolved.allSatisfy(\.canShow),
+            recoveryCommand: "panelctl recovery status --journal '/tmp/panelctl-multi-display-fixture/current.json'",
+            observations: observations,
+            mirrorTopologyVerified: unresolved.allSatisfy(\.topologyVerified),
+            removals: removals
         )
     }
 

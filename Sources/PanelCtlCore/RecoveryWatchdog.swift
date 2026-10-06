@@ -6,7 +6,8 @@ public enum RecoveryAction: String, Equatable {
 }
 
 public enum DisplayRecovery {
-    public static func run(action: RecoveryAction, timeout: TimeInterval?, journalPath: String?, executable: URL) throws {
+    public static func run(action: RecoveryAction, timeout: TimeInterval?, journalPath: String?,
+                           displaySelector: String? = nil, executable: URL) throws {
         let store = RecoveryStore(url: journalPath.map { URL(fileURLWithPath: $0) } ?? RecoveryStore.defaultURL)
         if action == .status {
             try printJournal(store.load())
@@ -31,6 +32,26 @@ public enum DisplayRecovery {
         }
         if action != .capture {
             let saved = try store.load()
+            if saved.publicMirrorSession != nil {
+                let controller = MirrorController()
+                let recovered: RecoveryJournal
+                if action == .verify {
+                    recovered = try controller.verifyRemoval(store: store, selector: displaySelector)
+                } else if action == .restore {
+                    recovered = try controller.unmirror(store: store, selector: displaySelector)
+                } else {
+                    throw RecoveryError.unsafe("public-mirror session supports status, verify and restore only")
+                }
+                try printJournal(recovered)
+                return
+            }
+            if let displaySelector {
+                guard saved.mirrorTargetID != nil,
+                      let target = saved.snapshot.displays.first(where: { $0.id == saved.mirrorTargetID }),
+                      target.uuid.caseInsensitiveCompare(displaySelector) == .orderedSame else {
+                    throw RecoveryError.unsafe("selected display does not match this legacy mirror journal")
+                }
+            }
             let engine: RecoveryEngine
             if saved.mirrorTargetID != nil {
                 engine = .publicMirror

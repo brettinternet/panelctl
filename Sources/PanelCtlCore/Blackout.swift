@@ -52,7 +52,7 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
         case .persistentDimming:
             return "refusing persistent blackout with --dim-to because DDC restore is not time-bounded"
         case .invalidHiddenMirrorSourceOverlay:
-            return "invalid PanelCtl hidden-mirror overlay options; use one matching source UUID, an opaque watched overlay, and a finite Restore timeout without hardware dimming, sleep, or display-awake options"
+            return "invalid PanelCtl hidden-mirror overlay options; use matching source UUIDs, an opaque watched overlay, and a finite Restore timeout without hardware dimming, sleep, or display-awake options"
         case .invalidHiddenDisplay:
             return "invalid PanelCtl hidden display; use --watch and distinct UUIDs that aren't blackout targets"
         case .mirrorSourceNotAuthorized(let selector, let reason):
@@ -708,7 +708,7 @@ public final class BlackoutController {
             if watch, cycleRestoreGeneration != restoreGeneration {
                 return
             }
-            if watch, options.hiddenMirrorSourceUUID != nil {
+            if watch, !options.hiddenMirrorSourceUUIDs.isEmpty {
                 try revalidateCoveredHiddenMirrorSource(options: options)
             }
             let sample = try idleSample()
@@ -1610,21 +1610,24 @@ public final class BlackoutController {
     }
 
     private func revalidateCoveredHiddenMirrorSource(options: BlackoutOptions) throws {
-        guard fullCycleActive,
-              let sourceUUID = options.hiddenMirrorSourceUUID,
-              let target = targets.first else { return }
-        let refusal = HiddenMirrorSourceOverlayAuthorization.revalidateWhileCovered(
-            sourceUUID: sourceUUID,
-            sourceDisplayID: target.id,
-            isMirrored: CGDisplayIsInMirrorSet(target.id) != 0,
-            status: mirrorHandoffStatus(),
-            removeCoverage: { [weak self] in
-                self?.fullCycleActive = false
-                self?.closeAllWindows()
+        guard fullCycleActive, !options.hiddenMirrorSourceUUIDs.isEmpty else { return }
+        let status = mirrorHandoffStatus()
+        for target in targets {
+            guard let sourceUUID = target.uuid,
+                  options.hiddenMirrorSourceUUIDs.contains(where: { $0.caseInsensitiveCompare(sourceUUID) == .orderedSame }) else {
+                continue
             }
-        )
-        if let refusal {
-            throw BlackoutError.mirrorSourceNotAuthorized(target.selector, refusal)
+            let refusal = HiddenMirrorSourceOverlayAuthorization.revalidateWhileCovered(
+                sourceUUID: sourceUUID,
+                sourceDisplayID: target.id,
+                isMirrored: CGDisplayIsInMirrorSet(target.id) != 0,
+                status: status,
+                removeCoverage: { [weak self] in
+                    self?.fullCycleActive = false
+                    self?.closeAllWindows()
+                }
+            )
+            if let refusal { throw BlackoutError.mirrorSourceNotAuthorized(target.selector, refusal) }
         }
     }
 
@@ -1635,14 +1638,15 @@ public final class BlackoutController {
         displayID: UInt32,
         options: BlackoutOptions
     ) throws {
-        guard let sourceUUID = options.hiddenMirrorSourceUUID else {
+        guard !options.hiddenMirrorSourceUUIDs.isEmpty else {
             try Self.validateTarget(isMirrored: isMirrored, selector: selector)
             return
         }
         guard let uuid,
-              uuid.caseInsensitiveCompare(sourceUUID) == .orderedSame else {
-            throw BlackoutError.mirrorSourceNotAuthorized(selector, "only the journaled mirror source may receive an overlay")
+              options.hiddenMirrorSourceUUIDs.contains(where: { $0.caseInsensitiveCompare(uuid) == .orderedSame }) else {
+            throw BlackoutError.mirrorSourceNotAuthorized(selector, "only the exact journaled mirror sources may receive an overlay")
         }
+        let sourceUUID = uuid
         if let reason = HiddenMirrorSourceOverlayAuthorization.refusal(
             sourceUUID: sourceUUID,
             sourceDisplayID: displayID,
@@ -1674,11 +1678,13 @@ public final class BlackoutController {
            options.hardwareBrightnessPercent != nil {
             throw BlackoutError.persistentDimming
         }
-        if let sourceUUID = options.hiddenMirrorSourceUUID {
-            guard UUID(uuidString: sourceUUID) != nil,
+        if !options.hiddenMirrorSourceUUIDs.isEmpty {
+            let sourceUUIDs = options.hiddenMirrorSourceUUIDs.map { $0.lowercased() }
+            guard sourceUUIDs.allSatisfy({ UUID(uuidString: $0) != nil }),
+                  Set(sourceUUIDs).count == sourceUUIDs.count,
                   !options.all,
-                  options.selectors.count == 1,
-                  options.selectors[0].caseInsensitiveCompare(sourceUUID) == .orderedSame,
+                  options.selectors.count == sourceUUIDs.count,
+                  options.selectors.allSatisfy({ selector in sourceUUIDs.contains(where: { selector.caseInsensitiveCompare($0) == .orderedSame }) }),
                   options.watch,
                   let idleAfter = options.idleAfter,
                   idleAfter.isFinite, idleAfter > 0,

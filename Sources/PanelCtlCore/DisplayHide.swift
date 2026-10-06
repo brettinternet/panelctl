@@ -43,6 +43,31 @@ public struct DisplayHideObservation: Equatable, Identifiable {
     public var id: String { identity.uuid }
 }
 
+public struct DisplayHideRemovalSummary: Equatable, Identifiable {
+    public let id: String
+    public let target: DisplayHideIdentity
+    public let source: DisplayHideIdentity
+    public let state: String
+    public let isUnresolved: Bool
+    public let canShow: Bool
+    public let showRefusal: String?
+    public let failure: String?
+    public let topologyVerified: Bool
+
+    init(id: String, target: DisplayHideIdentity, source: DisplayHideIdentity, state: String,
+         isUnresolved: Bool, canShow: Bool, showRefusal: String?, failure: String?, topologyVerified: Bool) {
+        self.id = id
+        self.target = target
+        self.source = source
+        self.state = state
+        self.isUnresolved = isUnresolved
+        self.canShow = canShow
+        self.showRefusal = showRefusal
+        self.failure = failure
+        self.topologyVerified = topologyVerified
+    }
+}
+
 public struct DisplayHideJournalSummary: Equatable {
     public let id: String
     public let state: String
@@ -54,10 +79,12 @@ public struct DisplayHideJournalSummary: Equatable {
     public let showRefusal: String?
     public let failure: String?
     public let mirrorTopologyVerified: Bool
+    public let removals: [DisplayHideRemovalSummary]
 
     init(id: String, state: String, target: DisplayHideIdentity?, source: DisplayHideIdentity?,
          isMirrorJournal: Bool, isUnresolved: Bool, canShow: Bool, showRefusal: String?,
-         failure: String?, mirrorTopologyVerified: Bool = false) {
+         failure: String?, mirrorTopologyVerified: Bool = false,
+         removals: [DisplayHideRemovalSummary] = []) {
         self.id = id
         self.state = state
         self.target = target
@@ -68,6 +95,7 @@ public struct DisplayHideJournalSummary: Equatable {
         self.showRefusal = showRefusal
         self.failure = failure
         self.mirrorTopologyVerified = mirrorTopologyVerified
+        self.removals = removals
     }
 }
 
@@ -76,6 +104,7 @@ public struct DisplayHideStatus: Equatable {
     public let observations: [DisplayHideObservation]
     public let journal: DisplayHideJournalSummary?
     public let inspectionFailure: String?
+    public let removals: [DisplayHideRemovalSummary]
 
     public var hasUnresolvedRecovery: Bool { journal?.isUnresolved ?? (inspectionFailure != nil) }
     public var hasUnresolvedMirror: Bool {
@@ -83,8 +112,17 @@ public struct DisplayHideStatus: Equatable {
     }
     public var showAvailable: Bool { journal?.canShow == true }
 
+    public init(journalPath: String, observations: [DisplayHideObservation], journal: DisplayHideJournalSummary?,
+                inspectionFailure: String?, removals: [DisplayHideRemovalSummary] = []) {
+        self.journalPath = journalPath
+        self.observations = observations
+        self.journal = journal
+        self.inspectionFailure = inspectionFailure
+        self.removals = removals
+    }
+
     static func failed(path: String, error: Error) -> Self {
-        Self(journalPath: path, observations: [], journal: nil, inspectionFailure: error.localizedDescription)
+        Self(journalPath: path, observations: [], journal: nil, inspectionFailure: error.localizedDescription, removals: [])
     }
 }
 
@@ -128,6 +166,10 @@ public struct DisplayHideController {
         }
 
         var journal = try store.load()
+        if journal.publicMirrorSession != nil {
+            mirror.reconcileSession(&journal, current: current, store: store)
+            return statusForMirrorSession(journal, records: records, current: current)
+        }
         let isMirror = journal.mirrorTargetID != nil && journal.mirrorSourceID != nil
         if !journal.state.resolved, isMirror, (try? journal.snapshot.verify(current)) != nil {
             // Accept a macOS/system restoration only after exact public snapshot
@@ -156,7 +198,8 @@ public struct DisplayHideController {
     }
 
     @discardableResult
-    public func show(expectedJournalID: String, returnInput: UInt8? = nil) throws -> DisplayInputOutcome {
+    public func show(expectedJournalID: String, targetUUID: String? = nil,
+                     returnInput: UInt8? = nil) throws -> DisplayInputOutcome {
         guard let expectedID = UUID(uuidString: expectedJournalID) else {
             let outcome = returnInput.map {
                 DisplayInputOutcome(state: .notAttempted, requestedInput: $0,
@@ -167,7 +210,8 @@ public struct DisplayHideController {
                 message: "invalid journal identity; refresh recovery status and confirm again"
             )
         }
-        return try handoff.guardedBack(expectedJournalID: expectedID, input: returnInput, store: store)
+        return try handoff.guardedBack(expectedJournalID: expectedID, targetUUID: targetUUID,
+                                       input: returnInput, store: store)
     }
 
     public func checkInputAvailability(target: DisplayHideIdentity) throws -> DDCInputReading {
@@ -322,6 +366,124 @@ public struct DisplayHideController {
             journal: summary,
             inspectionFailure: nil
         )
+    }
+
+    private func statusForMirrorSession(_ journal: RecoveryJournal, records: [DisplayRecord],
+                                        current: RecoverySnapshot) -> DisplayHideStatus {
+        guard let session = journal.publicMirrorSession else {
+            return .failed(path: store.url.path, error: RecoveryError.unsafe("missing public-mirror session"))
+        }
+        let currentByUUID = Dictionary(uniqueKeysWithValues: current.displays.map { ($0.uuid.lowercased(), $0) })
+        let recordsByUUID = Dictionary(uniqueKeysWithValues: records.compactMap { record in
+            record.uuid.map { ($0.lowercased(), record) }
+        })
+        let sessionVerified = MirrorSessionTopology.matches(
+            baseline: session.baseline, removals: session.removals, current: current
+        )
+        let modeFailure: String?
+        do { try mirror.preflightModes(session.baseline); modeFailure = nil }
+        catch { modeFailure = error.localizedDescription }
+        let removals = session.removals.map { removal -> DisplayHideRemovalSummary in
+            let savedTarget = session.baseline.displays.first { $0.uuid == removal.targetUUID }
+            let savedSource = session.baseline.displays.first { $0.uuid == removal.sourceUUID }
+            let targetIdentity = savedTarget.map(identity) ?? DisplayHideIdentity(
+                uuid: removal.targetUUID, displayID: removal.targetID, name: nil, vendor: 0, model: 0, serial: 0
+            )
+            let sourceIdentity = savedSource.map(identity) ?? DisplayHideIdentity(
+                uuid: removal.sourceUUID, displayID: removal.sourceID, name: nil, vendor: 0, model: 0, serial: 0
+            )
+            let observedTarget = currentByUUID[removal.targetUUID]
+            let observedSource = currentByUUID[removal.sourceUUID]
+            let targetRecord = recordsByUUID[removal.targetUUID]
+            let sourceRecord = recordsByUUID[removal.sourceUUID]
+            let relationVerified = observedTarget?.id == removal.targetID &&
+                observedTarget?.active == false &&
+                observedTarget?.mirrorUUID?.caseInsensitiveCompare(removal.sourceUUID) == .orderedSame &&
+                observedSource?.id == removal.sourceID && observedSource?.active == true &&
+                observedSource?.mirrorUUID == nil && targetRecord?.online == true &&
+                targetRecord?.asleep == false && sourceRecord?.online == true &&
+                sourceRecord?.active == true && sourceRecord?.asleep == false
+            let canRepairLayout = !removal.state.resolved &&
+                (MirrorSessionTopology.canRestoreFinalLayout(
+                    baseline: session.baseline, removals: session.removals,
+                    targetUUID: removal.targetUUID, current: current
+                ) || MirrorSessionTopology.canRepairTargetLayout(
+                    baseline: session.baseline, removals: session.removals,
+                    targetUUID: removal.targetUUID, current: current
+                )) && targetRecord?.online == true && targetRecord?.asleep == false &&
+                sourceRecord?.online == true && sourceRecord?.active == true && sourceRecord?.asleep == false
+            let canShow = modeFailure == nil &&
+                ((removal.state == .mirrored && sessionVerified && relationVerified) || canRepairLayout)
+            let refusal: String?
+            if canShow {
+                refusal = nil
+            } else if removal.state == .needsAttention {
+                refusal = removal.failure ?? "This removal needs recovery."
+            } else if !relationVerified {
+                refusal = "The exact removed display or its source is unavailable or no longer matches. Reconnect the captured displays and inspect recovery."
+            } else if !sessionVerified {
+                refusal = journal.failure ?? "Another removal in this session needs attention; inspect recovery before Show."
+            } else if let modeFailure {
+                refusal = modeFailure
+            } else if removal.state != .mirrored {
+                refusal = "This removal is still in an interrupted operation; inspect recovery before continuing."
+            } else {
+                refusal = nil
+            }
+            return DisplayHideRemovalSummary(
+                id: removal.id.uuidString, target: targetIdentity, source: sourceIdentity,
+                state: removal.state.rawValue, isUnresolved: !removal.state.resolved,
+                canShow: canShow, showRefusal: refusal, failure: removal.failure,
+                topologyVerified: relationVerified
+            )
+        }
+        var observations: [DisplayHideObservation] = records.compactMap { record in
+            guard let uuid = record.uuid?.lowercased() else { return nil }
+            let saved = currentByUUID[uuid]
+            let targetRemoval = removals.first { $0.isUnresolved && $0.target.uuid == uuid }
+            let displayIdentity = saved.map(identity) ?? identity(record)
+            let source = targetRemoval?.source
+            let state: DisplayHideObservedState
+            let detail: String?
+            if let targetRemoval, targetRemoval.topologyVerified,
+               targetRemoval.state == PublicMirrorRemovalState.mirrored.rawValue {
+                state = .hiddenByPanelCtl
+                detail = "Desktop hidden by PanelCtl; monitor input is unknown. Use the monitor's input buttons if needed."
+            } else if let targetRemoval {
+                state = .recoveryNeeded
+                detail = targetRemoval.failure ?? targetRemoval.showRefusal
+            } else if saved?.mirrorUUID != nil {
+                state = .mirroredExternally
+                detail = "Mirrored outside PanelCtl; correct this manually in macOS Displays settings."
+            } else {
+                state = .separate
+                detail = nil
+            }
+            return DisplayHideObservation(identity: displayIdentity, state: state, source: source,
+                                          detail: detail, isJournalTarget: targetRemoval != nil)
+        }
+        for removal in removals where removal.isUnresolved &&
+            !observations.contains(where: { $0.identity.uuid == removal.target.uuid }) {
+            observations.append(DisplayHideObservation(
+                identity: removal.target, state: .unavailable, source: removal.source,
+                detail: removal.showRefusal ?? "Reconnect the exact removed display to continue recovery.",
+                isJournalTarget: true
+            ))
+        }
+        let unresolved = removals.filter(\.isUnresolved)
+        let primary = unresolved.first
+        let summary = DisplayHideJournalSummary(
+            id: journal.id.uuidString, state: journal.state.rawValue,
+            target: primary?.target, source: primary?.source, isMirrorJournal: true,
+            isUnresolved: !journal.state.resolved, canShow: removals.contains(where: \.canShow),
+            showRefusal: unresolved.first(where: { !$0.canShow })?.showRefusal,
+            failure: journal.failure,
+            mirrorTopologyVerified: sessionVerified,
+            removals: removals
+        )
+        return DisplayHideStatus(journalPath: store.url.path,
+                                 observations: observations.sorted { $0.identity.uuid < $1.identity.uuid },
+                                 journal: summary, inspectionFailure: nil, removals: removals)
     }
 
     private func statusForUnsupportedJournal(_ journal: RecoveryJournal, records: [DisplayRecord],

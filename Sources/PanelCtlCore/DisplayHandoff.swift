@@ -67,6 +67,29 @@ public struct DisplayHandoffOperationFailure: Error, LocalizedError {
     }
 }
 
+public struct DisplayHandoffRemoval: Equatable, Identifiable {
+    public let id: String
+    public let target: DisplayHandoffIdentity
+    public let source: DisplayHandoffIdentity
+    public let state: String
+    public let isUnresolved: Bool
+    public let canShow: Bool
+    public let reason: String?
+    public let topologyVerified: Bool
+
+    public init(id: String, target: DisplayHandoffIdentity, source: DisplayHandoffIdentity,
+                state: String, isUnresolved: Bool, canShow: Bool, reason: String?, topologyVerified: Bool) {
+        self.id = id
+        self.target = target
+        self.source = source
+        self.state = state
+        self.isUnresolved = isUnresolved
+        self.canShow = canShow
+        self.reason = reason
+        self.topologyVerified = topologyVerified
+    }
+}
+
 public struct DisplayHandoffStatus: Equatable {
     public enum State: Equatable {
         case none
@@ -88,8 +111,21 @@ public struct DisplayHandoffStatus: Equatable {
     public let observations: [DisplayHideObservation]
     public let inspectionFailure: String?
     public let mirrorTopologyVerified: Bool
+    public let removals: [DisplayHandoffRemoval]
 
-    public var hasUnresolvedJournal: Bool { state != .none }
+    public var hasUnresolvedJournal: Bool { removals.contains(where: \.isUnresolved) || state != .none }
+    public func removal(for uuid: String) -> DisplayHandoffRemoval? {
+        if let removal = removals.first(where: { $0.target.uuid.caseInsensitiveCompare(uuid) == .orderedSame && $0.isUnresolved }) {
+            return removal
+        }
+        guard state != .none, let target, let source,
+              target.uuid.caseInsensitiveCompare(uuid) == .orderedSame else { return nil }
+        return DisplayHandoffRemoval(
+            id: journalID ?? target.uuid, target: target, source: source,
+            state: state == .hidden ? "mirrored" : "needsAttention", isUnresolved: true, canShow: canShow,
+            reason: reason, topologyVerified: mirrorTopologyVerified
+        )
+    }
 
     init(
         state: State,
@@ -102,7 +138,8 @@ public struct DisplayHandoffStatus: Equatable {
         recoveryCommand: String? = nil,
         observations: [DisplayHideObservation] = [],
         inspectionFailure: String? = nil,
-        mirrorTopologyVerified: Bool = false
+        mirrorTopologyVerified: Bool = false,
+        removals: [DisplayHandoffRemoval] = []
     ) {
         self.state = state
         self.target = target
@@ -116,6 +153,7 @@ public struct DisplayHandoffStatus: Equatable {
         self.observations = observations
         self.inspectionFailure = inspectionFailure
         self.mirrorTopologyVerified = mirrorTopologyVerified
+        self.removals = removals
     }
 
     fileprivate static func shellQuote(_ value: String) -> String {
@@ -131,45 +169,61 @@ enum HiddenMirrorSourceOverlayAuthorization {
         status: DisplayHandoffStatus
     ) -> String? {
         guard isMirrored else { return "the selected display is no longer in a mirror set" }
-        guard status.inspectionFailure == nil,
-              status.state == .hidden,
-              status.canShow,
-              status.journalID != nil,
-              let target = status.target,
-              let source = status.source,
-              source.uuid.caseInsensitiveCompare(sourceUUID) == .orderedSame,
-              source.id == sourceDisplayID else {
-            return status.reason ?? "the shared journal does not verify this selected source as Hidden by PanelCtl"
+        guard status.inspectionFailure == nil, status.state == .hidden,
+              status.canShow, status.journalID != nil, status.mirrorTopologyVerified else {
+            return status.reason ?? "the shared journal does not verify every removal in this Hidden layout"
         }
-        guard status.mirrorTopologyVerified else {
-            return "the current mirror topology, including the main display, differs from the journaled Hidden layout"
+        let removals: [DisplayHandoffRemoval]
+        if !status.removals.isEmpty {
+            removals = status.removals.filter(\.isUnresolved)
+        } else if let target = status.target, let source = status.source {
+            removals = [DisplayHandoffRemoval(
+                id: status.journalID ?? target.uuid, target: target, source: source,
+                state: "mirrored", isUnresolved: true, canShow: status.canShow,
+                reason: status.reason, topologyVerified: status.mirrorTopologyVerified
+            )]
+        } else {
+            return "the shared journal has no verified removal entries"
         }
-        let hiddenTargets = status.observations.filter {
-            $0.isJournalTarget && $0.state == .hiddenByPanelCtl
+        guard !removals.isEmpty, removals.allSatisfy({ $0.canShow && $0.topologyVerified }),
+              removals.contains(where: {
+                  $0.source.uuid.caseInsensitiveCompare(sourceUUID) == .orderedSame && $0.source.id == sourceDisplayID
+              }) else {
+            return "the shared journal does not verify this selected source as a source for a healthy removal"
         }
-        guard hiddenTargets.count == 1,
-              let hiddenTarget = hiddenTargets.first,
-              hiddenTarget.identity.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame,
-              hiddenTarget.identity.displayID == target.id,
-              hiddenTarget.source?.uuid.caseInsensitiveCompare(source.uuid) == .orderedSame,
-              hiddenTarget.source?.displayID == source.id else {
-            return "the journaled target is not observed mirroring the selected source"
+        for removal in removals {
+            let targets = status.observations.filter {
+                $0.isJournalTarget && $0.identity.uuid.caseInsensitiveCompare(removal.target.uuid) == .orderedSame
+            }
+            guard targets.count == 1, let target = targets.first,
+                  target.state == .hiddenByPanelCtl,
+                  target.identity.displayID == removal.target.id,
+                  target.source?.uuid.caseInsensitiveCompare(removal.source.uuid) == .orderedSame,
+                  target.source?.displayID == removal.source.id else {
+                return "a journaled target is not observed mirroring its recorded source"
+            }
+        }
+        guard let selectedSource = removals.first(where: {
+            $0.source.uuid.caseInsensitiveCompare(sourceUUID) == .orderedSame && $0.source.id == sourceDisplayID
+        })?.source else {
+            return "the selected display is not a source in the journal"
         }
         let sourceObservations = status.observations.filter {
-            $0.identity.uuid.caseInsensitiveCompare(source.uuid) == .orderedSame
+            $0.identity.uuid.caseInsensitiveCompare(selectedSource.uuid) == .orderedSame
         }
-        guard sourceObservations.count == 1,
-              let sourceObservation = sourceObservations.first,
+        guard sourceObservations.count == 1, let sourceObservation = sourceObservations.first,
               sourceObservation.state == .separate,
-              sourceObservation.identity.displayID == source.id,
-              sourceObservation.identity.vendor == source.vendor,
-              sourceObservation.identity.model == source.model,
-              sourceObservation.identity.serial == source.serial else {
+              sourceObservation.identity.displayID == selectedSource.id,
+              sourceObservation.identity.vendor == selectedSource.vendor,
+              sourceObservation.identity.model == selectedSource.model,
+              sourceObservation.identity.serial == selectedSource.serial else {
             return "the current selected source identity or topology does not match the journal"
         }
+        let targetUUIDs = Set(removals.map { $0.target.uuid.lowercased() })
         guard status.observations.allSatisfy({ observation in
             observation.state == .separate ||
-                (observation.isJournalTarget && observation.identity.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame && observation.state == .hiddenByPanelCtl)
+                (observation.isJournalTarget && targetUUIDs.contains(observation.identity.uuid.lowercased()) &&
+                 observation.state == .hiddenByPanelCtl)
         }) else {
             return "another display is externally mirrored or has unknown recovery state"
         }
@@ -234,45 +288,61 @@ public enum DisplayHandoff {
     }
 
     static func handoffStatus(from status: DisplayHideStatus) -> DisplayHandoffStatus {
-        guard let journal = status.journal, journal.isUnresolved else {
+        guard let journal = status.journal else {
             return DisplayHandoffStatus(
-                state: .none,
-                journalPath: status.journalPath,
-                journalID: status.journal?.id,
-                observations: status.observations,
-                inspectionFailure: status.inspectionFailure
+                state: .none, journalPath: status.journalPath,
+                observations: status.observations, inspectionFailure: status.inspectionFailure
             )
         }
         guard journal.isMirrorJournal else {
             return DisplayHandoffStatus(
-                state: .unsupported,
+                state: journal.isUnresolved ? .unsupported : .none,
                 target: journal.target.map(DisplayHandoffIdentity.init),
-                journalPath: status.journalPath,
-                journalID: journal.id,
+                journalPath: status.journalPath, journalID: journal.id,
                 reason: journal.showRefusal ?? status.inspectionFailure,
-                recoveryCommand: nil,
-                observations: status.observations,
+                recoveryCommand: nil, observations: status.observations,
                 inspectionFailure: status.inspectionFailure
             )
         }
-        let observedHidden = status.observations.contains {
-            $0.isJournalTarget && $0.state == .hiddenByPanelCtl
+        var removals = journal.removals.map { removal in
+            DisplayHandoffRemoval(
+                id: removal.id, target: DisplayHandoffIdentity(removal.target),
+                source: DisplayHandoffIdentity(removal.source), state: removal.state,
+                isUnresolved: removal.isUnresolved, canShow: removal.canShow,
+                reason: removal.showRefusal ?? removal.failure,
+                topologyVerified: removal.topologyVerified
+            )
         }
-        let reason = journal.showRefusal ?? journal.failure ?? status.inspectionFailure ??
+        if removals.isEmpty, let target = journal.target, let source = journal.source {
+            removals = [DisplayHandoffRemoval(
+                id: journal.id, target: DisplayHandoffIdentity(target), source: DisplayHandoffIdentity(source),
+                state: journal.state, isUnresolved: journal.isUnresolved, canShow: journal.canShow,
+                reason: journal.showRefusal, topologyVerified: journal.mirrorTopologyVerified
+            )]
+        }
+        let unresolved = removals.filter(\.isUnresolved)
+        let attention = unresolved.first(where: { !$0.topologyVerified || !$0.canShow })
+        let primary = attention ?? unresolved.first
+        let state: DisplayHandoffStatus.State = !journal.isUnresolved ? .none
+            : attention == nil ? .hidden : .recovery
+        let reason = attention?.reason ?? journal.failure ?? journal.showRefusal ?? status.inspectionFailure ??
             status.observations.first(where: \.isJournalTarget)?.detail
-        let recoveryCommand = "panelctl recovery restore --journal \(DisplayHandoffStatus.shellQuote(status.journalPath))"
+        let recoveryCommand: String?
+        if unresolved.count == 1, let target = unresolved.first?.target {
+            recoveryCommand = "panelctl recovery restore --display \(DisplayHandoffStatus.shellQuote(target.uuid)) --journal \(DisplayHandoffStatus.shellQuote(status.journalPath))"
+        } else if unresolved.count > 1 {
+            recoveryCommand = "panelctl recovery status --journal \(DisplayHandoffStatus.shellQuote(status.journalPath))"
+        } else {
+            recoveryCommand = nil
+        }
         return DisplayHandoffStatus(
-            state: observedHidden ? .hidden : .recovery,
-            target: journal.target.map(DisplayHandoffIdentity.init),
-            source: journal.source.map(DisplayHandoffIdentity.init),
-            journalPath: status.journalPath,
-            journalID: journal.id,
-            reason: reason,
-            canShow: journal.canShow,
-            recoveryCommand: recoveryCommand,
-            observations: status.observations,
-            inspectionFailure: status.inspectionFailure,
-            mirrorTopologyVerified: journal.mirrorTopologyVerified
+            state: state,
+            target: primary?.target ?? journal.target.map(DisplayHandoffIdentity.init),
+            source: primary?.source ?? journal.source.map(DisplayHandoffIdentity.init),
+            journalPath: status.journalPath, journalID: journal.id, reason: reason,
+            canShow: unresolved.contains(where: \.canShow), recoveryCommand: recoveryCommand,
+            observations: status.observations, inspectionFailure: status.inspectionFailure,
+            mirrorTopologyVerified: journal.mirrorTopologyVerified, removals: removals
         )
     }
 }
@@ -313,7 +383,8 @@ struct HandoffController {
         }
     }
 
-    func guardedBack(expectedJournalID: UUID, input: UInt8?, store: RecoveryStore) throws -> DisplayInputOutcome {
+    func guardedBack(expectedJournalID: UUID, targetUUID: String? = nil, input: UInt8?,
+                     store: RecoveryStore) throws -> DisplayInputOutcome {
         var inputOutcome = input.map {
             DisplayInputOutcome(state: .notAttempted, requestedInput: $0,
                                 detail: "Input selection was not attempted because the captured desktop was not restored.")
@@ -322,6 +393,7 @@ struct HandoffController {
             var afterRestoreRan = false
             _ = try mirror.unmirror(
                 store: store,
+                selector: targetUUID,
                 expectedID: expectedJournalID,
                 noOpWhenAlreadyResolved: true
             ) { target in
@@ -345,12 +417,16 @@ struct HandoffController {
 
     func away(selector: String, source: String, input: UInt8?, store: RecoveryStore) throws {
         var inputRecovery: String?
+        var capturedTarget: RecoveryDisplay?
         do {
-            let journal = try mirror.mirror(selector: selector, source: source, store: store) { target in
+            _ = try mirror.mirror(selector: selector, source: source, store: store) { target in
+                capturedTarget = target
                 try switchInput(input, target: target) { inputRecovery = $0 }
             }
             report("Away: separate desktop hidden by mirroring; Mac signal remains on. Journal: \(store.url.path)")
-            let target = journal.snapshot.displays.first { $0.id == journal.mirrorTargetID }!
+            guard let target = capturedTarget else {
+                throw RecoveryError.unsafe("newly hidden target is missing from the durable journal; inspect recovery status")
+            }
             report("Return with: panelctl back --display \(shellQuote(target.uuid)) --consent-back --journal \(shellQuote(store.url.path))")
             report("Add --input <Mac-input> only if DDC switching back is wanted; otherwise use the monitor's input button.")
         } catch {
@@ -360,9 +436,14 @@ struct HandoffController {
 
     func back(selector: String, input: UInt8?, store: RecoveryStore) throws {
         // No DDC open/read/write can prevent the topology restoration.
-        _ = try mirror.unmirror(store: store, selector: selector) { target in
-            report("Back: captured topology restored and verified. Journal: \(store.url.path)")
+        let journal = try mirror.unmirror(store: store, selector: selector) { target in
             try switchInput(input, target: target, returning: true) { report("Input recovery: \($0)") }
+        }
+        let remaining = journal.publicMirrorSession?.removals.filter { !$0.state.resolved }.count ?? 0
+        if remaining > 0 {
+            report("Back: selected display shown and verified; \(remaining) removal(s) remain hidden. Its position may differ slightly until the last Show restores the original arrangement. Journal: \(store.url.path)")
+        } else {
+            report("Back: captured topology restored and verified. Journal: \(store.url.path)")
         }
     }
 

@@ -241,6 +241,50 @@ final class ProtectionPreferencesTests: XCTestCase {
         ])
     }
 
+    func testHiddenMirrorOverlayAuthorizesEveryDistinctSourceOnce() throws {
+        let firstUUID = "00000000-0000-0000-0000-000000000001"
+        let secondUUID = "00000000-0000-0000-0000-000000000002"
+        var preferences = ProtectionPreferences()
+        preferences.selectedDisplayUUIDs = [firstUUID, secondUUID]
+        let first = display(index: 1, id: 101, uuid: firstUUID, width: 1920, height: 1080)
+        let second = display(index: 2, id: 202, uuid: secondUUID, width: 1920, height: 1080)
+        let arguments = try XCTUnwrap(preferences.hiddenMirrorOverlayArguments(
+            for: [first, second, first], hiddenDisplays: [first, second, displays[2]]
+        ))
+        XCTAssertEqual(arguments.filter { $0 == "--display" }.count, 2)
+        XCTAssertEqual(arguments.filter { $0 == "--panelctl-hidden-mirror-source" }.count, 2)
+        XCTAssertEqual(arguments.filter { $0 == "--panelctl-hidden-display" }.count, 1)
+        XCTAssertTrue(arguments.contains(firstUUID))
+        XCTAssertTrue(arguments.contains(secondUUID))
+        XCTAssertThrowsError(try preferences.hiddenMirrorOverlayArguments(for: [
+            first, display(index: 9, id: 999, uuid: firstUUID, width: 1920, height: 1080)
+        ]), "one UUID cannot authorize conflicting mirror-source identities")
+    }
+
+    func testProtectionServiceRecognizesMultiSourceOverlayAsHardwareFree() async throws {
+        let firstUUID = "00000000-0000-0000-0000-000000000001"
+        let secondUUID = "00000000-0000-0000-0000-000000000002"
+        var preferences = ProtectionPreferences()
+        preferences.selectedDisplayUUIDs = [firstUUID, secondUUID]
+        let first = display(index: 1, id: 101, uuid: firstUUID, width: 1920, height: 1080)
+        let second = display(index: 2, id: 202, uuid: secondUUID, width: 1920, height: 1080)
+        let arguments = try XCTUnwrap(preferences.hiddenMirrorOverlayArguments(for: [first, second]))
+        let recognized = await MainActor.run {
+            ProtectionService.isHardwareFreeHiddenMirrorOverlay(arguments: arguments)
+        }
+        XCTAssertTrue(recognized)
+        let unsafeArguments = arguments + ["--dim-to", "0"]
+        let unsafeRecognized = await MainActor.run {
+            ProtectionService.isHardwareFreeHiddenMirrorOverlay(arguments: unsafeArguments)
+        }
+        XCTAssertFalse(unsafeRecognized)
+        let duplicateTargetArguments = arguments + ["--display", firstUUID]
+        let duplicateTargetRecognized = await MainActor.run {
+            ProtectionService.isHardwareFreeHiddenMirrorOverlay(arguments: duplicateTargetArguments)
+        }
+        XCTAssertFalse(duplicateTargetRecognized)
+    }
+
     func testPlaybackDeferralOptOutEmitsIgnoreFlag() throws {
         var preferences = ProtectionPreferences()
         preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
