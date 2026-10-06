@@ -626,13 +626,22 @@ final class AppModel: ObservableObject {
     }
 
     func makeNewDisplayAction(selectedDisplayID: String? = nil) -> DisplayAction {
+        let existingNames = Set(displayActions.actions.map {
+            $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        })
+        var name = "New Action"
+        var suffix = 2
+        while existingNames.contains(name.lowercased()) {
+            name = "New Action \(suffix)"
+            suffix += 1
+        }
         var target: DisplayIdentitySnapshot?
         if let selectedDisplayID,
            let display = activeDisplays.first(where: { $0.uuid?.caseInsensitiveCompare(selectedDisplayID) == .orderedSame }),
            let uuid = display.uuid, UUID(uuidString: uuid) != nil {
             target = DisplayIdentitySnapshot(display)
         }
-        return DisplayAction(target: target)
+        return DisplayAction(name: name, target: target)
     }
 
     func makeNewDisplayActionStep(excluding action: DisplayAction? = nil) -> DisplayActionStep {

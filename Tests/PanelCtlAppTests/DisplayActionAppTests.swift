@@ -19,6 +19,30 @@ final class DisplayActionAppTests: XCTestCase {
         ]
     }
 
+    func testNewActionDefaultsToUniqueNameWithoutSavingDraft() throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let model = makeModel(defaults: defaults)
+        let draft = model.makeNewDisplayAction(selectedDisplayID: targetUUID)
+        XCTAssertEqual(draft.name, "New Action")
+        XCTAssertEqual(draft.target?.uuid, targetUUID)
+        XCTAssertEqual(draft.effect, .blackOut)
+        XCTAssertNil(model.displayActionValidation(for: draft))
+        XCTAssertTrue(model.displayActions.actions.isEmpty)
+        XCTAssertEqual(model.makeNewDisplayAction().name, "New Action")
+        XCTAssertNil(model.makeNewDisplayAction().target)
+
+        var first = draft
+        first.name = "new action"
+        try model.saveDisplayAction(first)
+        let second = model.makeNewDisplayAction(selectedDisplayID: targetUUID)
+        XCTAssertEqual(second.name, "New Action 2")
+        XCTAssertNil(model.displayActionValidation(for: second))
+        try model.saveDisplayAction(second)
+        XCTAssertEqual(model.makeNewDisplayAction().name, "New Action 3")
+        XCTAssertEqual(model.displayActions.actions.count, 2)
+    }
+
     func testActionsPersistVersionedAndRenameKeepsStableIDAndCommand() throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
