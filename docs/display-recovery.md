@@ -71,6 +71,12 @@ explicit target-only layout repair, but only while sibling topology and previous
 restorations verify. Exact target mode/origin/main verification still gates input
 return. See the [multi-display trial](display-multi-removal-trial.md) for the
 observed four-pixel origin mismatch; it is not a qualified round trip.
+If macOS still refuses the partial layout, do not retry repeatedly. An explicit
+Show of the last physically mirrored target may restore the full baseline while
+an earlier, already-separate target retains layout recovery. All other displays
+must already be separate, and every entry stays unresolved until the entire
+baseline verifies. Only the selected target's input is switched; return other
+inputs separately with explicit consent or monitor buttons.
 
 Private disable refuses while any public removal is unresolved, and a public
 removal refuses while a private-disable journal is unresolved. Legacy

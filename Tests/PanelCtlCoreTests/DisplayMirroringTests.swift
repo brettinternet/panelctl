@@ -396,6 +396,58 @@ final class DisplayMirroringTests: XCTestCase {
         XCTAssertEqual(current.displays[1].y, -4)
     }
 
+    func testLastPhysicalShowRestoresBaselineWithEarlierLayoutRecoveryOutstanding() throws {
+        let baseline = try changedSnapshot(sessionSnapshot([:], includeFourth: true)) { $0[1]["y"] = -4 }
+        var current = try sessionSnapshot([3: 1], includeFourth: true)
+        let removals = [
+            PublicMirrorRemoval(target: baseline.displays[1], source: baseline.displays[0],
+                                beforeOperation: baseline, state: .needsAttention),
+            PublicMirrorRemoval(target: baseline.displays[2], source: baseline.displays[0],
+                                beforeOperation: baseline, state: .mirrored)
+        ]
+        var journal = RecoveryJournal(snapshot: baseline, publicMirrorSession:
+            PublicMirrorSession(baseline: baseline, removals: removals))
+        journal.state = .needsAttention
+        let scenarioStore = RecoveryStore(url: directory.appendingPathComponent("last-physical-show.json"))
+        try scenarioStore.lock(); try scenarioStore.create(journal); scenarioStore.unlock()
+        let operation = RecoveryStore(url: directory.appendingPathComponent("last-physical-operation"))
+        var writes = 0
+        var returnedInputs: [String] = []
+        var shouldMatch = false
+        let sut = MirrorController(
+            records: { self.records(current) }, operationLock: { operation },
+            engine: RecoveryEngine(capture: { current }, apply: { snapshot in
+                XCTAssertEqual(snapshot, baseline)
+                writes += 1
+                let persisted = try scenarioStore.load()
+                XCTAssertEqual(persisted.publicMirrorSession?.removals.first?.state, .needsAttention)
+                XCTAssertEqual(persisted.publicMirrorSession?.removals.last?.state, .restoring)
+                current = baseline
+                if !shouldMatch { current = try self.changedSnapshot(current) { $0[1]["y"] = 0 } }
+            }, convergencePause: {}), preflightModes: { _ in },
+            restoreTarget: { _, _, _, _ in XCTFail("the last physical Show must verify the whole baseline") })
+        XCTAssertFalse(MirrorSessionTopology.canRestoreFinalLayout(
+            baseline: baseline, removals: removals, targetUUID: snapshotUUID(2), current: current),
+            "must not unmirror another still-hidden target when selecting the already-separate display")
+        let wrongMirror = try changedSnapshot(current) { $0[2]["mirrorUUID"] = self.snapshotUUID(4) }
+        XCTAssertFalse(MirrorSessionTopology.canRestoreFinalLayout(
+            baseline: baseline, removals: removals, targetUUID: snapshotUUID(3), current: wrongMirror))
+        let inspector = DisplayHideController(store: scenarioStore, mirror: sut, operationLock: { operation })
+        XCTAssertTrue(try XCTUnwrap(inspector.inspect().removals.last).canShow)
+        XCTAssertThrowsError(try sut.unmirror(store: scenarioStore, selector: snapshotUUID(3),
+                                             afterRestore: { returnedInputs.append($0.uuid) }))
+        XCTAssertTrue(returnedInputs.isEmpty)
+        XCTAssertTrue(try scenarioStore.load().publicMirrorSession?.removals.allSatisfy { !$0.state.resolved } == true)
+        shouldMatch = true
+        let result = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(3),
+                                      afterRestore: { returnedInputs.append($0.uuid) })
+        XCTAssertEqual(writes, 2)
+        XCTAssertEqual(result.state, .restored)
+        XCTAssertTrue(result.publicMirrorSession?.removals.allSatisfy { $0.state.resolved } == true)
+        XCTAssertEqual(returnedInputs, [snapshotUUID(3)], "never switch a sibling input without its own request")
+        try baseline.verify(current)
+    }
+
     func testUntouchedSecondHideAfterMainOriginShiftDoesNotBlockFirstShow() throws {
         let baseline = try sessionSnapshot([:], includeFourth: true)
         var current = baseline

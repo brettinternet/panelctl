@@ -140,14 +140,21 @@ enum MirrorSessionTopology {
         return true
     }
 
-    /// A failed final Show may already have cleared the last mirror. Keep its
-    /// recovery entry and allow explicit baseline repair, never a sibling replay.
-    static func canRepairFinalLayout(baseline: RecoverySnapshot, removals: [PublicMirrorRemoval],
-                                     current: RecoverySnapshot) -> Bool {
-        activeRemovals(removals).count == 1 &&
-            (try? baseline.validateRestoration(to: current)) != nil &&
-            current.displays.filter(\.main).count == 1 &&
-            current.displays.allSatisfy { $0.mirrorUUID == nil }
+    /// The final *physical* Show restores the full baseline even if a previous
+    /// Show cleared its mirror but retained unresolved layout recovery. Every
+    /// other display must already be separate; never replay a sibling mirror.
+    static func canRestoreFinalLayout(baseline: RecoverySnapshot, removals: [PublicMirrorRemoval],
+                                      targetUUID: String, current: RecoverySnapshot) -> Bool {
+        guard let selected = activeRemovals(removals).first(where: { $0.targetUUID == targetUUID }),
+              (try? baseline.validateRestoration(to: current)) != nil,
+              current.displays.filter(\.main).count == 1 else { return false }
+        return current.displays.allSatisfy { display in
+            if display.uuid == selected.targetUUID, let source = display.mirrorUUID {
+                return source.caseInsensitiveCompare(selected.sourceUUID) == .orderedSame && !display.active
+            }
+            return display.mirrorUUID == nil &&
+                (display.active || baseline.displays.first(where: { $0.uuid == display.uuid })?.active == false)
+        }
     }
 
     /// A partial Show can clear its mirror yet fail exact layout verification.
@@ -484,7 +491,8 @@ struct MirrorController {
         try session.baseline.validateRestoration(to: current)
         try preflightModes(session.baseline)
         guard MirrorSessionTopology.matches(baseline: session.baseline, removals: session.removals, current: current) ||
-                MirrorSessionTopology.canRepairFinalLayout(baseline: session.baseline, removals: session.removals, current: current) ||
+                MirrorSessionTopology.canRestoreFinalLayout(baseline: session.baseline, removals: session.removals,
+                                                           targetUUID: selected.targetUUID, current: current) ||
                 MirrorSessionTopology.canRepairTargetLayout(baseline: session.baseline, removals: session.removals,
                                                            targetUUID: selected.targetUUID, current: current) else {
             let reason = "current topology does not match the recorded removal session; no other removal was changed"
@@ -492,7 +500,9 @@ struct MirrorController {
             throw RecoveryError.unsafe(reason)
         }
         active = MirrorSessionTopology.activeRemovals(session.removals)
-        let finalShow = active.count == 1
+        let finalShow = active.count == 1 || MirrorSessionTopology.canRestoreFinalLayout(
+            baseline: session.baseline, removals: session.removals, targetUUID: selected.targetUUID, current: current
+        )
         guard var savedSession = journal.publicMirrorSession,
               let index = savedSession.removals.firstIndex(where: { $0.id == selected.id }) else {
             throw RecoveryError.unsafe("selected removal entry disappeared; keep the journal")

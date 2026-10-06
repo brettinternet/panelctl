@@ -404,8 +404,9 @@ public struct DisplayHideController {
                 targetRecord?.asleep == false && sourceRecord?.online == true &&
                 sourceRecord?.active == true && sourceRecord?.asleep == false
             let canRepairLayout = !removal.state.resolved &&
-                (MirrorSessionTopology.canRepairFinalLayout(
-                    baseline: session.baseline, removals: session.removals, current: current
+                (MirrorSessionTopology.canRestoreFinalLayout(
+                    baseline: session.baseline, removals: session.removals,
+                    targetUUID: removal.targetUUID, current: current
                 ) || MirrorSessionTopology.canRepairTargetLayout(
                     baseline: session.baseline, removals: session.removals,
                     targetUUID: removal.targetUUID, current: current

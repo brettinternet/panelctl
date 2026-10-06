@@ -62,4 +62,15 @@ a writer. A fake regression reproduces the four-pixel mismatch, requires a
 separate explicit repair, retains the sibling, refuses changed identity/sibling
 topology, and withholds input return until verification succeeds.
 
-A live repair and any later input/Show writes still need fresh separate approval.
+The user separately approved one origin-only repair and a contingent DP1 input
+return on `4d11d9e`. macOS again retained (3440,0); strict verification failed
+and no input write ran. The same approach was stopped rather than retried.
+
+The next recovery path recognizes the last **physically mirrored** target even
+when another entry has unresolved layout recovery. Only when all other displays
+are already separate can its explicit Show restore the full immutable baseline.
+Unrelated or sibling mirrors refuse this path. Every pending entry remains
+unresolved until full exact verification passes; only the selected target's
+input callback can run. Fake tests cover the observed state, wrong-source
+refusal, failed full verification retaining both entries, and successful exact
+final restoration. A live final Show still requires fresh separate approval.
