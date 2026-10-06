@@ -69,8 +69,11 @@ that display, and the remaining targets stay removed. The final Show verifies
 the exact pre-first-Hide arrangement, modes and main display before switching
 back to the Mac's detected input. Turning Experimental features off makes new
 Hides black out instead, but never removes Show or recovery for a removed
-display. Multi-display combinations are offline-tested only and remain
-unqualified until each live write is separately approved.
+display. Multi-display combinations remain unqualified. The supervised
+S2721DGF/AW3425DW cycle failed exact partial-Show position verification, although
+full final-layout recovery passed. Show keeps recovery and withholds input
+return on a mismatch; see [the recorded limitation](display-multi-removal-trial.md).
+Each new live write still needs separate approval.
 
 The menu also offers per-display Hide/Show; each Show leaves other removed
 displays untouched. **Show and Quit** restores each healthy removed target in

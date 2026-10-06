@@ -64,6 +64,17 @@ unmirror: lock → restore captured modes, origins, mirroring, main display
 - The journal stays unresolved while any target remains removed and blocks a
   new capture. Resolved journals are archived by the next capture.
 
+## Known multi-display qualification blocker
+
+The supervised S2721DGF → AW3425DW removal sequence onto AW3423DW did
+not pass independent same-order Show: macOS placed S2721DGF at (3440,0)
+instead of its saved (3440,-4) while AW3425DW remained mirrored. Target-only,
+origin-only repair, and explicitly anchored restoration all failed strict
+verification; no return-input write followed a failed Show. Full exact layout
+recovery succeeded after Showing the last mirrored target. This layout remains
+unsupported for a smooth independent round trip; do not repeat origin requests
+or weaken verification. See [trial evidence and recovery](display-multi-removal-trial.md).
+
 ## Recovery and selectors
 
 ```sh

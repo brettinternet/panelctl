@@ -199,6 +199,12 @@ idle, startup or wake path disconnects a display. See
   before topology work. No automatic logout, reboot or guessed identity is a
   recovery strategy.
 
+**Known qualification blocker:** on the recorded four-display layout, Showing
+S2721DGF while AW3425DW remains removed loses its saved four-pixel vertical
+offset. Show correctly reports recovery and withholds input return; it is not a
+qualified independent round trip. Guarded final-layout recovery succeeded only
+after the last mirror was removed. See [trial evidence](display-multi-removal-trial.md).
+
 ## States and recovery
 
 | Tile state | Meaning / action |

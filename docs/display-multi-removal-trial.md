@@ -119,7 +119,7 @@ pending Show's pre-operation snapshot is saved before completion; reconciliation
 uses the same durable anchor expectations after a crash or failed verification.
 It cannot turn an anchor mismatch into success on the next inspection.
 
-The raw recorded snapshots are retained in
+The first cycle's raw recorded snapshots are retained in
 `Tests/PanelCtlCoreTests/Fixtures/multi-removal-26A434.json`. Tests explicitly
 model public-only capture metadata in copies, leaving both raw evidence and
 runtime identity checks unchanged. `TargetRestoreTransactionTests` exercises
@@ -127,5 +127,38 @@ the production staging path through fake transaction callbacks, including
 negative origins, unchanged anchors, follower exclusion, pre-commit drift,
 cancel/consumption rules and mismatching postconditions. The two recorded
 failed snapshots still fail verification. These tests cannot prove that
-WindowServer accepts the requested layout; the experiment remains unqualified
-until a separately approved cycle succeeds.
+WindowServer accepts the requested layout.
+
+### Anchored trial result: still blocked
+
+On `1163766`, another separately approved S2721DGF-then-AW3425DW `away`
+sequence passed both topology checks and both DDC writes. The user confirmed
+both other-computer pictures and usable Mac survivors. Session
+`EAF4A192-C31C-44A8-BF7D-0265042130C6` retained the new baseline and entries.
+
+The separately approved anchored S2721DGF Show again produced (3440,0), exact
+mode 75, instead of (3440,-4). K272HUL and AW3423DW retained their exact
+positions/modes/main flags, and AW3425DW remained a follower in mode 208.
+Strict verification failed, the pending Show snapshot remained durable, and no
+DP1 return ran. **Anchoring did not fix the observed failure.** No further
+origin-request variants were attempted.
+
+Separately approved final Show of AW3425DW again restored the full exact
+baseline and verified its HDMI1 return. A separate `recovery verify` passed;
+the separately approved S2721DGF DP1 return verified. Fresh read-only capture
+and user confirmation established all four displays fully recovered.
+
+The user elected to **retain the branch, record the blocker, and stop hardware
+experiments**, rather than merge incomplete work or alter the starting layout.
+The original-layout requirement remains open. No active recovery or unused
+hardware-write approval remains. Future work requires evidence for a different
+supported restoration mechanism or an explicitly agreed change of scope; neither
+an arbitrary position tolerance nor silently Showing another target is acceptable.
+
+Offline evidence at this commit: 262 core + 160 app tests passed with warnings
+as errors (four opt-in skips), and both product builds passed. Two earlier full
+runs hit the native keyboard-menu focus fixture while desktop focus changed;
+the test passed in isolation and the complete suite passed after the user
+confirmed a quiet desktop. The scoped transaction review found a missing durable
+anchor postcondition; that was fixed with pre-Show snapshot persistence and
+relaunch/inspection regressions before this live trial.
