@@ -121,11 +121,19 @@ final class AppControlServerTests: XCTestCase {
         }.value
         XCTAssertEqual(response.outcome, .done)
         XCTAssertEqual(response.exitCode, 0)
+
+        let actionID = UUID()
+        let actionResponse = try await Task.detached {
+            try AppControlClient(socketPath: path, launch: { XCTFail("run-action must not launch") })
+                .execute(.runAction, actionID: actionID)
+        }.value
+        XCTAssertEqual(actionResponse.outcome, .done)
+        XCTAssertEqual(actionResponse.exitCode, 0)
     }
 
     @MainActor
-    func testHideShowLostResponseNeverLaunchesOrRetries() async throws {
-        for command in [AppControlCommand.hide, .show, .toggleHide] {
+    func testHideShowAndActionLostResponseNeverLaunchOrRetry() async throws {
+        for command in [AppControlCommand.hide, .show, .toggleHide, .runAction] {
             let path = "\(try AppControlSocket.userTemporaryDirectory())/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
             let listener = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
             XCTAssertGreaterThanOrEqual(listener, 0)
@@ -143,6 +151,7 @@ final class AppControlServerTests: XCTestCase {
             }
             XCTAssertEqual(result, 0)
             XCTAssertEqual(Darwin.listen(listener, 2), 0)
+            let actionID = UUID()
             let consumed = Task.detached { () throws -> AppControlRequest in
                 let connection = Darwin.accept(listener, nil, nil)
                 guard connection >= 0 else { throw AppControlError.transport("accept failed") }
@@ -161,7 +170,11 @@ final class AppControlServerTests: XCTestCase {
                     let client = try AppControlClient(socketPath: path,
                         launch: { XCTFail("lost response must not launch") },
                         isAppRunning: { XCTFail("lost response must not retry or poll"); return true })
-                    return try client.execute(command, targetUUID: "00000000-0000-0000-0000-000000000002")
+                    return try client.execute(
+                        command,
+                        targetUUID: command == .runAction ? nil : "00000000-0000-0000-0000-000000000002",
+                        actionID: command == .runAction ? actionID : nil
+                    )
                 }.value
                 XCTFail("lost response must throw")
             } catch {
@@ -169,7 +182,13 @@ final class AppControlServerTests: XCTestCase {
             }
             let request = try await consumed.value
             XCTAssertEqual(request.command, command)
-            XCTAssertNotNil(request.targetUUID)
+            if command == .runAction {
+                XCTAssertNil(request.targetUUID)
+                XCTAssertEqual(request.actionID, actionID)
+            } else {
+                XCTAssertNotNil(request.targetUUID)
+                XCTAssertNil(request.actionID)
+            }
         }
     }
 

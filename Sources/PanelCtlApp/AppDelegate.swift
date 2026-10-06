@@ -658,7 +658,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         switch request.command {
-        case .hide, .show, .toggleHide:
+        case .hide, .show, .toggleHide, .runAction:
             return await model.handleDisplayControlRequest(request, receivedAt: receivedAt)
         case .enable:
             model.setProtectionEnabled(true)

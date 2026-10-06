@@ -290,6 +290,256 @@ final class SettingsWindowTests: XCTestCase {
         )
     }
 
+    func testDisplayActionEditorCancelSaveAndStableID() throws {
+        let app = NSApplication.shared
+        let originalPolicy = app.activationPolicy()
+        app.setActivationPolicy(.accessory)
+        app.activate(ignoringOtherApps: true)
+        defer { app.setActivationPolicy(originalPolicy) }
+
+        let (model, defaults) = try makeModel()
+        defer { defaults.removePersistentDomain(forName: Self.suiteName) }
+        let navigation = SettingsNavigation()
+        navigation.selectedDisplayID = Self.sideUUID.lowercased()
+
+        var draft = model.makeNewDisplayAction(selectedDisplayID: Self.sideUUID)
+        let (cancelParent, cancelSheet) = try presentProductionDisplayActionEditor(
+            model: model, navigation: navigation, action: draft, existingID: nil, isNew: true
+        )
+        try replaceEditorName(in: cancelSheet, with: "Canceled action")
+        let escape = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: cancelSheet.windowNumber, context: nil,
+            characters: "\u{1B}", charactersIgnoringModifiers: "\u{1B}",
+            isARepeat: false, keyCode: 53
+        ))
+        XCTAssertTrue(cancelSheet.performKeyEquivalent(with: escape), "Escape invokes the production editor's Cancel action")
+        spin { cancelParent.attachedSheet == nil }
+        XCTAssertNil(cancelParent.attachedSheet, "Cancel dismisses the production editor")
+        XCTAssertTrue(model.displayActions.actions.isEmpty, "Cancel discards the editor draft")
+        XCTAssertNil(defaults.data(forKey: "displayActions"))
+        cancelParent.close()
+
+        draft = model.makeNewDisplayAction(selectedDisplayID: Self.sideUUID)
+        let (saveParent, saveSheet) = try presentProductionDisplayActionEditor(
+            model: model, navigation: navigation, action: draft, existingID: nil, isNew: true
+        )
+        try replaceEditorName(in: saveSheet, with: "Desk blackout")
+        XCTAssertTrue(model.displayActions.actions.isEmpty, "The production editor keeps changes in its draft until Save")
+        let returnKey = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: saveSheet.windowNumber, context: nil,
+            characters: "\r", charactersIgnoringModifiers: "\r",
+            isARepeat: false, keyCode: 36
+        ))
+        app.sendEvent(returnKey)
+        spin { saveParent.attachedSheet == nil && model.displayActions.actions.count == 1 }
+        XCTAssertNil(saveParent.attachedSheet, "Return dismisses the production editor after Save")
+        let saved = try XCTUnwrap(model.displayActions.actions.first)
+        XCTAssertEqual(saved.target?.uuid.lowercased(), Self.sideUUID.lowercased())
+        XCTAssertEqual(saved.effect, .blackOut)
+        XCTAssertEqual(
+            try JSONDecoder().decode(DisplayActionSet.self, from: XCTUnwrap(defaults.data(forKey: "displayActions"))),
+            model.displayActions,
+            "The production editor Save shortcut persists the action"
+        )
+        saveParent.close()
+
+        var renamed = saved
+        renamed.name = "Desk blackout renamed"
+        let (editParent, editSheet) = try presentProductionDisplayActionEditor(
+            model: model, navigation: navigation, action: renamed, existingID: saved.id, isNew: false
+        )
+        try replaceEditorName(in: editSheet, with: "Desk blackout renamed")
+        let editReturnKey = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: editSheet.windowNumber, context: nil,
+            characters: "\r", charactersIgnoringModifiers: "\r",
+            isARepeat: false, keyCode: 36
+        ))
+        app.sendEvent(editReturnKey)
+        spin { editParent.attachedSheet == nil && model.displayActions.actions.first?.name == "Desk blackout renamed" }
+        XCTAssertNil(editParent.attachedSheet, "Return dismisses the editor after rename")
+        XCTAssertEqual(model.displayActions.actions.first?.id, saved.id, "Rename preserves the script's stable action ID")
+        editParent.close()
+    }
+
+    func testDefaultDisplayActionEditorShowsMissingRemovalSetupAndNavigatesToSelectedDisplay() throws {
+        let app = NSApplication.shared
+        let originalPolicy = app.activationPolicy()
+        app.setActivationPolicy(.accessory)
+        app.activate(ignoringOtherApps: true)
+        defer { app.setActivationPolicy(originalPolicy) }
+
+        let (model, defaults) = try makeModel(configure: {
+            $0.set(true, forKey: "experimentalFeaturesEnabled")
+        })
+        defer { defaults.removePersistentDomain(forName: Self.suiteName) }
+        let navigation = SettingsNavigation()
+        navigation.tab = .automation
+        let action = model.makeNewDisplayAction(selectedDisplayID: Self.sideUUID)
+        XCTAssertEqual(action.effect, .blackOut, "new actions start with the default effect")
+        XCTAssertNil(model.hidePreferences[Self.sideUUID], "this is the first-use state with no Remove setup")
+        let (parent, sheet) = try presentProductionDisplayActionEditor(
+            model: model, navigation: navigation, action: action, existingID: nil, isNew: true
+        )
+        defer { parent.close() }
+
+        let content = try XCTUnwrap(sheet.contentView)
+        let guidance = "Turn on Remove from desktop for this display in Settings → Displays first."
+        XCTAssertEqual(model.displayActionRemovalSetupReason(for: Self.sideUUID), guidance)
+        content.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        let setupY = content.isFlipped ? content.bounds.minY + 332 : content.bounds.maxY - 332
+        let setupPoint = content.convert(NSPoint(x: 100, y: setupY), to: nil)
+        let down = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown, location: setupPoint, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: sheet.windowNumber,
+            context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+        ))
+        let up = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseUp, location: setupPoint, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime + 0.01, windowNumber: sheet.windowNumber,
+            context: nil, eventNumber: 1, clickCount: 1, pressure: 0
+        ))
+        sheet.sendEvent(down)
+        sheet.sendEvent(up)
+        spin { parent.attachedSheet == nil && navigation.tab == .displays &&
+            navigation.selectedDisplayID == Self.sideUUID.lowercased() }
+        XCTAssertNil(parent.attachedSheet)
+        XCTAssertEqual(navigation.tab, .displays)
+        XCTAssertEqual(navigation.selectedDisplayID, Self.sideUUID.lowercased())
+    }
+
+    func testDisplayActionFixtureSnapshots() throws {
+        guard let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] else {
+            throw XCTSkip("Set PANELCTL_SETTINGS_FIXTURE_OUTPUT to a directory to write Settings PNGs.")
+        }
+        let app = NSApplication.shared
+        let originalPolicy = app.activationPolicy()
+        let originalAppearance = app.appearance
+        app.setActivationPolicy(.accessory)
+        app.appearance = NSAppearance(named: .aqua)
+        defer {
+            app.appearance = originalAppearance
+            app.setActivationPolicy(originalPolicy)
+        }
+        try FileManager.default.createDirectory(atPath: output, withIntermediateDirectories: true)
+        let fakeHelper = URL(fileURLWithPath: output).appendingPathComponent("panelctl-fixture")
+        try Data().write(to: fakeHelper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeHelper.path)
+        setenv("PANELCTL_HELPER", fakeHelper.path, 1)
+        defer { unsetenv("PANELCTL_HELPER") }
+        let target = DisplayIdentitySnapshot(displays[1])
+        let unavailable = DisplayIdentitySnapshot(Self.display(
+            index: 4, id: 14, uuid: "00000000-0000-0000-0000-0000000000FF",
+            name: "Conference display", main: false
+        ))
+        let blackOut = DisplayAction(name: "Black out conference display", target: target)
+        let actions = DisplayActionSet(actions: [
+            blackOut,
+            DisplayAction(name: "Show main display", target: DisplayIdentitySnapshot(displays[0]), effect: .show),
+            DisplayAction(name: "Show conference display", target: target, effect: .show),
+            DisplayAction(
+                name: "Remove conference display — review required",
+                target: target,
+                effect: .removeFromDesktop,
+                reviewedRemoval: ReviewedRemovalSetup(removeEnabled: true, sourceUUID: Self.mainUUID, awayInput: 0x11)
+            ),
+            DisplayAction(name: "Show unavailable conference display", target: unavailable, effect: .show)
+        ])
+
+        for width in [680, 440] {
+            let suite = "panelctl-display-action-fixture-\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defaults.set(try JSONEncoder().encode(actions), forKey: "displayActions")
+            let model = AppModel(
+                defaults: defaults,
+                displayProvider: { self.displays },
+                idleSecondsProvider: { nil },
+                isDisplayMirrored: { _ in false },
+                inspectHandoff: { DisplayHandoffStatus(state: .none, journalPath: Self.journalPath) },
+                coverDisplays: { _ in [] },
+                quiesceProtection: { $0(true, nil) }
+            )
+            model.runDisplayAction(id: blackOut.id)
+            let controller = SettingsWindowController(model: model)
+            controller.present()
+            controller.select(.automation)
+            let window = try XCTUnwrap(controller.window)
+            window.setContentSize(NSSize(width: width, height: 1080))
+            try writeSnapshot(of: window, to: output, name: "actions-list-\(width)")
+
+            let firstUseSuite = "panelctl-display-action-first-use-\(UUID().uuidString)"
+            let firstUseDefaults = try XCTUnwrap(UserDefaults(suiteName: firstUseSuite))
+            firstUseDefaults.set(true, forKey: "experimentalFeaturesEnabled")
+            let firstUseModel = AppModel(
+                defaults: firstUseDefaults,
+                displayProvider: { self.displays },
+                idleSecondsProvider: { nil },
+                isDisplayMirrored: { _ in false },
+                inspectHandoff: { DisplayHandoffStatus(state: .none, journalPath: Self.journalPath) },
+                coverDisplays: { _ in [] },
+                quiesceProtection: { $0(true, nil) }
+            )
+            let firstUseAction = firstUseModel.makeNewDisplayAction(selectedDisplayID: target.uuid)
+            XCTAssertEqual(firstUseAction.effect, .blackOut)
+            let firstUseEditor = try presentStandaloneDisplayActionEditor(
+                in: window, model: firstUseModel, navigation: SettingsNavigation(),
+                action: firstUseAction, existingID: nil, isNew: true
+            )
+            try writeSnapshot(of: firstUseEditor, to: output, name: "action-editor-first-use-\(width)")
+            window.endSheet(firstUseEditor)
+            spin { window.attachedSheet == nil }
+            firstUseDefaults.removePersistentDomain(forName: firstUseSuite)
+
+            var preferences = DisplayHidePreferences()
+            preferences[Self.sideUUID] = DisplayHideConfiguration(
+                target: target,
+                enabled: true,
+                source: DisplayIdentitySnapshot(displays[0]),
+                awayInput: 0x11,
+                returnInput: 0x0F
+            )
+            let configuredSuite = "panelctl-display-action-editor-fixture-\(UUID().uuidString)"
+            let configuredDefaults = try XCTUnwrap(UserDefaults(suiteName: configuredSuite))
+            configuredDefaults.set(true, forKey: "experimentalFeaturesEnabled")
+            configuredDefaults.set(try JSONEncoder().encode(preferences), forKey: "displayHidePreferences")
+            let configuredModel = AppModel(
+                defaults: configuredDefaults,
+                displayProvider: { self.displays },
+                idleSecondsProvider: { nil },
+                isDisplayMirrored: { _ in false },
+                inspectHandoff: { DisplayHandoffStatus(state: .none, journalPath: Self.journalPath) },
+                checkDDCInput: { DDCInputReading(displayID: $0.displayID, uuid: $0.uuid, current: 0x0F) },
+                coverDisplays: { _ in [] },
+                quiesceProtection: { $0(true, nil) }
+            )
+            let removal = DisplayAction(
+                name: "Remove conference display",
+                target: target,
+                effect: .removeFromDesktop,
+                reviewedRemoval: ReviewedRemovalSetup(removeEnabled: true, sourceUUID: Self.mainUUID, awayInput: 0x11)
+            )
+            let detailsEditor = try presentStandaloneDisplayActionEditor(
+                in: window, model: configuredModel, navigation: SettingsNavigation(),
+                action: removal, existingID: nil, isNew: true
+            )
+            try writeSnapshot(of: detailsEditor, to: output, name: "action-editor-remove-\(width)")
+            window.endSheet(detailsEditor)
+
+            configuredModel.setExperimentalFeaturesEnabled(false)
+            let disabledEditor = try presentStandaloneDisplayActionEditor(
+                in: window, model: configuredModel, navigation: SettingsNavigation(),
+                action: removal, existingID: nil, isNew: true
+            )
+            try writeSnapshot(of: disabledEditor, to: output, name: "action-editor-remove-disabled-\(width)")
+            window.close()
+            defaults.removePersistentDomain(forName: suite)
+            configuredDefaults.removePersistentDomain(forName: configuredSuite)
+        }
+    }
+
     func testBlackOutMenuUsesEnabledRuleEffectsAndExplainsNoEnabledRules() throws {
         _ = NSApplication.shared
         let (model, defaults) = try makeModel()
@@ -1007,6 +1257,54 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(field.stringValue, name)
     }
 
+    private func presentProductionDisplayActionEditor(
+        model: AppModel,
+        navigation: SettingsNavigation,
+        action: DisplayAction,
+        existingID: UUID?,
+        isNew: Bool
+    ) throws -> (parent: NSWindow, sheet: NSWindow) {
+        let parent = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 640),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        parent.isReleasedWhenClosed = false
+        parent.contentView = NSHostingView(rootView: DisplayActionEditorSheetHost(
+            model: model,
+            navigation: navigation,
+            action: action,
+            existingID: existingID,
+            isNew: isNew
+        ))
+        parent.makeKeyAndOrderFront(nil)
+        spin { parent.attachedSheet != nil }
+        return (parent, try XCTUnwrap(parent.attachedSheet))
+    }
+
+    private func presentStandaloneDisplayActionEditor(
+        in parent: NSWindow,
+        model: AppModel,
+        navigation: SettingsNavigation,
+        action: DisplayAction,
+        existingID: UUID?,
+        isNew: Bool
+    ) throws -> NSWindow {
+        let sheet = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 520),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        sheet.contentView = NSHostingView(rootView: DisplayActionEditor(
+            model: model, navigation: navigation, action: action, existingID: existingID, isNew: isNew
+        ))
+        parent.beginSheet(sheet)
+        spin { parent.attachedSheet === sheet }
+        return try XCTUnwrap(parent.attachedSheet)
+    }
+
     private func presentStandaloneRuleEditor(
         in parent: NSWindow,
         model: AppModel,
@@ -1163,5 +1461,43 @@ final class SettingsWindowTests: XCTestCase {
             pixelWidth: portrait ? 1080 : 1920,
             pixelHeight: portrait ? 1920 : 1080
         )
+    }
+}
+
+@MainActor
+private struct DisplayActionEditorSheetHost: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var navigation: SettingsNavigation
+    @State private var presentation: DisplayActionEditorPresentation?
+
+    private let existingID: UUID?
+    private let isNew: Bool
+
+    init(
+        model: AppModel,
+        navigation: SettingsNavigation,
+        action: DisplayAction,
+        existingID: UUID?,
+        isNew: Bool
+    ) {
+        self.model = model
+        self.navigation = navigation
+        self.existingID = existingID
+        self.isNew = isNew
+        _presentation = State(initialValue: DisplayActionEditorPresentation(action: action, isNew: isNew))
+    }
+
+    var body: some View {
+        Text("Display action editor test host")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .sheet(item: $presentation) { presentation in
+                DisplayActionEditor(
+                    model: model,
+                    navigation: navigation,
+                    action: presentation.action,
+                    existingID: existingID,
+                    isNew: isNew
+                )
+            }
     }
 }

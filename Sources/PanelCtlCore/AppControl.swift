@@ -7,6 +7,7 @@ public enum AppControlCommand: String, Codable, Equatable, Sendable {
     case hide
     case show
     case toggleHide = "toggle-hide"
+    case runAction = "run-action"
     case enable
     case disable
     case toggle
@@ -23,14 +24,26 @@ public enum AppControlCommand: String, Codable, Equatable, Sendable {
         self == .hide || self == .show || self == .toggleHide
     }
 
+    /// Manually invoked display operations never launch or resend the app request.
+    public var isManualDisplayCommand: Bool {
+        isDisplayCommand || self == .runAction
+    }
+
     /// A shell command line that runs this display command with the CLI at
     /// `executable`, for pasting into a script.
     public func commandLine(executable: String, displayUUID: String) -> String {
+        "\(Self.shellSafeExecutable(executable)) app \(rawValue) --display \(displayUUID)"
+    }
+
+    public func commandLine(executable: String, actionID: UUID) -> String {
+        "\(Self.shellSafeExecutable(executable)) app \(rawValue) --action \(actionID.uuidString)"
+    }
+
+    private static func shellSafeExecutable(_ executable: String) -> String {
         let safe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@%+=:,./_-")
-        let path = !executable.isEmpty && executable.unicodeScalars.allSatisfy(safe.contains)
+        return !executable.isEmpty && executable.unicodeScalars.allSatisfy(safe.contains)
             ? executable
             : "'" + executable.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        return "\(path) app \(rawValue) --display \(displayUUID)"
     }
 }
 
@@ -42,23 +55,26 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
     public let command: AppControlCommand
     public let durationSeconds: TimeInterval?
     public let targetUUID: String?
+    public let actionID: UUID?
 
     public init(
         command: AppControlCommand,
         durationSeconds: TimeInterval? = nil,
         targetUUID: String? = nil,
+        actionID: UUID? = nil,
         protocolVersion: Int = AppControlRequest.currentProtocol
     ) {
         self.protocolVersion = protocolVersion
         self.command = command
         self.durationSeconds = durationSeconds
         self.targetUUID = targetUUID
+        self.actionID = actionID
     }
 
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol"
         case command
-        case durationSeconds, targetUUID
+        case durationSeconds, targetUUID, actionID
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -67,6 +83,7 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
         try container.encode(command, forKey: .command)
         try container.encodeIfPresent(durationSeconds, forKey: .durationSeconds)
         try container.encodeIfPresent(targetUUID, forKey: .targetUUID)
+        try container.encodeIfPresent(actionID, forKey: .actionID)
     }
 }
 
@@ -293,12 +310,14 @@ public struct AppControlClient {
     public func execute(
         _ command: AppControlCommand,
         durationSeconds: TimeInterval? = nil,
-        targetUUID: String? = nil
+        targetUUID: String? = nil,
+        actionID: UUID? = nil
     ) throws -> AppControlResponse {
         try execute(
             command,
             durationSeconds: durationSeconds,
             targetUUID: targetUUID,
+            actionID: actionID,
             deadline: Self.defaultDeadline
         )
     }
@@ -307,12 +326,13 @@ public struct AppControlClient {
         _ command: AppControlCommand,
         durationSeconds: TimeInterval? = nil,
         targetUUID: String? = nil,
+        actionID: UUID? = nil,
         deadline: TimeInterval
     ) throws -> AppControlResponse {
         do {
-            return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID)
+            return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID, actionID: actionID)
         } catch let error as AppControlTransportError {
-            if command == .status || command.isDisplayCommand {
+            if command == .status || command.isManualDisplayCommand {
                 if !error.requestBytesWritten, !isAppRunning() {
                     return .unavailable(error.description)
                 }
@@ -328,7 +348,7 @@ public struct AppControlClient {
                     )
                 }
                 do {
-                    return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID)
+                    return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID, actionID: actionID)
                 } catch {
                     throw AppControlError.transport(error.localizedDescription)
                 }
@@ -342,7 +362,7 @@ public struct AppControlClient {
             }
             _ = waitForSocket(deadline: deadline)
             do {
-                return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID)
+                return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID, actionID: actionID)
             } catch {
                 throw AppControlError.transport(error.localizedDescription)
             }
@@ -361,12 +381,14 @@ public struct AppControlClient {
     private func send(
         _ command: AppControlCommand,
         durationSeconds: TimeInterval?,
-        targetUUID: String?
+        targetUUID: String?,
+        actionID: UUID?
     ) throws -> AppControlResponse {
         let request = AppControlRequest(
             command: command,
             durationSeconds: durationSeconds,
-            targetUUID: targetUUID
+            targetUUID: targetUUID,
+            actionID: actionID
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -376,8 +398,8 @@ public struct AppControlClient {
 
         let fd = try Self.connect(to: socketPath)
         defer { close(fd) }
-        if command.isDisplayCommand {
-            // The app answers when the Hide or Show has finished.
+        if command.isManualDisplayCommand {
+            // The app answers when the Hide, Show or named action has finished.
             var timeout = timeval(tv_sec: Self.displayResponseTimeout, tv_usec: 0)
             _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         }

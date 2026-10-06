@@ -124,6 +124,7 @@ public enum PanelCommand: Equatable {
         command: AppControlCommand,
         durationSeconds: TimeInterval?,
         targetUUID: String? = nil,
+        actionID: UUID? = nil,
         json: Bool
     )
     case help(command: String?)
@@ -458,6 +459,7 @@ public enum CLIParser {
         var json = false
         var durationSeconds: TimeInterval?
         var targetUUID: String?
+        var actionID: UUID?
         var i = 1
         while i < args.count {
             switch args[i] {
@@ -476,6 +478,16 @@ public enum CLIParser {
                     throw CLIParseError.missingValue("--display (UUID)")
                 }
                 targetUUID = args[i]
+            case "--action":
+                guard command == .runAction else {
+                    throw CLIParseError.unknownOption("--action")
+                }
+                guard actionID == nil else { throw CLIParseError.duplicateOption("--action") }
+                i += 1
+                guard i < args.count, let parsed = UUID(uuidString: args[i]) else {
+                    throw CLIParseError.missingValue("--action (UUID)")
+                }
+                actionID = parsed
             case "--for":
                 guard command == .snooze else {
                     throw CLIParseError.unknownOption("--for")
@@ -503,10 +515,14 @@ public enum CLIParser {
         if command.isDisplayCommand, targetUUID == nil {
             throw CLIParseError.missingValue("--display")
         }
+        if command == .runAction, actionID == nil {
+            throw CLIParseError.missingValue("--action")
+        }
         return .app(
             command: command,
             durationSeconds: durationSeconds,
             targetUUID: targetUUID,
+            actionID: actionID,
             json: json
         )
     }

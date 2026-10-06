@@ -220,6 +220,7 @@ public enum CLIHelp {
               hide --display <UUID>
               show --display <UUID>
               toggle-hide --display <UUID>
+              run-action --action <UUID>
 
             Control PanelCtl.app; status does not launch the app. --json emits
             the machine-readable response. snooze temporarily pauses automation
@@ -228,6 +229,13 @@ public enum CLIHelp {
             the running app, using its Hide style, and wait for the result. Copy
             the command from Settings > Displays. A display already in the
             requested state is a no-op.
+            run-action --action <UUID> invokes one saved, named action only in
+            the running app. Copy its stable-ID command from Settings > Automations;
+            this command never launches the app, queues or retries a request.
+            Actions run only when you choose Run or run their command; startup,
+            login, wake, reconnection and Automation never run actions. After a
+            response-lost result, inspect `panelctl app status --json` before
+            deciding what to do.
             Exit codes: 0 done or no-op, 1 refused, busy, failed or control
             failure, 2 usage, 3 app unavailable, 5 partial input outcome,
             6 recovery needed. Status includes each display and its input outcome.

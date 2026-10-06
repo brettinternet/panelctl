@@ -5,6 +5,7 @@ struct AutomationSettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var navigation: SettingsNavigation
     @State private var editor: RuleEditorPresentation?
+    @State private var actionEditor: DisplayActionEditorPresentation?
 
     init(model: AppModel, navigation: SettingsNavigation, initialEditor: RuleEditorPresentation? = nil) {
         self.model = model
@@ -62,6 +63,26 @@ struct AutomationSettingsView: View {
                 SectionFooter("Rules run automatically. A display can be in only one rule that’s on.")
             }
 
+            Section {
+                if model.displayActions.actions.isEmpty {
+                    Text("No actions.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(model.displayActions.actions) { action in
+                    displayActionRow(action)
+                }
+                Button("Add Action…") {
+                    actionEditor = DisplayActionEditorPresentation(
+                        action: model.makeNewDisplayAction(selectedDisplayID: navigation.selectedDisplayID),
+                        isNew: true
+                    )
+                }
+            } header: {
+                Text("Actions")
+            } footer: {
+                SectionFooter("Actions run only when you choose Run or run their command. Automation, startup, wake and reconnection never run them.")
+            }
+
             if model.automationPreferences.rules.contains(where: { $0.settings.followUpAction == .sleepDisplays }) {
                 Section("Display sleep") {
                     Toggle(isOn: Binding(
@@ -83,6 +104,70 @@ struct AutomationSettingsView: View {
                 isNew: presentation.isNew
             )
         }
+        .sheet(item: $actionEditor) { presentation in
+            DisplayActionEditor(
+                model: model,
+                navigation: navigation,
+                action: presentation.action,
+                existingID: presentation.isNew ? nil : presentation.action.id,
+                isNew: presentation.isNew
+            )
+        }
+    }
+
+    private func displayActionRow(_ action: DisplayAction) -> some View {
+        let blocker = model.displayActionRunBlocker(for: action)
+        let status = model.displayActionStatus(for: action)
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Text(action.name)
+                    .font(.body.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 4)
+                Button("Edit…") {
+                    actionEditor = DisplayActionEditorPresentation(action: action, isNew: false)
+                }
+                .accessibilityLabel("Edit \(action.name)")
+                Button("Run") {
+                    model.runDisplayAction(id: action.id)
+                }
+                .disabled(blocker != nil || model.runningDisplayActionIDs.contains(action.id))
+                .accessibilityLabel("Run \(action.name)")
+            }
+            Text(DisplayActionPresentation.summary(for: action, displays: model.displays))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(status)
+                .foregroundStyle(status.contains("Needs review") || blocker != nil ? Color.orange : Color.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if let result = model.displayActionResults[action.id] {
+                HStack(alignment: .top, spacing: 5) {
+                    if result.outcome == .recoveryNeeded {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                    Text(result.summary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let detail = result.detail {
+                    Text(detail)
+                        .foregroundStyle(result.outcome == .partial ? Color.orange : Color.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if result.outcome == .recoveryNeeded {
+                    Text("Recovery needed. Review the affected display in Displays.")
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.vertical, 3)
     }
 
     private func ruleRow(_ rule: ProtectionRule) -> some View {
@@ -148,6 +233,226 @@ struct RuleEditorPresentation: Identifiable {
     init(rule: ProtectionRule, isNew: Bool) {
         self.rule = rule
         self.isNew = isNew
+    }
+}
+
+struct DisplayActionEditorPresentation: Identifiable {
+    let action: DisplayAction
+    let isNew: Bool
+    var id: UUID { action.id }
+}
+
+struct DisplayActionEditor: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var navigation: SettingsNavigation
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: DisplayAction
+    @State private var confirmingDelete = false
+    @State private var saveFailure: String?
+    @State private var copyConfirmation = false
+
+    private let existingID: UUID?
+    private let isNew: Bool
+
+    init(model: AppModel, navigation: SettingsNavigation, action: DisplayAction,
+         existingID: UUID?, isNew: Bool) {
+        self.model = model
+        self.navigation = navigation
+        self.existingID = existingID
+        self.isNew = isNew
+        _draft = State(initialValue: action)
+    }
+
+    private var validation: String? {
+        saveFailure ?? model.displayActionValidation(for: draft, replacing: existingID)
+    }
+
+    private var canSave: Bool { validation == nil }
+
+    private var removalSetupReason: String? {
+        guard let target = draft.target else { return "Choose a display first." }
+        return model.displayActionRemovalSetupReason(for: target.uuid)
+    }
+
+    private var commandLine: String? {
+        guard let executable = try? ProtectionService.helperExecutableURL() else { return nil }
+        return AppControlCommand.runAction.commandLine(executable: executable.path, actionID: draft.id)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                Section {
+                    TextField("Name", text: $draft.name)
+                        .onSubmit { save() }
+                    LabeledContent("Runs") {
+                        Text(DisplayActionPresentation.runsDescription)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Section("Display") {
+                    Picker("Display", selection: Binding(
+                        get: { draft.target?.uuid ?? "" },
+                        set: { selectDisplay($0) }
+                    )) {
+                        Text("Choose a display").tag("")
+                        ForEach(stableDisplays, id: \.id) { display in
+                            if let uuid = display.uuid {
+                                Text(display.settingsName).tag(uuid)
+                            }
+                        }
+                        if let target = draft.target,
+                           !stableDisplays.contains(where: { $0.uuid?.caseInsensitiveCompare(target.uuid) == .orderedSame }) {
+                            Text("\(DisplayActionPresentation.displayName(for: target, displays: model.displays)) (unavailable)")
+                                .tag(target.uuid)
+                        }
+                    }
+                }
+
+                Section("Effect") {
+                    Menu {
+                        ForEach(DisplayActionEffect.allCases) { effect in
+                            Button {
+                                draft.effect = effect
+                                if effect != .removeFromDesktop { draft.reviewedRemoval = nil }
+                            } label: {
+                                if draft.effect == effect {
+                                    Label(effect.title, systemImage: "checkmark")
+                                } else {
+                                    Text(effect.title)
+                                }
+                            }
+                            .disabled(effect == .removeFromDesktop && removalSetupReason != nil)
+                        }
+                    } label: {
+                        LabeledContent("Effect", value: draft.effect.title)
+                    }
+                    .accessibilityLabel("Effect: \(draft.effect.title)")
+
+                    if draft.effect == .removeFromDesktop {
+                        let configuration = draft.target.flatMap { model.hidePreferences[$0.uuid] }
+                        LabeledContent("Mirror onto", value: sourceName(configuration?.source?.uuid))
+                        LabeledContent("Switch monitor to", value: configuration?.awayInput.map(MonitorInput.name) ?? "Don’t switch")
+
+                        if draft.target != nil,
+                           let change = model.displayActionReviewChange(for: draft) {
+                            Label(change.message, systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    if let removalSetupReason {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(removalSetupReason)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Button("Set Up in Displays…") {
+                                let uuid = draft.target?.uuid
+                                dismiss()
+                                DispatchQueue.main.async { navigation.showDisplays(selecting: uuid) }
+                            }
+                            .disabled(draft.target == nil)
+                        }
+                    }
+                }
+
+                Section {
+                    if let commandLine {
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(commandLine)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 4)
+                            Button(copyConfirmation ? "Copied" : "Copy") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(commandLine, forType: .string)
+                                copyConfirmation = true
+                            }
+                            .accessibilityLabel("Copy action command")
+                        }
+                    } else {
+                        Text("The bundled panelctl command is unavailable in this build.")
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Command")
+                } footer: {
+                    SectionFooter("For Shortcuts or Stream Deck. PanelCtl must be running; requests are never queued or retried.")
+                }
+            }
+            .formStyle(.grouped)
+
+            if let validation {
+                Label(validation, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 8)
+            }
+
+            HStack {
+                if existingID != nil {
+                    Button("Delete Action…") { confirmingDelete = true }
+                        .accessibilityLabel("Delete Action")
+                    Spacer()
+                } else {
+                    Spacer()
+                }
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save", action: save)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSave)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 12)
+        }
+        .frame(width: 520, height: 520)
+        .alert("Delete “\(draft.name)”?", isPresented: $confirmingDelete) {
+            Button("Delete", role: .destructive) {
+                if let existingID { model.deleteDisplayAction(id: existingID) }
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Scripts that run its command will stop working. The display’s current state doesn’t change.")
+        }
+    }
+
+    private var stableDisplays: [DisplayRecord] {
+        model.activeDisplays.filter { display in
+            guard let uuid = display.uuid else { return false }
+            return UUID(uuidString: uuid) != nil
+        }
+    }
+
+    private func selectDisplay(_ uuid: String) {
+        guard let display = stableDisplays.first(where: { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame }) else {
+            return
+        }
+        draft.target = DisplayIdentitySnapshot(display)
+        if draft.effect == .removeFromDesktop { draft.reviewedRemoval = nil }
+        saveFailure = nil
+    }
+
+    private func sourceName(_ uuid: String?) -> String {
+        guard let uuid else { return "Not configured" }
+        return model.displays.first(where: { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame })?.settingsName
+            ?? "\(uuid.prefix(8))… (unavailable)"
+    }
+
+    private func save() {
+        do {
+            try model.saveDisplayAction(draft, replacing: existingID)
+            dismiss()
+        } catch {
+            saveFailure = error.localizedDescription
+        }
     }
 }
 

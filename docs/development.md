@@ -37,11 +37,22 @@ against fakes. To review rendered states:
 ```sh
 mkdir -p /tmp/panelctl-settings
 PANELCTL_SETTINGS_FIXTURE_OUTPUT=/tmp/panelctl-settings swift test --disable-sandbox \
-  --filter 'SettingsWindowTests.test(Settings|Displays|DismissInputWarning)FixtureSnapshots'
+  --filter 'SettingsWindowTests.test(Settings|Displays|DismissInputWarning|DisplayAction)FixtureSnapshots'
 ```
 
-Don't launch the real app or enable live blackout tests for this. VoiceOver and
-live monitor checks are separate, manual work.
+`testDisplayActionFixtureSnapshots` writes both 680- and 440-point Automation
+Actions lists and production Action editor sheets, including a default Black out
+draft with missing Remove setup. `testDefaultDisplayActionEditorShowsMissingRemovalSetupAndNavigatesToSelectedDisplay`
+exercises the production editor's setup guidance and Displays navigation;
+`testDisplayActionEditorCancelSaveAndStableID` exercises Cancel/Save/rename with
+native keyboard events and verifies that a saved Action's stable ID survives
+rename. Action
+execution and refusal/recovery cases are covered by `DisplayActionAppTests` with
+fake display writers. The list fixture exercises ready, hidden, needs-review and
+unavailable statuses. These fixtures never launch the real app, contact DDC or
+touch live displays. Don't
+enable live blackout tests for this. VoiceOver and live monitor checks are
+separate, manual work.
 
 ## Release
 

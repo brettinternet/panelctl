@@ -51,8 +51,8 @@ Rules:
 
 Move `PanelCtl.app` to `/Applications` and open it. Settings has three tabs:
 **Displays** (per-display Hide/Show, input switching, scripts), **Automations**
-(named idle protection rules) and **General** (launch at login, menu icon,
-Experimental features).
+(named idle protection rules and manual Actions) and **General** (launch at login,
+menu icon, Experimental features).
 
 The Automations tab keeps the master switch and global pause, and lists named
 rules with their effect, displays, Afterward behavior and current status. A
@@ -64,10 +64,10 @@ missing saved targets remain visible, and the global display-sleep timer setting
 appears only when a rule sleeps all displays. **Black Out Now** in the menu is
 titled for the enabled rules' effects; Restore and Pause remain global.
 
-Named idle blackout/dimming rules are shipped. Schedules, arbitrary action
-chains and manual display actions are deferred. Rules do not support unattended
-Hide/Show, topology, monitor-input, power or private-disconnect actions; those
-hardware-changing operations are not implicit rule triggers.
+Named idle blackout/dimming rules and named manual display Actions are shipped.
+Schedules and arbitrary action chains are deferred. Rules do not support
+unattended Hide/Show, topology, monitor-input, power or private-disconnect
+actions; those hardware-changing operations are not implicit rule triggers.
 
 Select a display tile to see its state, Hide/Show button, setup and inline
 results. Hide defaults to **Black out**: it leaves the desktop in place and
@@ -98,6 +98,28 @@ input-switch warnings; ordinary Hide/Show has no per-operation confirmation.
 Full disconnect (experimental) is separate and requires its own scoped consent each time.
 See [Hide styles and safety boundaries](display-hide-ux.md).
 
+### Named manual Actions
+
+Create a named, one-display Action in **Settings → Automations → Actions**.
+Choose the exact **Black out**, **Remove from desktop** or **Show** effect; an
+Action never changes style to get around a blocker. **Run** invokes the saved
+effect once. The editor also provides its `run-action --action UUID` command for
+Shortcuts or Stream Deck. The ID remains stable when the name is edited; deleting
+the Action stops that command from working but does not alter the display or its
+recovery state.
+
+A Remove Action records the current Remove switch, mirror source and away input
+as a reviewed setup. If one changes, the Action is disabled until it is reviewed
+and saved again. Experimental features and the target's current readiness are
+checked again before each run; a refusal never falls back to Black out. Show
+uses the existing recovery evidence and remains available with Experimental
+features off. Actions run only when you select **Run** or execute their exact
+command. If a command reports `response-lost`, inspect `panelctl app status
+--json` before deciding what to do; the request is never retried or queued.
+Startup, login, wake, reconnection, Automation, Pause and Restore never run
+Actions or undo an Action's manual Hide. For current limitations, see
+[Named manual display actions](display-hide-ux.md#named-manual-actions).
+
 ![Displays tab with experimental removal setup](displays.png)
 
 ![Automations tab with named protection rules and aggregate status](automations.png)
@@ -121,12 +143,13 @@ panelctl app snooze --for 30m
 panelctl app resume
 panelctl app open-settings
 panelctl app hide | show | toggle-hide --display UUID [--json]
+panelctl app run-action --action UUID [--json]
 ```
 
 Without a standalone install, use the bundled CLI:
 `/Applications/PanelCtl.app/Contents/Helpers/panelctl`.
 
-`status`, `hide`, `show` and `toggle-hide` never launch the app. Other commands
+`status`, `hide`, `show`, `toggle-hide` and `run-action` never launch the app. Other commands
 start it in the background; only `open-settings` shows a window. `enable`,
 `disable` and `toggle` change the Automation master switch; each rule also has
 its own enabled flag. Snooze and resume apply to Automation as a whole.
@@ -216,8 +239,9 @@ needed instead of being silently dropped.
 - Oversized status fails rather than drop evidence. An oversized Hide/Show reply
   keeps `outcome` and `summary` and omits `displays` and `detail`.
 
-Only explicit commands hide a display. Idle, startup, wake and reconnection
-never do. For a persistent CLI watcher, edit the
+Only an explicit Hide/Show command or named Action changes a display. Idle,
+startup, login, wake and reconnection never invoke these manual operations. For
+a persistent CLI watcher, edit the
 [LaunchAgent example](../examples/com.brettinternet.panelctl.blackout.plist).
 
 ## Experimental display commands

@@ -4,7 +4,11 @@
 [mirroring](display-mirroring.md) and optionally switches its input to another
 computer. `back` Shows only the selected target and optionally selects the Mac
 input. Healthy targets can share a session; the Mac keeps sending a signal and
-this is not private display disable.
+this is not private display disable. The app's named **Remove from desktop**
+Action uses the same reviewed Hide and journal-driven Show implementation; it
+adds no alternate topology or recovery path. It runs only from an explicit
+**Run** or `panelctl app run-action --action UUID` command, never an Automation
+rule or lifecycle event. See [named manual actions](display-hide-ux.md#named-manual-actions).
 
 ```sh
 panelctl away --display TARGET_UUID --source SOURCE_UUID --input hdmi1 --consent-away

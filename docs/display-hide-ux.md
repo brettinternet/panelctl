@@ -49,10 +49,11 @@ PanelCtl display-sleep timer setting appears separately from rule settings.
 
 Pause/Resume, the master switch and Restore stay global. The menu keeps no rule
 list; **Black Out Now** reflects the effects of enabled rules. These shipped
-rules perform automatic display protection only. Scheduled triggers, arbitrary
-action chains and manual display actions are separate deferred work; unattended
-Hide/Show, topology changes, monitor-input writes, power writes and private
-disconnect are unavailable as rule actions.
+rules perform automatic display protection only. Scheduled triggers and
+arbitrary action chains are deferred. Named manual Actions are separate,
+explicitly invoked operations; they are never rule actions or rule triggers.
+Unattended Hide/Show, topology changes, monitor-input writes, power writes and
+private disconnect remain unavailable as rule actions.
 
 Each enabled, runnable rule uses its own existing blackout helper and brightness
 journal. Two enabled rules may not overlap by display UUID (UUID comparison is
@@ -74,6 +75,31 @@ sleeps displays once, while other helpers suspend for display sleep and require
 fresh input after wake. Cleanup checks cover the legacy brightness journal,
 each rule journal and journals of deleted rules. An unresolved journal blocks
 all rules until verified cleanup succeeds.
+
+### Named manual actions
+
+**Settings → Automations → Actions** stores named, one-display commands with a
+stable ID. Choose exactly **Black out**, **Remove from desktop** or **Show**,
+then deliberately select **Run** or invoke the action's copied
+`panelctl app run-action --action UUID` command. Rename keeps the ID. Deleting an
+Action does not change the target's state or discard its recovery evidence.
+
+The selected effect is fixed for each run. A blocked Remove Action is refused,
+never converted to Black out. Remove requires Experimental features and records
+the target's current Remove switch, mirror source and away input when saved. A
+change to any reviewed field marks the Action **Needs review**; save the Action
+after inspecting the current Displays setup. Dynamic return-input detection is
+not a reviewed field. Each run rechecks the target's full stable identity,
+current setup, safety readiness, recovery state and automation cleanup before
+using the existing Hide/Show implementation.
+
+Show uses the existing recorded recovery for exactly its selected target and
+remains available after setup changes or Experimental features are turned off.
+Deleting an Action does not remove the ordinary tile/menu Show or recovery path.
+Actions run only on an explicit Run or exact command. Startup, login, wake,
+reconnection and Automation never run them. Automation Pause, Restore, timeout,
+Escape and activity affect only automation covers; they do not trigger an
+Action or show an Action-hidden display.
 
 ## Experimental features
 

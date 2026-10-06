@@ -9,6 +9,11 @@ final class AppControlTests: XCTestCase {
             String(data: try encoder.encode(AppControlRequest(command: .openSettings)), encoding: .utf8),
             #"{"command":"open-settings","protocol":1}"#
         )
+        let actionID = UUID(uuidString: "80B92489-591F-45A5-8B5C-1B9D203020A4")!
+        XCTAssertEqual(
+            String(data: try encoder.encode(AppControlRequest(command: .runAction, actionID: actionID)), encoding: .utf8),
+            #"{"actionID":"80B92489-591F-45A5-8B5C-1B9D203020A4","command":"run-action","protocol":1}"#
+        )
         XCTAssertEqual(
             String(data: try encoder.encode(AppControlRequest(command: .blackoutNow)), encoding: .utf8),
             #"{"command":"blackout-now","protocol":1}"#
@@ -150,6 +155,22 @@ final class AppControlTests: XCTestCase {
             XCTAssertEqual(try client.execute(command, targetUUID: uuid).exitCode, 3)
         }
         XCTAssertFalse(AppControlCommand.toggle.isDisplayCommand)
+        XCTAssertTrue(AppControlCommand.runAction.isManualDisplayCommand)
+        XCTAssertFalse(AppControlCommand.runAction.isDisplayCommand)
+        let actionID = UUID(uuidString: "80B92489-591F-45A5-8B5C-1B9D203020A4")!
+        XCTAssertEqual(
+            try CLIParser.parse(["app", "run-action", "--action", actionID.uuidString, "--json"]),
+            .app(command: .runAction, durationSeconds: nil, actionID: actionID, json: true)
+        )
+        for invalid in [
+            ["app", "run-action"],
+            ["app", "run-action", "--action", "not-a-uuid"],
+            ["app", "run-action", "--action", actionID.uuidString, "--action", actionID.uuidString],
+            ["app", "run-action", "--action", actionID.uuidString, "--display", uuid],
+            ["app", "status", "--action", actionID.uuidString]
+        ] {
+            XCTAssertThrowsError(try CLIParser.parse(invalid), "\(invalid)")
+        }
         XCTAssertThrowsError(try CLIParser.parse(["app", "enable", "--display", uuid]))
         XCTAssertNil(AppControlOutcome(rawValue: "confirmation-required"), "scripts act instead of asking for the UI")
         for (outcome, exitCode) in [(AppControlOutcome.done, Int32(0)), (.noOp, 0), (.refused, 1),
@@ -176,6 +197,31 @@ final class AppControlTests: XCTestCase {
                                                displayUUID: uuid),
             "'/Users/me/My Apps/Bob'\\''s/PanelCtl.app/Contents/Helpers/panelctl' app hide --display \(uuid)"
         )
+    }
+
+    func testRunActionCommandLineIsShellSafeAndUsesStableActionID() throws {
+        let actionID = UUID(uuidString: "80B92489-591F-45A5-8B5C-1B9D203020A4")!
+        let bundled = "/Applications/PanelCtl.app/Contents/Helpers/panelctl"
+        let command = AppControlCommand.runAction.commandLine(executable: bundled, actionID: actionID)
+        XCTAssertEqual(command, "\(bundled) app run-action --action \(actionID.uuidString)")
+        let words = command.split(separator: " ").map(String.init)
+        XCTAssertEqual(
+            try CLIParser.parse(Array(words.dropFirst())),
+            .app(command: .runAction, durationSeconds: nil, actionID: actionID, json: false)
+        )
+        XCTAssertEqual(
+            AppControlCommand.runAction.commandLine(
+                executable: "/Users/me/My Apps/Bob's/PanelCtl.app/Contents/Helpers/panelctl",
+                actionID: actionID
+            ),
+            "'/Users/me/My Apps/Bob'\\''s/PanelCtl.app/Contents/Helpers/panelctl' app run-action --action \(actionID.uuidString)"
+        )
+        let client = try AppControlClient(
+            socketPath: "/private/tmp/panelctl-no-action-app-\(UUID().uuidString)",
+            launch: { XCTFail("run-action must never launch PanelCtl.app") },
+            isAppRunning: { false }
+        )
+        XCTAssertEqual(try client.execute(.runAction, actionID: actionID).exitCode, 3)
     }
 
     func testAppCommandParsing() throws {

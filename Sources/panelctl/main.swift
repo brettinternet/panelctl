@@ -109,17 +109,18 @@ struct PanelCtlMain {
                 }
             case .wakeDisplays:
                 try DisplaySleepController.wake()
-            case .app(let appCommand, let durationSeconds, let targetUUID, let json):
+            case .app(let appCommand, let durationSeconds, let targetUUID, let actionID, let json):
                 let client = try AppControlClient()
                 let response: AppControlResponse
                 do {
                     response = try client.execute(
                         appCommand,
                         durationSeconds: durationSeconds,
-                        targetUUID: targetUUID
+                        targetUUID: targetUUID,
+                        actionID: actionID
                     )
                 } catch {
-                    guard appCommand.isDisplayCommand else { throw error }
+                    guard appCommand.isManualDisplayCommand else { throw error }
                     // A transport failure does not prove whether the request was received.
                     response = AppControlResponse(
                         ok: false, running: true, enabled: false, state: "unknown",
