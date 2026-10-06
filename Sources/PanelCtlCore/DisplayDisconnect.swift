@@ -102,6 +102,9 @@ public struct DisplayDisconnectController {
         return .init(journal, path: store.url.path)
     }
 
+    /// Whether the shared recovery journal exists, even if it is not private.
+    public func journalExists() throws -> Bool { try store.exists() }
+
     private func requireClearJournal() throws {
         if try store.exists(), try !store.load().state.resolved {
             throw RecoveryError.unsafe("unresolved journal; inspect status and recover before requesting another disconnect")

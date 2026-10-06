@@ -3600,15 +3600,17 @@ final class AppModel: ObservableObject {
         let previousInspectionFailure = disconnectInspectionFailure
         do {
             let observed = try disconnectController.inspect()
-            if observed == nil, disconnectRecoveryBlocked || previous?.resolved == false {
+            // A readable public-only journal is not missing private evidence.
+            let journalMissing = observed == nil ? try !disconnectController.journalExists() : false
+            if observed == nil, previous?.resolved == false || (disconnectRecoveryBlocked && journalMissing) {
                 throw RecoveryError.unsafe("disconnect recovery journal is missing; verified recovery cannot be established")
             }
             disconnectStatus = observed
             disconnectInspectionFailure = nil
-            if let observed, observed.resolved {
+            if observed?.resolved ?? true {
                 disconnectRecoveryBlocked = false
                 defaults.set(false, forKey: Self.disconnectRecoveryBlockedKey)
-                disconnectLease = nil
+                if observed != nil { disconnectLease = nil }
             } else if observed != nil {
                 disconnectRecoveryBlocked = true
                 defaults.set(true, forKey: Self.disconnectRecoveryBlockedKey)
@@ -3620,14 +3622,15 @@ final class AppModel: ObservableObject {
             defaults.set(true, forKey: Self.disconnectRecoveryBlockedKey)
             holdDisconnectAutomationPause()
         }
-        let retryBlockedHandoffInspection = disconnectAutomationPaused && disconnectStatus?.resolved == true &&
+        let retryBlockedHandoffInspection = disconnectAutomationPaused && disconnectInspectionFailure == nil &&
+            disconnectStatus?.resolved != false &&
             (handoffInspectionFailure != nil || handoffStatus?.hasUnresolvedJournal == true)
         if previous != disconnectStatus || previousInspectionFailure != disconnectInspectionFailure {
             refreshHandoffStatus()
             reconcileProtection()
         } else if retryBlockedHandoffInspection {
             // Recovery may hold the handoff journal lock briefly after the disconnect
-            // journal verifies. Retry read-only inspection on countdown ticks so a
+            // journal verifies, or during a cancelled disconnect with no journal. Retry read-only inspection on countdown ticks so a
             // cached busy result cannot strand automation stopped indefinitely.
             refreshHandoffStatus()
         }

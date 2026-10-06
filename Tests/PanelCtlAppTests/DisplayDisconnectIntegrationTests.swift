@@ -565,6 +565,78 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         await withCheckedContinuation { continuation in app.shutdown { continuation.resume() } }
     }
 
+    func testRepairedPublicJournalReleasesPersistedDisconnectBlock() async throws {
+        let f = try fixture("public-repaired")
+        try f.store.lock()
+        var journal = RecoveryJournal(snapshot: f.baseline)
+        journal.state = .restored
+        try f.store.create(journal)
+        f.store.unlock()
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: f.store.url.path)
+        let app = model(f)
+        XCTAssertNotNil(app.disconnectInspectionFailure, "unsafe permissions fail closed")
+        XCTAssertTrue(defaults.bool(forKey: "disconnectRecoveryBlocked"))
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: f.store.url.path)
+        app.refreshCountdown()
+        XCTAssertNil(app.disconnectInspectionFailure, "a readable public-only journal is not missing private evidence")
+        XCTAssertFalse(defaults.bool(forKey: "disconnectRecoveryBlocked"))
+        let relaunched = model(f)
+        XCTAssertNil(relaunched.disconnectInspectionFailure)
+        XCTAssertNil(relaunched.disconnectBlocker)
+
+        try FileManager.default.removeItem(at: f.store.url)
+        defaults.set(true, forKey: "disconnectRecoveryBlocked")
+        let missing = model(f)
+        XCTAssertNotNil(missing.disconnectInspectionFailure, "a missing journal still fails closed")
+        XCTAssertEqual(f.writes, [])
+        await withCheckedContinuation { continuation in app.shutdown { continuation.resume() } }
+        await withCheckedContinuation { continuation in relaunched.shutdown { continuation.resume() } }
+        await withCheckedContinuation { continuation in missing.shutdown { continuation.resume() } }
+    }
+
+    func testCancelledDisconnectRetriesBusyHandoffInspectionOnCountdown() async throws {
+        let helper = try writeAutomationHelper()
+        let f = try fixture("cancel-handoff-busy")
+        let log = directory.appendingPathComponent("cancel-handoff-busy.log")
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        defer { unsetenv("PANELCTL_HELPER"); unsetenv("PANELCTL_TEST_LOG") }
+        try saveAutomationPreferences(AutomationPreferences(isEnabled: true, rules: [
+            protectionRule("Survivor rule", uuid: f.baseline.displays[0].uuid)
+        ]))
+        var handoffBusy = false
+        let app = model(
+            f,
+            protectionCoordinator: automationCoordinator(
+                directory: directory.appendingPathComponent("cancel-handoff-journals", isDirectory: true)
+            ),
+            handoffStatusProvider: {
+                handoffBusy
+                    ? DisplayHandoffStatus(state: .busy, journalPath: "/synthetic/handoff.json",
+                                           reason: "synthetic journal lock busy", inspectionFailure: "synthetic journal lock busy")
+                    : DisplayHandoffStatus(state: .none, journalPath: "/synthetic/handoff.json")
+            }
+        )
+        try await waitUntil { launchLines(at: log).filter { $0.hasPrefix("watch") }.count == 1 }
+        app.prepareDisconnect(f.uuid)
+        try await waitUntil { app.disconnectConsentPending }
+        handoffBusy = true
+        app.refreshHandoffStatus()
+        app.cancelDisconnect()
+        XCTAssertNil(app.disconnectStatus, "cancellation created no disconnect journal")
+        XCTAssertNotNil(app.handoffInspectionFailure)
+        XCTAssertEqual(launchLines(at: log).filter { $0.hasPrefix("watch") }.count, 1)
+
+        handoffBusy = false
+        app.refreshCountdown()
+        try await waitUntil { launchLines(at: log).filter { $0.hasPrefix("watch") }.count == 2 }
+        XCTAssertNil(app.handoffInspectionFailure)
+        XCTAssertEqual(f.arms, 0)
+        XCTAssertEqual(f.writes, [])
+        await withCheckedContinuation { continuation in app.shutdown { continuation.resume() } }
+    }
+
     func testUnreadableDisconnectJournalFailsClosedAcrossRelaunch() async throws {
         let f = try fixture("unreadable")
         let corrupt = Data("not a recovery journal".utf8)
