@@ -83,6 +83,21 @@ panelctl app run-action --action ACTION_UUID --json
 - `done`: every step finished. `no-op`: nothing needed to change. `partial`:
   some steps changed, then the run stopped.
 
+## Saved display identity
+
+Actions and Remove from desktop settings follow the monitor across reconnects
+and restarts, even when macOS assigns a new numeric display ID. Existing saved
+settings load automatically; you don't need to recreate Actions or input choices.
+PanelCtl requires exactly one matching UUID with the same vendor, model and
+serial values. Names and desktop positions aren't used to choose a replacement.
+Missing, duplicate or changed identities remain blocked with a specific reason.
+
+Each new operation captures current display IDs. An Action keeps those captured
+identities for its entire run; a connection change stops it instead of choosing
+new IDs mid-run. A step checked as already complete cannot later become a write.
+Recovery journals and pending operations are never rebound to new IDs or a new
+session. Unresolved recovery still needs attention before conflicting work.
+
 ## Rules and hidden displays
 
 Automation rules never hide, show, mirror or switch inputs. Rules skip hidden
