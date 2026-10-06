@@ -62,12 +62,67 @@ struct RecoveryDisplay: Codable, Equatable {
     }
 }
 
+private struct StableRecoveryDisplayIdentity: Codable {
+    let uuid: String
+    let id: UInt32
+    let vendor: UInt32
+    let model: UInt32
+    let serial: UInt32
+    let builtin: Bool
+    let main: Bool
+    let active: Bool
+    let x: Int32
+    let y: Int32
+    let rotation: Double
+    let mirrorUUID: String?
+    let mode: RecoveryMode
+    let colorSpace: String?
+    let colorProfileIdentity: String?
+    let connector: String?
+}
+
+private struct StableRecoveryTopologyIdentity: Codable {
+    let bootSession: String
+    let osBuild: String
+    let userID: UInt32
+    let displays: [StableRecoveryDisplayIdentity]
+}
+
+func stableRecoveryDigest<T: Encodable>(_ value: T) -> String? {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+    guard let data = try? encoder.encode(value) else { return nil }
+    return RecoveryColorProfile.digest(data)
+}
+
 struct RecoverySnapshot: Codable, Equatable {
     let bootSession: String
     let osBuild: String
     let userID: UInt32
     let displays: [RecoveryDisplay]
     var hostModel: String? = nil
+
+    /// Stable projection of the same topology fields checked by `verify`.
+    /// Capture timestamps and diagnostic names/provenance are intentionally omitted.
+    func stableTopologyIdentity() -> String? {
+        let identity = StableRecoveryTopologyIdentity(
+            bootSession: bootSession,
+            osBuild: osBuild,
+            userID: userID,
+            displays: displays.map { display in
+                StableRecoveryDisplayIdentity(
+                    uuid: display.uuid, id: display.id, vendor: display.vendor, model: display.model,
+                    serial: display.serial, builtin: display.builtin, main: display.main, active: display.active,
+                    x: display.x, y: display.y, rotation: display.rotation, mirrorUUID: display.mirrorUUID,
+                    mode: display.mode, colorSpace: display.colorSpace,
+                    colorProfileIdentity: display.colorProfileDateIndependentDigest.map { "normalized:\($0)" }
+                        ?? display.colorProfileDigest.map { "raw:\($0)" },
+                    connector: display.connector
+                )
+            }.sorted { $0.uuid < $1.uuid }
+        )
+        return stableRecoveryDigest(identity)
+    }
 
     static func capture(includePrivateMetadata: Bool = true) throws -> Self {
         guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],

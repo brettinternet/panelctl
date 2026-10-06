@@ -1615,6 +1615,410 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertNoThrow(try model.makeShowRequest())
     }
 
+    func testSleepWakeRehidesTwoDisplaySessionEndToEndAcrossFreshCoreCaptures() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panelctl-app-wake-core-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journalStore = RecoveryStore(url: directory.appendingPathComponent("current.json"))
+        let operationStore = RecoveryStore(url: directory.appendingPathComponent("operation"))
+        let savedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let baseline = try appRecoverySnapshot(capturedAt: savedAt)
+        let firstHidden = try appRecoverySnapshot(capturedAt: savedAt.addingTimeInterval(1), mirroredIDs: [202])
+        var fakeTopology = try appRecoverySnapshot(capturedAt: savedAt.addingTimeInterval(2), mirroredIDs: [202, 303])
+        let removals = [
+            PublicMirrorRemoval(target: baseline.displays[1], source: baseline.displays[0],
+                                beforeOperation: baseline, state: .mirrored),
+            PublicMirrorRemoval(target: baseline.displays[2], source: baseline.displays[0],
+                                beforeOperation: firstHidden, state: .mirrored)
+        ]
+        var journal = RecoveryJournal(snapshot: baseline,
+                                      publicMirrorSession: PublicMirrorSession(baseline: baseline, removals: removals))
+        journal.state = .mirrored
+        try journalStore.lock()
+        try journalStore.create(journal)
+        journalStore.unlock()
+
+        var pendingTarget: UInt32?
+        var stagedTargets: [UInt32] = []
+        var commits = 0
+        var ddcCalls = 0
+        let transaction = MirrorTransaction(
+            begin: { OpaquePointer(bitPattern: 1)! },
+            stage: { _, targetID, sourceID in
+                guard sourceID == 101 else { throw RecoveryError.unsafe("unexpected mirror source") }
+                pendingTarget = targetID
+                stagedTargets.append(targetID)
+            },
+            complete: { _, _ in
+                guard pendingTarget != nil else {
+                    throw RecoveryError.unsafe("fake mirror transaction had no staged target")
+                }
+                fakeTopology = try self.appRecoverySnapshot(
+                    capturedAt: Date(), mirroredIDs: Set(stagedTargets)
+                )
+                pendingTarget = nil
+                commits += 1
+            },
+            cancel: { _ in }
+        )
+        let mirror = MirrorController(
+            records: { self.appDisplayRecords(fakeTopology) },
+            operationLock: { operationStore },
+            engine: RecoveryEngine(capture: { fakeTopology }, apply: { _ in
+                throw RecoveryError.unsafe("wake resume must use the public mirror transaction")
+            }, convergencePause: {}),
+            preflightModes: { _ in },
+            transaction: transaction
+        )
+        var handoff = HandoffController(mirror: mirror)
+        handoff.select = { _, _, _, _, _ in
+            ddcCalls += 1
+            throw RecoveryError.unsafe("wake resume must not select a monitor input")
+        }
+        let core = DisplayHideController(store: journalStore, mirror: mirror,
+                                         operationLock: { operationStore }, handoff: handoff)
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let model = AppModel(
+            defaults: defaults,
+            displayProvider: { self.appDisplayRecords(fakeTopology) },
+            inspectHandoff: {
+                guard let status = try? core.inspect() else {
+                    return DisplayHandoffStatus(state: .recovery, journalPath: journalStore.url.path,
+                                                inspectionFailure: "synthetic core inspection failed")
+                }
+                return DisplayHandoff.handoffStatus(from: status)
+            },
+            hideDisplay: { _, _, _ in
+                throw RecoveryError.unsafe("automatic resume must use the guarded core expectation path")
+            },
+            sleepResumeHideDisplay: { target, source, expected in
+                try core.hide(target: target, source: source, awayInput: nil, wakeExpectation: expected)
+            },
+            quiesceProtection: { $0(true, nil) },
+            displayWakeSettleDelay: 0.01
+        )
+        model.refreshHandoffStatus()
+        try await waitUntil { !model.protectionQuiescencePending }
+        XCTAssertEqual(model.handoffStatus?.state, DisplayHandoffStatus.State.hidden)
+        model.beginDisplaySleepTransition()
+
+        // A fresh independent capture differs only in diagnostic capture timestamps.
+        fakeTopology = try appRecoverySnapshot(capturedAt: Date(timeIntervalSince1970: 1_800_000_000))
+        model.displayWakeObserved(screensAwake: true)
+        try await waitUntil { !model.displayLifecycleTransitioning }
+
+        let final = try core.inspect()
+        XCTAssertEqual(final.journal?.state, RecoveryState.mirrored.rawValue)
+        XCTAssertEqual(final.removals.filter { $0.isUnresolved }.count, 2)
+        XCTAssertEqual(stagedTargets, [202, 303])
+        XCTAssertEqual(commits, 2)
+        XCTAssertEqual(ddcCalls, 0)
+    }
+
+    func testSleepWakeRehidesExactRestoredTwoDisplaySessionOnceWithoutDDC() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let first = sleepRemoval(id: "entry-target", target: displays[1], source: displays[2], resolved: false)
+        let second = sleepRemoval(id: "entry-main", target: displays[0], source: displays[2], resolved: false)
+        let initial = multiHandoffStatus([first, second], observations: [], journalID: "sleep-journal",
+                                         state: .hidden, baselineIdentity: "exact-baseline")
+        let restored = multiHandoffStatus([
+            sleepRemoval(id: first.id, target: displays[1], source: displays[2], resolved: true),
+            sleepRemoval(id: second.id, target: displays[0], source: displays[2], resolved: true)
+        ], observations: [], journalID: "sleep-journal", state: DisplayHandoffStatus.State.none,
+           baselineIdentity: "exact-baseline")
+        let box = StatusBox(initial)
+        var applied: [DisplayHandoffRemoval] = []
+        var inputChoices: [UInt8?] = []
+        let model = makeModel(
+            defaults: defaults, displays: displays, status: { box.value },
+            hideDisplay: { target, source, input in
+                inputChoices.append(input)
+                guard let removal = [first, second].first(where: {
+                    $0.target.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame &&
+                        $0.source.uuid.caseInsensitiveCompare(source.uuid) == .orderedSame
+                }) else { throw RecoveryError.unsafe("unexpected resume identity") }
+                applied.append(removal)
+                box.value = self.multiHandoffStatus(
+                    applied.map { self.sleepRemoval(id: $0.id, target: $0.target, source: $0.source, resolved: false) },
+                    observations: [], journalID: "resumed-journal", state: .hidden,
+                    baselineIdentity: "exact-baseline"
+                )
+                return .notRequested
+            },
+            displayWakeSettleDelay: 0.02
+        )
+        try await waitUntil { !model.protectionQuiescencePending }
+
+        model.beginDisplaySleepTransition()
+        box.value = restored
+        model.displayWakeObserved(screensAwake: false)
+        model.displayWakeObserved(screensAwake: true)
+        // Duplicate and out-of-order wake events reset the settle window, not the intent.
+        model.displayWakeObserved(screensAwake: false)
+        model.displayWakeObserved(screensAwake: true)
+        try await waitUntil { !model.displayLifecycleTransitioning }
+
+        XCTAssertEqual(applied.map { $0.target.uuid }, [Self.targetUUID, Self.mainUUID])
+        XCTAssertEqual(inputChoices, [nil, nil], "wake recovery never replays configured DDC input changes")
+        XCTAssertEqual(model.handoffStatus?.state, DisplayHandoffStatus.State.hidden)
+        XCTAssertEqual(model.handoffStatus?.removals.filter { $0.isUnresolved }.count, 2)
+        XCTAssertNil(model.displayResults[Self.targetKey])
+        model.displayWakeObserved(screensAwake: true)
+        XCTAssertEqual(applied.count, 2, "a duplicate wake after settlement cannot replay Hide")
+    }
+
+    func testSleepResumeDoesNotRehideEntriesAlreadyRestoredBeforeSleep() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let active = sleepRemoval(id: "active-entry", target: displays[1], source: displays[2], resolved: false)
+        let alreadyRestored = sleepRemoval(id: "restored-entry", target: displays[0], source: displays[2], resolved: true)
+        let baseline = multiHandoffStatus([active, alreadyRestored], observations: [], journalID: "partial-journal",
+                                          state: .hidden, baselineIdentity: "exact-baseline")
+        let restored = multiHandoffStatus([
+            sleepRemoval(id: active.id, target: displays[1], source: displays[2], resolved: true),
+            alreadyRestored
+        ], observations: [], journalID: "partial-journal", state: DisplayHandoffStatus.State.none,
+           baselineIdentity: "exact-baseline")
+        let box = StatusBox(baseline)
+        var applied: [DisplayHandoffRemoval] = []
+        let model = makeModel(
+            defaults: defaults, displays: displays, status: { box.value },
+            hideDisplay: { target, source, _ in
+                guard let removal = [active, alreadyRestored].first(where: {
+                    $0.target.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame &&
+                        $0.source.uuid.caseInsensitiveCompare(source.uuid) == .orderedSame
+                }) else { throw RecoveryError.unsafe("unexpected resume identity") }
+                applied.append(removal)
+                box.value = self.multiHandoffStatus([active], observations: [], journalID: "resumed-journal",
+                                                     state: .hidden, baselineIdentity: "exact-baseline")
+                return .notRequested
+            }, displayWakeSettleDelay: 0.01
+        )
+        try await waitUntil { !model.protectionQuiescencePending }
+        model.beginDisplaySleepTransition()
+        box.value = restored
+        model.displayWakeObserved(screensAwake: true)
+        try await waitUntil { !model.displayLifecycleTransitioning }
+
+        XCTAssertEqual(applied.map { $0.id }, [active.id])
+    }
+
+    func testExplicitShowCancelsPendingSleepResume() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let mirrored = sleepRemoval(id: "show-entry", target: displays[1], source: displays[2], resolved: false)
+        let restored = sleepRemoval(id: mirrored.id, target: displays[1], source: displays[2], resolved: true)
+        let box = StatusBox(multiHandoffStatus([mirrored], observations: [], journalID: "show-sleep-journal",
+                                               state: .hidden, baselineIdentity: "exact-baseline"))
+        var hideCalls = 0
+        var showCalls = 0
+        let model = makeModel(
+            defaults: defaults, displays: displays, status: { box.value },
+            hideDisplay: { _, _, _ in hideCalls += 1; return .notRequested },
+            showDisplay: { _, _ in showCalls += 1; return .notRequested },
+            displayWakeSettleDelay: 0.02
+        )
+        try await waitUntil { !model.protectionQuiescencePending }
+        model.beginDisplaySleepTransition()
+        box.value = multiHandoffStatus([restored], observations: [], journalID: "show-sleep-journal",
+                                       state: DisplayHandoffStatus.State.none, baselineIdentity: "exact-baseline")
+        model.displayWakeObserved(screensAwake: true)
+        model.show(targetUUID: Self.targetUUID)
+        try await waitUntil { !model.displayLifecycleTransitioning }
+
+        XCTAssertEqual(hideCalls, 0)
+        XCTAssertEqual(showCalls, 0, "the explicit request during settle is refused, not replayed later")
+    }
+
+    func testSleepResumeRefusesChangedDisplayIDAndKeepsManualRecoveryVisible() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let mirrored = sleepRemoval(id: "changed-entry", target: displays[1], source: displays[2], resolved: false)
+        let restored = sleepRemoval(id: mirrored.id, target: displays[1], source: displays[2], resolved: true)
+        let box = StatusBox(multiHandoffStatus([mirrored], observations: [], journalID: "changed-journal",
+                                               state: .hidden, baselineIdentity: "exact-baseline"))
+        var currentDisplays = displays
+        var hideCalls = 0
+        let model = makeModel(
+            defaults: defaults, displays: displays, displayProvider: { currentDisplays }, status: { box.value },
+            hideDisplay: { _, _, _ in hideCalls += 1; return .notRequested }, displayWakeSettleDelay: 0.01
+        )
+        try await waitUntil { !model.protectionQuiescencePending }
+        model.beginDisplaySleepTransition()
+        currentDisplays[1] = Self.display(index: 2, id: 999, uuid: Self.targetUUID, name: "Target", main: false)
+        box.value = multiHandoffStatus([restored], observations: [], journalID: "changed-journal",
+                                       state: DisplayHandoffStatus.State.none, baselineIdentity: "exact-baseline")
+        model.displayWakeObserved(screensAwake: true)
+        try await waitUntil { !model.displayLifecycleTransitioning }
+
+        XCTAssertEqual(hideCalls, 0)
+        XCTAssertTrue(model.displayResults[Self.targetKey]?.message.contains("exact journal") == true)
+        XCTAssertTrue(model.displayResults[Self.targetKey]?.inputNeedsAttention == true)
+    }
+
+    func testSleepResumeRefusesChangedBaselineIdentity() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let mirrored = sleepRemoval(id: "baseline-entry", target: displays[1], source: displays[2], resolved: false)
+        let restored = sleepRemoval(id: mirrored.id, target: displays[1], source: displays[2], resolved: true)
+        let box = StatusBox(multiHandoffStatus([mirrored], observations: [], journalID: "baseline-journal",
+                                               state: .hidden, baselineIdentity: "saved-baseline"))
+        var hideCalls = 0
+        let model = makeModel(
+            defaults: defaults, displays: displays, status: { box.value },
+            hideDisplay: { _, _, _ in hideCalls += 1; return .notRequested }, displayWakeSettleDelay: 0.01
+        )
+        try await waitUntil { !model.protectionQuiescencePending }
+        model.beginDisplaySleepTransition()
+        box.value = multiHandoffStatus([restored], observations: [], journalID: "baseline-journal",
+                                       state: DisplayHandoffStatus.State.none, baselineIdentity: "changed-baseline")
+        model.displayWakeObserved(screensAwake: true)
+        try await waitUntil { !model.displayLifecycleTransitioning }
+
+        XCTAssertEqual(hideCalls, 0)
+        XCTAssertTrue(model.displayResults[Self.targetKey]?.message.contains("baseline") == true)
+    }
+
+    func testUnrelatedDisplayChangeDoesNotRehideAResolvedSleepJournal() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let mirrored = sleepRemoval(id: "unrelated-entry", target: displays[1], source: displays[2], resolved: false)
+        let restored = sleepRemoval(id: mirrored.id, target: displays[1], source: displays[2], resolved: true)
+        let box = StatusBox(multiHandoffStatus([mirrored], observations: [], journalID: "unrelated-journal",
+                                               state: .hidden, baselineIdentity: "exact-baseline"))
+        var hideCalls = 0
+        let model = makeModel(
+            defaults: defaults, displays: displays, status: { box.value },
+            hideDisplay: { _, _, _ in hideCalls += 1; return .notRequested }, displayWakeSettleDelay: 0.01
+        )
+        try await waitUntil { !model.protectionQuiescencePending }
+        box.value = multiHandoffStatus([restored], observations: [], journalID: "unrelated-journal",
+                                       state: DisplayHandoffStatus.State.none, baselineIdentity: "exact-baseline")
+        model.displayConfigurationChanged(restartWatcher: true)
+        try await Task.sleep(nanoseconds: 30_000_000)
+
+        XCTAssertEqual(hideCalls, 0)
+        XCTAssertFalse(model.displayLifecycleTransitioning)
+    }
+
+    func testFailedSleepResumeLeavesRecoveryAndDoesNotRetry() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let mirrored = sleepRemoval(id: "failed-entry", target: displays[1], source: displays[2], resolved: false)
+        let restored = sleepRemoval(id: mirrored.id, target: displays[1], source: displays[2], resolved: true)
+        let box = StatusBox(multiHandoffStatus([mirrored], observations: [], journalID: "failed-journal",
+                                               state: .hidden, baselineIdentity: "exact-baseline"))
+        var hideCalls = 0
+        let model = makeModel(
+            defaults: defaults, displays: displays, status: { box.value }, hideDisplay: { _, _, _ in
+                hideCalls += 1
+                box.value = self.multiHandoffStatus([
+                    self.sleepRemoval(id: mirrored.id, target: self.displays[1], source: self.displays[2], resolved: false,
+                                      state: "needsAttention", canShow: false, topologyVerified: false)
+                ], observations: [], journalID: "failed-journal", state: .recovery,
+                   baselineIdentity: "exact-baseline")
+                throw RecoveryError.unsafe("fake guarded Hide refusal")
+            }, displayWakeSettleDelay: 0.01
+        )
+        try await waitUntil { !model.protectionQuiescencePending }
+        model.beginDisplaySleepTransition()
+        box.value = multiHandoffStatus([restored], observations: [], journalID: "failed-journal",
+                                       state: DisplayHandoffStatus.State.none, baselineIdentity: "exact-baseline")
+        model.displayWakeObserved(screensAwake: true)
+        try await waitUntil { !model.displayLifecycleTransitioning }
+        model.displayWakeObserved(screensAwake: true)
+        try await Task.sleep(nanoseconds: 30_000_000)
+
+        XCTAssertEqual(hideCalls, 1, "a refused reapply has a one-attempt budget")
+        XCTAssertEqual(model.handoffStatus?.state, DisplayHandoffStatus.State.recovery)
+        XCTAssertTrue(model.displayResults[Self.targetKey]?.message.contains("fake guarded Hide refusal") == true)
+    }
+
+    func testSystemWakeWithoutScreensWakeDoesNotResumeEarly() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let mirrored = sleepRemoval(id: "system-entry", target: displays[1], source: displays[2], resolved: false)
+        let box = StatusBox(multiHandoffStatus([mirrored], observations: [], journalID: "system-journal",
+                                               state: .hidden, baselineIdentity: "exact-baseline"))
+        var hideCalls = 0
+        let model = makeModel(
+            defaults: defaults, displays: displays, status: { box.value },
+            hideDisplay: { _, _, _ in hideCalls += 1; return .notRequested }, displayWakeSettleDelay: 0.01
+        )
+        try await waitUntil { !model.protectionQuiescencePending }
+        model.beginDisplaySleepTransition()
+        model.displayWakeObserved(screensAwake: false)
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(hideCalls, 0)
+        XCTAssertTrue(model.displayLifecycleTransitioning)
+    }
+
+    func testSleepAgainDuringWakeDebounceKeepsIntentUntilFreshWake() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let mirrored = sleepRemoval(id: "second-sleep-entry", target: displays[1], source: displays[2], resolved: false)
+        let restored = sleepRemoval(id: mirrored.id, target: displays[1], source: displays[2], resolved: true)
+        let box = StatusBox(multiHandoffStatus([mirrored], observations: [], journalID: "second-sleep-journal",
+                                               state: .hidden, baselineIdentity: "stable-baseline"))
+        var hideCalls = 0
+        let model = makeModel(
+            defaults: defaults, displays: displays, status: { box.value },
+            sleepResumeHideDisplay: { _, _, _ in
+                hideCalls += 1
+                box.value = self.multiHandoffStatus([mirrored], observations: [], journalID: "second-sleep-journal",
+                                                    state: .hidden, baselineIdentity: "stable-baseline")
+                return .notRequested
+            }, displayWakeSettleDelay: 0.05
+        )
+        try await waitUntil { !model.protectionQuiescencePending }
+        model.beginDisplaySleepTransition()
+        box.value = multiHandoffStatus([restored], observations: [], journalID: "second-sleep-journal",
+                                       state: DisplayHandoffStatus.State.none, baselineIdentity: "stable-baseline")
+        model.displayWakeObserved(screensAwake: true)
+        try await Task.sleep(nanoseconds: 15_000_000)
+
+        model.beginDisplaySleepTransition()
+        model.refreshHandoffStatus()
+        try await Task.sleep(nanoseconds: 70_000_000)
+        XCTAssertEqual(hideCalls, 0, "the first wake settlement is cancelled by a second sleep")
+        XCTAssertTrue(model.displayLifecycleTransitioning, "the lifecycle gate stays closed while screens sleep")
+
+        model.displayWakeObserved(screensAwake: true)
+        try await waitUntil { !model.displayLifecycleTransitioning }
+        XCTAssertEqual(hideCalls, 1, "the original intent is consumed only after a fresh screen wake")
+    }
+
+    func testRecoveryTileOffersGuardedRestoreForManualRecovery() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let failed = sleepRemoval(id: "recovery-entry", target: displays[1], source: displays[2], resolved: false,
+                                  state: "needsAttention", canShow: false, topologyVerified: false)
+        let box = StatusBox(multiHandoffStatus([failed], observations: [], journalID: "recovery-journal",
+                                               state: .recovery, baselineIdentity: "exact-baseline"))
+        var showCalls = 0
+        let model = makeModel(
+            defaults: defaults, displays: displays, status: { box.value },
+            quiesceProtection: { $0(true, nil) },
+            showDisplay: { _, _ in
+                showCalls += 1
+                throw RecoveryError.unsafe("strict topology check refused")
+            }
+        )
+        try await waitUntil { !model.protectionQuiescencePending }
+        let tile = try XCTUnwrap(model.displayTiles.first { $0.id == Self.targetKey })
+        XCTAssertEqual(tile.status, .needsRecovery)
+        XCTAssertEqual(tile.action, .show)
+        XCTAssertNil(try model.makeShowRequest(targetUUID: Self.targetUUID).returnInput)
+        let result = try await showAndWait(model)
+        XCTAssertFalse(result.succeeded)
+        XCTAssertEqual(showCalls, 1)
+        XCTAssertEqual(model.handoffStatus?.state, .recovery)
+    }
+
     func testDisplayTilesFollowArrangementAndShowEachState() throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
@@ -2694,6 +3098,48 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(missingDisplay.outcome, .refused)
     }
 
+    private func appRecoverySnapshot(capturedAt: Date, mirroredIDs: Set<UInt32> = []) throws -> RecoverySnapshot {
+        let specs: [(id: UInt32, uuid: String, name: String, vendor: UInt32, model: UInt32,
+                     serial: UInt32, x: Int32, width: Int, height: Int)] = [
+            (101, Self.mainUUID, "Main OLED", 1, 1, 11, 0, 1920, 1080),
+            (202, Self.targetUUID, "Target", 2, 2, 22, 1920, 2560, 1440),
+            (303, Self.sourceUUID, "Mirror source", 3, 3, 33, 4480, 1920, 1080)
+        ]
+        let displays: [[String: Any]] = specs.map { spec in
+            let hidden = mirroredIDs.contains(spec.id)
+            return [
+                "uuid": spec.uuid, "id": spec.id, "name": spec.name,
+                "vendor": spec.vendor, "model": spec.model, "serial": spec.serial, "builtin": false,
+                "main": spec.id == 101, "active": !hidden, "x": spec.x, "y": 0, "rotation": 0,
+                "mirrorUUID": hidden ? Self.mainUUID as Any : NSNull(),
+                "mode": ["id": Int(spec.id), "width": spec.width, "height": spec.height,
+                          "pixelWidth": spec.width, "pixelHeight": spec.height,
+                          "refreshRate": 60.0, "flags": 0],
+                "identityEvidence": ["source": "syntheticFixture",
+                                     "capturedAt": capturedAt.timeIntervalSinceReferenceDate]
+            ]
+        }
+        let payload: [String: Any] = [
+            "bootSession": "app-wake-fixture", "osBuild": "fixture-build", "userID": getuid(),
+            "hostModel": "synthetic-host", "displays": displays
+        ]
+        return try JSONDecoder().decode(RecoverySnapshot.self,
+                                        from: JSONSerialization.data(withJSONObject: payload))
+    }
+
+    private func appDisplayRecords(_ snapshot: RecoverySnapshot) -> [DisplayRecord] {
+        snapshot.displays.enumerated().map { index, display in
+            DisplayRecord(
+                index: index + 1, id: display.id, uuid: display.uuid, name: display.name,
+                active: display.active, online: true, asleep: false, builtin: display.builtin,
+                main: display.main, vendor: display.vendor, model: display.model, serial: display.serial,
+                bounds: DisplayBounds(CGRect(x: CGFloat(display.x), y: CGFloat(display.y),
+                                             width: CGFloat(display.mode.width), height: CGFloat(display.mode.height))),
+                pixelWidth: display.mode.pixelWidth, pixelHeight: display.mode.pixelHeight
+            )
+        }
+    }
+
     private func makeModel(
         defaults: UserDefaults,
         displays: [DisplayRecord],
@@ -2706,7 +3152,9 @@ final class DisplayHideAppTests: XCTestCase {
         isDisplayMirrored: @escaping (UInt32) -> Bool = { _ in false },
         coverDisplays: @escaping @MainActor (Set<UInt32>) -> Set<UInt32> = { _ in [] },
         hideDisplay: @escaping (DisplayHideIdentity, DisplayHideIdentity, UInt8?) throws -> DisplayInputOutcome = { _, _, _ in .notRequested },
+        sleepResumeHideDisplay: ((DisplayHideIdentity, DisplayHideIdentity, DisplayHideWakeExpectation) throws -> DisplayInputOutcome)? = nil,
         showDisplay: @escaping (String, UInt8?) throws -> DisplayInputOutcome = { _, _ in .notRequested },
+        displayWakeSettleDelay: TimeInterval = 1,
         checkDDCInput: @escaping (DisplayHideIdentity) throws -> DDCInputReading = { _ in
             DDCInputReading(displayID: 0, uuid: "", current: 1)
         }
@@ -2719,12 +3167,16 @@ final class DisplayHideAppTests: XCTestCase {
             isDisplayMirrored: isDisplayMirrored,
             inspectHandoff: { status() ?? fallback },
             hideDisplay: hideDisplay,
+            sleepResumeHideDisplay: sleepResumeHideDisplay ?? { target, source, _ in
+                try hideDisplay(target, source, nil)
+            },
             showDisplay: showDisplay,
             checkDDCInput: checkDDCInput,
             // Black out never draws over a real screen in tests.
             coverDisplays: coverDisplays,
             quiesceProtection: useManagedProtectionService ? nil : quiesceProtection,
-            protectionService: protectionService
+            protectionService: protectionService,
+            displayWakeSettleDelay: displayWakeSettleDelay
         )
     }
 
@@ -2752,9 +3204,30 @@ final class DisplayHideAppTests: XCTestCase {
         )
     }
 
+    private func sleepRemoval(id: String, target: DisplayRecord, source: DisplayRecord, resolved: Bool,
+                              state: String? = nil, canShow: Bool? = nil,
+                              topologyVerified: Bool? = nil) -> DisplayHandoffRemoval {
+        DisplayHandoffRemoval(
+            id: id, target: handoffIdentity(target), source: handoffIdentity(source),
+            state: state ?? (resolved ? "restored" : "mirrored"), isUnresolved: !resolved,
+            canShow: canShow ?? !resolved, reason: nil,
+            topologyVerified: topologyVerified ?? !resolved
+        )
+    }
+
+    private func sleepRemoval(id: String, target: DisplayHandoffIdentity, source: DisplayHandoffIdentity,
+                              resolved: Bool) -> DisplayHandoffRemoval {
+        DisplayHandoffRemoval(
+            id: id, target: target, source: source, state: resolved ? "restored" : "mirrored",
+            isUnresolved: !resolved, canShow: !resolved, reason: nil, topologyVerified: !resolved
+        )
+    }
+
     private func multiHandoffStatus(_ removals: [DisplayHandoffRemoval],
                                    observations: [DisplayHideObservation], journalID: String,
-                                   state: DisplayHandoffStatus.State? = nil) -> DisplayHandoffStatus {
+                                   state: DisplayHandoffStatus.State? = nil,
+                                   baselineIdentity: String? = nil,
+                                   observedTopologyIdentity: String? = nil) -> DisplayHandoffStatus {
         let unresolved = removals.filter(\.isUnresolved)
         let primary = unresolved.first ?? removals.first
         return DisplayHandoffStatus(
@@ -2766,6 +3239,9 @@ final class DisplayHideAppTests: XCTestCase {
             recoveryCommand: "panelctl recovery status --journal '/tmp/panelctl-multi-display-fixture/current.json'",
             observations: observations,
             mirrorTopologyVerified: unresolved.allSatisfy(\.topologyVerified),
+            baselineIdentity: baselineIdentity,
+            observedTopologyIdentity: observedTopologyIdentity ?? baselineIdentity,
+            journalIdentity: "fixture-\(journalID)-\(removals.map(\.state).joined(separator: ","))",
             removals: removals
         )
     }
@@ -2778,7 +3254,8 @@ final class DisplayHideAppTests: XCTestCase {
         canShow: Bool = false,
         reason: String? = nil,
         observationState: DisplayHideObservedState? = nil,
-        inspectionFailure: String? = nil
+        inspectionFailure: String? = nil,
+        baselineIdentity: String? = nil
     ) -> DisplayHandoffStatus {
         let targetIdentity = target.map(displayIdentity)
         let sourceIdentity = source.map(displayIdentity)
@@ -2813,7 +3290,8 @@ final class DisplayHideAppTests: XCTestCase {
             recoveryCommand: state == .none ? nil : "panelctl recovery restore --journal '/tmp/panelctl-display-hide-fixture/current.json'",
             observations: observations,
             inspectionFailure: inspectionFailure,
-            mirrorTopologyVerified: state == .hidden
+            mirrorTopologyVerified: state == .hidden,
+            baselineIdentity: baselineIdentity ?? journalID.map { "baseline-\($0)" }
         )
     }
 

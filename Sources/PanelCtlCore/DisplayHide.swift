@@ -33,6 +33,25 @@ public struct DisplayHideIdentity: Equatable, Identifiable {
     }
 }
 
+public struct DisplayHideWakeExpectation: Equatable {
+    public let journalID: String
+    public let journalIdentity: String
+    public let baselineIdentity: String
+    public let observedTopologyIdentity: String
+    public let target: DisplayHideIdentity
+    public let source: DisplayHideIdentity
+
+    public init(journalID: String, journalIdentity: String, baselineIdentity: String,
+                observedTopologyIdentity: String, target: DisplayHideIdentity, source: DisplayHideIdentity) {
+        self.journalID = journalID
+        self.journalIdentity = journalIdentity
+        self.baselineIdentity = baselineIdentity
+        self.observedTopologyIdentity = observedTopologyIdentity
+        self.target = target
+        self.source = source
+    }
+}
+
 public struct DisplayHideObservation: Equatable, Identifiable {
     public let identity: DisplayHideIdentity
     public let state: DisplayHideObservedState
@@ -79,12 +98,16 @@ public struct DisplayHideJournalSummary: Equatable {
     public let showRefusal: String?
     public let failure: String?
     public let mirrorTopologyVerified: Bool
+    public let baselineIdentity: String?
+    public let observedTopologyIdentity: String?
+    public let journalIdentity: String?
     public let removals: [DisplayHideRemovalSummary]
 
     init(id: String, state: String, target: DisplayHideIdentity?, source: DisplayHideIdentity?,
          isMirrorJournal: Bool, isUnresolved: Bool, canShow: Bool, showRefusal: String?,
          failure: String?, mirrorTopologyVerified: Bool = false,
-         removals: [DisplayHideRemovalSummary] = []) {
+         baselineIdentity: String? = nil, observedTopologyIdentity: String? = nil,
+         journalIdentity: String? = nil, removals: [DisplayHideRemovalSummary] = []) {
         self.id = id
         self.state = state
         self.target = target
@@ -95,6 +118,9 @@ public struct DisplayHideJournalSummary: Equatable {
         self.showRefusal = showRefusal
         self.failure = failure
         self.mirrorTopologyVerified = mirrorTopologyVerified
+        self.baselineIdentity = baselineIdentity
+        self.observedTopologyIdentity = observedTopologyIdentity
+        self.journalIdentity = journalIdentity
         self.removals = removals
     }
 }
@@ -188,13 +214,18 @@ public struct DisplayHideController {
 
     @discardableResult
     public func hide(target: DisplayHideIdentity, source: DisplayHideIdentity,
-                     awayInput: UInt8? = nil) throws -> DisplayInputOutcome {
+                     awayInput: UInt8? = nil,
+                     wakeExpectation: DisplayHideWakeExpectation? = nil) throws -> DisplayInputOutcome {
         guard UUID(uuidString: target.uuid) != nil,
               UUID(uuidString: source.uuid) != nil,
               target.uuid.caseInsensitiveCompare(source.uuid) != .orderedSame else {
             throw RecoveryError.unsafe("Hide requires distinct, explicit display UUIDs")
         }
-        return try handoff.guardedAway(target: target, source: source, input: awayInput, store: store)
+        if wakeExpectation != nil, awayInput != nil {
+            throw RecoveryError.unsafe("wake resume never switches monitor inputs")
+        }
+        return try handoff.guardedAway(target: target, source: source, input: awayInput,
+                                       wakeExpectation: wakeExpectation, store: store)
     }
 
     @discardableResult
@@ -358,7 +389,10 @@ public struct DisplayHideController {
             canShow: canShow,
             showRefusal: unresolved ? refusal : nil,
             failure: journal.failure,
-            mirrorTopologyVerified: mirrorTopologyVerified
+            mirrorTopologyVerified: mirrorTopologyVerified,
+            baselineIdentity: journal.snapshot.stableTopologyIdentity(),
+            observedTopologyIdentity: current.stableTopologyIdentity(),
+            journalIdentity: journal.wakeResumeIdentity()
         )
         return DisplayHideStatus(
             journalPath: store.url.path,
@@ -479,6 +513,9 @@ public struct DisplayHideController {
             showRefusal: unresolved.first(where: { !$0.canShow })?.showRefusal,
             failure: journal.failure,
             mirrorTopologyVerified: sessionVerified,
+            baselineIdentity: session.baseline.stableTopologyIdentity(),
+            observedTopologyIdentity: current.stableTopologyIdentity(),
+            journalIdentity: journal.wakeResumeIdentity(),
             removals: removals
         )
         return DisplayHideStatus(journalPath: store.url.path,
@@ -503,7 +540,10 @@ public struct DisplayHideController {
             target: targetIdentity, source: nil, isMirrorJournal: false,
             isUnresolved: !journal.state.resolved, canShow: false,
             showRefusal: journal.state.resolved ? nil : "This journal is not a public mirror journal. Use panelctl recovery status --journal '\(store.url.path)' and its recorded CLI recovery action.",
-            failure: journal.failure
+            failure: journal.failure,
+            baselineIdentity: journal.snapshot.stableTopologyIdentity(),
+            observedTopologyIdentity: current.stableTopologyIdentity(),
+            journalIdentity: journal.wakeResumeIdentity()
         )
         return DisplayHideStatus(
             journalPath: store.url.path, observations: observations, journal: summary,

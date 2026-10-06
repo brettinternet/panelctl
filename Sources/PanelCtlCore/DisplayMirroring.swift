@@ -55,6 +55,7 @@ struct MirrorTransaction {
         let config = try begin()
         var consumed = false
         defer { if !consumed { cancel(config) } }
+        try revalidate()
         try stage(config, target, source)
         try revalidate()
         consumed = true
@@ -270,6 +271,7 @@ struct MirrorController {
     func mirror(selector: String, source: String, store: RecoveryStore,
                 expectedTarget: DisplayHideIdentity? = nil,
                 expectedSource: DisplayHideIdentity? = nil,
+                wakeExpectation: DisplayHideWakeExpectation? = nil,
                 beforeMirror: (RecoveryDisplay) throws -> Void = { _ in }) throws -> RecoveryJournal {
         let operation = operationLock()
         try operation.lock()
@@ -298,6 +300,16 @@ struct MirrorController {
             throw RecoveryError.unsafe("display set changed during capture; refusing mirror")
         }
         let existing = try store.exists() ? store.load() : nil
+        if let wakeExpectation {
+            guard let existing else {
+                throw RecoveryError.unsafe("wake resume journal disappeared; inspect recovery before continuing")
+            }
+            try validateWakeResumeExpectation(
+                wakeExpectation, journal: existing, current: current,
+                target: target, source: sourceRecord,
+                expectedTarget: expectedTarget, expectedSource: expectedSource
+            )
+        }
         var journal: RecoveryJournal
         var session: PublicMirrorSession
         let baseline: RecoverySnapshot
@@ -401,6 +413,12 @@ struct MirrorController {
             try beforeMirror(targetSaved)
             try transaction.apply(target: target.id, source: sourceRecord.id) {
                 try current.verify(engine.capture())
+                if let wakeExpectation, let existing {
+                    try validateWakeResumeWriteBoundary(
+                        wakeExpectation, originalJournal: existing, pendingJournal: journal,
+                        pendingRemoval: removal, current: current, store: store
+                    )
+                }
             }
             let mainBefore = current.displays.first(where: \.main)?.uuid
             try engine.converge {
@@ -434,6 +452,87 @@ struct MirrorController {
             try? store.save(journal)
             throw fallback(error, store: store, selector: target.uuid)
         }
+    }
+
+    private func validateWakeResumeExpectation(
+        _ expectation: DisplayHideWakeExpectation,
+        journal: RecoveryJournal,
+        current: RecoverySnapshot,
+        target: DisplayRecord,
+        source: DisplayRecord,
+        expectedTarget: DisplayHideIdentity?,
+        expectedSource: DisplayHideIdentity?
+    ) throws {
+        guard journal.id.uuidString.caseInsensitiveCompare(expectation.journalID) == .orderedSame,
+              journal.wakeResumeIdentity() == expectation.journalIdentity,
+              (journal.publicMirrorSession?.baseline ?? journal.snapshot).stableTopologyIdentity() == expectation.baselineIdentity,
+              current.stableTopologyIdentity() == expectation.observedTopologyIdentity,
+              expectedTarget == expectation.target, expectedSource == expectation.source,
+              matches(expectation.target, record: target), matches(expectation.source, record: source) else {
+            throw RecoveryError.unsafe("wake resume journal, session, baseline, topology, or target/source identity changed; no mirror was staged")
+        }
+        let baseline = journal.publicMirrorSession?.baseline ?? journal.snapshot
+        try baseline.validateRestoration(to: current)
+        if journal.state.resolved {
+            try baseline.verify(current)
+        } else if let session = journal.publicMirrorSession {
+            guard MirrorSessionTopology.matches(baseline: session.baseline, removals: session.removals, current: current) else {
+                throw RecoveryError.unsafe("wake resume session topology changed; no mirror was staged")
+            }
+        } else {
+            guard let targetID = journal.mirrorTargetID, let sourceID = journal.mirrorSourceID,
+                  HiddenMirrorTopology.matches(snapshot: baseline, targetID: targetID, sourceID: sourceID, current: current) else {
+                throw RecoveryError.unsafe("wake resume legacy mirror topology changed; no mirror was staged")
+            }
+        }
+    }
+
+    private func validateWakeResumeWriteBoundary(
+        _ expectation: DisplayHideWakeExpectation,
+        originalJournal: RecoveryJournal,
+        pendingJournal: RecoveryJournal,
+        pendingRemoval: PublicMirrorRemoval,
+        current: RecoverySnapshot,
+        store: RecoveryStore
+    ) throws {
+        guard current.stableTopologyIdentity() == expectation.observedTopologyIdentity,
+              let pendingSession = pendingJournal.publicMirrorSession,
+              pendingSession.baseline.stableTopologyIdentity() == expectation.baselineIdentity,
+              let last = pendingSession.removals.last, last == pendingRemoval,
+              last.state == .captured,
+              last.targetUUID == expectation.target.uuid.lowercased(),
+              last.targetID == expectation.target.displayID,
+              last.sourceUUID == expectation.source.uuid.lowercased(),
+              last.sourceID == expectation.source.displayID,
+              (try? pendingRemoval.beforeOperation.verify(current)) != nil else {
+            throw RecoveryError.unsafe("wake resume transaction no longer matches its captured journal and topology; transaction cancelled")
+        }
+        let durable = try store.load()
+        guard Self.sameStoredJournal(pendingJournal, durable) else {
+            throw RecoveryError.unsafe("wake resume journal changed at the writer boundary; transaction cancelled")
+        }
+        if originalJournal.state.resolved {
+            let archiveURL = store.url.deletingLastPathComponent()
+                .appendingPathComponent("recovery-\(originalJournal.id.uuidString).json")
+            let archived = try RecoveryStore(url: archiveURL).load()
+            guard archived.wakeResumeIdentity() == expectation.journalIdentity else {
+                throw RecoveryError.unsafe("wake resume source journal changed at the writer boundary; transaction cancelled")
+            }
+        } else if let originalSession = originalJournal.publicMirrorSession {
+            guard Array(pendingSession.removals.dropLast()) == originalSession.removals,
+                  pendingSession.baseline.stableTopologyIdentity() == originalSession.baseline.stableTopologyIdentity() else {
+                throw RecoveryError.unsafe("wake resume session changed while preparing the transaction; transaction cancelled")
+            }
+        } else {
+            throw RecoveryError.unsafe("wake resume source journal kind changed; transaction cancelled")
+        }
+    }
+
+    private static func sameStoredJournal(_ lhs: RecoveryJournal, _ rhs: RecoveryJournal) -> Bool {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        guard let left = try? encoder.encode(lhs), let right = try? encoder.encode(rhs) else { return false }
+        return left == right
     }
 
     func unmirror(store: RecoveryStore, selector: String? = nil, expectedID: UUID? = nil,

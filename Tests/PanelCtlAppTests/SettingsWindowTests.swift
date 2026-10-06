@@ -198,6 +198,58 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertNoThrow(try model.makeShowRequest())
     }
 
+    func testRecoveryDetailsDisclosureRespondsAcrossItsFullRowAndToKeyboard() throws {
+        let status = DisplayHandoffStatus(
+            state: .recovery,
+            target: hiddenStatus().target,
+            source: hiddenStatus().source,
+            journalPath: Self.journalPath,
+            journalID: "disclosure-interaction-fixture",
+            reason: "Synthetic recovery details for disclosure interaction."
+        )
+        let (model, defaults) = try makeModel(status: { status }, configure: {
+            $0.set(true, forKey: "experimentalFeaturesEnabled")
+        })
+        defer { defaults.removePersistentDomain(forName: Self.suiteName) }
+        let controller = SettingsWindowController(model: model)
+        controller.present()
+        controller.selectDisplay(uuid: Self.sideUUID)
+        let window = try XCTUnwrap(controller.window)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 680, height: 900))
+        window.makeKeyAndOrderFront(nil)
+        spin { window.isKeyWindow }
+        guard window.isKeyWindow else {
+            throw XCTSkip("AppKit fixture could not activate a key window, so native keyboard interaction is unavailable.")
+        }
+
+        func disclosureButton() -> NSButton? {
+            guard let content = window.contentView else { return nil }
+            return nativeViews(in: content).compactMap { $0 as? NSButton }.first {
+                $0.title == "Recovery details" || $0.accessibilityLabel() == "Recovery details"
+            }
+        }
+        spin { window.contentView?.layoutSubtreeIfNeeded(); return disclosureButton() != nil }
+        guard let collapsed = disclosureButton() else {
+            throw XCTSkip("SwiftUI disclosure accessibility button is not exposed in the synthetic AppKit view tree.")
+        }
+        XCTAssertGreaterThan(collapsed.bounds.width, 200, "the disclosure button covers the header row, not only the caret")
+        XCTAssertEqual(collapsed.accessibilityValue() as? String, "Collapsed")
+        XCTAssertEqual(collapsed.accessibilityHelp(), "Show or hide details.")
+
+        clickNativeButton(collapsed, atX: collapsed.bounds.minX + 4)
+        spin { disclosureButton()?.accessibilityValue() as? String == "Expanded" }
+        let expanded = try XCTUnwrap(disclosureButton())
+        clickNativeButton(expanded, atX: expanded.bounds.maxX - 4)
+        spin { disclosureButton()?.accessibilityValue() as? String == "Collapsed" }
+
+        let keyboardButton = try XCTUnwrap(disclosureButton())
+        XCTAssertTrue(window.makeFirstResponder(keyboardButton), "the native disclosure button can receive keyboard focus")
+        sendSpaceKey(to: window)
+        spin { disclosureButton()?.accessibilityValue() as? String == "Expanded" }
+        window.close()
+    }
+
     func testBlackedOutDisplayStaysHiddenAfterSettingsCloses() throws {
         let (model, defaults) = try makeModel()
         defer { defaults.removePersistentDomain(forName: Self.suiteName) }
@@ -375,6 +427,39 @@ final class SettingsWindowTests: XCTestCase {
             journalID: "settings-capture-fixture",
             reason: "An unfinished recovery journal needs review."
         )
+        let wakeReason = "display topology no longer matches this removal; inspect recovery before continuing"
+        func fixtureIdentity(_ display: DisplayRecord) -> DisplayHandoffIdentity {
+            DisplayHandoffIdentity(DisplayHideIdentity(
+                uuid: display.uuid ?? "unavailable-\(display.id)", displayID: display.id,
+                name: display.name, vendor: display.vendor, model: display.model, serial: display.serial
+            ))
+        }
+        func recoveryObservation(_ display: DisplayRecord) -> DisplayHideObservation {
+            DisplayHideObservation(
+                identity: DisplayHideIdentity(uuid: display.uuid ?? "unavailable-\(display.id)",
+                    displayID: display.id, name: display.name, vendor: display.vendor,
+                    model: display.model, serial: display.serial),
+                state: .recoveryNeeded,
+                source: DisplayHideIdentity(uuid: displays[0].uuid!, displayID: displays[0].id,
+                    name: displays[0].name, vendor: displays[0].vendor, model: displays[0].model,
+                    serial: displays[0].serial), detail: wakeReason, isJournalTarget: true
+            )
+        }
+        let wakeRemovals = [
+            DisplayHandoffRemoval(id: "fixture-side", target: fixtureIdentity(displays[1]),
+                                  source: fixtureIdentity(displays[0]), state: "needsAttention",
+                                  isUnresolved: true, canShow: false, reason: wakeReason, topologyVerified: false),
+            DisplayHandoffRemoval(id: "fixture-built-in", target: fixtureIdentity(displays[2]),
+                                  source: fixtureIdentity(displays[0]), state: "needsAttention",
+                                  isUnresolved: true, canShow: false, reason: wakeReason, topologyVerified: false)
+        ]
+        let wakeRecovery = DisplayHandoffStatus(
+            state: .recovery, target: wakeRemovals[0].target, source: wakeRemovals[0].source,
+            journalPath: Self.journalPath, journalID: "settings-wake-reset",
+            reason: wakeReason, canShow: false,
+            observations: [recoveryObservation(displays[1]), recoveryObservation(displays[2])],
+            baselineIdentity: "synthetic-baseline", removals: wakeRemovals
+        )
         let scenarios: [(name: String, experimental: Bool, status: DisplayHandoffStatus?, tab: SettingsTab)] = [
             ("off", false, nil, .displays),
             ("blacked-out", false, nil, .displays),
@@ -387,6 +472,7 @@ final class SettingsWindowTests: XCTestCase {
             ("partial", true, nil, .displays),
             ("hidden", true, hiddenStatus(), .displays),
             ("recovery", true, recovery, .displays),
+            ("wake-reset", true, wakeRecovery, .displays),
             ("recovery-banner", true, recovery, .automation),
             ("recovery-journal", false, targetless, .displays),
             ("cleanup-displays", true, nil, .displays),
@@ -556,6 +642,32 @@ final class SettingsWindowTests: XCTestCase {
 
     private func nativeViews(in root: NSView) -> [NSView] {
         [root] + root.subviews.flatMap(nativeViews)
+    }
+
+    private func clickNativeButton(_ button: NSButton, atX x: CGFloat) {
+        guard let window = button.window else { XCTFail("disclosure button has no window"); return }
+        let point = button.convert(NSPoint(x: x, y: button.bounds.midY), to: nil)
+        let down = NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [],
+                                      timestamp: ProcessInfo.processInfo.systemUptime,
+                                      windowNumber: window.windowNumber, context: nil,
+                                      eventNumber: 0, clickCount: 1, pressure: 1)!
+        let up = NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [],
+                                    timestamp: ProcessInfo.processInfo.systemUptime + 0.01,
+                                    windowNumber: window.windowNumber, context: nil,
+                                    eventNumber: 1, clickCount: 1, pressure: 0)!
+        window.sendEvent(down)
+        window.sendEvent(up)
+    }
+
+    private func sendSpaceKey(to window: NSWindow) {
+        let down = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                    windowNumber: window.windowNumber, context: nil,
+                                    characters: " ", charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49)!
+        let up = NSEvent.keyEvent(with: .keyUp, location: .zero, modifierFlags: [], timestamp: 0.01,
+                                  windowNumber: window.windowNumber, context: nil,
+                                  characters: " ", charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49)!
+        window.sendEvent(down)
+        window.sendEvent(up)
     }
 
     /// Opens the side display in Displays and returns its Remove from desktop switch, if shown.

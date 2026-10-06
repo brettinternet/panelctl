@@ -23,7 +23,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var launchedAsLoginItem = false
     private var suppressInitialSettings = false
     private var terminationPending = false
-    private var systemSleeping = false
     private lazy var blackoutFocusController = BlackoutFocusController { [weak self] in
         self?.handleBlackoutEscape() ?? false
     }
@@ -168,6 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        model?.cancelPendingSleepHideResume()
         blackoutFocusTimer?.invalidate()
         blackoutFocusController.shutdown()
         controlServer?.stop()
@@ -738,34 +738,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !terminationPending else { return }
         if notification.name == NSWorkspace.willSleepNotification ||
             notification.name == NSWorkspace.screensDidSleepNotification {
-            systemSleeping = true
-            model.setDisplayLifecycleTransitioning(true)
+            model.beginDisplaySleepTransition()
+            // The in-memory resume intent is captured before inspection can
+            // reconcile a system-restored layout and retire its journal entries.
             model.refreshHandoffStatus()
             return
         }
         if notification.name == NSWorkspace.didWakeNotification {
-            model.setDisplayLifecycleTransitioning(true)
-            model.refreshDisplays(restartWatcher: true)
+            model.displayWakeObserved(screensAwake: false)
             return
         }
         if notification.name == NSWorkspace.screensDidWakeNotification {
             DisplaySleepController.automationScreensDidWake()
-            model.setDisplayLifecycleTransitioning(true)
-            model.refreshDisplays(restartWatcher: true)
-            systemSleeping = false
-            model.setDisplayLifecycleTransitioning(false)
+            model.displayWakeObserved(screensAwake: true)
             return
         }
-        model.setDisplayLifecycleTransitioning(true)
         // AppKit can retain stale display coordinate transforms after a display
         // transition. Replace the helper's WindowServer connection; the service
         // rearms the idle interval so replacement cannot cause a blackout.
-        model.refreshDisplays(
+        model.displayConfigurationChanged(
             restartWatcher: Self.shouldRestartWatcher(after: notification.name)
         )
-        if !systemSleeping {
-            model.setDisplayLifecycleTransitioning(false)
-        }
     }
 
     private func presentNoticeIfNeeded(_ notice: AppNotice) {

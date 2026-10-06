@@ -127,6 +127,7 @@ struct ExperimentalDisconnectView: View {
                 }
             } }
         }
+        .disclosureGroupStyle(FullRowDisclosureGroupStyle())
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
     }

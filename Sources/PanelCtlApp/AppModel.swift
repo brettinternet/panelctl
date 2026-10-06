@@ -11,6 +11,13 @@ struct AppNotice: Identifiable, Equatable {
 
 typealias ProtectionQuiesce = (@escaping (Bool, String?) -> Void) -> Void
 
+private struct SleepHideResumeIntent {
+    let journalID: String
+    let baselineIdentity: String
+    let journalRemovals: [DisplayHandoffRemoval]
+    let removals: [DisplayHandoffRemoval]
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     static let githubURL = URL(string: "https://github.com/brettinternet/panelctl")!
@@ -142,6 +149,7 @@ final class AppModel: ObservableObject {
     private let isDisplayMirrored: (UInt32) -> Bool
     private let inspectHandoff: () -> DisplayHandoffStatus
     private let hideDisplay: (DisplayHideIdentity, DisplayHideIdentity, UInt8?) throws -> DisplayInputOutcome
+    private let sleepResumeHideDisplay: (DisplayHideIdentity, DisplayHideIdentity, DisplayHideWakeExpectation) throws -> DisplayInputOutcome
     private let showDisplay: (String, UInt8?) throws -> DisplayInputOutcome
     private let checkDDCInput: (DisplayHideIdentity) throws -> DDCInputReading
     private let coverDisplays: @MainActor (Set<UInt32>) -> Set<UInt32>
@@ -151,6 +159,11 @@ final class AppModel: ObservableObject {
     private var manualActivityDate: Date?
     private var waitingForDisplayRuleIDs = Set<UUID>()
     private var protectionRearmRequired = false
+    private var sleepHideResumeIntent: SleepHideResumeIntent?
+    private var sleepLifecycleActive = false
+    private var screensAwakeAfterSleep = false
+    private var sleepWakeSettlement: Task<Void, Never>?
+    private let displayWakeSettleDelay: TimeInterval
     private static let preferencesKey = "blackoutPreferences"
     private static let automationPreferencesKey = "automationRules"
     private static let hidePreferencesKey = "displayHidePreferences"
@@ -177,6 +190,10 @@ final class AppModel: ObservableObject {
         hideDisplay: @escaping (DisplayHideIdentity, DisplayHideIdentity, UInt8?) throws -> DisplayInputOutcome = {
             try DisplayHideController().hide(target: $0, source: $1, awayInput: $2)
         },
+        sleepResumeHideDisplay: @escaping (DisplayHideIdentity, DisplayHideIdentity, DisplayHideWakeExpectation) throws -> DisplayInputOutcome = { target, source, expectation in
+            try DisplayHideController().hide(target: target, source: source, awayInput: nil,
+                                             wakeExpectation: expectation)
+        },
         showDisplay: @escaping (String, UInt8?) throws -> DisplayInputOutcome = { key, input in
             let pieces = key.split(separator: "|", maxSplits: 1).map(String.init)
             if pieces.count == 2 {
@@ -192,11 +209,13 @@ final class AppModel: ObservableObject {
         protectionService: ProtectionService? = nil,
         protectionCoordinator injectedProtectionCoordinator: ProtectionCoordinator? = nil,
         disconnectController: DisplayDisconnectController = DisplayDisconnectController(),
-        disconnectExecutable: @escaping @MainActor () throws -> URL = ProtectionService.helperExecutableURL
+        disconnectExecutable: @escaping @MainActor () throws -> URL = ProtectionService.helperExecutableURL,
+        displayWakeSettleDelay: TimeInterval = 1
     ) {
         self.defaults = defaults
         self.disconnectController = disconnectController
         self.disconnectExecutable = disconnectExecutable
+        self.displayWakeSettleDelay = displayWakeSettleDelay.isFinite ? min(max(0, displayWakeSettleDelay), 10) : 1
         self.displayProvider = displayProvider
         self.now = now
         self.idleSecondsProvider = idleSecondsProvider
@@ -204,6 +223,7 @@ final class AppModel: ObservableObject {
         self.isDisplayMirrored = isDisplayMirrored
         self.inspectHandoff = inspectHandoff
         self.hideDisplay = hideDisplay
+        self.sleepResumeHideDisplay = sleepResumeHideDisplay
         self.showDisplay = showDisplay
         self.checkDDCInput = checkDDCInput
         self.coverDisplays = coverDisplays ?? HiddenDisplayOverlays().cover
@@ -1024,7 +1044,8 @@ final class AppModel: ObservableObject {
                 tile.action = .show
                 return
             }
-            guard let uuid = tile.uuid, let removal = handoffStatus?.removal(for: uuid), removal.canShow else { return }
+            guard let uuid = tile.uuid, let removal = handoffStatus?.removal(for: uuid) else { return }
+            guard removal.canShow || canAttemptGuardedRecoveryShow(removal) else { return }
             tile.action = .show
             tile.actionBlocker = showWait?.localizedDescription
         case .on, .blackedOut, .asleep, .mirrored, .unavailable:
@@ -1396,6 +1417,7 @@ final class AppModel: ObservableObject {
     /// Hides a display right away in its style: blacked out, or removed from
     /// the desktop. The outcome is kept in `displayResults` and passed to `completion`.
     func hide(targetUUID: String, completion: ((DisplayOperationResult) -> Void)? = nil) {
+        cancelPendingSleepHideResume()
         if isBlackoutHidden(targetUUID) {
             refuse(.hide, targetUUID: targetUUID, error: DisplayHideError.unavailable(
                 "This display is already hidden."
@@ -1444,7 +1466,7 @@ final class AppModel: ObservableObject {
               let removal = handoffStatus.removal(for: target) else {
             throw DisplayHideError.recoveryBlocksAction("This display isn’t hidden by PanelCtl.")
         }
-        guard removal.canShow else {
+        guard removal.canShow || canAttemptGuardedRecoveryShow(removal) else {
             throw DisplayHideError.recoveryBlocksAction(
                 removal.reason ?? "PanelCtl can’t restore this display right now."
             )
@@ -1457,6 +1479,7 @@ final class AppModel: ObservableObject {
     /// Shows a hidden display right away. Refuses when the journal belongs to
     /// a different display, so a stale action never shows another one.
     func show(targetUUID: String, completion: ((DisplayOperationResult) -> Void)? = nil) {
+        cancelPendingSleepHideResume()
         if isBlackoutHidden(targetUUID) {
             showBlackedOut(targetUUID: targetUUID, completion: completion)
             return
@@ -1486,6 +1509,51 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func beginDisplaySleepTransition() {
+        sleepWakeSettlement?.cancel()
+        sleepWakeSettlement = nil
+        screensAwakeAfterSleep = false
+        if !sleepLifecycleActive {
+            sleepLifecycleActive = true
+            sleepHideResumeIntent = captureSleepHideResumeIntent()
+        }
+        setDisplayLifecycleTransitioning(true)
+    }
+
+    /// A system-wake notification is not proof that displays have finished
+    /// waking. Only screensDidWake starts the bounded settle period.
+    func displayWakeObserved(screensAwake: Bool) {
+        setDisplayLifecycleTransitioning(true)
+        refreshDisplays(restartWatcher: true)
+        guard sleepLifecycleActive else {
+            setDisplayLifecycleTransitioning(false)
+            return
+        }
+        if screensAwake {
+            screensAwakeAfterSleep = true
+            scheduleSleepWakeSettlement()
+        } else if screensAwakeAfterSleep {
+            // Out-of-order duplicate notifications restart, never shorten, the settle window.
+            scheduleSleepWakeSettlement()
+        }
+    }
+
+    func displayConfigurationChanged(restartWatcher: Bool) {
+        setDisplayLifecycleTransitioning(true)
+        refreshDisplays(restartWatcher: restartWatcher)
+        if sleepLifecycleActive {
+            if screensAwakeAfterSleep { scheduleSleepWakeSettlement() }
+        } else {
+            setDisplayLifecycleTransitioning(false)
+        }
+    }
+
+    func cancelPendingSleepHideResume() {
+        // Keep wake settlement alive so lifecycle gates clear, but discard the
+        // intent before any scheduled re-hide can run.
+        sleepHideResumeIntent = nil
+    }
+
     func setDisplayLifecycleTransitioning(_ transitioning: Bool) {
         guard displayLifecycleTransitioning != transitioning else { return }
         displayLifecycleTransitioning = transitioning
@@ -1499,6 +1567,11 @@ final class AppModel: ObservableObject {
         }
         if !transitioning {
             reconcileHiddenDisplays()
+            if protectionRearmRequired, handoffStatus?.hasUnresolvedJournal != true,
+               handoffInspectionFailure == nil, !protectionQuiescencePending,
+               protectionQuiescenceFailure == nil {
+                rearmProtectionAfterDisplayRecovery()
+            }
         }
         onStatusChange?()
     }
@@ -1521,7 +1594,11 @@ final class AppModel: ObservableObject {
         } else if !isUnresolved && wasUnresolved,
                   !protectionQuiescencePending,
                   protectionQuiescenceFailure == nil {
-            rearmProtectionAfterDisplayRecovery()
+            if displayLifecycleTransitioning {
+                protectionRearmRequired = true
+            } else {
+                rearmProtectionAfterDisplayRecovery()
+            }
         }
         if previous != handoffStatus || previousFailure != handoffInspectionFailure {
             onStatusChange?()
@@ -1529,6 +1606,198 @@ final class AppModel: ObservableObject {
                 reconcileProtection()
             }
         }
+    }
+
+    private func captureSleepHideResumeIntent() -> SleepHideResumeIntent? {
+        guard handoffInspectionFailure == nil, let status = handoffStatus,
+              status.state == .hidden, status.mirrorTopologyVerified,
+              let journalID = status.journalID, let baselineIdentity = status.baselineIdentity else { return nil }
+        var journalRemovals = status.removals
+        var removals = journalRemovals.filter(\.isUnresolved)
+        if removals.isEmpty, let target = status.target,
+           let removal = status.removal(for: target.uuid) {
+            removals = [removal]
+        }
+        if journalRemovals.isEmpty { journalRemovals = removals }
+        guard !removals.isEmpty,
+              removals.allSatisfy({ $0.state == "mirrored" && $0.canShow && $0.topologyVerified }) else { return nil }
+        return SleepHideResumeIntent(journalID: journalID, baselineIdentity: baselineIdentity,
+                                     journalRemovals: journalRemovals, removals: removals)
+    }
+
+    private func scheduleSleepWakeSettlement() {
+        sleepWakeSettlement?.cancel()
+        sleepWakeSettlement = Task { [weak self] in
+            guard let self else { return }
+            let delay = UInt64(self.displayWakeSettleDelay * 1_000_000_000)
+            if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+            guard !Task.isCancelled else { return }
+            self.finishSleepWakeSettlement()
+        }
+    }
+
+    private func finishSleepWakeSettlement() {
+        guard sleepLifecycleActive, screensAwakeAfterSleep else { return }
+        sleepWakeSettlement = nil
+        displays = displayProvider()
+        refreshHandoffStatus()
+        if let intent = sleepHideResumeIntent {
+            resumeSleepHideIntent(intent)
+        }
+        sleepHideResumeIntent = nil
+        sleepLifecycleActive = false
+        screensAwakeAfterSleep = false
+        setDisplayLifecycleTransitioning(false)
+    }
+
+    private func resumeSleepHideIntent(_ intent: SleepHideResumeIntent) {
+        guard !hideOperation.isBusy, !protectionQuiescencePending,
+              protectionQuiescenceFailure == nil, handoffInspectionFailure == nil,
+              let status = handoffStatus,
+              status.journalID == intent.journalID,
+              status.baselineIdentity == intent.baselineIdentity,
+              status.journalIdentity != nil, status.observedTopologyIdentity != nil,
+              sameSleepRemovalIdentities(intent.journalRemovals, in: status),
+              intent.removals.allSatisfy({ removal in
+                  matchesPresentDisplay(removal.target) && matchesAwakeDisplay(removal.source)
+              }) else {
+            recordSleepResumeFailure(intent.removals.first, reason: "The exact journal, baseline, display identities, or awake lifecycle no longer match. No automatic Show, re-hide, or DDC input replay was attempted.")
+            return
+        }
+
+        // If macOS kept the verified mirror topology, there is nothing to reapply.
+        if status.state == .hidden {
+            guard sleepRemovalsStillHidden(intent.journalRemovals, in: status) else {
+                recordSleepResumeFailure(intent.removals.first, reason: "The mirror topology no longer verifies after wake. Inspect recovery before continuing.")
+                return
+            }
+            return
+        }
+        guard status.state == .none,
+              sleepRemovalsMatchRestoredBaseline(intent.journalRemovals, in: status) else {
+            recordSleepResumeFailure(intent.removals.first, reason: status.reason ?? "Recovery inspection did not verify the saved baseline. Inspect recovery before continuing.")
+            return
+        }
+
+        hideOperation = .hiding(intent.removals[0].target.uuid)
+        onStatusChange?()
+        var applied: [DisplayHandoffRemoval] = []
+        defer {
+            hideOperation = .idle
+            onStatusChange?()
+        }
+        for removal in intent.removals {
+            guard !Task.isCancelled, displayLifecycleTransitioning,
+                  matchesAwakeDisplay(removal.target), matchesAwakeDisplay(removal.source) else {
+                recordSleepResumeFailure(removal, reason: "The display lifecycle or exact target/source identity changed during wake recovery.")
+                return
+            }
+            let target = coreIdentity(removal.target)
+            let source = coreIdentity(removal.source)
+            guard let status = handoffStatus,
+                  let journalID = status.journalID,
+                  let journalIdentity = status.journalIdentity,
+                  let baselineIdentity = status.baselineIdentity,
+                  let observedTopologyIdentity = status.observedTopologyIdentity else {
+                recordSleepResumeFailure(removal, reason: "The guarded journal expectation is unavailable after wake.")
+                return
+            }
+            let expectation = DisplayHideWakeExpectation(
+                journalID: journalID, journalIdentity: journalIdentity,
+                baselineIdentity: baselineIdentity,
+                observedTopologyIdentity: observedTopologyIdentity,
+                target: target, source: source
+            )
+            do {
+                _ = try sleepResumeHideDisplay(target, source, expectation)
+                applied.append(removal)
+                displays = displayProvider()
+                refreshHandoffStatus()
+                guard resumedRemovalsMatch(applied, baselineIdentity: intent.baselineIdentity) else {
+                    recordSleepResumeFailure(removal, reason: "The guarded Hide did not verify the expected public-mirror session. The journal is retained; inspect recovery before continuing.")
+                    return
+                }
+            } catch {
+                displays = displayProvider()
+                refreshHandoffStatus()
+                recordSleepResumeFailure(removal, reason: error.localizedDescription)
+                return
+            }
+        }
+    }
+
+    private func sameSleepRemovalIdentities(_ expected: [DisplayHandoffRemoval],
+                                            in status: DisplayHandoffStatus) -> Bool {
+        guard status.removals.count == expected.count else { return false }
+        return expected.allSatisfy { wanted in
+            guard let actual = status.removals.first(where: { $0.id == wanted.id }) else { return false }
+            return sameSleepDisplayIdentity(actual.target, wanted.target) &&
+                sameSleepDisplayIdentity(actual.source, wanted.source)
+        }
+    }
+
+    private func sleepRemovalsStillHidden(_ expected: [DisplayHandoffRemoval],
+                                          in status: DisplayHandoffStatus) -> Bool {
+        guard sameSleepRemovalIdentities(expected, in: status) else { return false }
+        return expected.allSatisfy { wanted in
+            guard let actual = status.removals.first(where: { $0.id == wanted.id }) else { return false }
+            if wanted.isUnresolved {
+                return actual.isUnresolved && actual.state == "mirrored" && actual.canShow && actual.topologyVerified
+            }
+            return !actual.isUnresolved && actual.state == wanted.state
+        }
+    }
+
+    private func sleepRemovalsMatchRestoredBaseline(_ expected: [DisplayHandoffRemoval],
+                                                    in status: DisplayHandoffStatus) -> Bool {
+        sameSleepRemovalIdentities(expected, in: status) && status.removals.allSatisfy {
+            !$0.isUnresolved && $0.state == "restored"
+        }
+    }
+
+    private func matchesPresentDisplay(_ identity: DisplayHandoffIdentity) -> Bool {
+        let matches = displays.filter { $0.uuid?.caseInsensitiveCompare(identity.uuid) == .orderedSame }
+        guard matches.count == 1, let display = matches.first else { return false }
+        return display.id == identity.id && display.vendor == identity.vendor && display.model == identity.model &&
+            display.serial == identity.serial && display.online && !display.asleep
+    }
+
+    private func matchesAwakeDisplay(_ identity: DisplayHandoffIdentity) -> Bool {
+        guard matchesPresentDisplay(identity),
+              let display = displays.first(where: { $0.uuid?.caseInsensitiveCompare(identity.uuid) == .orderedSame }) else {
+            return false
+        }
+        return display.active
+    }
+
+    private func resumedRemovalsMatch(_ expected: [DisplayHandoffRemoval], baselineIdentity: String) -> Bool {
+        guard let status = handoffStatus, handoffInspectionFailure == nil,
+              status.state == .hidden, status.baselineIdentity == baselineIdentity,
+              status.removals.filter(\.isUnresolved).count == expected.count else { return false }
+        return expected.allSatisfy { wanted in
+            guard let actual = status.removals.first(where: {
+                $0.target.uuid.caseInsensitiveCompare(wanted.target.uuid) == .orderedSame
+            }) else { return false }
+            return actual.isUnresolved && actual.state == "mirrored" && actual.canShow && actual.topologyVerified &&
+                sameSleepDisplayIdentity(actual.target, wanted.target) &&
+                sameSleepDisplayIdentity(actual.source, wanted.source)
+        }
+    }
+
+    private func sameSleepDisplayIdentity(_ lhs: DisplayHandoffIdentity, _ rhs: DisplayHandoffIdentity) -> Bool {
+        lhs.uuid.caseInsensitiveCompare(rhs.uuid) == .orderedSame && lhs.id == rhs.id &&
+            lhs.vendor == rhs.vendor && lhs.model == rhs.model && lhs.serial == rhs.serial
+    }
+
+    private func recordSleepResumeFailure(_ removal: DisplayHandoffRemoval?, reason: String) {
+        guard let removal else { return }
+        let key = removal.target.uuid.lowercased()
+        displayResults[key] = DisplayOperationResult(
+            action: .hide, succeeded: false,
+            message: "PanelCtl didn’t re-hide this display after waking. \(reason) Open System Settings → Displays to correct the layout, then inspect recovery.",
+            inputMessage: nil, inputOutcome: nil, inputNeedsAttention: true
+        )
+        onStatusChange?()
     }
 
     var version: String {
@@ -2090,6 +2359,26 @@ final class AppModel: ObservableObject {
         )
     }
 
+    private func coreIdentity(_ identity: DisplayHandoffIdentity) -> DisplayHideIdentity {
+        DisplayHideIdentity(
+            uuid: identity.uuid,
+            displayID: identity.id,
+            name: identity.name,
+            vendor: identity.vendor,
+            model: identity.model,
+            serial: identity.serial
+        )
+    }
+
+    private func canAttemptGuardedRecoveryShow(_ removal: DisplayHandoffRemoval) -> Bool {
+        guard let status = handoffStatus, status.state == .recovery,
+              status.inspectionFailure == nil, status.journalID != nil,
+              status.removals.contains(where: { $0.id == removal.id && $0.isUnresolved }),
+              matchesPresentDisplay(removal.target), matchesPresentDisplay(removal.source),
+              matchesAwakeDisplay(removal.source) else { return false }
+        return true
+    }
+
     private func isEligibleHideTarget(_ display: DisplayRecord) -> Bool {
         display.active && display.online && !display.asleep &&
             !display.builtin &&
@@ -2231,8 +2520,9 @@ final class AppModel: ObservableObject {
         refreshHandoffStatus()
         let capturedRemoval = request.status.removal(for: request.targetUUID)
         let currentRemoval = handoffStatus?.removal(for: request.targetUUID)
+        let canAttemptGuardedRecovery = currentRemoval.map(canAttemptGuardedRecoveryShow) == true
         guard handoffStatus?.hasUnresolvedJournal == true,
-              currentRemoval?.canShow == true,
+              currentRemoval?.canShow == true || canAttemptGuardedRecovery,
               capturedRemoval?.id == currentRemoval?.id,
               handoffStatus?.journalID == request.status.journalID,
               let expectedJournalID = request.status.journalID else {

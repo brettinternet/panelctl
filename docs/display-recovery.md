@@ -80,6 +80,45 @@ must already be separate, and every entry stays unresolved until the entire
 baseline verifies. Only the selected target's input is switched; return other
 inputs separately with explicit consent or monitor buttons.
 
+### App sleep/wake handling
+
+For a public-mirror session that is healthy and fully verified before PanelCtl
+observes a system or screen sleep, the app keeps a session-only resume intent in
+memory. After `screensDidWake` and a 1-second settle, it inspects the journal. A
+new sleep notification cancels that settle, clears the awake flag and preserves
+the original intent until a later screen wake. The baseline token is a stable
+projection of topology and identity fields: capture timestamps, localized names,
+host labels and diagnostic identity provenance do not participate. The saved
+baseline is still checked with `RecoverySnapshot.verify`, which requires exact
+identity, profile compatibility, modes, main/active roles, origins and mirror
+relationships.
+
+The app re-applies each removal that was still hidden before sleep through the
+existing public mirroring path only if the same journal/session token, baseline,
+captured target/source UUIDs, numeric IDs and hardware identities still match,
+every target/source is present and awake, and inspection proves the complete
+baseline was restored. The expected journal, session, baseline and observed
+topology are checked again under the core operation/journal locks and at
+transaction revalidation boundaries before staging and commit. A still-healthy
+hidden topology is left alone; entries already restored before sleep stay
+restored. Reapplication is one attempt per observed sleep cycle and never
+switches monitor inputs or replays DDC. These locks do not serialize unrelated
+display managers or macOS; a post-commit mismatch remains journaled recovery,
+not success.
+
+This is not startup/login recovery: intent is not persisted, so quitting or
+relaunching while asleep loses it. Missing, changed, ambiguous, partially
+restored or interrupted-Show state, a source that is not awake, or uncertain
+wake ordering refuses automatic re-hide and keeps recovery evidence. Other
+monitor/topology changes do not trigger it. Displays → Restore offers the
+existing guarded Show/recovery path for a public removal even when inspection
+reports `needsAttention`; core identity and topology checks remain mandatory.
+For a multi-removal wake reset with all targets separate and captured identities
+intact, selecting Restore can restore and verify the full saved baseline. If
+that action is refused, keep the journal, use System Settings → Displays to
+correct the arrangement, then Check Again and inspect the journal. No private
+setter, automatic DDC, global reset or reboot is involved.
+
 Private disable refuses while any public removal is unresolved, and a public
 removal refuses while a private-disable journal is unresolved. Legacy
 single-display mirror journals retain their original Show/recovery behavior.
