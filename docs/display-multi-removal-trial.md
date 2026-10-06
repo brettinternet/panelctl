@@ -10,8 +10,8 @@ and monitor-button/System Settings fallback. No private setter, blackout,
 global reset, logout, reboot, or automatic retry was used.
 
 **Not qualified:** both Hides passed, but the first partial Show failed strict
-origin verification. Recovery is ongoing; do not describe this as a successful
-round trip or evidence for other combinations.
+origin verification. Guarded final-layout recovery succeeded, but this was not
+a successful independent same-order round trip or evidence for other combinations.
 
 ## Captured baseline
 
@@ -73,4 +73,33 @@ Unrelated or sibling mirrors refuse this path. Every pending entry remains
 unresolved until full exact verification passes; only the selected target's
 input callback can run. Fake tests cover the observed state, wrong-source
 refusal, failed full verification retaining both entries, and successful exact
-final restoration. A live final Show still requires fresh separate approval.
+final restoration.
+
+## Final recovery result
+
+On `bb6c5c1`, after separate approvals for the topology and contingent input
+writes, `back` of AW3425DW restored the **entire exact original baseline** in
+one transaction and verified its HDMI1 return. Separate `recovery verify`
+passed with journal state `verified` and both entries `restored`. A fresh
+read-only capture matched all original mode IDs/rates, origins (including
+S2721DGF at (3440,-4)), main flag, and absence of mirrors. S2721DGF still read
+HDMI1; a separately approved DDC-only DP1 return then verified. The user
+confirmed all four displays fully usable in the expected Mac arrangement.
+
+There is no outstanding hardware recovery. The user requested retaining the
+branch and continuing offline investigation rather than merging an incomplete
+same-order workflow. Automation remains snoozed until the originally approved
+expiry; no additional cycle is authorized.
+
+## Offline diagnosis
+
+The installed CoreGraphics SDK's `CGDisplayConfiguration.h` documents that
+requested origins are placed as close as possible without overlap or gaps and
+that origins not explicitly staged may be repositioned. It also warns that
+setting a mirror follower's origin removes that display from its mirror set.
+This explains why a successful transaction return alone cannot establish exact
+restoration; it does **not** identify why this particular four-pixel adjustment
+occurred. The partial writer staged only S2721DGF. Whether explicitly anchoring
+the already-separate survivors would prevent normalization remains a hypothesis,
+not a qualified fix. No private API, automatic retry, or weaker verification
+is authorized by that hypothesis.
