@@ -22,7 +22,7 @@ struct PublicMirrorRemoval: Codable, Equatable, Identifiable {
     let beforeOperation: RecoverySnapshot
     var state: PublicMirrorRemovalState
     var failure: String?
-    // Durable pending Show evidence. Anchor postconditions must survive a
+    // Durable pre-Show snapshot. Partial-Show postconditions must survive a
     // crash after completion and must not disappear on read-only inspection.
     var restoreFrom: RecoverySnapshot?
 

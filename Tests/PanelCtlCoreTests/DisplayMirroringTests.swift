@@ -339,7 +339,7 @@ final class DisplayMirroringTests: XCTestCase {
         }
     }
 
-    func testPartialShowOriginMismatchAllowsOnlyExplicitTargetRepair() throws {
+    func testFailedPartialShowAllowsOnlyExplicitTargetRepair() throws {
         let baseline = try changedSnapshot(sessionSnapshot([:], includeFourth: true)) { $0[1]["y"] = -4 }
         var current = try sessionSnapshot([2: 1, 3: 1], includeFourth: true)
         let removals = [2, 3].map { index in
@@ -362,13 +362,16 @@ final class DisplayMirroringTests: XCTestCase {
                 XCTAssertEqual(targetUUID, self.snapshotUUID(2))
                 let siblingBefore = current.displays[2]
                 writes += 1
+                // macOS places the target at y=0 rather than its saved -4 both
+                // times; that is accepted. The first write leaves the wrong
+                // mode, which is not: do not report success or return input.
                 if writes == 1 {
-                    // Observed macOS result: mirror cleared and mode restored,
-                    // but the target's -4 origin became 0. Do not report success.
-                    current = try self.sessionSnapshot([3: 1], includeFourth: true)
+                    current = try self.changedSnapshot(self.sessionSnapshot([3: 1], includeFourth: true)) {
+                        var mode = $0[1]["mode"] as! [String: Any]; mode["refreshRate"] = 30; $0[1]["mode"] = mode
+                    }
                 } else {
                     XCTAssertNil(current.displays[1].mirrorUUID)
-                    current = try self.changedSnapshot(current) { $0[1]["y"] = -4 }
+                    current = try self.sessionSnapshot([3: 1], includeFourth: true)
                 }
                 XCTAssertEqual(current.displays[2], siblingBefore)
             })
@@ -391,9 +394,9 @@ final class DisplayMirroringTests: XCTestCase {
         let repaired = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(2),
                                         afterRestore: { _ in inputCalls += 1 })
         XCTAssertEqual(writes, 2, "only a separate explicit Show retries the failed target layout")
-        XCTAssertEqual(inputCalls, 1, "input return happens only after exact target verification")
+        XCTAssertEqual(inputCalls, 1, "input return happens only after the partial-Show postcondition verifies")
         XCTAssertEqual(repaired.publicMirrorSession?.removals.map(\.state), [.restored, .mirrored])
-        XCTAssertEqual(current.displays[1].y, -4)
+        XCTAssertEqual(current.displays[1].y, 0, "macOS placement is accepted until the last Show")
     }
 
     func testLastPhysicalShowRestoresBaselineWithEarlierLayoutRecoveryOutstanding() throws {
@@ -598,7 +601,7 @@ final class DisplayMirroringTests: XCTestCase {
         XCTAssertEqual(active.count, 2)
         try handoff.back(selector: snapshotUUID(3), input: nil, store: scenarioStore)
         XCTAssertEqual(active.count, 1, "back Shows only its selected target")
-        XCTAssertTrue(reports.contains { $0.contains("selected display restored and verified; 1 removal(s) remain hidden") })
+        XCTAssertTrue(reports.contains { $0.contains("selected display shown and verified; 1 removal(s) remain hidden") })
     }
 
     func testDistinctSourcesAndMainTargetSurviveObservedMacRearrangement() throws {
@@ -661,6 +664,61 @@ final class DisplayMirroringTests: XCTestCase {
         let final = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(2))
         XCTAssertEqual(current, baseline, "final Show strictly restores the original main, modes and arrangement")
         XCTAssertEqual(final.state, .restored)
+    }
+
+    func testPartialShowPlacementSurvivesAnotherHideAndFinalShowIsExact() throws {
+        // Display 2 is saved four points above the main display's top edge;
+        // macOS places it at y=0 whenever it returns while 3 is still removed.
+        let baseline = try changedSnapshot(sessionSnapshot([:])) { $0[1]["y"] = -4 }
+        var active: [Int: Int] = [:]
+        var current = baseline
+        var staged: (UInt32, UInt32) = (0, 0)
+        var fullRestores = 0
+        func layout() throws -> RecoverySnapshot {
+            try changedSnapshot(sessionSnapshot(active)) { if active[2] == nil { $0[1]["y"] = 0 } }
+        }
+        let scenarioStore = RecoveryStore(url: directory.appendingPathComponent("placement-rehide.json"))
+        let operation = RecoveryStore(url: directory.appendingPathComponent("placement-operation"))
+        let sut = MirrorController(
+            records: { self.records(current) }, operationLock: { operation },
+            engine: RecoveryEngine(capture: { current }, apply: { snapshot in
+                XCTAssertEqual(snapshot, baseline)
+                fullRestores += 1
+                active.removeAll()
+                current = baseline
+            }, convergencePause: {}),
+            preflightModes: { _ in },
+            transaction: MirrorTransaction(
+                begin: { OpaquePointer(bitPattern: 1)! },
+                stage: { _, target, source in staged = (target, source) },
+                complete: { _, _ in
+                    active[Int(staged.0) - 6] = Int(staged.1) - 6
+                    current = try layout()
+                }, cancel: { _ in XCTFail("successful fake transaction must not cancel") }),
+            restoreTarget: { _, targetUUID, revalidate, _ in
+                try revalidate()
+                let target = try XCTUnwrap([2, 3].first { self.snapshotUUID($0) == targetUUID })
+                active.removeValue(forKey: target)
+                current = try layout()
+            })
+        var inputs: [String] = []
+        _ = try sut.mirror(selector: snapshotUUID(2), source: snapshotUUID(1), store: scenarioStore)
+        _ = try sut.mirror(selector: snapshotUUID(3), source: snapshotUUID(1), store: scenarioStore)
+        _ = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(2), afterRestore: { inputs.append($0.uuid) })
+        XCTAssertEqual(current.displays[1].y, 0)
+        XCTAssertEqual(inputs, [snapshotUUID(2)])
+        // The placed display is an ordinary visible display: inspection keeps
+        // the session healthy and it can be removed again.
+        let inspector = DisplayHideController(store: scenarioStore, mirror: sut, operationLock: { operation })
+        XCTAssertFalse(try inspector.inspect().removals.contains { $0.state == "needsAttention" })
+        _ = try sut.mirror(selector: snapshotUUID(2), source: snapshotUUID(1), store: scenarioStore)
+        _ = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(3), afterRestore: { inputs.append($0.uuid) })
+        XCTAssertEqual(fullRestores, 0)
+        let final = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(2), afterRestore: { inputs.append($0.uuid) })
+        XCTAssertEqual(fullRestores, 1, "the last Show stages the whole baseline")
+        XCTAssertEqual(final.state, .restored)
+        XCTAssertEqual(current, baseline, "the original -4 origin returns only with the final Show")
+        XCTAssertEqual(inputs, [snapshotUUID(2), snapshotUUID(3), snapshotUUID(2)])
     }
 
     func testMainTargetMirrorsWhenTargetSourceOrAnotherDisplayRemainsMain() throws {

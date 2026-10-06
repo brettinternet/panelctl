@@ -61,19 +61,29 @@ unmirror: lock → restore captured modes, origins, mirroring, main display
   strictly restores and verifies the immutable original arrangement, modes and
   main display. Any mismatch keeps recovery. Failure/interruption marks only the
   selected entry and preserves its siblings.
+- A partial Show (other targets stay removed) stages only the target: clear its
+  mirror, restore its mode and request its saved origin. Quartz places a
+  requested origin as close as it can and may refuse the saved one while other
+  displays are mirrored, so the origin is not verified. The pre-Show snapshot
+  is saved first; the Show verifies exact identity, the target's mode and main
+  role, that it is separate and active, that every remaining removal still
+  mirrors its source and, while the main display is unchanged, that every other
+  visible display kept its exact position and mode. Only then does input return
+  run. The same durable expectations resolve an interrupted Show after relaunch.
+  A shown target is then an ordinary visible display until the final Show.
 - The journal stays unresolved while any target remains removed and blocks a
   new capture. Resolved journals are archived by the next capture.
 
-## Known multi-display qualification blocker
+## Partial-Show placement on the recorded layout
 
-The supervised S2721DGF → AW3425DW removal sequence onto AW3423DW did
-not pass independent same-order Show: macOS placed S2721DGF at (3440,0)
-instead of its saved (3440,-4) while AW3425DW remained mirrored. Target-only,
-origin-only repair, and explicitly anchored restoration all failed strict
-verification; no return-input write followed a failed Show. Full exact layout
-recovery succeeded after Showing the last mirrored target. This layout remains
-unsupported for a smooth independent round trip; do not repeat origin requests
-or weaken verification. See [trial evidence and recovery](display-multi-removal-trial.md).
+In two supervised S2721DGF → AW3425DW removal sequences onto AW3423DW, macOS
+placed S2721DGF at (3440,0) instead of its saved (3440,-4) when it returned
+while AW3425DW remained mirrored, even with the other desktops explicitly
+anchored. Exact mode, survivors and the remaining mirror verified. The last
+Show restored the full baseline, including (3440,-4), exactly both times.
+Partial Show therefore no longer requires the saved origin (see above). The
+same-order round trip with input return is not yet qualified; it needs a new
+supervised trial. See [trial evidence and recovery](display-multi-removal-trial.md).
 
 ## Recovery and selectors
 
@@ -88,8 +98,9 @@ panelctl back --display TARGET_UUID --consent-back [--journal <path>]
 unresolved removal makes the target unambiguous. For several removals the CLI
 refuses an omitted selector. `unmirror` and `back` accept an explicit target;
 use the exact UUID from `recovery status`. Verify does not Show an active
-removal. It confirms the current session or, after Show/system restoration,
-verifies that target against its baseline. Sibling entries are never replayed
+removal. It confirms the current session. An interrupted Show resolves only by
+its own durable partial-Show postcondition; a display macOS restored itself
+resolves only if it matches its baseline exactly. Sibling entries are never replayed
 to recover the selected target. Legacy singleton journals retain their original
 commands.
 

@@ -12,6 +12,8 @@ global reset, logout, reboot, or automatic retry was used.
 **Not qualified:** both Hides passed, but the first partial Show failed strict
 origin verification. Guarded final-layout recovery succeeded, but this was not
 a successful independent same-order round trip or evidence for other combinations.
+The partial-Show requirement was later changed; see
+[Scope decision](#scope-decision-partial-show-placement). A new trial is required.
 
 ## Captured baseline
 
@@ -170,3 +172,30 @@ capture of the recovered desktop was verified as
 `3FE2CCE5-E5B1-4F4B-80B4-03208D81585C` in `current.json`. Capture/verify made no
 display or DDC writes. This restores journal compatibility without changing the
 existing snooze deadline or automation preferences.
+
+## Scope decision: partial-Show placement
+
+After the two trials above, the user decided (2026-10-06) that a partial Show
+must not require the saved origin. Both trials placed S2721DGF at (3440,0) the
+same way, even with the other desktops explicitly anchored, while the last Show
+restored the full baseline, including (3440,-4), exactly. The saved layout minus
+a mirrored display is evidently not one macOS keeps on this setup; this is a
+documented scope change, not a position tolerance.
+
+A partial Show now stages only the target (mirror, mode, requested saved origin)
+and verifies, against the durable pre-Show snapshot, exact identity, the
+target's mode and main role, that it is separate and active, every remaining
+removal and, while the main display is unchanged, every other visible display's
+exact position and mode. The anchored staging from `1163766` was removed because
+it did not change the hardware result. The final Show and its exact
+full-baseline verification are unchanged.
+
+Offline evidence: the recorded `failedPartial`/`failedRepair` snapshots in
+`Tests/PanelCtlCoreTests/Fixtures/multi-removal-26A434.json` now pass the
+partial-Show postcondition, still fail baseline verification, and are refused
+as a final-Show result. No hardware write was made for this change.
+
+**Still not qualified.** AC8 needs a new supervised same-order trial on the
+original layout (S2721DGF at (3440,-4)), with every DDC and topology write
+separately approved, recording the partial placement, input returns and exact
+final verification.

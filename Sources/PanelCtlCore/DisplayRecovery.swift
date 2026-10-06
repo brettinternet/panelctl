@@ -253,39 +253,14 @@ enum RecoveryConfiguration {
         try checked(result, "commit configuration")
     }
 
-    /// Restore one target; remaining mirror followers are never staged.
+    /// Restore one target, requesting its saved origin. Remaining mirror
+    /// followers and other desktops are never staged. macOS may place the
+    /// target elsewhere; callers verify with MirrorSessionTopology.verifyPartialShow.
     static func restoreTarget(_ baseline: RecoverySnapshot, targetUUID: String,
                               revalidate: () throws -> Void = {},
                               capture: () throws -> RecoverySnapshot = { try .capture(includePrivateMetadata: false) },
                               transaction: TargetRestoreTransaction = TargetRestoreTransaction()) throws {
         try transaction.apply(baseline, targetUUID: targetUUID, revalidate: revalidate, capture: capture)
-    }
-
-    /// In an unchanged main-display coordinate frame, explicitly preserve the
-    /// current independent desktops. Quartz may otherwise reposition unstaged
-    /// origins. Never set a follower's origin: that would unmirror it.
-    /// A moving main display needs its existing restoration policy instead of
-    /// blindly anchoring coordinates from the old frame.
-    static func targetRestoreAnchors(_ baseline: RecoverySnapshot, targetUUID: String,
-                                     before: RecoverySnapshot) -> [RecoveryDisplay] {
-        guard let target = baseline.displays.first(where: { $0.uuid == targetUUID }), !target.main,
-              let originalMain = baseline.displays.first(where: \.main),
-              let currentMain = before.displays.first(where: \.main),
-              originalMain.uuid == currentMain.uuid, currentMain.active, currentMain.mirrorUUID == nil else { return [] }
-        return before.displays.filter { $0.uuid != targetUUID && $0.active && $0.mirrorUUID == nil }
-    }
-
-    static func verifyTargetRestoreAnchors(_ baseline: RecoverySnapshot, targetUUID: String,
-                                          before: RecoverySnapshot, current: RecoverySnapshot) throws {
-        try before.validateRestoration(to: current)
-        for anchor in targetRestoreAnchors(baseline, targetUUID: targetUUID, before: before) {
-            guard let observed = current.displays.first(where: { $0.uuid == anchor.uuid }),
-                  observed.active == anchor.active, observed.main == anchor.main,
-                  observed.x == anchor.x, observed.y == anchor.y,
-                  observed.mode == anchor.mode, observed.mirrorUUID == anchor.mirrorUUID else {
-                throw RecoveryError.unsafe("partial Show changed an anchored desktop; keep recovery")
-            }
-        }
     }
 
     /// Read-only recoverability preflight, also exercised by rehearsal before
@@ -341,7 +316,6 @@ struct TargetRestoreTransaction {
             throw RecoveryError.unsafe("target is unavailable for public-mirror restoration")
         }
         let stageMode = try prepareMode(target)
-        let anchors = RecoveryConfiguration.targetRestoreAnchors(baseline, targetUUID: targetUUID, before: before)
         try before.verify(capture())
         try revalidate()
         let config = try begin()
@@ -349,12 +323,7 @@ struct TargetRestoreTransaction {
         defer { if !consumed { cancel(config) } }
         if currentTarget.mirrorUUID != nil { try clearMirror(config, target.id) }
         if currentTarget.mode != target.mode { try stageMode(config) }
-        if !anchors.isEmpty {
-            // Explicitly assign even unchanged anchors; intended main is last.
-            for display in ([target] + anchors).sorted(by: { !$0.main && $1.main }) {
-                try origin(config, display.id, display.x, display.y)
-            }
-        } else if currentTarget.x != target.x || currentTarget.y != target.y || currentTarget.main != target.main {
+        if currentTarget.x != target.x || currentTarget.y != target.y || currentTarget.main != target.main {
             try origin(config, target.id, target.x, target.y)
         }
         try before.verify(capture())

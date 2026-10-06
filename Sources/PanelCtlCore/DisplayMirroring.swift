@@ -16,7 +16,7 @@ public enum DisplayMirroring {
         let journal = try MirrorController().unmirror(store: store, selector: selector)
         let remaining = journal.publicMirrorSession?.removals.filter { !$0.state.resolved }.count ?? 0
         if remaining > 0 {
-            print("Selected display restored and verified; \(remaining) removal(s) remain; journal retained: \(store.url.path)")
+            print("Selected display shown and verified; \(remaining) removal(s) remain. Its position may differ slightly until the last Show restores the original arrangement; journal retained: \(store.url.path)")
         } else {
             print("Captured arrangement, modes and main display verified; journal retained: \(store.url.path)")
         }
@@ -117,11 +117,9 @@ enum MirrorSessionTopology {
             return (try? baseline.verify(current)) != nil
         }
         var activeByTarget: [String: PublicMirrorRemoval] = [:]
-        var latestByTarget: [String: PublicMirrorRemoval] = [:]
-        for removal in removals { latestByTarget[removal.targetUUID] = removal }
         for removal in activeRemovals(removals) {
             guard activeByTarget[removal.targetUUID] == nil,
-                  pendingRestoreAnchorsMatch(removal, baseline: baseline, current: current) else { return false }
+                  pendingShowSurvivorsMatch(removal, baseline: baseline, current: current) else { return false }
             activeByTarget[removal.targetUUID] = removal
         }
         for original in baseline.displays {
@@ -132,21 +130,72 @@ enum MirrorSessionTopology {
                       let source = current.displays.first(where: { $0.uuid == removal.sourceUUID }),
                       source.id == removal.sourceID, source.active, source.mirrorUUID == nil else { return false }
             } else {
+                // Positions are not session invariants while any display is
+                // removed: macOS may rearrange on mirror and place a partially
+                // shown target near its saved origin. The final Show verifies
+                // the whole baseline exactly.
                 guard observed.mirrorUUID == original.mirrorUUID else { return false }
                 if original.active, !observed.active { return false }
-                if let latest = latestByTarget[original.uuid], latest.state == .restored,
-                   !targetMatchesBaseline(original.uuid, baseline: baseline, current: current) { return false }
             }
         }
         return true
     }
 
-    static func pendingRestoreAnchorsMatch(_ removal: PublicMirrorRemoval, baseline: RecoverySnapshot,
-                                           current: RecoverySnapshot) -> Bool {
+    /// Postcondition of a Show that leaves other displays removed. With other
+    /// displays still mirrored, the saved origin may not be a layout macOS
+    /// accepts (recorded on 26A434: requested (3440,-4), placed at (3440,0)),
+    /// so the target's origin is requested but not required. Everything else
+    /// is exact: identity, the target's mode and main role, other visible
+    /// displays (see showSurvivorsUnchanged) and every remaining removal.
+    /// When no removal remains, matches() requires the whole baseline.
+    static func verifyPartialShow(baseline: RecoverySnapshot, removals: [PublicMirrorRemoval], removalID: UUID,
+                                  before: RecoverySnapshot, current: RecoverySnapshot) throws {
+        try baseline.validateRestoration(to: current)
+        guard let index = removals.firstIndex(where: { $0.id == removalID }) else {
+            throw RecoveryError.unsafe("selected removal entry disappeared")
+        }
+        let targetUUID = removals[index].targetUUID
+        guard let original = baseline.displays.first(where: { $0.uuid == targetUUID }),
+              let observed = current.displays.first(where: { $0.uuid == targetUUID }),
+              observed.mirrorUUID == nil, observed.active,
+              observed.mode == original.mode, observed.main == original.main else {
+            throw RecoveryError.unsafe("Show did not return the display separately with its saved mode and main-display role; keep recovery")
+        }
+        guard showSurvivorsUnchanged(baseline: baseline, targetUUID: targetUUID, before: before, current: current) else {
+            throw RecoveryError.unsafe("Show changed another visible display; keep recovery")
+        }
+        var proposed = removals
+        proposed[index].state = .restored
+        guard matches(baseline: baseline, removals: proposed, current: current) else {
+            throw RecoveryError.unsafe("Show changed another removal or did not restore the original layout; keep recovery")
+        }
+    }
+
+    /// Every display that was visible before the Show stays visible with its
+    /// exact mode. Positions are global coordinates relative to the main
+    /// display's (0,0), so they compare exactly whenever the main display is
+    /// unchanged. A returning original main takes (0,0), and macOS may move
+    /// main while other displays are removed; then positions do not compare.
+    static func showSurvivorsUnchanged(baseline: RecoverySnapshot, targetUUID: String,
+                                       before: RecoverySnapshot, current: RecoverySnapshot) -> Bool {
+        guard (try? before.validateRestoration(to: current)) != nil,
+              let target = baseline.displays.first(where: { $0.uuid == targetUUID }) else { return false }
+        let sameFrame = !target.main &&
+            before.displays.first(where: \.main)?.uuid == current.displays.first(where: \.main)?.uuid
+        return before.displays.allSatisfy { survivor in
+            guard survivor.uuid != targetUUID, survivor.active, survivor.mirrorUUID == nil else { return true }
+            guard let observed = current.displays.first(where: { $0.uuid == survivor.uuid }),
+                  observed.active, observed.mirrorUUID == nil, observed.mode == survivor.mode else { return false }
+            return !sameFrame || (observed.main == survivor.main && observed.x == survivor.x && observed.y == survivor.y)
+        }
+    }
+
+    /// A pending Show's durable pre-Show snapshot keeps its survivor
+    /// expectations across failure, crash and relaunch.
+    static func pendingShowSurvivorsMatch(_ removal: PublicMirrorRemoval, baseline: RecoverySnapshot,
+                                          current: RecoverySnapshot) -> Bool {
         guard let before = removal.restoreFrom else { return true }
-        return (try? RecoveryConfiguration.verifyTargetRestoreAnchors(
-            baseline, targetUUID: removal.targetUUID, before: before, current: current
-        )) != nil
+        return showSurvivorsUnchanged(baseline: baseline, targetUUID: removal.targetUUID, before: before, current: current)
     }
 
     /// The final *physical* Show restores the full baseline even if a previous
@@ -166,15 +215,15 @@ enum MirrorSessionTopology {
         }
     }
 
-    /// A partial Show can clear its mirror yet fail exact layout verification.
-    /// Only that recorded failed target may be repaired; all sibling topology
-    /// and previously restored targets must still verify before another write.
+    /// A partial Show can clear its mirror yet fail its postcondition (for
+    /// example its mode). Only that recorded failed target may be repaired;
+    /// survivors and sibling topology must still verify before another write.
     static func canRepairTargetLayout(baseline: RecoverySnapshot, removals: [PublicMirrorRemoval],
                                       targetUUID: String, current: RecoverySnapshot) -> Bool {
         guard activeRemovals(removals).count > 1,
               let index = removals.firstIndex(where: { $0.targetUUID == targetUUID && !$0.state.resolved }),
               removals[index].state == .needsAttention || removals[index].state == .restoring,
-              pendingRestoreAnchorsMatch(removals[index], baseline: baseline, current: current),
+              pendingShowSurvivorsMatch(removals[index], baseline: baseline, current: current),
               let target = current.displays.first(where: { $0.uuid == targetUUID }),
               target.mirrorUUID == nil, target.active else { return false }
         var siblings = removals
@@ -551,20 +600,10 @@ struct MirrorController {
                     try engine.capture()
                 })
                 try engine.converge {
-                    guard var observedSession = journal.publicMirrorSession,
-                          let index = observedSession.removals.firstIndex(where: { $0.id == selected.id }) else {
-                        throw RecoveryError.unsafe("selected removal entry disappeared")
-                    }
-                    observedSession.removals[index].state = .restored
-                    let observed = try engine.capture()
-                    try RecoveryConfiguration.verifyTargetRestoreAnchors(
-                        session.baseline, targetUUID: selected.targetUUID, before: restoringCurrent, current: observed
+                    try MirrorSessionTopology.verifyPartialShow(
+                        baseline: session.baseline, removals: journal.publicMirrorSession?.removals ?? [],
+                        removalID: selected.id, before: restoringCurrent, current: engine.capture()
                     )
-                    guard MirrorSessionTopology.matches(baseline: session.baseline,
-                                                        removals: observedSession.removals,
-                                                        current: observed) else {
-                        throw RecoveryError.unsafe("partial Show changed another removal or failed strict target verification")
-                    }
                 }
                 guard var completed = journal.publicMirrorSession,
                       let index = completed.removals.firstIndex(where: { $0.id == selected.id }) else {
@@ -671,18 +710,32 @@ struct MirrorController {
         var changed = false
         if MirrorSessionTopology.matches(baseline: session.baseline, removals: session.removals, current: current) {
             for index in session.removals.indices where !session.removals[index].state.resolved {
-                if session.removals[index].state != .mirrored || session.removals[index].failure != nil {
+                if session.removals[index].state != .mirrored || session.removals[index].failure != nil ||
+                    session.removals[index].restoreFrom != nil {
                     session.removals[index].state = .mirrored
                     session.removals[index].failure = nil
+                    session.removals[index].restoreFrom = nil
                     changed = true
                 }
             }
         } else {
             for index in session.removals.indices where !session.removals[index].state.resolved {
                 let removal = session.removals[index]
-                guard MirrorSessionTopology.pendingRestoreAnchorsMatch(removal, baseline: session.baseline, current: current) else {
+                // An interrupted or retried Show resolves only by its own
+                // durable postcondition, never by a later, weaker inspection.
+                if let before = removal.restoreFrom,
+                   (try? MirrorSessionTopology.verifyPartialShow(baseline: session.baseline, removals: session.removals,
+                                                                 removalID: removal.id, before: before,
+                                                                 current: current)) != nil {
+                    session.removals[index].state = .restored
+                    session.removals[index].failure = nil
+                    session.removals[index].restoreFrom = nil
+                    changed = true
+                    continue
+                }
+                guard MirrorSessionTopology.pendingShowSurvivorsMatch(removal, baseline: session.baseline, current: current) else {
                     session.removals[index].state = .needsAttention
-                    session.removals[index].failure = removal.failure ?? "partial Show changed an anchored desktop; keep recovery"
+                    session.removals[index].failure = removal.failure ?? "Show changed another visible display; keep recovery"
                     changed = true
                     continue
                 }
@@ -713,6 +766,7 @@ struct MirrorController {
                 } else if session.removals[index].state == .captured || session.removals[index].state == .restoring {
                     session.removals[index].state = .mirrored
                     session.removals[index].failure = nil
+                    session.removals[index].restoreFrom = nil
                     changed = true
                 }
             }

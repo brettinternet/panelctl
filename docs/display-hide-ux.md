@@ -171,8 +171,11 @@ idle, startup or wake path disconnects a display. See
 
 - Healthy removals can coexist in one atomically saved session; each target has
   its own write-ahead topology, tile/menu/script action and status. Show acts on
-  only the selected target; other removals remain hidden. Final Show verifies
-  the immutable pre-first-Hide arrangement, modes and main display exactly.
+  only the selected target; other removals remain hidden. While others stay
+  removed, macOS may place the returning display near, not at, its saved
+  position; Show verifies its mode and main role, the other visible displays
+  and the remaining removals instead. Final Show verifies the immutable
+  pre-first-Hide arrangement, modes and main display exactly.
   A recovery-needed entry blocks new Hides; entries are never discarded or
   replayed to restore another target.
 - In every order, Hide requires another visible desktop to remain. Removed or
@@ -199,11 +202,12 @@ idle, startup or wake path disconnects a display. See
   before topology work. No automatic logout, reboot or guessed identity is a
   recovery strategy.
 
-**Known qualification blocker:** on the recorded four-display layout, Showing
-S2721DGF while AW3425DW remains removed loses its saved four-pixel vertical
-offset. Show correctly reports recovery and withholds input return; it is not a
-qualified independent round trip. Guarded final-layout recovery succeeded only
-after the last mirror was removed. See [trial evidence](display-multi-removal-trial.md).
+**Partial-Show placement:** on the recorded four-display layout, Showing
+S2721DGF while AW3425DW remains removed places it at y=0 instead of its saved
+y=-4; two hardware trials reproduced this. Such a Show succeeds and returns
+the input; the last Show restores the exact original arrangement, which both
+trials verified. The complete same-order round trip still needs a new
+supervised trial. See [trial evidence](display-multi-removal-trial.md).
 
 ## States and recovery
 

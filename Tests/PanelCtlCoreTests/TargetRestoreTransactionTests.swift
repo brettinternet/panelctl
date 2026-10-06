@@ -33,25 +33,44 @@ final class TargetRestoreTransactionTests: XCTestCase {
         return try JSONDecoder().decode(RecoverySnapshot.self, from: JSONSerialization.data(withJSONObject: value))
     }
 
-    func testRecordedOriginFailuresRemainFailuresAndFinalLayoutMatches() throws {
+    private func session(_ baseline: RecoverySnapshot, followerRestored: Bool = false) throws -> [PublicMirrorRemoval] {
+        let target = try XCTUnwrap(baseline.displays.first { $0.uuid == targetUUID })
+        let follower = try XCTUnwrap(baseline.displays.first { $0.uuid == followerUUID })
+        let source = try XCTUnwrap(baseline.displays.first { $0.uuid == sourceUUID })
+        return [
+            PublicMirrorRemoval(target: target, source: source, beforeOperation: baseline, state: .mirrored),
+            PublicMirrorRemoval(target: follower, source: source, beforeOperation: baseline,
+                                state: followerRestored ? .restored : .mirrored)
+        ]
+    }
+
+    func testRecordedPartialShowPlacementVerifiesWhileFinalLayoutStaysExact() throws {
         let baseline = try fixture("baseline")
+        let before = try fixture("bothHidden")
+        let removals = try session(baseline)
         for name in ["failedPartial", "failedRepair"] {
-            let failed = try fixture(name)
-            try baseline.validateRestoration(to: failed)
-            let target = try XCTUnwrap(failed.displays.first { $0.uuid == targetUUID })
-            XCTAssertEqual(target.y, 0)
+            let placed = try fixture(name)
+            try baseline.validateRestoration(to: placed)
+            let target = try XCTUnwrap(placed.displays.first { $0.uuid == targetUUID })
+            XCTAssertEqual(target.y, 0, "macOS placed the target four points from its saved origin")
             XCTAssertEqual(target.mode, baseline.displays.first { $0.uuid == targetUUID }?.mode)
-            XCTAssertFalse(MirrorSessionTopology.targetMatchesBaseline(targetUUID, baseline: baseline, current: failed))
-            XCTAssertThrowsError(try baseline.verify(failed))
+            XCTAssertFalse(MirrorSessionTopology.targetMatchesBaseline(targetUUID, baseline: baseline, current: placed))
+            XCTAssertThrowsError(try baseline.verify(placed))
+            XCTAssertNoThrow(try MirrorSessionTopology.verifyPartialShow(
+                baseline: baseline, removals: removals, removalID: removals[0].id, before: before, current: placed
+            ), "a partial Show requests but cannot require an origin macOS will not accept")
+            // The same placement is never enough once no removal remains.
+            let last = try session(baseline, followerRestored: true)
+            XCTAssertThrowsError(try MirrorSessionTopology.verifyPartialShow(
+                baseline: baseline, removals: last, removalID: last[0].id, before: before, current: placed
+            ))
         }
         try baseline.verify(fixture("restored"))
     }
 
-    func testActualStagingAnchorsUnchangedIndependentDesktopsNeverFollowers() throws {
+    func testStagingRequestsOnlyTheTargetsSavedOrigin() throws {
         let baseline = try fixture("baseline")
         let target = try XCTUnwrap(baseline.displays.first { $0.uuid == targetUUID })
-        let follower = try XCTUnwrap(baseline.displays.first { $0.uuid == followerUUID })
-        let source = try XCTUnwrap(baseline.displays.first { $0.uuid == sourceUUID })
         for name in ["bothHidden", "failedRepair"] {
             let before = try fixture(name)
             var events: [String] = []
@@ -73,13 +92,8 @@ final class TargetRestoreTransactionTests: XCTestCase {
             XCTAssertEqual(events.last, "complete")
             XCTAssertEqual(events.contains("unmirror-\(target.id)"), name == "bothHidden")
             XCTAssertEqual(events.contains("mode-\(target.id)"), name == "bothHidden")
-            XCTAssertEqual(origins.count, 3)
-            XCTAssertFalse(origins.contains { $0.0 == follower.id }, "setting a follower origin would unmirror it")
+            XCTAssertEqual(origins.count, 1, "no other desktop or mirror follower is staged")
             XCTAssertTrue(origins.contains { $0.0 == target.id && $0.1 == 3440 && $0.2 == -4 })
-            XCTAssertEqual(origins.last?.0, source.id, "the unchanged current main is explicitly staged last")
-            for anchor in before.displays where anchor.active && anchor.uuid != targetUUID && anchor.mirrorUUID == nil {
-                XCTAssertTrue(origins.contains { $0.0 == anchor.id && $0.1 == anchor.x && $0.2 == anchor.y })
-            }
         }
     }
 
@@ -119,23 +133,49 @@ final class TargetRestoreTransactionTests: XCTestCase {
         }
     }
 
-    func testAnchoringDoesNotReplayCoordinatesAcrossAMainDisplayChange() throws {
+    func testSurvivorPositionsCompareUnlessTheTargetIsTheOriginalMain() throws {
         let baseline = try fixture("baseline")
-        var movedMain = try change(fixture("bothHidden"), uuid: sourceUUID) { $0["main"] = false }
-        movedMain = try change(movedMain, uuid: "98402864-2a3e-4b75-92e6-0f801b89c132") { $0["main"] = true }
-        XCTAssertTrue(RecoveryConfiguration.targetRestoreAnchors(baseline, targetUUID: targetUUID, before: movedMain).isEmpty)
-        XCTAssertTrue(RecoveryConfiguration.targetRestoreAnchors(baseline, targetUUID: sourceUUID, before: baseline).isEmpty)
+        let before = try fixture("bothHidden")
+        let otherUUID = "98402864-2a3e-4b75-92e6-0f801b89c132"
+        let placed = try fixture("failedPartial")
+        XCTAssertTrue(MirrorSessionTopology.showSurvivorsUnchanged(baseline: baseline, targetUUID: targetUUID,
+                                                                   before: before, current: placed))
+        let moved = try change(placed, uuid: otherUUID) { $0["x"] = -1439 }
+        let modeChanged = try change(placed, uuid: otherUUID) {
+            var mode = $0["mode"] as! [String: Any]; mode["refreshRate"] = 30; $0["mode"] = mode
+        }
+        let hidden = try change(placed, uuid: otherUUID) { $0["active"] = false }
+        for current in [moved, modeChanged, hidden] {
+            XCTAssertFalse(MirrorSessionTopology.showSurvivorsUnchanged(baseline: baseline, targetUUID: targetUUID,
+                                                                        before: before, current: current))
+        }
+        // Coordinates are relative to the main display. A returning original
+        // main, or macOS moving main, changes that frame, so only visibility
+        // and modes compare; the final Show restores every position.
+        var mainMoved = try change(moved, uuid: sourceUUID) { $0["main"] = false }
+        mainMoved = try change(mainMoved, uuid: otherUUID) { $0["main"] = true }
+        XCTAssertTrue(MirrorSessionTopology.showSurvivorsUnchanged(baseline: baseline, targetUUID: targetUUID,
+                                                                   before: before, current: mainMoved))
+        XCTAssertTrue(MirrorSessionTopology.showSurvivorsUnchanged(baseline: baseline, targetUUID: sourceUUID,
+                                                                   before: before, current: moved))
+        for current in [modeChanged, hidden] {
+            XCTAssertFalse(MirrorSessionTopology.showSurvivorsUnchanged(baseline: baseline, targetUUID: sourceUUID,
+                                                                        before: before, current: current))
+        }
     }
 
-    func testControllerRequiresExactTargetAndIndependentAnchorsBeforeInputReturn() throws {
+    func testControllerVerifiesPartialShowPostconditionBeforeInputReturn() throws {
         let baseline = try fixture("baseline")
         let before = try fixture("bothHidden")
         let target = try XCTUnwrap(baseline.displays.first { $0.uuid == targetUUID })
         let follower = try XCTUnwrap(baseline.displays.first { $0.uuid == followerUUID })
         let source = try XCTUnwrap(baseline.displays.first { $0.uuid == sourceUUID })
-        let repaired = try change(fixture("failedPartial"), uuid: targetUUID) { $0["y"] = -4 }
-        for outcome in ["exact", "targetY", "anchorX", "anchorMode", "anchorMain", "anchorActive"] {
-            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("panelctl-anchor-tests-\(UUID())")
+        // Recorded 26A434 result: exact mode, survivors unchanged, (3440,0).
+        let placed = try fixture("failedPartial")
+        let succeeds = ["placed", "exact"]
+        for outcome in succeeds + ["targetMode", "targetMain", "siblingSeparate",
+                                   "survivorX", "survivorMode", "survivorMain", "survivorActive"] {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("panelctl-partial-show-tests-\(UUID())")
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
                                                    attributes: [.posixPermissions: 0o700])
             defer { try? FileManager.default.removeItem(at: directory) }
@@ -158,17 +198,24 @@ final class TargetRestoreTransactionTests: XCTestCase {
                     let pending = try store.load()
                     XCTAssertEqual(pending.publicMirrorSession?.removals.first?.state, .restoring)
                     XCTAssertEqual(pending.publicMirrorSession?.removals.first?.restoreFrom, before,
-                                   "Show anchors must be durable before completion can change topology")
+                                   "Show expectations must be durable before completion can change topology")
                     completions += 1
-                    current = repaired
+                    current = placed
                     switch outcome {
-                    case "targetY": current = try self.change(current, uuid: self.targetUUID) { $0["y"] = 0 }
-                    case "anchorX": current = try self.change(current, uuid: self.sourceUUID) { $0["x"] = 1 }
-                    case "anchorMode": current = try self.change(current, uuid: self.sourceUUID) {
+                    case "exact": current = try self.change(current, uuid: self.targetUUID) { $0["y"] = -4 }
+                    case "targetMode": current = try self.change(current, uuid: self.targetUUID) {
                         var mode = $0["mode"] as! [String: Any]; mode["refreshRate"] = 60; $0["mode"] = mode
                     }
-                    case "anchorMain": current = try self.change(current, uuid: self.sourceUUID) { $0["main"] = false }
-                    case "anchorActive": current = try self.change(current, uuid: self.sourceUUID) { $0["active"] = false }
+                    case "targetMain": current = try self.change(current, uuid: self.targetUUID) { $0["main"] = true }
+                    case "siblingSeparate": current = try self.change(current, uuid: self.followerUUID) {
+                        $0["mirrorUUID"] = NSNull(); $0["active"] = true
+                    }
+                    case "survivorX": current = try self.change(current, uuid: self.sourceUUID) { $0["x"] = 1 }
+                    case "survivorMode": current = try self.change(current, uuid: self.sourceUUID) {
+                        var mode = $0["mode"] as! [String: Any]; mode["refreshRate"] = 60; $0["mode"] = mode
+                    }
+                    case "survivorMain": current = try self.change(current, uuid: self.sourceUUID) { $0["main"] = false }
+                    case "survivorActive": current = try self.change(current, uuid: self.sourceUUID) { $0["active"] = false }
                     default: break
                     }
                 }, cancel: { _ in XCTFail("completion consumes transaction") })
@@ -187,17 +234,25 @@ final class TargetRestoreTransactionTests: XCTestCase {
                     try RecoveryConfiguration.restoreTarget(baseline, targetUUID: uuid, revalidate: validate,
                                                             capture: capture, transaction: transaction)
                 })
-            if outcome == "exact" {
+            let success = succeeds.contains(outcome)
+            if success {
                 _ = try sut.unmirror(store: store, selector: targetUUID, afterRestore: { _ in inputs += 1 })
             } else {
                 XCTAssertThrowsError(try sut.unmirror(store: store, selector: targetUUID, afterRestore: { _ in inputs += 1 }), outcome)
             }
             XCTAssertEqual(completions, 1, "verification reads never retry the writer")
-            XCTAssertEqual(inputs, outcome == "exact" ? 1 : 0)
+            XCTAssertEqual(inputs, success ? 1 : 0, outcome)
             let saved = try store.load()
-            XCTAssertEqual(saved.publicMirrorSession?.removals.first?.state, outcome == "exact" ? .restored : .needsAttention)
-            XCTAssertEqual(saved.publicMirrorSession?.removals.last?.state, .mirrored)
-            if outcome.hasPrefix("anchor") {
+            XCTAssertEqual(saved.publicMirrorSession?.removals.first?.state, success ? .restored : .needsAttention, outcome)
+            XCTAssertEqual(saved.publicMirrorSession?.removals.last?.state, .mirrored, outcome)
+            if success {
+                // The shown display is an ordinary visible display; the
+                // remaining removal stays healthy and verifiable.
+                XCTAssertEqual(try sut.verifyRemoval(store: store, selector: followerUUID).state, .mirrored, outcome)
+                XCTAssertEqual(try sut.verifyRemoval(store: store, selector: targetUUID)
+                    .publicMirrorSession?.removals.first?.state, .restored, outcome)
+            }
+            if outcome.hasPrefix("survivor") {
                 // Also replay a process interruption after commit but before
                 // postverification/failure persistence: the pending snapshot
                 // alone must prevent weaker inspection from retiring recovery.
@@ -212,16 +267,18 @@ final class TargetRestoreTransactionTests: XCTestCase {
                 XCTAssertEqual(observed.removals.first?.state, "needsAttention", outcome)
                 XCTAssertThrowsError(try sut.verifyRemoval(store: store, selector: targetUUID), outcome)
                 XCTAssertThrowsError(try sut.unmirror(store: store, selector: targetUUID),
-                                     "partial repair cannot adopt the wrong anchor as its new expectation")
+                                     "partial repair cannot adopt a changed survivor as its new expectation")
                 XCTAssertEqual(try store.load().publicMirrorSession?.removals.first?.restoreFrom, before)
                 XCTAssertEqual(completions, 1)
                 XCTAssertEqual(inputs, 0)
-                current = repaired
+                // Interrupted after macOS placed the target: the durable
+                // pre-Show expectations resolve it without the saved origin.
+                current = placed
                 XCTAssertEqual(try sut.verifyRemoval(store: store, selector: targetUUID).publicMirrorSession?.removals.first?.state,
                                .restored, "only matching the durable expectations can resolve this entry")
                 XCTAssertEqual(completions, 1, "read-only reconciliation never retries")
             } else {
-                XCTAssertEqual(saved.publicMirrorSession?.removals.first?.restoreFrom == nil, outcome == "exact")
+                XCTAssertEqual(saved.publicMirrorSession?.removals.first?.restoreFrom == nil, success, outcome)
             }
         }
     }

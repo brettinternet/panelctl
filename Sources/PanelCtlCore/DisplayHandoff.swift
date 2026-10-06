@@ -441,7 +441,7 @@ struct HandoffController {
         }
         let remaining = journal.publicMirrorSession?.removals.filter { !$0.state.resolved }.count ?? 0
         if remaining > 0 {
-            report("Back: selected display restored and verified; \(remaining) removal(s) remain hidden. Journal: \(store.url.path)")
+            report("Back: selected display shown and verified; \(remaining) removal(s) remain hidden. Its position may differ slightly until the last Show restores the original arrangement. Journal: \(store.url.path)")
         } else {
             report("Back: captured topology restored and verified. Journal: \(store.url.path)")
         }

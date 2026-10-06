@@ -66,14 +66,16 @@ The last recovery entry is retained until the **whole** baseline verifies. If
 a failed final Show has already cleared mirroring but left a mode or origin
 wrong, explicit Show or selected `restore` can repair that layout after the
 same identity checks; inspection and `verify` never retry the display writer.
-A failed partial Show that already cleared its target's mirror also permits an
-explicit target-only layout repair, but only while sibling topology and previous
-restorations verify. Exact target mode/origin/main verification still gates input
-return. See the [multi-display trial](display-multi-removal-trial.md) for the
-observed four-pixel origin mismatch; it is not a qualified round trip.
-If macOS still refuses the partial layout, do not retry repeatedly. An explicit
+A partial Show requests, but does not verify, the target's saved origin:
+macOS may place it nearby while other displays are mirrored (see the
+[multi-display trial](display-multi-removal-trial.md)). Its exact identity,
+mode and main role, the other visible displays and the remaining removals are
+verified against the durable pre-Show snapshot before input return; a mismatch
+keeps recovery. A failed partial Show that already cleared its target's mirror
+permits an explicit target-only repair, but only while those survivors and
+sibling topology still verify. Do not retry repeatedly. An explicit
 Show of the last physically mirrored target may restore the full baseline while
-an earlier, already-separate target retains layout recovery. All other displays
+an earlier, already-separate target retains recovery. All other displays
 must already be separate, and every entry stays unresolved until the entire
 baseline verifies. Only the selected target's input is switched; return other
 inputs separately with explicit consent or monitor buttons.

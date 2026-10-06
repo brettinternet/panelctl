@@ -65,14 +65,14 @@ desktop** for each target. Choose **Mirror onto** and optionally **Switch
 monitor to**. Multiple healthy removals can coexist, including several targets
 onto one source. Each tile, menu item and scripted status is per target; setup
 for other displays stays editable. Show any target in any order: it returns only
-that display, and the remaining targets stay removed. The final Show verifies
-the exact pre-first-Hide arrangement, modes and main display before switching
-back to the Mac's detected input. Turning Experimental features off makes new
+that display, and the remaining targets stay removed. While other targets stay
+removed, macOS may place the returning display slightly away from its saved
+position; the final Show verifies the exact pre-first-Hide arrangement, modes
+and main display. Every Show verifies before switching back to the Mac's
+detected input. Turning Experimental features off makes new
 Hides black out instead, but never removes Show or recovery for a removed
-display. Multi-display combinations remain unqualified. The supervised
-S2721DGF/AW3425DW cycle failed exact partial-Show position verification, although
-full final-layout recovery passed. Show keeps recovery and withholds input
-return on a mismatch; see [the recorded limitation](display-multi-removal-trial.md).
+display. Multi-display combinations remain unqualified until a supervised
+same-order round trip passes; see [the trial record](display-multi-removal-trial.md).
 Each new live write still needs separate approval.
 
 The menu also offers per-display Hide/Show; each Show leaves other removed

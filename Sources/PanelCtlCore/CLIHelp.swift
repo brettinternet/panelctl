@@ -97,7 +97,8 @@ public enum CLIHelp {
             Captures topology before writes.
             Mirroring removes a separate desktop, NOT the signal; modes/HDR/refresh,
             windows and Spaces may change. No gamma, DDC or private display setters.
-            unmirror --display restores only that target; the final Show restores and
+            unmirror --display restores only that target; while others stay removed macOS
+            may place it near, not at, its saved origin. The final Show restores and
             verifies the immutable pre-first-Hide modes, origins, mirroring and main display.
             It does not restore window/Spaces placement or HDR settings. Failures keep every
             entry. Explicit fallback: panelctl recovery restore --display <UUID>
