@@ -22,7 +22,14 @@ jobs:
       - name: Lint compiler warnings
         run: swift build --disable-sandbox --build-tests -Xswiftc -warnings-as-errors
       - name: Run tests
-        run: swift test --disable-sandbox
+        timeout-minutes: 5
+        run: swift test --disable-sandbox 2>&1 | tee test-output.log
+      - name: Upload test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: test-output.log
       - name: Check release version policy
         run: ./scripts/test-release-version.sh
       - name: Compile CLI product
@@ -40,7 +47,14 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v6
       - name: Run tests
-        run: swift test --disable-sandbox
+        timeout-minutes: 5
+        run: swift test --disable-sandbox 2>&1 | tee test-output.log
+      - name: Upload test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: test-output.log
       - name: Package release
         run: ./scripts/package-release.sh "$GITHUB_REF_NAME"
       - name: Create GitHub release
