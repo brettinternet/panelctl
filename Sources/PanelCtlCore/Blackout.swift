@@ -1715,7 +1715,7 @@ public final class BlackoutController {
                   Set(sourceUUIDs).count == sourceUUIDs.count,
                   !options.all,
                   options.selectors.count == sourceUUIDs.count,
-                  options.selectors.allSatisfy({ selector in sourceUUIDs.contains(where: { selector.caseInsensitiveCompare($0) == .orderedSame }) }),
+                  Set(options.selectors.map { $0.lowercased() }) == Set(sourceUUIDs),
                   options.watch,
                   let idleAfter = options.idleAfter,
                   idleAfter.isFinite, idleAfter > 0,

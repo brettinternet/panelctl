@@ -102,6 +102,7 @@ final class CLIParserTests: XCTestCase {
         XCTAssertNoThrow(try BlackoutController.validateOptions(options))
 
         let rejected: [([String], CLIParseError)] = [
+            (["--display", source, "--display", source, "--panelctl-hidden-mirror-source", source, "--panelctl-hidden-mirror-source", "00000000-0000-0000-0000-000000000002", "--watch", "--idle-after", "10", "--timeout", "60"], .invalidHiddenMirrorSourceOverlay),
             (["--display", source, "--panelctl-hidden-mirror-source", "00000000-0000-0000-0000-000000000002", "--watch", "--idle-after", "10", "--timeout", "60"], .invalidHiddenMirrorSourceOverlay),
             (["--display", source, "--panelctl-hidden-mirror-source", source, "--watch", "--idle-after", "10"], .invalidHiddenMirrorSourceOverlay),
             (["--display", source, "--panelctl-hidden-mirror-source", source, "--watch", "--idle-after", "10", "--timeout", "60", "--dim-to", "20"], .invalidHiddenMirrorSourceOverlay),
@@ -455,7 +456,7 @@ final class CLIParserTests: XCTestCase {
         XCTAssertEqual(try CLIParser.parse(["help", "blackout"]), .help(command: "blackout"))
         XCTAssertEqual(try CLIParser.parse(["blackout", "-h"]), .help(command: "blackout"))
         XCTAssertEqual(try CLIParser.parse(["--version"]), .version)
-        XCTAssertEqual(CLIHelp.version, "panelctl 0.3.26")
+        XCTAssertEqual(CLIHelp.version, "panelctl 0.4.0")
         XCTAssertTrue(CLIHelp.text(for: "app").contains("snooze --for <duration>"))
         XCTAssertTrue(CLIHelp.text(for: "app").contains("toggle-hide --display <UUID>"))
         XCTAssertTrue(CLIHelp.text(for: "app").contains("0 done or no-op"))

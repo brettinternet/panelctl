@@ -6,6 +6,39 @@ struct SettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var navigation: SettingsNavigation
 
+    private enum PresentedAlert: Identifiable {
+        case experimentalConsent
+        case notice(AppNotice)
+
+        var id: String {
+            switch self {
+            case .experimentalConsent: return "experimental-consent"
+            case .notice(let notice): return notice.id.uuidString
+            }
+        }
+    }
+
+    // A parent notice alert can suppress a nested consent alert on macOS 15.
+    // Present both through one binding; consent takes precedence over notices.
+    private var presentedAlert: Binding<PresentedAlert?> {
+        let alert: PresentedAlert? = model.experimentalConsentPending
+            ? .experimentalConsent : model.notice.map { .notice($0) }
+        return Binding(
+            get: { alert },
+            set: { value in
+                guard case nil = value else { return }
+                switch alert {
+                case .experimentalConsent?:
+                    model.experimentalConsentPending = false
+                case .notice(let notice)?:
+                    if model.notice?.id == notice.id { model.notice = nil }
+                case nil:
+                    break
+                }
+            }
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Displays shows recovery itself, on the affected display or above the
@@ -24,23 +57,39 @@ struct SettingsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .alert(item: $model.notice) { notice in
-            if notice.opensLoginItemSettings {
+        .alert(item: presentedAlert) { alert in
+            switch alert {
+            case .experimentalConsent:
                 return Alert(
-                    title: Text(notice.title),
-                    message: Text(notice.message),
-                    primaryButton: .default(Text("Open System Settings")) {
-                        model.openLoginItemSettings()
+                    title: Text(GeneralSettingsView.experimentalConsentTitle),
+                    message: Text(GeneralSettingsView.experimentalConsentMessage),
+                    primaryButton: .default(Text("Turn On")) {
+                        model.acceptExperimentalConsent()
                     },
                     secondaryButton: .cancel()
                 )
+            case .notice(let notice):
+                return noticeAlert(notice)
             }
+        }
+    }
+
+    private func noticeAlert(_ notice: AppNotice) -> Alert {
+        if notice.opensLoginItemSettings {
             return Alert(
                 title: Text(notice.title),
                 message: Text(notice.message),
-                dismissButton: .default(Text("OK"))
+                primaryButton: .default(Text("Open System Settings")) {
+                    model.openLoginItemSettings()
+                },
+                secondaryButton: .cancel()
             )
         }
+        return Alert(
+            title: Text(notice.title),
+            message: Text(notice.message),
+            dismissButton: .default(Text("OK"))
+        )
     }
 
     private func recoveryBanner(_ problem: String) -> some View {

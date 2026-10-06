@@ -214,17 +214,36 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testExperimentalToggleAsksForConsentBeforeTurningOn() throws {
+        // SwiftUI consent sheets require a key window on macOS 15. Activate
+        // this fixture as an accessory, never a Dock application.
+        let app = NSApplication.shared
+        let originalPolicy = app.activationPolicy()
+        app.setActivationPolicy(.accessory)
+        defer { app.setActivationPolicy(originalPolicy) }
         let (model, defaults) = try makeModel()
         defer { defaults.removePersistentDomain(forName: Self.suiteName) }
         let controller = SettingsWindowController(model: model)
         controller.present()
         controller.select(.general)
         let window = try XCTUnwrap(controller.window)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        app.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        spin { window.isKeyWindow }
+        XCTAssertTrue(window.isKeyWindow, "consent fixture needs a key window")
+        // Wait for the selected tab to mount before changing its alert binding.
+        spin {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return window.contentView.map {
+                nativeViews(in: $0).compactMap { $0 as? NSSwitch }.count == 3
+            } == true
+        }
+        XCTAssertEqual(nativeViews(in: try XCTUnwrap(window.contentView))
+            .compactMap { $0 as? NSSwitch }.count, 3)
 
         func consentButton(_ title: String) throws -> NSButton {
             spin { window.attachedSheet != nil }
-            let sheet = try XCTUnwrap(window.attachedSheet, "consent is presented on the Settings window")
+            let sheet = try XCTUnwrap(window.attachedSheet,
+                "consent is presented on Settings; policy=\(app.activationPolicy().rawValue), key=\(window.isKeyWindow), pending=\(model.experimentalConsentPending)")
             let texts = nativeViews(in: try XCTUnwrap(sheet.contentView)).compactMap { ($0 as? NSTextField)?.stringValue }
             XCTAssertTrue(texts.contains(GeneralSettingsView.experimentalConsentTitle))
             XCTAssertTrue(texts.contains(GeneralSettingsView.experimentalConsentMessage))
@@ -253,6 +272,17 @@ final class SettingsWindowTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         XCTAssertNil(window.attachedSheet, "turning off needs no consent")
         XCTAssertFalse(model.experimentalFeaturesEnabled)
+
+        // The shared presenter must still display and dismiss ordinary notices.
+        model.notice = AppNotice(title: "Fixture notice", message: "No hardware action", opensLoginItemSettings: false)
+        spin { window.attachedSheet != nil }
+        let noticeSheet = try XCTUnwrap(window.attachedSheet)
+        let noticeViews = nativeViews(in: try XCTUnwrap(noticeSheet.contentView))
+        XCTAssertTrue(noticeViews.compactMap { ($0 as? NSTextField)?.stringValue }.contains("Fixture notice"))
+        try XCTUnwrap(noticeViews.compactMap { $0 as? NSButton }.first { $0.title == "OK" }).performClick(nil)
+        spin { window.attachedSheet == nil && model.notice == nil }
+        XCTAssertNil(window.attachedSheet)
+        XCTAssertNil(model.notice)
     }
 
     func testMenuUsesAutomationWording() throws {
@@ -510,6 +540,12 @@ final class SettingsWindowTests: XCTestCase {
     private func spin(timeout: TimeInterval = 2, until condition: () -> Bool) {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline {
+            // Like DisplayHideAppTests, drive AppKit lifecycle events: XCTest
+            // runs the run loop but does not provide an NSApplication event loop.
+            for _ in 0..<100 {
+                guard let event = NSApp.nextEvent(matching: .any, until: Date(), inMode: .default, dequeue: true) else { break }
+                NSApp.sendEvent(event)
+            }
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))
         }
     }
@@ -530,9 +566,19 @@ final class SettingsWindowTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         defer { window.close() }
         window.setContentSize(NSSize(width: 680, height: 1200))
-        window.contentView?.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        return nativeViews(in: try XCTUnwrap(window.contentView)).lazy.compactMap { $0 as? NSSwitch }.first
+        let content = try XCTUnwrap(window.contentView)
+        let expectedState: NSControl.StateValue = model.hideRemovesFromDesktop(displays[1]) ? .on : .off
+        spin {
+            content.layoutSubtreeIfNeeded()
+            let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
+            return model.experimentalFeaturesEnabled
+                ? switches.count == 1 && switches[0].state == expectedState
+                : switches.isEmpty
+        }
+        // The Displays tab has only one switch. Wait for SwiftUI to apply the
+        // selection and binding instead of reading the initial default state.
+        let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
+        return switches.count == 1 ? switches[0] : nil
     }
 
     private func hiddenStatus() -> DisplayHandoffStatus {

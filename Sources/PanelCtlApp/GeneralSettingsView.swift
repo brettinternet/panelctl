@@ -5,7 +5,7 @@ struct GeneralSettingsView: View {
     @ObservedObject var model: AppModel
 
     static let experimentalConsentTitle = "Turn on experimental features?"
-    static let experimentalConsentMessage = "Hide can then remove a display from the desktop by mirroring it, and switch the monitor\u{2019}s input. Windows move and resolution, refresh rate or HDR can change until Show. Tested with one monitor setup only. Show stays available if you turn this off."
+    static let experimentalConsentMessage = "Hide can then remove a display from the desktop by mirroring it, and switch the monitor\u{2019}s input. Windows move and resolution, refresh rate or HDR can change until Show. Show stays available if you turn this off."
 
     var body: some View {
         Form {
@@ -45,13 +45,5 @@ struct GeneralSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .alert(Self.experimentalConsentTitle, isPresented: $model.experimentalConsentPending) {
-            Button("Turn On") {
-                model.acceptExperimentalConsent()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(Self.experimentalConsentMessage)
-        }
     }
 }
