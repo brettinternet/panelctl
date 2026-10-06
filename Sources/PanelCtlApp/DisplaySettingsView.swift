@@ -402,7 +402,7 @@ struct DisplaySettingsView: View {
             } header: {
                 Text("Scripts")
             } footer: {
-                SectionFooter("For Stream Deck or Shortcuts. Use hide or show to set one state.",
+                SectionFooter("For scripts or other apps. Use hide or show to set one state.",
                               learnMore: AppModel.scriptingDocsURL)
             }
         }

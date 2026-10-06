@@ -77,7 +77,7 @@ struct AutomationSettingsView: View {
             } header: {
                 Text("Actions")
             } footer: {
-                SectionFooter("Run an action here, or from Shortcuts or Stream Deck. Actions never run on their own.")
+                SectionFooter("Run an action here, or from scripts or other apps. Actions never run on their own.")
             }
 
             if model.automationPreferences.rules.contains(where: { $0.settings.followUpAction == .sleepDisplays }) {
@@ -380,7 +380,7 @@ struct DisplayActionEditor: View {
                 } header: {
                     Text("Command")
                 } footer: {
-                    SectionFooter("Use in Shortcuts or Stream Deck. PanelCtl must be running.")
+                    SectionFooter("Use in scripts or other apps. PanelCtl must be running.")
                 }
             }
             .formStyle(.grouped)
