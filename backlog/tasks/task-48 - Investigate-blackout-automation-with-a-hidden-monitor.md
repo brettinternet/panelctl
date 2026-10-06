@@ -5,8 +5,9 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-10-06 21:03'
-updated_date: '2026-10-06 21:16'
-labels: []
+updated_date: '2026-10-06 21:25'
+labels:
+  - reviewed
 dependencies: []
 ordinal: 38010
 ---
@@ -33,6 +34,8 @@ Inspect live configuration, helper arguments and countdown without changing disp
 
 <!-- SECTION:NOTES:BEGIN -->
 Read-only inspection found OLED protection running against the remaining Dell AW3423DW, with the hidden selected target excluded. Rule idle threshold is 300 seconds; app status decreased from 300 to 286 to 252. User left the Mac idle and explicitly confirmed: "ok it works". No failing mechanism established, no source edits, no tests needed for code changes, and no fix to commit. Read-only watch cancelled after confirmation. Unrelated TASK-46 changes preserved.
+
+Review: no-change investigation; nothing to fix. Task file committed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -5,8 +5,9 @@ status: Done
 assignee:
   - '@pi'
 created_date: '2026-10-06 20:12'
-updated_date: '2026-10-06 20:29'
-labels: []
+updated_date: '2026-10-06 21:25'
+labels:
+  - reviewed
 dependencies: []
 ordinal: 37010
 ---
@@ -37,6 +38,8 @@ A rule containing an intentionally removed or unavailable monitor currently paus
 Implemented partial safe blackout using the existing bounded overlay path. Added a removal-session marker and whole-session helper revalidation after independent review found that ordinary-only overlays also need journal monitoring. Mirror-source identity checks, recovery/Full-disconnect/cleanup gates preserved. Sleep is replaced by finite overlay restoration during verified removal; rule status/timers explain it. Full offline suite and both product builds pass; release-version checks pass. Native automation fixtures rendered and inspected at 440 and 680 points; no live hardware writes. Independent reviewer passed corrected implementation. Delivery integration pending.
 
 Delivered code commit 6e19b07 by fast-forward merge into main. Final offline suite: 285 core tests and 237 app tests, 7 expected skips, 0 failures; both product builds and release-version script passed. Review correction independently accepted in run 7c5d3a77-42e2-40e3-a5cf-6ff471909cab. Owned worktree .worktrees/automation-remaining-displays (creation receipt session 01a112d5-f4be-704e-95f6-2de35357a302, base d0de5fd) and branch removed by Worktrunk after verifying receipt and clean merged checkout. Herdr workspace w2S contained only its idle shell and was closed by post-remove hook; workspace_not_found verified. Unrelated TASK-46 backlog edits and multi-step-actions worktree preserved. No push or live hardware trial.
+
+Review: fixed skipped-display count for All displays rules with stale saved selections (regression case added), duplicate --panelctl-removal-session-overlay now rejected, doc paragraph split. Commit 1fd22b4; full warnings-as-errors suite (285 core, 237 app), both builds and release-version check passed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

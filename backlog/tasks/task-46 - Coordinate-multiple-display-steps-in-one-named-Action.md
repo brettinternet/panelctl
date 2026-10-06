@@ -4,12 +4,13 @@ title: Coordinate multiple display steps in one named Action
 status: Done
 assignee: []
 created_date: '2026-10-06 18:29'
-updated_date: '2026-10-06 21:15'
+updated_date: '2026-10-06 21:25'
 labels:
   - app
   - automation
   - cli
   - display-hide
+  - reviewed
 dependencies:
   - TASK-36
   - TASK-32
@@ -91,6 +92,8 @@ Migration complete: executor checkpoint confirmed inactive; all 11 TASK-46 sourc
 Worktree implementation and 680/440 fixtures completed; executor reports full suite/builds passed. Parent reran warnings-as-errors suite: 283 core tests passed (2 skips); 250 app tests had only the existing native menu-arrow test fail (4 assertions), then that test passed in isolation. Both debug product builds passed. Parent inspected 440 partial/editor PNGs; LSP AppModel diagnostics unknown (bounded timeout), not clean. One independent review 0e993283 found six confirmed defects: deferred hidden-display reconciliation lost; preflight refusal omitted recovery cleanup; ordinary delayed display requests ignore Action finish timestamp; projected Show retains live mirror deps; corrupt legacy missing effect defaults to blackout; no-op/blocker replies bypass payload bounds. Retained executor resumed as 2b8c11f2 to fix these with targeted regressions and full checks; no second general review planned. Review artifact /Users/brett/.pi/agent/sessions/--Users-brett-dev-me-panelctl--/subagent-artifacts/outputs/0de79017-71db-4729-a847-e07f387153e2/task46-worktree-review.md. No commit or hardware writes. Main advanced independently with TASK-47; worktree remains based on d0de5fd.
 
 Delivered implementation commit 6de658a on multi-step-actions. All six independent-review findings corrected and regression-tested; parent inspected corrected paths and final test/build logs. Final warnings-as-errors full suite: 283 core +255 app tests, 7 expected skips, zero failures, including native menu keyboard test unchanged. Both products debug warnings-as-errors builds passed; diff check clean. Evidence: /tmp/panelctl-task46-followup-{focused,full,cli-build,app-build}.log. Native 680/440 Actions list/progress/partial/editor fixtures rendered and inspected separately at /tmp/panelctl-task46-fixtures; parent inspected narrow partial/editor examples. Storage/limits/conflicts/projection/no-op/lease/quiescence/interruption/recovery/result/server-encoding criteria covered by 35 DisplayActionAppTests plus AppControlTests and native SettingsWindowTests; docs/help updated. LSP remains unknown, compiler/test evidence authoritative. No live hardware writes or new qualification. User superseded the original main-only plan with worktree execution: source commit stays on multi-step-actions, not merged or pushed; primary main independently advanced with TASK-47. Retained clean owned checkout /Users/brett/dev/me/panelctl/.worktrees/multi-step-actions and hook-created workspace pending integration, not removed because implementation is intentionally unmerged. Original receipt and session evidence recorded above; all delegated work complete, claim released.
+
+Review: fixed automation helpers never restarting after an Action that quiesced them (reconcile once at lease end); a step whose fresh state needs a write after an all-no-op preflight is now refused instead of writing with helpers running; replaced string-matched save errors with typed validation. Regression tests added. Commit 6e1103e on multi-step-actions (still unmerged; branch based on d0de5fd and will conflict with TASK-47 in AppModel overlay reconciliation). Full warnings-as-errors suite (283 core, 257 app) and both builds passed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
