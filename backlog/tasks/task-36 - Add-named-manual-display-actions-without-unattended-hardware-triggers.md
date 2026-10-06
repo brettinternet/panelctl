@@ -4,6 +4,7 @@ title: Add named manual display actions without unattended hardware triggers
 status: To Do
 assignee: []
 created_date: '2026-10-05 22:30'
+updated_date: '2026-10-05 22:42'
 labels:
   - app
   - automation
@@ -18,6 +19,10 @@ references:
   - TASK-27
   - TASK-29
   - TASK-32
+  - Sources/PanelCtlApp/DisplayHidePreferences.swift
+  - Sources/PanelCtlApp/AutomationSettingsView.swift
+  - Sources/PanelCtlCore/CLIParser.swift
+  - Sources/PanelCtlCore/CLIHelp.swift
 documentation:
   - docs/display-hide-ux.md
   - docs/display-handoff.md
@@ -30,16 +35,92 @@ ordinal: 26010
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Users want reusable display actions alongside protection rules, including handing a monitor to another computer, without converting safe idle protection into topology or input writes. Add deliberately invoked named actions in Automations, clearly distinguished from automatic protection. Reuse the existing Displays setup, app control and Hide/Show recovery rather than creating another hardware or recovery path. Initial scope is one exact display per action, with explicit blackout Hide, Remove from desktop with optional configured input handoff, or Show. Multi-display scenes, arbitrary sequences, schedules, idle/empty-triggered removal or input switching, DDC power and private disconnect remain deferred. TASK-31/TASK-32 remain separate work and must not be duplicated or assumed complete. Delivery is offline only; new hardware qualification requires separately scoped human approval.
+Users want reusable display actions alongside protection rules, including handing a monitor to another computer from Shortcuts or Stream Deck, without converting safe idle protection into topology or input writes. Add deliberately invoked named actions in Automations, clearly separated from automatic rules. Reuse the existing Displays setup, app control and Hide/Show recovery rather than creating another hardware or recovery path. Initial scope is one exact display per action with exactly three effects: Black out, Remove from desktop (with its configured optional input handoff) or Show. A named action never falls back to a different effect, unlike the per-display Hide button. The plan fixes the list, editor, command and refusal wording. Multi-display scenes, toggles, arbitrary sequences, schedules, idle- or empty-triggered removal or input switching, DDC power and private disconnect remain deferred. TASK-31/TASK-32 remain separate work and must not be duplicated or assumed complete. Delivery is offline only; new hardware qualification requires separately scoped human approval.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Users can create, name, edit and delete single-display manual actions in Automations, with an explicit Manual shortcut trigger, Run control and a copyable bundled-CLI invocation using a stable action ID for Shortcuts or Stream Deck. No unattended trigger can select topology/input actions; startup, login, wake and reconnection never execute them.
-- [ ] #2 Saved actions disclose the exact target and effect, including mirror source and optional away input for removal. Hardware setup stays in Displays. A material setup or Hide-style change invalidates the affected saved action until reviewed; it cannot silently change blackout into removal, input switching or power. Execution rechecks the reviewed configuration and identity.
-- [ ] #3 Manual actions reuse the current experimental consent, eligibility, last-visible safety, automation cleanup, operation serialization and journal recovery checks. Unsupported targets, busy state and unresolved recovery report actionable refusals; no bypass, queued execution, automatic retry, fallback method or guessed identity is introduced.
-- [ ] #4 Hide and Show are explicit desired-state operations: already-achieved state is a no-op without another input write. Show follows the actual outstanding Hide/recovery evidence rather than current setup, including after configuration changes or experimental features are disabled. Existing per-display Show and recovery stay available if a saved action is edited or deleted.
-- [ ] #5 Activity, protection Restore and Pause All do not undo a manual Hide or switch a monitor back from another computer. Show is deliberate. Results distinguish desktop outcome, input outcome and recovery needed, and an unavailable or lost response never triggers automatic resend.
-- [ ] #6 The named-action command uses the running app and existing app-control error conventions; existing per-display hide/show/toggle-hide commands remain compatible. CLI help and docs explain command copying, state inspection after uncertain results, and the distinction between deliberately invoked commands and unattended built-in triggers.
-- [ ] #7 Fake-backed model, app-control, parser and UI tests cover configuration drift, stable IDs, repeated requests, contention, cleanup failure, missing targets, consent, partial input outcomes, deletion with outstanding recovery and absence of automatic hardware execution. Native UI fixtures are inspected; full offline tests and warnings-as-errors builds pass. Existing docs distinguish implemented actions from hardware-qualified combinations and retain power/private-disconnect exclusions.
+- [ ] #1 Users can create, name, edit and delete single-display actions in an Actions section of Automations. Each row has Run and Edit; the editor shows a read-only Runs line (only when you choose Run or run its command), Display, Effect and a copyable bundled-CLI command using a stable action ID. There is no trigger picker, no menu bar item and no hotkey; startup, login, wake, reconnection and automation never run actions.
+- [ ] #2 Saved actions disclose the exact target and effect, including mirror source and away input for removal. Hardware setup stays in Displays, reached through a Set Up in Displays button. A change to the reviewed removal setup (Remove from desktop on/off, mirror source or away input) marks the action Needs review, disabling Run and refusing its command until saved again; Remove from desktop with Experimental features off is refused, never converted to Black out. Execution rechecks the reviewed configuration and identity.
+- [ ] #3 Actions reuse the current experimental consent, eligibility, last-visible safety, automation cleanup, operation serialization and journal recovery checks. Unsupported targets, busy state and unresolved recovery report actionable refusals inline and in the command result; no confirmation dialog, bypass, queued execution, automatic retry, fallback method or guessed identity is introduced.
+- [ ] #4 Hide and Show are desired-state operations: Hide already done with the same style and Show of a display that is not hidden are no-ops without another input write; Hide of a display hidden with the other style is refused. Show follows the actual outstanding Hide/recovery evidence rather than current setup, including after configuration changes or with Experimental features off. Existing per-display Show and recovery stay available if an action is edited or deleted.
+- [ ] #5 Activity, protection Restore, Escape on automation covers and Pause do not undo an action Hide or switch a monitor back from another computer. Results appear inline on the action row and display tile and distinguish desktop outcome, input outcome and recovery needed; an unavailable or lost response never triggers automatic resend.
+- [ ] #6 The app run-action command takes the action ID, uses the running app, never launches it, and reuses the hide/show outcomes and exit codes, with unknown IDs, needs review, Experimental off and style mismatch reported as refusals. Existing per-display hide/show/toggle-hide commands remain compatible. CLI help and docs explain command copying, state inspection after uncertain results and the difference between deliberately invoked commands and unattended built-in triggers.
+- [ ] #7 Fake-backed model, app-control, parser and UI tests cover setup drift, stable IDs across rename, repeated requests, contention, cleanup failure, missing targets, consent, style mismatch, partial input outcomes, deletion with outstanding recovery and absence of automatic execution. Native UI fixtures at 680 and 440 pt are inspected; full offline tests and warnings-as-errors builds pass. Docs distinguish implemented actions from hardware-qualified combinations and retain power/private-disconnect exclusions.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+0. Before claiming: confirm TASK-35 is Done; read the Automations tab/editor patterns it shipped and TASK-32’s state (multi-removal changes refusals and Show). Reuse, don’t fork, the per-display Hide/Show path in AppModel and its result store.
+
+## Decisions (settled; do not reopen without the user)
+
+- An **action** = one exact display + one effect, run only by a person: the row’s **Run** button or its CLI command (Shortcuts/Stream Deck). There is no trigger picker; the editor shows a read-only "Runs: Only when you choose Run or run its command."
+- Effects (exactly three): **Black out** (Hide using Black out regardless of the display’s Hide style), **Remove from desktop** (Hide using the display’s Displays setup: mirror source and optional Switch monitor to), **Show** (undo whatever Hide/recovery evidence exists for that display). No Toggle effect (per-display `app toggle-hide` already exists), no multi-display scenes, no power/private disconnect.
+- Named actions never fall back: Remove from desktop with Experimental features off or setup missing is refused, never converted to Black out (unlike per-display Hide’s documented fallback).
+- Setup lives in Displays. The action stores the target `DisplayIdentitySnapshot` and, for removal, a reviewed fingerprint `‹removeEnabled, sourceUUID, awayInput›` (not `returnInput`, which detection updates). Any fingerprint difference → **Needs review**: Run disabled, command refused, editor shows the change (e.g. "Switch monitor to: HDMI 1 → HDMI 2"); Save re-snapshots. Black out and Show actions have no setup fingerprint.
+- Desired-state semantics: Hide when already hidden by the same style = `no-op` (no input write); hidden by the other style = refused "Already hidden by ‹style›. Show it first."; Show when not hidden = `no-op`.
+- Not in the menu bar menu; no global hotkeys; no confirmation before Run (matches tile Hide/Show); results inline, no dialogs.
+- Automation never runs actions; Restore, activity, Escape on automation covers and Pause never undo them. Startup, login, wake and reconnection never run them.
+
+## Automations tab additions
+
+```
+Section "Actions"   (below Rules)
+  Hand off S2721DGF                        [Edit…] [Run]
+  Remove DELL S2721DGF from desktop onto DELL AW3423DW · switch to HDMI 1
+  Display is on                     ← or "Hidden", "Running…", "Unavailable: ‹reason›", ⚠ "Needs review: Displays setup changed"
+  ‹last result line for this run, session-only, same text as the tile result›
+  [Add Action…]
+  footer: Actions run only when you choose Run or run their command. Automation, startup, wake and reconnection never run them.
+```
+
+- Summary names the actual effect: "Black out DELL S2721DGF", "Remove … from desktop onto … · switch to HDMI 1 | · don’t switch input", "Show DELL S2721DGF". Missing target: "DELL S2721DGF (unavailable)", Run disabled with reason.
+- Run is disabled with a visible reason (not tooltip-only) when refused up front: needs review, Experimental off, target unavailable, operation busy, recovery needs attention. While running: "Running…", button disabled. Also show the result on the display tile (existing store).
+- Empty state: "No actions." + Add Action… + footer.
+
+## Action editor sheet
+
+```
+New Action / Edit Action
+  Name     [Hand off S2721DGF      ]
+  Runs     Only when you choose Run or run its command          (read-only)
+  Display  [DELL S2721DGF ▾]   (stable-UUID displays only; saved missing target listed as "(unavailable)")
+  Effect   [Black out | Remove from desktop | Show]
+           Remove disabled with reason + [Set Up in Displays…] when Experimental is off or the display has no Remove from desktop setup
+Effect details (read-only, from Displays; Remove only)
+  Mirror onto        DELL AW3423DW
+  Switch monitor to  HDMI 1 | Don’t switch
+  ⚠ Displays setup changed since review: … Save to accept.
+Command
+  /Applications/PanelCtl.app/Contents/Helpers/panelctl app run-action --action ‹UUID›   [Copy]
+  footer: For Shortcuts or Stream Deck. PanelCtl must be running; requests are never queued or retried.
+────────────────────────────────────────────────
+[Delete Action…]                         [Cancel] [Save]
+```
+
+- Defaults: name empty (required, unique case-insensitively among actions), Display = selected Displays tile if any, Effect = Black out. Rename never changes the ID or command.
+- Delete Action… → alert "Delete “‹name›”?" message "Scripts that run its command will stop working. The display’s current state doesn’t change." Deleting never shows a display; the tile’s Show and recovery stay available.
+- `Set Up in Displays…` uses `navigation.showDisplays(selecting:)`; no setup controls in this sheet.
+
+## CLI and app control
+
+- `panelctl app run-action --action UUID [--json]`: new `AppControlCommand.runAction` with additive `actionID` request field (protocol stays 1). Never launches the app (same as hide/show), waits up to 30 s, never queued or resent.
+- Response/exit codes reuse the hide/show table (`done`, `no-op`, `refused`, `busy`, `failed`, `response-lost`, `partial`, `recovery-needed`). Unknown/deleted ID, needs review, Experimental off and style mismatch are `refused` (exit 1) with a specific `error`. `displays` carries state for inspection after uncertain results; no new status fields.
+- Copy string generated like `AppControlCommand.commandLine` (shell-safe quoting of the bundled CLI path).
+- Existing `hide|show|toggle-hide --display` unchanged.
+
+## Steps
+
+1. Model: `DisplayAction ‹id: UUID, name, target: DisplayIdentitySnapshot, effect, reviewedRemoval?›` persisted (versioned) beside the TASK-34 rule set; validation and review-state as pure functions.
+2. Execution: thread an explicit hide style through the existing AppModel Hide path (today style comes from `hidePreferences[uuid].enabled` + Experimental), recheck fingerprint and identity under the existing operation lock, then call the same Hide/Show code (consent, eligibility, last-visible, automation quiescence, journal). No new hardware path.
+3. App control + parser + CLI help (`CLIHelp.swift`) for `run-action`.
+4. UI: Actions section, editor sheet, row state/results, Copy.
+5. Tests with fakes: stable IDs across rename; drift → needs review for each fingerprint field; Experimental off refuses removal but Show works; style mismatch refusal; repeated Hide/Show no-op without input writes; busy/contention; cleanup failure refusal; missing target; consent; partial input outcomes; delete with outstanding removal keeps tile Show; relaunch/wake/reconnect/login run nothing; Restore/Pause don’t undo; parser/app-control round trips and exit codes. Fixtures at 680/440 pt: actions list (ready, hidden, needs review, unavailable), editor Remove with details, editor Remove disabled.
+6. Docs: `docs/usage.md` (named actions, command copying, inspecting `app status --json` after `response-lost`), `docs/display-hide-ux.md` (actions vs per-display Hide, no fallback, deliberate vs unattended), `docs/display-handoff.md` cross-link; keep hardware-qualified combinations and power/private-disconnect exclusions explicit. Full suite, warnings-as-errors debug+release builds, `git diff --check`. No live writes; hardware qualification needs separate approval.
+
+## Do not add
+
+Toggle effect, multi-display or sequenced actions, schedules or any automatic trigger, menu-bar action items, hotkeys, Run confirmations, completion dialogs, retries/queues, setup editing inside the action sheet, power or private-disconnect effects.
+<!-- SECTION:PLAN:END -->

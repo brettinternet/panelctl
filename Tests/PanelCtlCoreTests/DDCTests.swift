@@ -111,6 +111,28 @@ final class DDCTests: XCTestCase {
         }
     }
 
+    func testKnownReturnWithUnknownOriginalWritesOnceAndReportsReadbackHonestly() throws {
+        for scenario in ["verified", "unreadable", "mismatch", "write-failed"] {
+            let fake = FakeChannel(
+                inputs: scenario == "unreadable" ? [.failure(.invalidReply("invalid payload length"))] :
+                    [.success(scenario == "mismatch" ? 0x11 : 0x0F)],
+                writeError: scenario == "write-failed" ? .requestFailed(-1) : nil)
+            do {
+                let result = try DDCInput.select(0x0F, channel: fake.channel, displayID: 7, uuid: "UUID",
+                                                 readOriginal: false, polls: 3, pause: { _ in })
+                XCTAssertFalse(["mismatch", "write-failed"].contains(scenario))
+                XCTAssertNil(result.original)
+                XCTAssertEqual(result.outcome, scenario == "verified" ? .verified : .unverified)
+                XCTAssertEqual(result.observed, scenario == "verified" ? 0x0F : nil)
+            } catch {
+                XCTAssertTrue(["mismatch", "write-failed"].contains(scenario))
+                XCTAssertTrue(String(describing: error).contains("previous input unknown"))
+                XCTAssertFalse(String(describing: error).contains("--set"), "do not invent a recovery input")
+            }
+            XCTAssertEqual(fake.writes, [0x0F], scenario)
+        }
+    }
+
     func testTransportLossAfterWriteIsUnverifiedNotRetried() throws {
         let fake = FakeChannel(inputs: [.success(0x0F), .success(0x0F), .failure(DDCError.requestFailed(-1))])
         let result = try select(0x11, fake)

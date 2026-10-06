@@ -37,7 +37,7 @@ against fakes. To review rendered states:
 ```sh
 mkdir -p /tmp/panelctl-settings
 PANELCTL_SETTINGS_FIXTURE_OUTPUT=/tmp/panelctl-settings swift test --disable-sandbox \
-  --filter 'SettingsWindowTests.test(Settings|Displays)FixtureSnapshots'
+  --filter 'SettingsWindowTests.test(Settings|Displays|DismissInputWarning)FixtureSnapshots'
 ```
 
 Don't launch the real app or enable live blackout tests for this. VoiceOver and

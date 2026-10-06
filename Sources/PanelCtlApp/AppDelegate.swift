@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var controlServer: AppControlServer?
     private var statusItem: NSStatusItem?
     private var settingsWindowController: SettingsWindowController?
+    private let onSettingsPresentationChange: (Bool) -> Void
     private var noticeCancellable: AnyCancellable?
     private var launchedAsLoginItem = false
     private var suppressInitialSettings = false
@@ -27,6 +28,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self?.handleBlackoutEscape() ?? false
     }
     private var blackoutFocusTimer: Timer?
+
+    init(onSettingsPresentationChange: @escaping (Bool) -> Void = { _ in }) {
+        self.onSettingsPresentationChange = onSettingsPresentationChange
+        super.init()
+    }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let event = NSAppleEventManager.shared().currentAppleEvent
@@ -87,6 +93,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if settingsWindowController?.window?.isVisible == true {
             settingsWindowController?.window?.makeKeyAndOrderFront(nil)
         }
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
     }
 
     func applicationShouldTerminate(
@@ -273,7 +283,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.statusItem = statusItem
     }
 
-    private func configureMainMenu() {
+    func configureMainMenu() {
         let mainMenu = NSMenu()
         let appMenuItem = NSMenuItem(
             title: "PanelCtl",
@@ -287,6 +297,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appMenu.addItem(item("Quit PanelCtl", action: #selector(quit), key: "q"))
         appMenuItem.submenu = appMenu
         mainMenu.addItem(appMenuItem)
+
+        let fileMenuItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+        let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(NSMenuItem(
+            title: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"
+        ))
+        fileMenuItem.submenu = fileMenu
+        mainMenu.addItem(fileMenuItem)
         NSApp.mainMenu = mainMenu
     }
 
@@ -576,7 +594,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// its display unless the caller asks for something else.
     private func showSettings(tab: SettingsTab? = nil, displayUUID: String? = nil) {
         if settingsWindowController == nil {
-            settingsWindowController = SettingsWindowController(model: model)
+            settingsWindowController = SettingsWindowController(
+                model: model, onPresentationChange: onSettingsPresentationChange
+            )
         }
         model.refreshLaunchAtLoginStatus()
         model.refreshDisplays()

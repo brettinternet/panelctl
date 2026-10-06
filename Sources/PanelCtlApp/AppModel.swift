@@ -1049,6 +1049,19 @@ final class AppModel: ObservableObject {
         return saved == away ? nil : saved
     }
 
+    func canDismissInputWarning(for targetUUID: String) -> Bool {
+        guard !hideOperation.isBusy, displayRecoveryProblem == nil,
+              let result = displayResults[targetUUID.lowercased()] else { return false }
+        return result.succeeded && result.inputNeedsAttention && !result.inputWarningDismissed
+    }
+
+    /// Acknowledge a past input warning, not a repair or a new display operation.
+    func dismissInputWarning(for targetUUID: String) {
+        guard canDismissInputWarning(for: targetUUID) else { return }
+        displayResults[targetUUID.lowercased()]?.inputWarningDismissed = true
+        onStatusChange?()
+    }
+
     /// A failed result describes settings that just changed, so it no longer applies.
     private func clearFailedResult(_ uuid: String) {
         // A switched monitor stays switched whatever the settings, so its undo command stays.

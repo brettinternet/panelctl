@@ -60,8 +60,11 @@ monitor's input button as the fallback.
 macOS still treats the display as attached, so windows, cursor and Spaces stay
 on it while it shows the other computer. Use [away/back](display-handoff.md) to
 also hide the Mac desktop. Switching back from the Mac requires the monitor to
-keep answering DDC on its DisplayPort input while showing HDMI; that varies by
-monitor.
+keep accepting DDC on its DisplayPort input while showing HDMI; that varies by
+monitor and may change when the selected input has no signal or enters standby.
+Standalone `ddc-input --set` requires a current-input read. Journal-backed
+Show/back can attempt the known return input once when that read fails, but
+cannot guarantee a sleeping monitor accepts it; use the monitor's buttons if needed.
 
 ## Hardware results
 

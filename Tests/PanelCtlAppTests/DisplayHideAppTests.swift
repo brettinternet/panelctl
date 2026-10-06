@@ -859,6 +859,35 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertNil(model.notice)
         XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.status, .on)
         XCTAssertEqual(model.controlDisplayOutcome, .partial)
+
+        // A later recovery problem must not be hidden by acknowledging an old input result.
+        box.value = handoffStatus(.recovery, target: displays[1], source: displays[0],
+                                  reason: "Reconnect the captured display.")
+        model.refreshDisplays()
+        XCTAssertFalse(model.canDismissInputWarning(for: Self.targetUUID))
+        model.dismissInputWarning(for: Self.targetUUID)
+        XCTAssertEqual(model.displayResults[Self.targetKey], shownResult)
+        XCTAssertNotNil(model.displayRecoveryProblem)
+
+        box.value = handoffStatus(.none, target: nil, source: nil)
+        model.refreshDisplays()
+        XCTAssertTrue(model.canDismissInputWarning(for: Self.targetUUID))
+        model.dismissInputWarning(for: Self.targetUUID.uppercased())
+        let dismissed = try XCTUnwrap(model.displayResults[Self.targetKey])
+        XCTAssertTrue(dismissed.inputWarningDismissed)
+        XCTAssertFalse(dismissed.needsAttention)
+        XCTAssertNil(dismissed.menuLine)
+        XCTAssertNil(dismissed.undoInputCommand)
+        XCTAssertEqual(dismissed.inputOutcome, shownResult.inputOutcome)
+        XCTAssertEqual(model.controlDisplayOutcome, .partial, "acknowledgement is not successful DDC")
+        XCTAssertEqual(model.controlDisplayStatuses.first { $0.targetUUID.lowercased() == Self.targetKey }?.lastInputOutcome,
+                       shownResult.inputOutcome)
+        model.dismissInputWarning(for: Self.targetUUID)
+        model.refreshDisplays()
+        XCTAssertEqual(model.displayResults[Self.targetKey], dismissed)
+        XCTAssertFalse(model.canDismissInputWarning(for: Self.targetUUID))
+        XCTAssertEqual(awayInputs, [0x11])
+        XCTAssertEqual(returnInputs, [0x0F], "dismissal never invokes a display operation")
     }
 
     func testHideInspectionFailurePreservesReturnedInputOutcome() async throws {
@@ -1013,6 +1042,11 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(result.inputOutcome?.recoveryCommand, command)
         XCTAssertEqual(result.undoInputCommand, command)
         XCTAssertEqual(model.displayTiles.first { $0.id == Self.targetKey }?.status, .needsRecovery)
+        XCTAssertEqual(model.displayRecoveryProblem, "journal retained after DDC failure")
+        let retainedResult = model.displayResults[Self.targetKey]
+        XCTAssertFalse(model.canDismissInputWarning(for: Self.targetUUID))
+        model.dismissInputWarning(for: Self.targetUUID)
+        XCTAssertEqual(model.displayResults[Self.targetKey], retainedResult)
         XCTAssertEqual(model.displayRecoveryProblem, "journal retained after DDC failure")
     }
 
