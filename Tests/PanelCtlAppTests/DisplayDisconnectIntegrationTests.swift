@@ -125,11 +125,19 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         try Fixture(url: directory.appendingPathComponent("\(name).json"))
     }
 
-    private func model(_ f: Fixture, extraDisplays: [DisplayRecord] = [],
-                       cover: @escaping (Set<UInt32>) -> Set<UInt32> = { _ in [] }) -> AppModel {
-        AppModel(defaults: defaults, displayProvider: { f.records + extraDisplays }, idleSecondsProvider: { 0 },
+    private func model(
+        _ f: Fixture,
+        extraDisplays: [DisplayRecord] = [],
+        cover: @escaping (Set<UInt32>) -> Set<UInt32> = { _ in [] },
+        quiesceProtection: ProtectionQuiesce? = nil,
+        protectionCoordinator: ProtectionCoordinator? = nil,
+        handoffStatusProvider: (() -> DisplayHandoffStatus)? = nil,
+        now: @escaping () -> Date = Date.init
+    ) -> AppModel {
+        AppModel(defaults: defaults, displayProvider: { f.records + extraDisplays }, now: now,
+            idleSecondsProvider: { 0 },
             sleepDisplays: { XCTFail("sleep must not run") }, isDisplayMirrored: { _ in false },
-            inspectHandoff: {
+            inspectHandoff: handoffStatusProvider ?? {
                 let status = try? f.controller.inspect()
                 return DisplayHandoffStatus(state: status?.resolved == false ? .unsupported : .none,
                     journalPath: f.store.url.path, journalID: status?.journalID)
@@ -137,21 +145,103 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
             hideDisplay: { _, _, _ in throw RecoveryError.unsafe("no mirror writes") },
             showDisplay: { _, _ in throw RecoveryError.unsafe("no mirror writes") },
             checkDDCInput: { _ in throw RecoveryError.unsafe("no DDC") }, coverDisplays: cover,
+            quiesceProtection: quiesceProtection, protectionCoordinator: protectionCoordinator,
             disconnectController: f.controller, disconnectExecutable: { URL(fileURLWithPath: "/unused") })
     }
 
-    func testBlackOutRefusesDuringDisconnectLease() throws {
+    private struct WaitTimeout: Error {}
+
+    private func waitUntil(
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ condition: () -> Bool
+    ) async throws {
+        for _ in 0..<500 {
+            if condition() { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTFail("Timed out waiting for asynchronous disconnect state", file: file, line: line)
+        throw WaitTimeout()
+    }
+
+    private func protectionRule(_ name: String, uuid: String, idleSeconds: TimeInterval = 120) -> ProtectionRule {
+        var settings = ProtectionPreferences()
+        settings.selectedDisplayUUIDs = [uuid]
+        settings.didChooseDisplays = true
+        settings.idleSeconds = idleSeconds
+        settings.followUpAction = .restore
+        return ProtectionRule(name: name, isEnabled: true, settings: settings)
+    }
+
+    private func saveAutomationPreferences(_ preferences: AutomationPreferences) throws {
+        defaults.set(try JSONEncoder().encode(preferences), forKey: "automationRules")
+    }
+
+    private func automationCoordinator(
+        directory: URL,
+        cleanupIsVerified: @escaping () -> Bool = { true }
+    ) -> ProtectionCoordinator {
+        ProtectionCoordinator(
+            verifyJournal: { _ in true },
+            ruleJournalDirectory: directory,
+            removeDeletedDirectories: false,
+            serviceFactory: { ruleID in
+                ProtectionService(
+                    cleanupRuleID: ruleID,
+                    cleanupIsVerified: cleanupIsVerified,
+                    displaysAreAsleep: { false }
+                )
+            }
+        )
+    }
+
+    private func writeAutomationHelper(ignoreTermination: Bool = false) throws -> URL {
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let script = """
+        #!/bin/sh
+        if [ "${PANELCTL_CLEANUP_ONLY:-}" = "1" ]; then
+          printf 'cleanup\\n' >> "$PANELCTL_TEST_LOG"
+          printf '{"state":"stopped","blackedOutDisplayIDs":[],"cleanupSucceeded":true}\\n'
+          exit 0
+        fi
+        printf 'watch %s\\n' "$*" >> "$PANELCTL_TEST_LOG"
+        printf 'rearm %s\\n' "${PANELCTL_REARM_ON_START:-0}" >> "$PANELCTL_TEST_LOG"
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
+        if [ "\(ignoreTermination ? "1" : "0")" = "1" ] && [ "${PANELCTL_IGNORE_TERM:-}" = "1" ]; then
+          trap '' TERM
+          while :; do /bin/sleep 0.05; done
+        fi
+        while IFS= read -r command; do
+          if [ "$command" = "restore" ]; then
+            printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
+          fi
+        done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+        return helper
+    }
+
+    private func launchLines(at log: URL) -> [String] {
+        (try? String(contentsOf: log, encoding: .utf8))?
+            .split(whereSeparator: \.isNewline).map(String.init) ?? []
+    }
+
+    func testBlackOutRefusesDuringDisconnectLease() async throws {
         let f = try fixture()
         let third = DisplayRecord(index: 3, id: 3, uuid: "00000000-0000-0000-0000-000000000003", name: "Synthetic third",
             active: true, online: true, asleep: false, builtin: false, main: false, vendor: 3, model: 3, serial: 3,
             bounds: DisplayBounds(CGRect(x: 3840, y: 0, width: 1920, height: 1080)), pixelWidth: 1920, pixelHeight: 1080)
         var covers: [Set<UInt32>] = []
-        let app = model(f, extraDisplays: [third]) { ids in covers.append(ids); return [] }
-        app.prepareDisconnect(f.uuid); app.confirmDisconnect()
+        let app = model(f, extraDisplays: [third], cover: { ids in covers.append(ids); return [] })
+        app.prepareDisconnect(f.uuid)
+        try await waitUntil { app.disconnectConsentPending }
+        app.confirmDisconnect()
         XCTAssertEqual(f.arms, 1)
         app.refreshDisplays()
         let survivor = try XCTUnwrap(app.displays.first { $0.main })
-        XCTAssertEqual(app.blackoutReadiness(for: survivor)?.localizedDescription, "Finish the current disconnect first.")
+        XCTAssertEqual(app.blackoutReadiness(for: survivor)?.localizedDescription,
+                       "Full disconnect is pausing automation or awaiting verified recovery.")
         var result: DisplayOperationResult?
         app.hide(targetUUID: try XCTUnwrap(survivor.uuid)) { result = $0 }
         XCTAssertEqual(result?.succeeded, false)
@@ -159,9 +249,10 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         try f.finish?()
     }
 
-    func testConsentCancelExpiryReplayAndQualificationRefusals() throws {
+    func testConsentCancelExpiryReplayAndQualificationRefusals() async throws {
         let f = try fixture(), app = model(f)
         app.prepareDisconnect(f.uuid)
+        try await waitUntil { app.disconnectConsentPending }
         let request = try XCTUnwrap(app.disconnectRequest)
         XCTAssertEqual(request.timeout, 15)
         let consent = ExperimentalDisconnectControls.consentMessage(request)
@@ -172,13 +263,19 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         XCTAssertLessThanOrEqual(consent.split(whereSeparator: { $0.isWhitespace }).count, 55)
         app.cancelDisconnect(); app.confirmDisconnect()
         XCTAssertEqual(f.arms, 0)
-        app.prepareDisconnect(f.uuid); f.clock += 31; app.confirmDisconnect()
+        try await waitUntil { app.disconnectBlocker == nil }
+        app.prepareDisconnect(f.uuid)
+        try await waitUntil { app.disconnectConsentPending }
+        f.clock += 31
+        app.confirmDisconnect()
         XCTAssertTrue(app.disconnectFailure?.contains("expired") == true)
         XCTAssertEqual(f.arms, 0)
         XCTAssertThrowsError(try f.controller.disconnect(request, consent: false, executable: URL(fileURLWithPath: "/unused")))
         XCTAssertThrowsError(try f.controller.disconnect(request, consent: true, executable: URL(fileURLWithPath: "/unused")))
         XCTAssertEqual(f.arms, 0)
+        try await waitUntil { app.disconnectBlocker == nil }
         app.prepareDisconnect("00000000-0000-0000-0000-000000000001")
+        try await waitUntil { !app.disconnectPreparationPending }
         XCTAssertNil(app.disconnectRequest)
         XCTAssertTrue(app.disconnectFailure?.contains("non-main external") == true)
         XCTAssertEqual(f.writes, [])
@@ -208,7 +305,7 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         XCTAssertEqual(f.writes, [])
     }
 
-    func testEveryDisplayExposesExperimentalControlsWithoutGrantingConsent() throws {
+    func testEveryDisplayExposesExperimentalControlsWithoutGrantingConsent() async throws {
         let f = try fixture(), app = model(f)
         for display in app.displays {
             XCTAssertTrue(ExperimentalDisconnectControls.isVisible(model: app, targetUUID: display.uuid))
@@ -218,15 +315,378 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         XCTAssertFalse(ExperimentalDisconnectControls.isVisible(model: app, targetUUID: f.uuid))
         XCTAssertEqual(f.arms, 0)
         app.acceptExperimentalConsent()
-        app.prepareDisconnect(f.uuid); app.confirmDisconnect()
+        app.prepareDisconnect(f.uuid)
+        try await waitUntil { app.disconnectConsentPending }
+        app.confirmDisconnect()
         app.setExperimentalFeaturesEnabled(false)
         XCTAssertTrue(ExperimentalDisconnectControls.isVisible(model: app, targetUUID: nil))
         try f.finish?()
     }
 
-    func testAppToCoreFakeLeaseWatchdogAndReadOnlyRelaunch() throws {
+    func testPreparationSupersedesPendingCoordinatorRestartCallback() async throws {
+        let f = try fixture("pending-reconcile")
+        let helper = try writeAutomationHelper(ignoreTermination: true)
+        let log = directory.appendingPathComponent("pending-reconcile.log")
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        setenv("PANELCTL_IGNORE_TERM", "1", 1)
+        defer {
+            unsetenv("PANELCTL_HELPER")
+            unsetenv("PANELCTL_TEST_LOG")
+            unsetenv("PANELCTL_IGNORE_TERM")
+        }
+        try saveAutomationPreferences(AutomationPreferences(isEnabled: true, rules: [
+            protectionRule("Rule", uuid: f.uuid)
+        ]))
+        let coordinator = automationCoordinator(
+            directory: directory.appendingPathComponent("pending-reconcile-journals", isDirectory: true)
+        )
+        let app = model(f, protectionCoordinator: coordinator)
+        try await waitUntil { launchLines(at: log).filter { $0.hasPrefix("watch") }.count == 1 }
+
+        app.refreshDisplays(restartWatcher: true)
+        try await waitUntil {
+            if case .stopping = app.runtimeState { return true }
+            return false
+        }
+        app.prepareDisconnect(f.uuid)
+        XCTAssertTrue(app.disconnectPreparationPending)
+        try await waitUntil { app.disconnectConsentPending }
+        XCTAssertEqual(launchLines(at: log).filter { $0.hasPrefix("watch") }.count, 1,
+                       "the stale restart callback cannot launch treatment during consent")
+        unsetenv("PANELCTL_IGNORE_TERM")
+
+        app.cancelDisconnect()
+        try await waitUntil { launchLines(at: log).filter { $0.hasPrefix("watch") }.count == 2 }
+        XCTAssertEqual(Array(launchLines(at: log).filter { $0.hasPrefix("rearm") }.suffix(1)), ["rearm 1"],
+                       "the safe cancellation launches the helper with the fresh-countdown flag")
+        await withCheckedContinuation { continuation in app.shutdown { continuation.resume() } }
+    }
+
+    func testAutomationPauseStopsEveryRuleAndCancellationRestartsWithFreshSettings() async throws {
+        let f = try fixture("multiple-rules")
+        let helper = try writeAutomationHelper()
+        let log = directory.appendingPathComponent("multiple-rules.log")
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        defer { unsetenv("PANELCTL_HELPER"); unsetenv("PANELCTL_TEST_LOG") }
+        let original = AutomationPreferences(isEnabled: true, rules: [
+            protectionRule("External", uuid: f.uuid),
+            protectionRule("Survivor", uuid: f.baseline.displays[0].uuid)
+        ])
+        try saveAutomationPreferences(original)
+        let coordinator = automationCoordinator(directory: directory.appendingPathComponent("rule-journals", isDirectory: true))
+        let app = model(f, protectionCoordinator: coordinator)
+        try await waitUntil { launchLines(at: log).filter { $0.hasPrefix("watch") }.count == 2 }
+
+        app.prepareDisconnect(f.uuid)
+        XCTAssertTrue(app.disconnectPreparationPending)
+        try await waitUntil { app.disconnectConsentPending }
+        XCTAssertEqual(app.automationPreferences, original)
+        XCTAssertEqual(f.arms, 0, "cleanup and consent do not arm a disconnect")
+        XCTAssertEqual(launchLines(at: log).filter { $0.hasPrefix("watch") }.count, 2)
+        XCTAssertTrue(app.statusSummary.contains("Automation paused"))
+        XCTAssertThrowsError(try app.blackoutNow(), "manual blackout cannot bypass the disconnect pause")
+
+        app.refreshDisplays(restartWatcher: true)
+        var edited = app.automationPreferences
+        edited.rules[0].settings.idleSeconds = 900
+        app.automationPreferences = edited
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(launchLines(at: log).filter { $0.hasPrefix("watch") }.count, 2,
+                       "queued refreshes and preference edits cannot restart paused rules")
+
+        app.cancelDisconnect()
+        try await waitUntil { launchLines(at: log).filter { $0.hasPrefix("watch") }.count == 4 }
+        XCTAssertTrue(app.automationPreferences.isEnabled)
+        XCTAssertEqual(app.automationPreferences.rules[0].settings.idleSeconds, 900)
+        let loggedLines = launchLines(at: log)
+        let resumedLaunches = Array(loggedLines.filter { $0.hasPrefix("watch") }.suffix(2))
+        XCTAssertEqual(resumedLaunches.count, 2)
+        XCTAssertTrue(resumedLaunches.contains { $0.contains("--idle-after 900") },
+                      "the edited rule resumes from its current settings: \(resumedLaunches)")
+        XCTAssertTrue(resumedLaunches.contains { $0.contains("--idle-after 120") },
+                      "the untouched rule also resumes with its saved settings: \(resumedLaunches)")
+        XCTAssertEqual(Array(loggedLines.filter { $0.hasPrefix("rearm") }.suffix(2)), ["rearm 1", "rearm 1"],
+                       "fresh countdown resumes must reach helpers via PANELCTL_REARM_ON_START")
+        XCTAssertEqual(f.arms, 0)
+        await withCheckedContinuation { continuation in app.shutdown { continuation.resume() } }
+    }
+
+    func testTemporaryPausePreservesOffStateAndSnoozeExpiry() async throws {
+        let helper = try writeAutomationHelper()
+        let log = directory.appendingPathComponent("snooze.log")
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        defer { unsetenv("PANELCTL_HELPER"); unsetenv("PANELCTL_TEST_LOG") }
+
+        let disabledFixture = try fixture("automation-off")
+        try saveAutomationPreferences(AutomationPreferences(isEnabled: false, rules: [
+            protectionRule("Off rule", uuid: disabledFixture.uuid)
+        ]))
+        let disabledApp = model(disabledFixture)
+        disabledApp.prepareDisconnect(disabledFixture.uuid)
+        try await waitUntil { disabledApp.disconnectConsentPending }
+        XCTAssertFalse(disabledApp.automationPreferences.isEnabled)
+        disabledApp.cancelDisconnect()
+        try await waitUntil { disabledApp.disconnectBlocker == nil }
+        XCTAssertFalse(disabledApp.automationPreferences.isEnabled, "cancellation never enables a master switch the user left off")
+        await withCheckedContinuation { continuation in disabledApp.shutdown { continuation.resume() } }
+
+        let baseTime = Date(timeIntervalSince1970: 2_000_000_000)
+        let futureSnoozeFixture = try fixture("future-snooze")
+        let futureDeadline = baseTime.addingTimeInterval(3600)
+        let futureClock = baseTime
+        try saveAutomationPreferences(AutomationPreferences(isEnabled: true, rules: [
+            protectionRule("Future-snoozed rule", uuid: futureSnoozeFixture.uuid)
+        ]))
+        defaults.set(futureDeadline, forKey: "snoozedUntil")
+        let futureSnoozeApp = model(
+            futureSnoozeFixture,
+            protectionCoordinator: automationCoordinator(
+                directory: directory.appendingPathComponent("future-snooze-journals", isDirectory: true)
+            ),
+            now: { futureClock }
+        )
+        futureSnoozeApp.prepareDisconnect(futureSnoozeFixture.uuid)
+        try await waitUntil { futureSnoozeApp.disconnectConsentPending }
+        futureSnoozeApp.cancelDisconnect()
+        try await waitUntil { futureSnoozeApp.disconnectBlocker == nil }
+        XCTAssertEqual(futureSnoozeApp.snoozedUntil, futureDeadline)
+        XCTAssertEqual(defaults.object(forKey: "snoozedUntil") as? Date, futureDeadline)
+        XCTAssertTrue(launchLines(at: log).isEmpty, "cancellation preserves a still-active snooze")
+        await withCheckedContinuation { continuation in futureSnoozeApp.shutdown { continuation.resume() } }
+
+        let snoozedFixture = try fixture("automation-snoozed")
+        var currentTime = baseTime
+        let deadline = baseTime.addingTimeInterval(30)
+        try saveAutomationPreferences(AutomationPreferences(isEnabled: true, rules: [
+            protectionRule("Snoozed rule", uuid: snoozedFixture.uuid)
+        ]))
+        defaults.set(deadline, forKey: "snoozedUntil")
+        let coordinator = automationCoordinator(directory: directory.appendingPathComponent("snoozed-journals", isDirectory: true))
+        let snoozedApp = model(snoozedFixture, protectionCoordinator: coordinator, now: { currentTime })
+        snoozedApp.prepareDisconnect(snoozedFixture.uuid)
+        try await waitUntil { snoozedApp.disconnectConsentPending }
+        XCTAssertEqual(defaults.object(forKey: "snoozedUntil") as? Date, deadline)
+        currentTime = deadline.addingTimeInterval(1)
+        snoozedApp.refreshCountdown()
+        XCTAssertNil(snoozedApp.snoozedUntil)
+        XCTAssertEqual(defaults.object(forKey: "snoozedUntil") as? Date, deadline,
+                       "timer expiry is retained during the disconnect pause")
+        XCTAssertTrue(launchLines(at: log).isEmpty, "snooze expiry cannot restart automation before cancellation")
+        snoozedApp.cancelDisconnect()
+        try await waitUntil { launchLines(at: log).contains { $0.hasPrefix("watch") } }
+        XCTAssertNil(defaults.object(forKey: "snoozedUntil"), "the expired snooze clears only as the safe pause ends")
+        XCTAssertTrue(snoozedApp.automationPreferences.isEnabled)
+        await withCheckedContinuation { continuation in snoozedApp.shutdown { continuation.resume() } }
+    }
+
+    func testUserTurningAutomationOffDuringPauseStaysOffAfterCancellation() async throws {
+        let f = try fixture("user-turns-automation-off")
+        let helper = try writeAutomationHelper()
+        let log = directory.appendingPathComponent("user-turns-automation-off.log")
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        defer { unsetenv("PANELCTL_HELPER"); unsetenv("PANELCTL_TEST_LOG") }
+        try saveAutomationPreferences(AutomationPreferences(isEnabled: true, rules: [
+            protectionRule("Rule", uuid: f.uuid)
+        ]))
+        let app = model(f, protectionCoordinator: automationCoordinator(
+            directory: directory.appendingPathComponent("user-off-journals", isDirectory: true)
+        ))
+        try await waitUntil { launchLines(at: log).filter { $0.hasPrefix("watch") }.count == 1 }
+        app.prepareDisconnect(f.uuid)
+        try await waitUntil { app.disconnectConsentPending }
+        app.setProtectionEnabled(false)
+        app.cancelDisconnect()
+        try await waitUntil { app.disconnectBlocker == nil }
+        XCTAssertFalse(app.automationPreferences.isEnabled)
+        XCTAssertEqual(launchLines(at: log).filter { $0.hasPrefix("watch") }.count, 1,
+                       "cancellation respects the user's deliberate master-switch change")
+        await withCheckedContinuation { continuation in app.shutdown { continuation.resume() } }
+    }
+
+    func testQueuedCleanupCancellationNeverPresentsConsentOrWrites() async throws {
+        let f = try fixture("queued-cancel")
+        try saveAutomationPreferences(AutomationPreferences(isEnabled: false, rules: [
+            protectionRule("Off rule", uuid: f.uuid)
+        ]))
+        var pendingCleanup: ((Bool, String?) -> Void)?
+        let app = model(f, quiesceProtection: { pendingCleanup = $0 })
+        app.prepareDisconnect(f.uuid)
+        XCTAssertTrue(app.disconnectPreparationPending)
+        app.cancelDisconnect()
+        pendingCleanup?(true, nil)
+        try await waitUntil { !app.disconnectPreparationPending && app.disconnectBlocker == nil }
+        XCTAssertFalse(app.disconnectConsentPending)
+        XCTAssertNil(app.disconnectRequest)
+        XCTAssertEqual(f.arms, 0)
+        XCTAssertEqual(f.writes, [])
+        XCTAssertFalse(app.automationPreferences.isEnabled)
+    }
+
+    func testFailedAutomationCleanupBlocksConsentUntilExplicitRetry() async throws {
+        let f = try fixture("cleanup-failure")
+        let helper = try writeAutomationHelper()
+        let log = directory.appendingPathComponent("cleanup-failure.log")
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        defer { unsetenv("PANELCTL_HELPER"); unsetenv("PANELCTL_TEST_LOG") }
+        try saveAutomationPreferences(AutomationPreferences(isEnabled: true, rules: [
+            protectionRule("External", uuid: f.uuid),
+            protectionRule("Survivor", uuid: f.baseline.displays[0].uuid)
+        ]))
+        var cleanupVerified = true
+        let coordinator = automationCoordinator(
+            directory: directory.appendingPathComponent("cleanup-journals", isDirectory: true),
+            cleanupIsVerified: { cleanupVerified }
+        )
+        let app = model(f, protectionCoordinator: coordinator)
+        try await waitUntil { launchLines(at: log).filter { $0.hasPrefix("watch") }.count == 2 }
+        cleanupVerified = false
+        app.prepareDisconnect(f.uuid)
+        try await waitUntil { !app.disconnectPreparationPending && app.protectionQuiescenceFailure != nil }
+        XCTAssertNil(app.disconnectRequest)
+        XCTAssertFalse(app.disconnectConsentPending)
+        XCTAssertEqual(f.arms, 0)
+        XCTAssertEqual(f.writes, [])
+        XCTAssertTrue(app.disconnectBlocker?.contains("Retry Automation Cleanup") == true)
+
+        cleanupVerified = true
+        app.retryAutomationCleanup()
+        try await waitUntil {
+            app.protectionQuiescenceFailure == nil &&
+                launchLines(at: log).filter { $0.hasPrefix("watch") }.count == 4
+        }
+        XCTAssertFalse(app.disconnectConsentPending, "retry cleans up but never continues the refused operation")
+        XCTAssertEqual(f.arms, 0)
+        XCTAssertEqual(f.writes, [])
+        await withCheckedContinuation { continuation in app.shutdown { continuation.resume() } }
+    }
+
+    func testUnreadableDisconnectJournalFailsClosedAcrossRelaunch() async throws {
+        let f = try fixture("unreadable")
+        let corrupt = Data("not a recovery journal".utf8)
+        try corrupt.write(to: f.store.url)
+        try saveAutomationPreferences(AutomationPreferences(isEnabled: true, rules: [
+            protectionRule("Enabled rule", uuid: f.uuid)
+        ]))
+        let ruleJournalDirectory = directory.appendingPathComponent("unreadable-rule-journals", isDirectory: true)
+        let app = model(f, protectionCoordinator: automationCoordinator(directory: ruleJournalDirectory))
+        XCTAssertNotNil(app.disconnectInspectionFailure)
+        XCTAssertTrue(defaults.bool(forKey: "disconnectRecoveryBlocked"))
+        XCTAssertTrue(app.automationPreferences.isEnabled)
+        XCTAssertTrue(app.disconnectBlocker?.contains("panelctl recovery status") == true)
+        XCTAssertTrue(ExperimentalDisconnectControls.isVisible(model: app, targetUUID: nil))
+        app.setExperimentalFeaturesEnabled(false)
+        XCTAssertTrue(ExperimentalDisconnectControls.isVisible(model: app, targetUUID: nil),
+                      "unreadable recovery remains visible with Experimental features off")
+        app.refreshCountdown()
+        XCTAssertNotNil(app.disconnectInspectionFailure)
+        XCTAssertEqual(try Data(contentsOf: f.store.url), corrupt)
+        XCTAssertEqual(f.arms, 0)
+        XCTAssertEqual(f.writes, [])
+
+        let relaunched = model(f, protectionCoordinator: automationCoordinator(directory: ruleJournalDirectory))
+        XCTAssertNotNil(relaunched.disconnectInspectionFailure)
+        XCTAssertNotNil(relaunched.disconnectBlocker)
+        XCTAssertTrue(relaunched.automationPreferences.isEnabled)
+        XCTAssertEqual(try Data(contentsOf: f.store.url), corrupt)
+        XCTAssertEqual(f.arms, 0, "relaunch never starts automation or private recovery against unreadable evidence")
+        XCTAssertEqual(f.writes, [])
+        await withCheckedContinuation { continuation in app.shutdown { continuation.resume() } }
+        await withCheckedContinuation { continuation in relaunched.shutdown { continuation.resume() } }
+    }
+
+    func testVerifiedRecoveryResumesAutomationButFailedRecoveryStaysPausedAcrossRelaunch() async throws {
+        let helper = try writeAutomationHelper()
+        let successfulFixture = try fixture("verified-resume")
+        let successLog = directory.appendingPathComponent("verified-resume.log")
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", successLog.path, 1)
+        defer { unsetenv("PANELCTL_HELPER"); unsetenv("PANELCTL_TEST_LOG") }
+        try saveAutomationPreferences(AutomationPreferences(isEnabled: true, rules: [
+            protectionRule("Survivor rule", uuid: successfulFixture.baseline.displays[0].uuid)
+        ]))
+        let successCoordinator = automationCoordinator(
+            directory: directory.appendingPathComponent("verified-resume-journals", isDirectory: true)
+        )
+        var handoffBusy = false
+        var handoffReadCount = 0
+        let successfulApp = model(
+            successfulFixture,
+            protectionCoordinator: successCoordinator,
+            handoffStatusProvider: {
+                handoffReadCount += 1
+                return handoffBusy
+                    ? DisplayHandoffStatus(state: .busy, journalPath: "/synthetic/handoff.json",
+                                           reason: "synthetic journal lock busy", inspectionFailure: "synthetic journal lock busy")
+                    : DisplayHandoffStatus(state: .none, journalPath: "/synthetic/handoff.json")
+            }
+        )
+        try await waitUntil { launchLines(at: successLog).filter { $0.hasPrefix("watch") }.count == 1 }
+        successfulApp.prepareDisconnect(successfulFixture.uuid)
+        try await waitUntil { successfulApp.disconnectConsentPending }
+        successfulApp.confirmDisconnect()
+        XCTAssertEqual(launchLines(at: successLog).filter { $0.hasPrefix("watch") }.count, 1,
+                       "disconnect lease holds the rule stopped")
+        handoffBusy = true
+        try successfulFixture.finish?()
+        successfulApp.refreshCountdown()
+        try await waitUntil { successfulApp.handoffInspectionFailure != nil && !successfulApp.protectionQuiescencePending }
+        XCTAssertEqual(successfulApp.disconnectStatus?.resolved, true)
+        XCTAssertEqual(launchLines(at: successLog).filter { $0.hasPrefix("watch") }.count, 1,
+                       "a transient handoff lock keeps the resumed helper stopped")
+        handoffBusy = false
+        let priorHandoffReads = handoffReadCount
+        successfulApp.refreshCountdown()
+        try await waitUntil { launchLines(at: successLog).filter { $0.hasPrefix("watch") }.count == 2 }
+        XCTAssertGreaterThan(handoffReadCount, priorHandoffReads,
+                             "an unchanged resolved disconnect journal still retries handoff inspection")
+        XCTAssertNil(successfulApp.handoffInspectionFailure)
+        XCTAssertEqual(Array(launchLines(at: successLog).filter { $0.hasPrefix("rearm") }.suffix(1)), ["rearm 1"],
+                       "verified recovery sends the fresh-countdown rearm flag to the helper")
+        XCTAssertTrue(successfulApp.disconnectStatus?.resolved == true)
+        XCTAssertTrue(successfulApp.automationPreferences.isEnabled)
+        await withCheckedContinuation { continuation in successfulApp.shutdown { continuation.resume() } }
+
+        let failedFixture = try fixture("failed-resume")
+        let failureLog = directory.appendingPathComponent("failed-resume.log")
+        setenv("PANELCTL_TEST_LOG", failureLog.path, 1)
+        try saveAutomationPreferences(AutomationPreferences(isEnabled: true, rules: [
+            protectionRule("Survivor rule", uuid: failedFixture.baseline.displays[0].uuid)
+        ]))
+        let failureJournalDirectory = directory.appendingPathComponent("failed-resume-journals", isDirectory: true)
+        let failedCoordinator = automationCoordinator(directory: failureJournalDirectory)
+        let failedApp = model(failedFixture, protectionCoordinator: failedCoordinator)
+        try await waitUntil { launchLines(at: failureLog).filter { $0.hasPrefix("watch") }.count == 1 }
+        failedApp.prepareDisconnect(failedFixture.uuid)
+        try await waitUntil { failedApp.disconnectConsentPending }
+        failedApp.confirmDisconnect()
+        failedFixture.fault = "reconnect"
+        failedApp.reconnectDisconnect()
+        XCTAssertEqual(failedApp.disconnectStatus?.state, "needsAttention")
+        XCTAssertTrue(defaults.bool(forKey: "disconnectRecoveryBlocked"))
+        XCTAssertTrue(failedApp.statusSummary.contains("waiting for verified disconnect recovery"))
+        XCTAssertEqual(launchLines(at: failureLog).filter { $0.hasPrefix("watch") }.count, 1,
+                       "failed recovery must not rearm the existing helper")
+
+        let relaunched = model(failedFixture, protectionCoordinator: automationCoordinator(directory: failureJournalDirectory))
+        XCTAssertEqual(relaunched.disconnectStatus?.state, "needsAttention")
+        XCTAssertNotNil(relaunched.disconnectBlocker)
+        XCTAssertTrue(relaunched.automationPreferences.isEnabled)
+        XCTAssertEqual(launchLines(at: failureLog).filter { $0.hasPrefix("watch") }.count, 1,
+                       "relaunch keeps automation paused instead of replaying the disconnect")
+        await withCheckedContinuation { continuation in failedApp.shutdown { continuation.resume() } }
+        await withCheckedContinuation { continuation in relaunched.shutdown { continuation.resume() } }
+    }
+
+    func testAppToCoreFakeLeaseWatchdogAndReadOnlyRelaunch() async throws {
         let f = try fixture(), app = model(f)
-        app.prepareDisconnect(f.uuid); app.confirmDisconnect()
+        app.prepareDisconnect(f.uuid)
+        try await waitUntil { app.disconnectConsentPending }
+        app.confirmDisconnect()
         XCTAssertEqual(f.writes, [false]); XCTAssertEqual(f.arms, 1)
         let status = try XCTUnwrap(app.disconnectStatus)
         XCTAssertEqual(status.state, "disabled"); XCTAssertEqual(status.target?.displayID, 2)
@@ -245,11 +705,13 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         XCTAssertEqual(f.writes, [false, true], "expiry never renews disconnect")
     }
 
-    func testRefusalHelperFailureAndFailedReconnectPreserveEvidence() throws {
+    func testRefusalHelperFailureAndFailedReconnectPreserveEvidence() async throws {
         for fault in ["identity", "survivor", "helper", "reconnect"] {
             let f = try fixture(fault), app = model(f)
             f.fault = fault
-            app.prepareDisconnect(f.uuid); app.confirmDisconnect()
+            app.prepareDisconnect(f.uuid)
+            try await waitUntil { !app.disconnectPreparationPending }
+            if app.disconnectRequest != nil { app.confirmDisconnect() }
             if fault == "reconnect" {
                 XCTAssertEqual(f.writes, [false])
                 app.reconnectDisconnect()
@@ -283,15 +745,18 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         }
     }
 
-    func testConfirmationRevalidatesIdentityAndUnresolvedJournalWithoutWrites() throws {
+    func testConfirmationRevalidatesIdentityAndUnresolvedJournalWithoutWrites() async throws {
         let f = try fixture(), app = model(f)
         app.prepareDisconnect(f.uuid)
+        try await waitUntil { app.disconnectConsentPending }
         f.fault = "identity"
         app.confirmDisconnect()
         XCTAssertEqual(f.arms, 0)
         XCTAssertNotNil(app.disconnectFailure)
         f.fault = ""
+        try await waitUntil { app.disconnectBlocker == nil }
         app.prepareDisconnect(f.uuid)
+        try await waitUntil { app.disconnectConsentPending }
         try f.store.lock()
         try f.store.create(RecoveryJournal(snapshot: f.baseline))
         f.store.unlock()
@@ -348,9 +813,11 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         }
     }
 
-    func testReconnectIgnoresExperimentalGateButRejectsChangedConsentJournal() throws {
+    func testReconnectIgnoresExperimentalGateButRejectsChangedConsentJournal() async throws {
         let f = try fixture(), app = model(f)
-        app.prepareDisconnect(f.uuid); app.confirmDisconnect()
+        app.prepareDisconnect(f.uuid)
+        try await waitUntil { app.disconnectConsentPending }
+        app.confirmDisconnect()
         app.setExperimentalFeaturesEnabled(false)
         let journalID = try XCTUnwrap(app.disconnectStatus?.journalID)
         app.reconnectDisconnect(expectedJournalID: UUID().uuidString)
@@ -396,12 +863,12 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         XCTAssertEqual(writerConstructions, 0)
     }
 
-    func testNativeProductionControlsWithFakeStatusRender() throws {
+    func testNativeProductionControlsWithFakeStatusRender() async throws {
         _ = NSApplication.shared
         let f = try fixture(), app = model(f)
-        func render(_ name: String, targetUUID: String?) throws {
+        func render(_ name: String, targetUUID: String?, model renderingModel: AppModel) throws {
             let host = NSHostingView(rootView: Form {
-                ExperimentalDisconnectControls(model: app, targetUUID: targetUUID)
+                ExperimentalDisconnectControls(model: renderingModel, targetUUID: targetUUID)
             }.formStyle(.grouped))
             host.sizingOptions = []
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 700),
@@ -418,12 +885,34 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
                     .write(to: URL(fileURLWithPath: output).appendingPathComponent("\(name).png"))
             }
         }
-        try render("generic-monitor-ready", targetUUID: f.uuid)
-        try render("main-display-refused", targetUUID: f.baseline.displays[0].uuid)
+        try render("generic-monitor-ready", targetUUID: f.uuid, model: app)
+        try render("main-display-refused", targetUUID: f.baseline.displays[0].uuid, model: app)
         XCTAssertEqual(f.writes, [])
-        app.prepareDisconnect(f.uuid); app.confirmDisconnect()
+        app.prepareDisconnect(f.uuid)
+        try render("automation-pausing", targetUUID: f.uuid, model: app)
+        try await waitUntil { app.disconnectConsentPending }
+        try render("automation-consent-paused", targetUUID: f.uuid, model: app)
+        app.confirmDisconnect()
         app.refreshDisplays()
-        try render("integrated-lease", targetUUID: nil)
+        try render("integrated-lease", targetUUID: nil, model: app)
         try f.finish?()
+        app.refreshCountdown()
+        XCTAssertEqual(app.disconnectStatus?.resolved, true)
+
+        let unreadableFixture = try fixture("unreadable-ui")
+        try Data("bad journal".utf8).write(to: unreadableFixture.store.url)
+        let unreadableApp = model(unreadableFixture)
+        try render("unreadable-recovery-paused", targetUUID: nil, model: unreadableApp)
+        await withCheckedContinuation { continuation in unreadableApp.shutdown { continuation.resume() } }
+
+        defaults.set(false, forKey: "disconnectRecoveryBlocked")
+        let cleanupFixture = try fixture("cleanup-ui")
+        var cleanupCompletion: ((Bool, String?) -> Void)?
+        let cleanupApp = model(cleanupFixture, quiesceProtection: { cleanupCompletion = $0 })
+        cleanupApp.prepareDisconnect(cleanupFixture.uuid)
+        cleanupCompletion?(false, "Synthetic saved-brightness cleanup failure")
+        try await waitUntil { !cleanupApp.disconnectPreparationPending && cleanupApp.protectionQuiescenceFailure != nil }
+        try render("automation-cleanup-blocked", targetUUID: cleanupFixture.uuid, model: cleanupApp)
+        await withCheckedContinuation { continuation in cleanupApp.shutdown { continuation.resume() } }
     }
 }

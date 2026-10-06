@@ -908,6 +908,7 @@ extension ProtectionRuntimeState {
         switch self {
         case .disabled: return "disabled"
         case .snoozed: return "snoozed"
+        case .disconnectPaused: return "disconnect_paused"
         case .starting: return "starting"
         case .waiting: return "waiting"
         case .waitingForInput: return "waiting_for_input"

@@ -70,6 +70,8 @@ public struct DisplayDisconnectController {
         self.init(store: RecoveryStore())
     }
 
+    public var journalPath: String { store.url.path }
+
     init(store: RecoveryStore,
          capture: @escaping () throws -> RecoverySnapshot = { try .capture() },
          preflight: @escaping (RecoverySnapshot, UInt32) throws -> Void = RecoveryCLI().preflight,

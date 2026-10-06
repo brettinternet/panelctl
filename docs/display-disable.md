@@ -73,11 +73,17 @@ panelctl recovery panic
 operation, not a Hide style or a fallback from Hide. With Experimental features
 on, the section appears for every selected display (and whenever a
 disconnect journal exists). Main and built-in displays show a refusal rather
-than being hidden. Turn off automation, show blacked-out/hidden
-displays, and finish any unresolved recovery first (the row names the current
-blocker and offers **Turn Off Automation** when that is it), then choose
-**Disconnect…**. Its eligibility check is read-only: it never starts a display
-transaction.
+than being hidden. Show blacked-out/hidden displays and finish any unresolved
+recovery first, then choose **Disconnect…**. PanelCtl temporarily pauses
+automation without changing the master switch, rule settings or snooze deadline.
+It stops every managed helper and verifies cover and saved-brightness cleanup
+before showing one-use consent; pending or failed cleanup blocks the operation
+with an actionable reason. Automation stays paused through preparation, consent,
+the lease and unresolved recovery. Cancel or a pre-write refusal resumes
+eligible rules with a fresh countdown. After a performed disconnect, automation
+resumes only when the journal verifies recovery. It stays off if the master
+switch is off, and an existing snooze remains in effect. Eligibility checks are
+read-only: they never start a display transaction.
 
 Availability is based on runtime safety checks, not certification of a monitor.
 There is no exact monitor UUID, vendor/model/serial, connector or Mac-model
@@ -101,15 +107,17 @@ transaction, journal and bounded recovery engine as the CLI. No automatic DDC
 input return, lease extension or repeated disconnect is offered.
 
 The app inspects the shared `Recovery/current.json` on launch and during the
-lease, without invoking recovery writes. Status and **Reconnect…**
-remain available after restart, when the target is absent, and with
-Experimental features off. Reconnect closes an owned lease to request early
-helper recovery, or explicitly runs guarded journal recovery after relaunch.
-An active helper may report busy; wait and inspect again. Expiry is not proof
-of recovery. `needsAttention`, helper failure and unreadable journals remain
-visible; no evidence is deleted and no ID is guessed. A helper preparation
-failure without staged target evidence may require `recovery status` followed
-by read-only `recovery verify`; it never authorizes a private enable.
+lease, without invoking recovery writes. Status and **Reconnect…** remain
+available after restart, when the target is absent, and with Experimental
+features off. Reconnect closes an owned lease to request early helper recovery,
+or explicitly runs guarded journal recovery after relaunch. An active helper may
+report busy; wait and inspect again. Expiry and helper exit are not proof of
+recovery. `needsAttention`, helper failure, and unreadable or missing journals
+remain blocking across relaunch; no evidence is deleted and no ID is guessed.
+An unreadable journal is shown with its path and the read-only
+`panelctl recovery status` command; no private recovery is attempted. A helper
+preparation failure without staged target evidence may require `recovery status`
+followed by read-only `recovery verify`; it never authorizes a private enable.
 
 Private disconnect is excluded from scripting, idle/empty-display automation,
 startup, wake and automatic re-disconnect. Global reset, logout, reboot and

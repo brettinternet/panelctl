@@ -142,10 +142,18 @@ final class AppModel: ObservableObject {
     @Published var notice: AppNotice?
     @Published var experimentalConsentPending = false
     @Published var disconnectConsentPending = false
+    @Published private(set) var disconnectPreparationPending = false
     @Published private(set) var disconnectRequest: DisplayDisconnectRequest?
     @Published private(set) var disconnectStatus: DisplayDisconnectStatus?
+    @Published private(set) var disconnectInspectionFailure: String?
     @Published private(set) var disconnectFailure: String?
     private var disconnectLease: DisplayDisconnectLease?
+    private var disconnectAutomationPaused = false
+    private var disconnectPauseCleanupPending = false
+    private var disconnectPauseCleanupAttempted = false
+    private var disconnectPreparationCancelled = false
+    private var disconnectRecoveryBlocked = false
+    var disconnectJournalPath: String { disconnectController.journalPath }
     private let disconnectController: DisplayDisconnectController
     private let disconnectExecutable: @MainActor () throws -> URL
     @Published private(set) var countdownDate = Date()
@@ -183,6 +191,7 @@ final class AppModel: ObservableObject {
     private static let experimentalFeaturesKey = "experimentalFeaturesEnabled"
     private static let snoozedUntilKey = "snoozedUntil"
     private static let cleanupFailureKey = "automationCleanupFailure"
+    private static let disconnectRecoveryBlockedKey = "disconnectRecoveryBlocked"
     static let maximumSnoozeDuration: TimeInterval = 30 * 24 * 60 * 60
 
     init(
@@ -227,6 +236,11 @@ final class AppModel: ObservableObject {
         self.defaults = defaults
         self.disconnectController = disconnectController
         self.disconnectExecutable = disconnectExecutable
+        self.disconnectRecoveryBlocked = defaults.bool(forKey: Self.disconnectRecoveryBlockedKey)
+        if self.disconnectRecoveryBlocked {
+            self.disconnectAutomationPaused = true
+            self.disconnectInspectionFailure = "A previous disconnect recovery is still unresolved. Its journal must be readable and verified before automation can resume."
+        }
         self.displayWakeSettleDelay = displayWakeSettleDelay.isFinite ? min(max(0, displayWakeSettleDelay), 10) : 1
         self.displayProvider = displayProvider
         self.now = now
@@ -277,12 +291,6 @@ final class AppModel: ObservableObject {
         )
         protectionQuiescenceFailure = defaults.string(forKey: Self.cleanupFailureKey) ??
             protectionCoordinator.unresolvedCleanupFailure
-        let storedSnooze = defaults.object(forKey: Self.snoozedUntilKey) as? Date
-        if let storedSnooze, storedSnooze > now(), ruleSet.isEnabled {
-            runtimeState = .snoozed(storedSnooze)
-        } else {
-            defaults.removeObject(forKey: Self.snoozedUntilKey)
-        }
         protectionCoordinator.onStateChange = { [weak self] in
             guard let self else { return }
             if let cleanupFailure = self.protectionCoordinator.unresolvedCleanupFailure {
@@ -312,6 +320,12 @@ final class AppModel: ObservableObject {
         defaults.set(showMenuBarIcon, forKey: Self.showMenuBarIconKey)
         refreshHandoffStatus()
         refreshDisconnectStatus()
+        let storedSnooze = defaults.object(forKey: Self.snoozedUntilKey) as? Date
+        if let storedSnooze, storedSnooze > now(), ruleSet.isEnabled {
+            runtimeState = .snoozed(storedSnooze)
+        } else if !disconnectAutomationPaused {
+            defaults.removeObject(forKey: Self.snoozedUntilKey)
+        }
         reconcileProtection()
         startCountdownTimer()
     }
@@ -509,6 +523,8 @@ final class AppModel: ObservableObject {
                 return "Desktop hidden · automation paused while displays sleep"
             case .stopping:
                 return "Desktop hidden · automation is stopping on \(names)"
+            case .disconnectPaused:
+                return "Desktop hidden · automation is paused for Full disconnect"
             case .waitingForDisplays(let message):
                 return "Desktop hidden · automation waiting for displays: \(message)"
             case .failed(let message):
@@ -534,13 +550,15 @@ final class AppModel: ObservableObject {
     }
 
     var hideConfigurationFrozen: Bool {
-        disconnectLease != nil || disconnectStatus?.resolved == false ||
+        disconnectAutomationPaused || disconnectInspectionFailure != nil ||
+            disconnectLease != nil || disconnectStatus?.resolved == false ||
             handoffStatus?.hasUnresolvedJournal == true || handoffInspectionFailure != nil ||
             hideOperation.isBusy || displayLifecycleTransitioning
     }
 
     func hideConfigurationFrozen(for targetUUID: String) -> Bool {
-        disconnectLease != nil || disconnectStatus?.resolved == false ||
+        disconnectAutomationPaused || disconnectInspectionFailure != nil ||
+            disconnectLease != nil || disconnectStatus?.resolved == false ||
             displayLifecycleTransitioning ||
             (hideOperation.targetUUID?.caseInsensitiveCompare(targetUUID) == .orderedSame) ||
             isJournalTarget(targetUUID)
@@ -778,8 +796,9 @@ final class AppModel: ObservableObject {
         if let failure = protectionQuiescenceFailure {
             return "Automation cleanup needs attention. Choose Retry Automation Cleanup, then try again. (\(failure))"
         }
-        if disconnectLease != nil || disconnectStatus?.resolved == false {
-            return "Finish the current disconnect first."
+        if disconnectAutomationPaused || disconnectInspectionFailure != nil ||
+            disconnectLease != nil || disconnectStatus?.resolved == false {
+            return "Full disconnect is pausing automation or awaiting verified recovery. Finish it first."
         }
 
         switch action.effect {
@@ -1094,6 +1113,9 @@ final class AppModel: ObservableObject {
         for configuration: DisplayHideConfiguration,
         allowingCurrentOperation: Bool = false
     ) -> DisplayHideError? {
+        if disconnectAutomationPaused || disconnectInspectionFailure != nil {
+            return .recoveryBlocksAction("Full disconnect is pausing automation or awaiting verified recovery.")
+        }
         if let failure = handoffInspectionFailure {
             return .recoveryBlocksHide("Couldn\u{2019}t check display recovery: \(failure)")
         }
@@ -1218,9 +1240,10 @@ final class AppModel: ObservableObject {
     /// Why Hide can't black out this display right now, or nil when it can.
     func blackoutReadiness(for display: DisplayRecord) -> DisplayHideError? {
         if hideOperation.isBusy { return .actionInProgress }
-        // Disconnect consent excludes other display changes during its lease.
-        if disconnectLease != nil || disconnectStatus?.resolved == false {
-            return .unavailable("Finish the current disconnect first.")
+        // Disconnect preparation, consent and recovery exclude other display changes.
+        if disconnectAutomationPaused || disconnectInspectionFailure != nil ||
+            disconnectLease != nil || disconnectStatus?.resolved == false {
+            return .unavailable("Full disconnect is pausing automation or awaiting verified recovery.")
         }
         if displayLifecycleTransitioning { return .sleeping }
         guard let uuid = display.uuid, UUID(uuidString: uuid) != nil,
@@ -1525,6 +1548,9 @@ final class AppModel: ObservableObject {
     /// Why Show must wait, apart from the hidden display's own state.
     private var showWait: DisplayHideError? {
         if hideOperation.isBusy { return .actionInProgress }
+        if disconnectAutomationPaused || disconnectInspectionFailure != nil {
+            return .recoveryBlocksAction("Full disconnect is pausing automation or awaiting verified recovery.")
+        }
         if displayLifecycleTransitioning { return .sleeping }
         if protectionQuiescencePending { return Self.automationStopping }
         return nil
@@ -2465,10 +2491,33 @@ final class AppModel: ObservableObject {
     }
 
     var statusSystemImage: String {
-        blackedOutDisplayIDs.isEmpty ? runtimeState.systemImage : "rectangle.fill"
+        if !blackedOutDisplayIDs.isEmpty { return "rectangle.fill" }
+        if disconnectAutomationPaused {
+            return disconnectInspectionFailure != nil || protectionQuiescenceFailure != nil
+                ? "exclamationmark.triangle.fill" : "pause.circle.fill"
+        }
+        return runtimeState.systemImage
     }
 
     var statusSummary: String {
+        if disconnectAutomationPaused {
+            if let failure = disconnectInspectionFailure {
+                return "Automation paused · disconnect recovery needs attention: \(failure)"
+            }
+            if let failure = protectionQuiescenceFailure {
+                return "Automation paused · cleanup needs attention: \(failure)"
+            }
+            if disconnectPreparationPending || disconnectPauseCleanupPending {
+                return "Automation paused · stopping helpers and verifying cleanup"
+            }
+            if disconnectStatus?.resolved == false {
+                return "Automation paused · waiting for verified disconnect recovery"
+            }
+            if let until = snoozedUntil {
+                return "Automation paused for Full disconnect · snoozed until \(Self.expiryFormatter.string(from: until))"
+            }
+            return "Automation paused for Full disconnect · preferences and snooze unchanged"
+        }
         if protectionPausedForDisplayRecovery { return hiddenMirrorProtectionSummary }
         let enabledRules = automationPreferences.rules.filter(\.isEnabled)
         if let failure = protectionQuiescenceFailure {
@@ -2566,7 +2615,7 @@ final class AppModel: ObservableObject {
         case .waiting: return 6
         case .starting: return 7
         case .stopping: return 8
-        case .disabled, .snoozed: return 9
+        case .disabled, .snoozed, .disconnectPaused: return 9
         }
     }
 
@@ -2597,7 +2646,9 @@ final class AppModel: ObservableObject {
             self.protectionQuiescencePending = false
             if succeeded {
                 self.protectionQuiescenceFailure = nil
+                if self.disconnectAutomationPaused { self.disconnectPauseCleanupAttempted = true }
                 self.rearmProtectionAfterDisplayRecovery()
+                self.releaseDisconnectAutomationPauseIfSafe()
             } else {
                 self.protectionQuiescenceFailure = message ?? self.protectionQuiescenceFailure ??
                     "Automation cleanup could not be verified."
@@ -2607,6 +2658,9 @@ final class AppModel: ObservableObject {
     }
 
     func blackoutNow() throws {
+        guard !disconnectAutomationPaused, disconnectInspectionFailure == nil else {
+            throw RecoveryError.unsafe("Automation is paused during Full disconnect and verified recovery.")
+        }
         guard automationPreferences.rules.contains(where: \.isEnabled) else {
             throw ProtectionConfigurationError.noEnabledRules
         }
@@ -2624,6 +2678,7 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func restoreBlackout() throws -> Bool {
+        if disconnectAutomationPaused || disconnectInspectionFailure != nil { return false }
         if protectionPausedForDisplayRecovery && !hiddenMirrorOverlayPolicyEligible { return false }
         guard snoozedUntil == nil, automationPreferences.isEnabled,
               automationPreferences.rules.contains(where: \.isEnabled),
@@ -2634,6 +2689,9 @@ final class AppModel: ObservableObject {
     }
 
     func sleepAllNow() throws {
+        guard !disconnectAutomationPaused, disconnectInspectionFailure == nil else {
+            throw RecoveryError.unsafe("Display actions are paused during Full disconnect and verified recovery.")
+        }
         let wasSnoozed = cancelSnooze()
         if wasSnoozed {
             reconcileProtection()
@@ -2765,6 +2823,11 @@ final class AppModel: ObservableObject {
 
     private func runtimeState(for rule: ProtectionRule) -> ProtectionRuntimeState {
         guard rule.isEnabled else { return .disabled }
+        if disconnectAutomationPaused {
+            if let protectionQuiescenceFailure { return .failed(protectionQuiescenceFailure) }
+            if let disconnectInspectionFailure { return .failed(disconnectInspectionFailure) }
+            return automationPreferences.isEnabled ? .disconnectPaused : .disabled
+        }
         let state = protectionCoordinator.runtimeState(
             for: rule.id,
             automationEnabled: automationPreferences.isEnabled,
@@ -2786,7 +2849,9 @@ final class AppModel: ObservableObject {
 
     private var aggregateRuntimeState: ProtectionRuntimeState {
         if let failure = protectionQuiescenceFailure { return .failed(failure) }
+        if let disconnectInspectionFailure { return .failed(disconnectInspectionFailure) }
         guard automationPreferences.isEnabled else { return .disabled }
+        if disconnectAutomationPaused { return .disconnectPaused }
         if let until = snoozedUntil { return .snoozed(until) }
         let states = automationPreferences.rules.filter(\.isEnabled).map { runtimeState(for: $0) }
         guard !states.isEmpty else { return .waiting }
@@ -2900,7 +2965,8 @@ final class AppModel: ObservableObject {
         let canRun = automationPreferences.isEnabled && snoozedUntil == nil &&
             protectionQuiescenceFailure == nil && !protectionQuiescencePending &&
             hideOperation == .idle && !displayLifecycleTransitioning &&
-            disconnectLease == nil && disconnectStatus?.resolved != false
+            !disconnectAutomationPaused && disconnectInspectionFailure == nil &&
+            !disconnectRecoveryBlocked && disconnectLease == nil && disconnectStatus?.resolved != false
         if canRun {
             if protectionPausedForDisplayRecovery {
                 for rule in automationPreferences.rules where hiddenOverlayRuleIDs.contains(rule.id) {
@@ -2960,6 +3026,7 @@ final class AppModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.protectionQuiescencePending = false
+                if self.disconnectAutomationPaused { self.disconnectPauseCleanupAttempted = true }
                 self.protectionQuiescenceFailure = succeeded
                     ? nil
                     : (message ?? "Automation cleanup could not be verified.")
@@ -2971,13 +3038,18 @@ final class AppModel: ObservableObject {
                 } else {
                     self.reconcileProtection()
                 }
+                self.releaseDisconnectAutomationPauseIfSafe()
                 self.onStatusChange?()
             }
         }
     }
 
     private func rearmProtectionAfterDisplayRecovery() {
-        guard handoffStatus?.hasUnresolvedJournal != true,
+        guard !disconnectAutomationPaused,
+              disconnectStatus?.resolved != false,
+              disconnectInspectionFailure == nil,
+              !disconnectRecoveryBlocked,
+              handoffStatus?.hasUnresolvedJournal != true,
               handoffInspectionFailure == nil,
               protectionQuiescenceFailure == nil else {
             reconcileProtection()
@@ -3340,41 +3412,135 @@ final class AppModel: ObservableObject {
         countdownDate = now()
         refreshDisconnectStatus()
         if defaults.object(forKey: Self.snoozedUntilKey) != nil,
-           snoozedUntil == nil {
+           snoozedUntil == nil, !disconnectAutomationPaused {
             resumeProtection()
         }
     }
 
     // Private disconnect is a separate, manual operation, never a Hide style or
-    // app-control command. Startup and timer refreshes inspect only; no recovery
-    // writer runs without a user action (the independent lease helper is separate).
-    var disconnectBlocker: String? {
+    // app-control command. Inspection and startup never run private recovery.
+    private var disconnectEligibilityBlocker: String? {
         if !experimentalFeaturesEnabled { return "Turn on Experimental features in General first." }
-        if disconnectLease != nil || disconnectStatus?.resolved == false { return "Finish the current disconnect first." }
-        if preferences.isEnabled { return "Requires Automation to be off." }
-        if protectionCoordinator.hasManagedProcess || protectionQuiescencePending {
-            return "Waiting for Automation to stop\u{2026}"
+        if let disconnectInspectionFailure {
+            return "Disconnect recovery cannot be inspected; automation remains paused. Check `panelctl recovery status` and preserve \(disconnectJournalPath). (\(disconnectInspectionFailure))"
         }
-        if !blackoutHiddenDisplays.isEmpty || hideConfigurationFrozen || protectionQuiescenceFailure != nil {
+        if disconnectLease != nil || disconnectStatus?.resolved == false {
+            return "Finish the current disconnect recovery first."
+        }
+        if let protectionQuiescenceFailure {
+            return "Automation cleanup needs attention. Choose Retry Automation Cleanup, then try again. (\(protectionQuiescenceFailure))"
+        }
+        if protectionQuiescencePending || disconnectPauseCleanupPending {
+            return "Waiting for automation cleanup to finish\u{2026}"
+        }
+        if !blackoutHiddenDisplays.isEmpty || handoffStatus?.hasUnresolvedJournal == true ||
+            handoffInspectionFailure != nil || hideOperation.isBusy || displayLifecycleTransitioning {
             return "Show hidden displays and finish recovery first."
+        }
+        return nil
+    }
+
+    var disconnectBlocker: String? {
+        if let blocker = disconnectEligibilityBlocker { return blocker }
+        if disconnectPreparationPending { return "Stopping automation and verifying cleanup before consent."
+        }
+        if disconnectRequest != nil || disconnectConsentPending { return "Confirm or cancel the current disconnect."
+        }
+        if disconnectAutomationPaused { return "Automation is paused until disconnect recovery is verified."
         }
         return nil
     }
 
     func prepareDisconnect(_ uuid: String) {
         disconnectRequest = nil
+        disconnectConsentPending = false
         disconnectFailure = nil
         do {
             if let blocker = disconnectBlocker { throw RecoveryError.unsafe(blocker) }
             _ = try disconnectExecutable()
+            disconnectAutomationPaused = true
+            disconnectPreparationPending = true
+            disconnectPreparationCancelled = false
+            protectionRearmRequired = true
+            runtimeState = aggregateRuntimeState
+            onStatusChange?()
+            stopForDisconnect { [weak self] succeeded, message in
+                self?.finishDisconnectPreparation(
+                    uuid: uuid,
+                    succeeded: succeeded,
+                    message: message
+                )
+            }
+        } catch { disconnectFailure = error.localizedDescription }
+    }
+
+    private func stopForDisconnect(completion: @escaping (Bool, String?) -> Void) {
+        disconnectPauseCleanupPending = true
+        disconnectPauseCleanupAttempted = true
+        stopManagedProtection { [weak self] succeeded, message in
+            Task { @MainActor in
+                guard let self else { return }
+                self.disconnectPauseCleanupPending = false
+                completion(succeeded, message)
+                self.runtimeState = self.aggregateRuntimeState
+                self.onStatusChange?()
+                self.releaseDisconnectAutomationPauseIfSafe()
+            }
+        }
+    }
+
+    private func finishDisconnectPreparation(
+        uuid: String,
+        succeeded: Bool,
+        message: String?
+    ) {
+        guard disconnectPreparationPending else { return }
+        if !succeeded {
+            let failure = message ?? "Automation cleanup could not be verified."
+            protectionQuiescenceFailure = failure
+            disconnectFailure = "Automation cleanup needs attention: \(failure)"
+            disconnectPreparationPending = false
+            runtimeState = aggregateRuntimeState
+            onStatusChange?()
+            return
+        }
+        protectionQuiescenceFailure = nil
+        if disconnectPreparationCancelled {
+            disconnectPreparationPending = false
+            disconnectPreparationCancelled = false
+            releaseDisconnectAutomationPauseIfSafe()
+            return
+        }
+
+        refreshDisconnectStatus()
+        if let blocker = disconnectEligibilityBlocker {
+            disconnectPreparationPending = false
+            disconnectFailure = blocker
+            releaseDisconnectAutomationPauseIfSafe()
+            return
+        }
+        do {
             disconnectRequest = try disconnectController.prepare(targetUUID: uuid)
             disconnectConsentPending = true
-        } catch { disconnectFailure = error.localizedDescription }
+        } catch {
+            disconnectFailure = error.localizedDescription
+            refreshDisconnectStatus()
+        }
+        disconnectPreparationPending = false
+        runtimeState = aggregateRuntimeState
+        onStatusChange?()
+        releaseDisconnectAutomationPauseIfSafe()
     }
 
     func cancelDisconnect() {
         disconnectConsentPending = false
         disconnectRequest = nil
+        if disconnectPreparationPending {
+            disconnectPreparationCancelled = true
+            onStatusChange?()
+            return
+        }
+        releaseDisconnectAutomationPauseIfSafe()
     }
 
     func confirmDisconnect() {
@@ -3382,17 +3548,28 @@ final class AppModel: ObservableObject {
         guard let request = disconnectRequest else { return }
         disconnectRequest = nil // Never persist or reuse consent, even on refusal.
         do {
-            if let blocker = disconnectBlocker { throw RecoveryError.unsafe(blocker) }
+            guard disconnectAutomationPaused, !disconnectPreparationPending,
+                  !disconnectPauseCleanupPending else {
+                throw RecoveryError.unsafe("Automation cleanup is not complete; select and confirm again.")
+            }
+            if let blocker = disconnectEligibilityBlocker { throw RecoveryError.unsafe(blocker) }
+            guard !protectionCoordinator.hasManagedProcess else {
+                throw RecoveryError.unsafe("Automation helpers are still stopping; wait for cleanup to finish.")
+            }
             disconnectLease = try disconnectController.disconnect(request, consent: true, executable: disconnectExecutable())
         } catch { disconnectFailure = error.localizedDescription }
         refreshDisconnectStatus()
         refreshHandoffStatus()
         reconcileProtection()
+        releaseDisconnectAutomationPauseIfSafe()
     }
 
     func reconnectDisconnect(expectedJournalID: String? = nil) {
         disconnectFailure = nil
         do {
+            if let disconnectInspectionFailure {
+                throw RecoveryError.unsafe("disconnect recovery is unreadable; inspect \(disconnectJournalPath) and run `panelctl recovery status` first: \(disconnectInspectionFailure)")
+            }
             if let expectedJournalID, expectedJournalID != disconnectStatus?.journalID {
                 throw RecoveryError.unsafe("journal changed during confirmation; inspect and confirm again")
             }
@@ -3407,18 +3584,94 @@ final class AppModel: ObservableObject {
         } catch { disconnectFailure = error.localizedDescription }
         refreshDisconnectStatus()
         refreshHandoffStatus()
+        releaseDisconnectAutomationPauseIfSafe()
     }
 
     func refreshDisconnectStatus() {
         let previous = disconnectStatus
+        let previousInspectionFailure = disconnectInspectionFailure
         do {
-            disconnectStatus = try disconnectController.inspect()
-            if disconnectStatus?.resolved == true { disconnectLease = nil }
-        } catch { disconnectFailure = error.localizedDescription }
-        if previous != disconnectStatus {
+            let observed = try disconnectController.inspect()
+            if observed == nil, disconnectRecoveryBlocked || previous?.resolved == false {
+                throw RecoveryError.unsafe("disconnect recovery journal is missing; verified recovery cannot be established")
+            }
+            disconnectStatus = observed
+            disconnectInspectionFailure = nil
+            if let observed, observed.resolved {
+                disconnectRecoveryBlocked = false
+                defaults.set(false, forKey: Self.disconnectRecoveryBlockedKey)
+                disconnectLease = nil
+            } else if observed != nil {
+                disconnectRecoveryBlocked = true
+                defaults.set(true, forKey: Self.disconnectRecoveryBlockedKey)
+                holdDisconnectAutomationPause()
+            }
+        } catch {
+            disconnectInspectionFailure = error.localizedDescription
+            disconnectRecoveryBlocked = true
+            defaults.set(true, forKey: Self.disconnectRecoveryBlockedKey)
+            holdDisconnectAutomationPause()
+        }
+        let retryBlockedHandoffInspection = disconnectAutomationPaused && disconnectStatus?.resolved == true &&
+            (handoffInspectionFailure != nil || handoffStatus?.hasUnresolvedJournal == true)
+        if previous != disconnectStatus || previousInspectionFailure != disconnectInspectionFailure {
             refreshHandoffStatus()
             reconcileProtection()
+        } else if retryBlockedHandoffInspection {
+            // Recovery may hold the handoff journal lock briefly after the disconnect
+            // journal verifies. Retry read-only inspection on countdown ticks so a
+            // cached busy result cannot strand automation stopped indefinitely.
+            refreshHandoffStatus()
         }
+        releaseDisconnectAutomationPauseIfSafe()
+    }
+
+    private func holdDisconnectAutomationPause() {
+        disconnectAutomationPaused = true
+        protectionRearmRequired = true
+        guard !disconnectPauseCleanupAttempted,
+              !disconnectPauseCleanupPending, !protectionQuiescencePending else {
+            runtimeState = aggregateRuntimeState
+            onStatusChange?()
+            return
+        }
+        stopForDisconnect { [weak self] succeeded, message in
+            guard let self else { return }
+            self.protectionQuiescenceFailure = succeeded
+                ? nil
+                : (message ?? "Automation cleanup could not be verified.")
+            self.runtimeState = self.aggregateRuntimeState
+            self.onStatusChange?()
+        }
+        runtimeState = aggregateRuntimeState
+        onStatusChange?()
+    }
+
+    private func releaseDisconnectAutomationPauseIfSafe() {
+        guard disconnectAutomationPaused,
+              !disconnectPreparationPending,
+              !disconnectPauseCleanupPending,
+              !disconnectConsentPending,
+              disconnectRequest == nil,
+              disconnectLease == nil,
+              disconnectStatus?.resolved != false,
+              disconnectInspectionFailure == nil,
+              !disconnectRecoveryBlocked,
+              handoffStatus?.hasUnresolvedJournal != true,
+              handoffInspectionFailure == nil,
+              !protectionQuiescencePending,
+              protectionQuiescenceFailure == nil,
+              !protectionCoordinator.hasManagedProcess else { return }
+        disconnectAutomationPaused = false
+        disconnectPauseCleanupAttempted = false
+        disconnectPreparationCancelled = false
+        if let storedSnooze = defaults.object(forKey: Self.snoozedUntilKey) as? Date,
+           storedSnooze <= now() {
+            defaults.removeObject(forKey: Self.snoozedUntilKey)
+        }
+        rearmProtectionAfterDisplayRecovery()
+        runtimeState = aggregateRuntimeState
+        onStatusChange?()
     }
 
     private static let expiryFormatter: DateFormatter = {

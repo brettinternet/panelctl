@@ -151,7 +151,10 @@ final class ProtectionCoordinator {
 
     func disableForDisplayHide(completion: @escaping (Bool, String?) -> Void) {
         pendingBlackoutNow = false
-        desiredSignature = nil
+        desiredArguments = [:]
+        desiredSignature = Self.signature(for: [:])
+        reconciliationGeneration &+= 1
+        reconciliationInProgress = false
         pendingDisplayRearmOnLaunch = true
         let current = Array(services.values)
         guard !current.isEmpty else {

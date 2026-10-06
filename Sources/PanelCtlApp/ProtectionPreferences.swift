@@ -615,6 +615,9 @@ enum ProtectionRulePresentation {
         if case .disabled = state {
             return .init(text: ProtectionRuntimeState.disabled.label, blockedReason: nil)
         }
+        if case .disconnectPaused = state {
+            return .init(text: ProtectionRuntimeState.disconnectPaused.label, blockedReason: nil)
+        }
         if case .failed(let reason) = state {
             let blocked = validation.blockingReason ?? reason
             return .init(text: "Blocked: \(blocked)", blockedReason: blocked)

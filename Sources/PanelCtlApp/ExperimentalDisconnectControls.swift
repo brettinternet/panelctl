@@ -10,19 +10,30 @@ struct ExperimentalDisconnectControls: View {
     /// Shown for every selected display with Experimental on, and whenever a
     /// disconnect journal exists so reconnect stays reachable.
     static func isVisible(model: AppModel, targetUUID: String?) -> Bool {
-        model.disconnectStatus != nil || (model.experimentalFeaturesEnabled
-            && targetUUID != nil)
+        model.disconnectStatus != nil || model.disconnectInspectionFailure != nil ||
+            (model.experimentalFeaturesEnabled && targetUUID != nil)
     }
 
     var body: some View {
         Section {
+            if let failure = model.disconnectInspectionFailure {
+                Text("Disconnect recovery is unreadable or unavailable. Automation remains paused; no recovery write was attempted.")
+                Text("\(model.disconnectJournalPath)").font(.caption).textSelection(.enabled)
+                Text(failure).foregroundStyle(.orange).textSelection(.enabled)
+                Button("Reconnect…") {}.disabled(true)
+                LabeledContent("Inspect recovery") {
+                    Text("panelctl recovery status").font(.callout.monospaced()).textSelection(.enabled)
+                }
+            }
             if let status = model.disconnectStatus {
                 if status.resolved {
-                    Text("Reconnected. If the screen stays dark, select this Mac’s input on the monitor.")
+                    Text("Reconnected. Automation resumes only if enabled and not snoozed, with a fresh countdown. If the screen stays dark, select this Mac’s input on the monitor.")
                 } else if let presentation = presentation(status) {
+                    Text("Automation is paused without changing preferences or snooze until recovery is verified.")
+                        .font(.caption).foregroundStyle(.secondary)
                     ExperimentalDisconnectView(presentation: presentation)
                 } else {
-                    Text("The helper stopped before recording a display. Check recovery status; don\u{2019}t guess a display.")
+                    Text("The helper stopped before recording a display. Automation stays paused. Check recovery status; don\u{2019}t guess a display.")
                     Text("\(status.journalPath) · \(status.state)").font(.caption).textSelection(.enabled)
                     if let failure = status.failure { Text(failure).foregroundStyle(.orange).textSelection(.enabled) }
                 }
@@ -31,13 +42,26 @@ struct ExperimentalDisconnectControls: View {
                         reconnectJournalID = status.journalID
                         reconnectConsent = true
                     }
-                    .disabled(!status.canReconnect)
+                    .disabled(!status.canReconnect || model.disconnectInspectionFailure != nil)
                 }
             }
             if let failure = model.disconnectFailure {
                 Text(failure).foregroundStyle(.orange).textSelection(.enabled)
             }
-            if model.disconnectStatus?.resolved != false, model.experimentalFeaturesEnabled {
+            if model.disconnectPreparationPending {
+                HStack(alignment: .center, spacing: 12) {
+                    Text("Stopping automation and verifying cleanup before consent. Preferences and snooze stay unchanged.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button("Cancel") { model.cancelDisconnect() }
+                }
+            } else if model.disconnectRequest != nil {
+                Text("Automation stays paused until you cancel or recovery is verified.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if model.disconnectStatus?.resolved != false,
+                      model.disconnectInspectionFailure == nil,
+                      model.experimentalFeaturesEnabled {
                 disconnectRow
             }
         } header: {
@@ -64,31 +88,32 @@ struct ExperimentalDisconnectControls: View {
     }
 
     /// One row: what the action does (or what blocks it) beside the action itself.
-    /// When Automation is the blocker, offer to turn it off in place.
     private var disconnectRow: some View {
         let blocker = model.disconnectBlocker ?? targetBlocker
-        return HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Unplug for 15 seconds")
-                Group {
-                    if let blocker {
-                        Text("\(Image(systemName: "lock")) \(blocker)")
-                    } else {
-                        Text("macOS treats this display as unplugged, then PanelCtl reconnects it.")
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Unplug for 15 seconds")
+                    Group {
+                        if let blocker {
+                            Text("\(Image(systemName: "lock")) \(blocker)")
+                        } else {
+                            Text("macOS treats this display as unplugged, then PanelCtl reconnects it.")
+                        }
                     }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 8)
-            if blocker != nil, model.preferences.isEnabled {
-                Button("Turn Off Automation") { model.setProtectionEnabled(false) }
-            } else {
+                Spacer(minLength: 8)
                 Button("Disconnect…") {
                     if let targetUUID { model.prepareDisconnect(targetUUID) }
                 }
                 .disabled(targetUUID == nil || blocker != nil)
+            }
+            if model.protectionQuiescenceFailure != nil {
+                Button("Retry Automation Cleanup", action: model.retryAutomationCleanup)
+                    .disabled(model.protectionQuiescencePending)
             }
         }
     }
@@ -106,7 +131,7 @@ struct ExperimentalDisconnectControls: View {
 
     /// Consent is one-use and per operation; it confirms what PanelCtl can't read.
     static func consentMessage(_ request: DisplayDisconnectRequest) -> String {
-        "\(request.target.name) disconnects for 15 seconds; \(request.survivor.name) stays on.\n\nAutomatic reconnect may fail and require manual recovery. Continue only if you\u{2019}re at this Mac and the other screen is usable. Don’t unplug displays or change inputs during the test."
+        "\(request.target.name) disconnects for 15 seconds; \(request.survivor.name) stays on.\n\nAutomation pauses without changing preferences or snooze. Automatic reconnect may fail and require manual recovery. Continue only if you\u{2019}re at this Mac and the other screen is usable. Don’t unplug displays or change inputs during the test."
     }
 
     private func presentation(_ status: DisplayDisconnectStatus) -> ExperimentalDisconnectPresentation? {

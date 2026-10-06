@@ -230,10 +230,17 @@ checks permit eligible non-main external physical displays without a monitor
 allowlist; main/built-in displays show a refusal. Strict identity, native-driver,
 survivor and verified ABI requirements remain. Each operation warns that this
 monitor may not recover automatically, requires fresh consent, and holds a fixed
-15-second watchdog lease. General experimental consent is insufficient. Turn
-off automation and show hidden displays first. Journal-driven reconnect stays
-available without an enumerable target or the experimental gate. No script,
-idle, startup or wake path disconnects a display. See
+15-second watchdog lease. General experimental consent is insufficient. Show
+hidden displays and finish any unresolved recovery first. PanelCtl pauses
+automation temporarily without changing its master switch, rule settings or
+snooze deadline, and verifies helper, cover and saved-brightness cleanup before
+consent. It remains paused through the lease and unresolved recovery;
+cancellation or a pre-write refusal restarts eligible rules with a fresh
+countdown, while a performed disconnect resumes automation only after verified
+recovery. An unreadable journal remains blocking across relaunch, with no
+automatic recovery write. Journal-driven reconnect stays available without an
+enumerable target or the experimental gate. No script, idle, startup or wake
+path disconnects a display. See
 [qualification and recovery limits](display-disable.md#app-controls).
 
 ## Coexistence and safety boundaries

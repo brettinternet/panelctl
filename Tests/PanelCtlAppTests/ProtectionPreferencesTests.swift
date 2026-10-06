@@ -1527,7 +1527,15 @@ final class ProtectionPreferencesTests: XCTestCase {
         idleSecondsProvider: @escaping () -> TimeInterval? = { nil },
         sleepDisplays: @escaping () throws -> Void = { XCTFail("unexpected display sleep") }
     ) -> AppModel {
-        AppModel(
+        let recoveryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panelctl-protection-recovery-\(UUID())", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: recoveryDirectory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: recoveryDirectory) }
+        return AppModel(
             defaults: defaults,
             displayProvider: displayProvider,
             now: now,
@@ -1535,7 +1543,7 @@ final class ProtectionPreferencesTests: XCTestCase {
             sleepDisplays: sleepDisplays,
             inspectHandoff: { DisplayHandoffStatus(state: .none, journalPath: "/nonexistent/panelctl-protection-tests.json") },
             disconnectController: DisplayDisconnectController(
-                store: RecoveryStore(url: URL(fileURLWithPath: "/nonexistent/panelctl-protection-tests-recovery.json"))
+                store: RecoveryStore(url: recoveryDirectory.appendingPathComponent("current.json"))
             )
         )
     }

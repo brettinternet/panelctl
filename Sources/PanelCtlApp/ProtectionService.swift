@@ -13,6 +13,7 @@ private let shutdownLogger = Logger(
 enum ProtectionRuntimeState: Equatable {
     case disabled
     case snoozed(Date)
+    case disconnectPaused
     case starting
     case waiting
     case waitingForInput
@@ -27,6 +28,7 @@ enum ProtectionRuntimeState: Equatable {
         switch self {
         case .disabled: return "Automation off"
         case .snoozed: return "Automation paused"
+        case .disconnectPaused: return "Paused for Full disconnect"
         case .starting: return "Starting…"
         case .waiting: return "Watching for inactivity"
         case .waitingForInput: return "Waiting for activity"
@@ -42,7 +44,7 @@ enum ProtectionRuntimeState: Equatable {
     var systemImage: String {
         switch self {
         case .disabled: return "shield"
-        case .snoozed: return "pause.circle.fill"
+        case .snoozed, .disconnectPaused: return "pause.circle.fill"
         case .starting, .waiting, .waitingForInput, .waitingForPlayback: return "shield.fill"
         case .blackedOut: return "rectangle.fill"
         case .sleeping: return "moon.fill"
@@ -61,6 +63,7 @@ enum ProtectionRuntimeState: Equatable {
         switch self {
         case .waitingForDisplays(let message), .failed(let message): return message
         case .waitingForPlayback: return "The idle countdown restarts when it ends."
+        case .disconnectPaused: return "Automation resumes with a fresh countdown only after cancellation or verified recovery. Preferences and snooze stay unchanged."
         case .snoozed(let until):
             return "Resumes \(until.formatted(date: .abbreviated, time: .shortened))"
         default: return nil
