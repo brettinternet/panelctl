@@ -29,7 +29,13 @@ final class SettingsWindowTests: XCTestCase {
         let app = NSApplication.shared
         let originalPolicy = app.activationPolicy()
         let originalMenu = app.mainMenu
-        defer { app.mainMenu = originalMenu }
+        let originalWindowsMenu = app.windowsMenu
+        let originalHelpMenu = app.helpMenu
+        defer {
+            app.mainMenu = originalMenu
+            app.windowsMenu = originalWindowsMenu
+            app.helpMenu = originalHelpMenu
+        }
         let (model, defaults) = try makeModel()
         defer { defaults.removePersistentDomain(forName: Self.suiteName) }
         let delegate = AppDelegate()

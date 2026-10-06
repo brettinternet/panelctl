@@ -314,8 +314,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             keyEquivalent: ""
         )
         let appMenu = NSMenu()
+        appMenu.addItem(NSMenuItem(
+            title: "About PanelCtl", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""
+        ))
+        appMenu.addItem(.separator())
         appMenu.addItem(item("Settings…", action: #selector(openSettings), key: ","))
-        appMenu.addItem(item("View on GitHub", action: #selector(openGitHub)))
+        appMenu.addItem(.separator())
+        appMenu.addItem(NSMenuItem(title: "Hide PanelCtl", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"))
+        let hideOthers = NSMenuItem(
+            title: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h"
+        )
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthers)
+        appMenu.addItem(NSMenuItem(
+            title: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: ""
+        ))
         appMenu.addItem(.separator())
         appMenu.addItem(item("Quit PanelCtl", action: #selector(quit), key: "q"))
         appMenuItem.submenu = appMenu
@@ -328,7 +341,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ))
         fileMenuItem.submenu = fileMenu
         mainMenu.addItem(fileMenuItem)
+        let editMenuItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        let editMenu = NSMenu(title: "Edit")
+        // Leave native commands untargeted so the focused control handles them.
+        editMenu.addItem(NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
+        let redo = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(redo)
+        editMenu.addItem(.separator())
+        editMenu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+
+        let windowMenuItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(NSMenuItem(
+            title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"
+        ))
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+
+        let helpMenuItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
+        let helpMenu = NSMenu(title: "Help")
+        helpMenu.addItem(item("View on GitHub", action: #selector(openGitHub)))
+        helpMenuItem.submenu = helpMenu
+        mainMenu.addItem(helpMenuItem)
         NSApp.mainMenu = mainMenu
+        NSApp.windowsMenu = windowMenu
+        NSApp.helpMenu = helpMenu
     }
 
     private func updateStatusItem() {
