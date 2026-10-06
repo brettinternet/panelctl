@@ -69,8 +69,203 @@ final class DisplayHideTests: XCTestCase {
         XCTAssertEqual(status.removals.count, 2)
         XCTAssertEqual(Set(status.removals.map { $0.target.uuid }), Set([targetUUID, otherUUID]))
         XCTAssertTrue(status.removals.allSatisfy(\.canShow))
+        XCTAssertNotNil(status.baselineIdentity, "sleep recovery can compare the exact retained session baseline")
         XCTAssertTrue(status.recoveryCommand?.contains("recovery status") == true,
                       "session-level guidance inspects the journal instead of guessing a target")
+    }
+
+    func testStableTopologyIdentityIgnoresFreshCaptureAndDiagnosticFields() throws {
+        let saved = try timestampedSnapshot(Date(timeIntervalSince1970: 1_700_000_000))
+        let rawObserved = try timestampedSnapshot(Date(timeIntervalSince1970: 1_800_000_000))
+        let observedDisplays = rawObserved.displays.map { display in
+            var evidence = display.identityEvidence!
+            evidence.transport = "changed diagnostic transport"
+            evidence.transportLocation = "changed diagnostic port"
+            evidence.framebufferLocation = "changed diagnostic framebuffer"
+            evidence.hpd = "changed diagnostic HPD"
+            return RecoveryDisplay(
+                uuid: display.uuid, id: display.id, name: "Localized name changed",
+                vendor: display.vendor, model: display.model, serial: display.serial,
+                builtin: display.builtin, main: display.main, active: display.active,
+                x: display.x, y: display.y, rotation: display.rotation, mirrorUUID: display.mirrorUUID,
+                mode: display.mode, colorSpace: display.colorSpace,
+                colorProfileDigest: display.colorProfileDigest,
+                colorProfileDateIndependentDigest: display.colorProfileDateIndependentDigest,
+                connector: display.connector, identityEvidence: evidence
+            )
+        }
+        let observed = RecoverySnapshot(bootSession: rawObserved.bootSession, osBuild: rawObserved.osBuild,
+                                        userID: rawObserved.userID, displays: observedDisplays,
+                                        hostModel: "changed diagnostic host label")
+
+        XCTAssertNoThrow(try saved.verify(observed))
+        XCTAssertEqual(saved.stableTopologyIdentity(), observed.stableTopologyIdentity())
+
+        let changedLayout = try timestampedSnapshot(Date(timeIntervalSince1970: 1_800_000_000)) { displays in
+            displays[1]["x"] = 1930
+        }
+        XCTAssertNotEqual(saved.stableTopologyIdentity(), changedLayout.stableTopologyIdentity())
+        XCTAssertThrowsError(try saved.verify(changedLayout), "the stable token keeps exact layout checks")
+        let changedMode = try timestampedSnapshot(Date(timeIntervalSince1970: 1_800_000_000)) { displays in
+            var mode = displays[1]["mode"] as! [String: Any]
+            mode["width"] = 1920
+            displays[1]["mode"] = mode
+        }
+        XCTAssertNotEqual(saved.stableTopologyIdentity(), changedMode.stableTopologyIdentity())
+        XCTAssertThrowsError(try saved.verify(changedMode), "the stable token keeps exact mode checks")
+    }
+
+    func testTwoDisplayWakeResetOffersGuardedRestoreOfTheCapturedBaseline() throws {
+        let baseline = topology.snapshot
+        let firstHidden = try snapshot { displays in
+            displays[1]["mirrorUUID"] = self.sourceUUID
+            displays[1]["active"] = false
+        }
+        let bothHidden = try snapshot { displays in
+            displays[1]["mirrorUUID"] = self.sourceUUID
+            displays[1]["active"] = false
+            displays[2]["mirrorUUID"] = self.sourceUUID
+            displays[2]["active"] = false
+        }
+        let removals = [
+            PublicMirrorRemoval(target: baseline.displays[1], source: baseline.displays[0],
+                                beforeOperation: baseline, state: .mirrored),
+            PublicMirrorRemoval(target: baseline.displays[2], source: baseline.displays[0],
+                                beforeOperation: firstHidden, state: .mirrored)
+        ]
+        var journal = RecoveryJournal(snapshot: baseline,
+                                      publicMirrorSession: PublicMirrorSession(baseline: baseline, removals: removals))
+        journal.state = .mirrored
+        try save(journal)
+        topology.snapshot = bothHidden
+        XCTAssertEqual(try controller().inspect().removals.filter(\.isUnresolved).count, 2)
+
+        // Simulate macOS clearing both mirrors but leaving the layout shifted.
+        topology.snapshot = try snapshot { displays in
+            displays[1]["x"] = 120
+            displays[2]["x"] = 2040
+        }
+        let recovery = try controller().inspect()
+        XCTAssertEqual(recovery.removals.filter(\.isUnresolved).count, 2)
+        XCTAssertTrue(recovery.removals.allSatisfy { $0.state == PublicMirrorRemovalState.needsAttention.rawValue })
+        XCTAssertEqual(DisplayHandoff.handoffStatus(from: recovery).state, .recovery)
+        XCTAssertEqual(writerCount, 0, "inspection leaves the shifted wake layout untouched")
+
+        XCTAssertNoThrow(try controller().show(expectedJournalID: journal.id.uuidString, targetUUID: targetUUID))
+        XCTAssertEqual(writerCount, 1, "the explicit guarded Restore uses one public configuration transaction")
+        XCTAssertEqual(try store.load().publicMirrorSession?.removals.filter { !$0.state.resolved }.count, 0)
+        XCTAssertNoThrow(try baseline.verify(topology.snapshot))
+    }
+
+    func testWakeResumeRejectsJournalMutationBeforeAnyMirrorStage() throws {
+        let status = try prepareWakeResetStatus()
+        let expected = try wakeExpectation(status, targetUUID: targetUUID)
+        try store.lock()
+        var altered = try store.load()
+        altered.trigger = "unexpected-external-change"
+        try store.save(altered)
+        store.unlock()
+
+        var stages = 0
+        var commits = 0
+        let sut = controller(transaction: MirrorTransaction(
+            begin: { OpaquePointer(bitPattern: 1)! },
+            stage: { _, _, _ in stages += 1 },
+            complete: { _, _ in commits += 1 },
+            cancel: { _ in }
+        ))
+        XCTAssertThrowsError(try sut.hide(target: expected.target, source: expected.source, wakeExpectation: expected))
+        XCTAssertEqual(stages, 0)
+        XCTAssertEqual(commits, 0)
+    }
+
+    func testWakeResumeRejectsTopologyMutationAfterInspectionBeforeWriter() throws {
+        let status = try prepareWakeResetStatus()
+        let expected = try wakeExpectation(status, targetUUID: targetUUID)
+        topology.snapshot = try timestampedSnapshot(Date(timeIntervalSince1970: 1_900_000_000)) { displays in
+            displays[1]["x"] = 1900
+        }
+
+        var stages = 0
+        var commits = 0
+        let sut = controller(transaction: MirrorTransaction(
+            begin: { OpaquePointer(bitPattern: 1)! },
+            stage: { _, _, _ in stages += 1 },
+            complete: { _, _ in commits += 1 },
+            cancel: { _ in }
+        ))
+        XCTAssertThrowsError(try sut.hide(target: expected.target, source: expected.source, wakeExpectation: expected))
+        XCTAssertEqual(stages, 0)
+        XCTAssertEqual(commits, 0)
+    }
+
+    func testWakeResumeRevalidatesJournalAfterBeginBeforeAnyMirrorStage() throws {
+        let status = try prepareWakeResetStatus()
+        let expected = try wakeExpectation(status, targetUUID: targetUUID)
+        var stages = 0
+        var commits = 0
+        var cancels = 0
+        let sut = controller(transaction: MirrorTransaction(
+            begin: {
+                var altered = try self.store.load()
+                altered.trigger = "changed-after-preflight"
+                try self.store.save(altered)
+                return OpaquePointer(bitPattern: 1)!
+            },
+            stage: { _, _, _ in stages += 1 },
+            complete: { _, _ in commits += 1 },
+            cancel: { _ in cancels += 1 }
+        ))
+        XCTAssertThrowsError(try sut.hide(target: expected.target, source: expected.source, wakeExpectation: expected))
+        XCTAssertEqual(stages, 0, "journal is revalidated after begin and before mirror staging")
+        XCTAssertEqual(commits, 0)
+        XCTAssertEqual(cancels, 1)
+    }
+
+    func testWakeResumeRevalidatesTopologyAfterStageBeforeCommit() throws {
+        let status = try prepareWakeResetStatus()
+        let expected = try wakeExpectation(status, targetUUID: targetUUID)
+        var stages = 0
+        var commits = 0
+        var cancels = 0
+        let sut = controller(transaction: MirrorTransaction(
+            begin: { OpaquePointer(bitPattern: 1)! },
+            stage: { _, _, _ in
+                stages += 1
+                self.topology.snapshot = try self.timestampedSnapshot(Date(timeIntervalSince1970: 1_900_000_000)) { displays in
+                    displays[1]["x"] = 1900
+                }
+            },
+            complete: { _, _ in commits += 1 },
+            cancel: { _ in cancels += 1 }
+        ))
+        XCTAssertThrowsError(try sut.hide(target: expected.target, source: expected.source, wakeExpectation: expected))
+        XCTAssertEqual(stages, 1, "the staged fake transaction is cancelled on the post-stage topology mismatch")
+        XCTAssertEqual(commits, 0, "the changed topology is refused before commit")
+        XCTAssertEqual(cancels, 1)
+    }
+
+    func testWakeResumeRevalidatesTopologyAfterBeginBeforeAnyMirrorStage() throws {
+        let status = try prepareWakeResetStatus()
+        let expected = try wakeExpectation(status, targetUUID: targetUUID)
+        var stages = 0
+        var commits = 0
+        var cancels = 0
+        let sut = controller(transaction: MirrorTransaction(
+            begin: {
+                self.topology.snapshot = try self.timestampedSnapshot(Date(timeIntervalSince1970: 1_900_000_000)) { displays in
+                    displays[1]["x"] = 1900
+                }
+                return OpaquePointer(bitPattern: 1)!
+            },
+            stage: { _, _, _ in stages += 1 },
+            complete: { _, _ in commits += 1 },
+            cancel: { _ in cancels += 1 }
+        ))
+        XCTAssertThrowsError(try sut.hide(target: expected.target, source: expected.source, wakeExpectation: expected))
+        XCTAssertEqual(stages, 0, "topology is revalidated after begin and before mirror staging")
+        XCTAssertEqual(commits, 0)
+        XCTAssertEqual(cancels, 1)
     }
 
     func testHideAndShowUseSharedJournalAndFakePublicWriter() throws {
@@ -315,6 +510,7 @@ final class DisplayHideTests: XCTestCase {
         let status = try controller().inspect()
 
         XCTAssertFalse(status.hasUnresolvedRecovery)
+        XCTAssertEqual(status.journal?.baselineIdentity, status.journal?.observedTopologyIdentity)
         XCTAssertEqual(try store.load().state, .verified)
         XCTAssertEqual(writerCount, 0, "observing macOS restoration must never replay Hide or Show")
     }
@@ -438,6 +634,54 @@ final class DisplayHideTests: XCTestCase {
         XCTAssertEqual(writerCount, 0)
     }
 
+    private func prepareWakeResetStatus() throws -> DisplayHideStatus {
+        let baseline = try timestampedSnapshot(Date(timeIntervalSince1970: 1_700_000_000))
+        let firstHidden = try timestampedSnapshot(Date(timeIntervalSince1970: 1_700_000_001)) { displays in
+            displays[1]["mirrorUUID"] = self.sourceUUID
+            displays[1]["active"] = false
+        }
+        let bothHidden = try timestampedSnapshot(Date(timeIntervalSince1970: 1_700_000_002)) { displays in
+            displays[1]["mirrorUUID"] = self.sourceUUID
+            displays[1]["active"] = false
+            displays[2]["mirrorUUID"] = self.sourceUUID
+            displays[2]["active"] = false
+        }
+        let removals = [
+            PublicMirrorRemoval(target: baseline.displays[1], source: baseline.displays[0],
+                                beforeOperation: baseline, state: .mirrored),
+            PublicMirrorRemoval(target: baseline.displays[2], source: baseline.displays[0],
+                                beforeOperation: firstHidden, state: .mirrored)
+        ]
+        var journal = RecoveryJournal(snapshot: baseline,
+                                      publicMirrorSession: PublicMirrorSession(baseline: baseline, removals: removals))
+        journal.state = .mirrored
+        try save(journal)
+        topology.snapshot = bothHidden
+        XCTAssertEqual(try controller().inspect().removals.filter(\.isUnresolved).count, 2)
+
+        // New capture timestamps model macOS restoring the saved baseline after wake.
+        topology.snapshot = try timestampedSnapshot(Date(timeIntervalSince1970: 1_800_000_000))
+        let status = try controller().inspect()
+        XCTAssertEqual(status.journal?.state, RecoveryState.verified.rawValue)
+        XCTAssertTrue(status.removals.allSatisfy { !$0.isUnresolved && $0.state == "restored" })
+        XCTAssertEqual(status.journal?.baselineIdentity, status.journal?.observedTopologyIdentity)
+        return status
+    }
+
+    private func wakeExpectation(_ status: DisplayHideStatus, targetUUID: String) throws -> DisplayHideWakeExpectation {
+        let journal = try XCTUnwrap(status.journal)
+        let removal = try XCTUnwrap(status.removals.first {
+            $0.target.uuid.caseInsensitiveCompare(targetUUID) == .orderedSame
+        })
+        return DisplayHideWakeExpectation(
+            journalID: journal.id,
+            journalIdentity: try XCTUnwrap(journal.journalIdentity),
+            baselineIdentity: try XCTUnwrap(journal.baselineIdentity),
+            observedTopologyIdentity: try XCTUnwrap(journal.observedTopologyIdentity),
+            target: removal.target, source: removal.source
+        )
+    }
+
     private func controller(transaction: MirrorTransaction = MirrorTransaction(),
                              restore: ((RecoverySnapshot) throws -> Void)? = nil) -> DisplayHideController {
         let mirror = MirrorController(
@@ -478,6 +722,28 @@ final class DisplayHideTests: XCTestCase {
         try store.lock()
         defer { store.unlock() }
         try store.create(journal)
+    }
+
+    private func timestampedSnapshot(
+        _ capturedAt: Date,
+        _ modify: (inout [[String: Any]]) -> Void = { _ in }
+    ) throws -> RecoverySnapshot {
+        let base = try snapshot(modify)
+        let displays = base.displays.map { display in
+            RecoveryDisplay(
+                uuid: display.uuid, id: display.id, name: display.name,
+                vendor: display.vendor, model: display.model, serial: display.serial,
+                builtin: display.builtin, main: display.main, active: display.active,
+                x: display.x, y: display.y, rotation: display.rotation, mirrorUUID: display.mirrorUUID,
+                mode: display.mode, colorSpace: display.colorSpace,
+                colorProfileDigest: display.colorProfileDigest,
+                colorProfileDateIndependentDigest: display.colorProfileDateIndependentDigest,
+                connector: display.connector,
+                identityEvidence: RecoveryIdentityEvidence(source: .syntheticFixture, capturedAt: capturedAt)
+            )
+        }
+        return RecoverySnapshot(bootSession: base.bootSession, osBuild: base.osBuild,
+                                userID: base.userID, displays: displays, hostModel: base.hostModel)
     }
 
     private func snapshot(

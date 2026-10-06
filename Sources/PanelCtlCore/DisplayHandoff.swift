@@ -111,6 +111,12 @@ public struct DisplayHandoffStatus: Equatable {
     public let observations: [DisplayHideObservation]
     public let inspectionFailure: String?
     public let mirrorTopologyVerified: Bool
+    /// Stable normalized digest of the journaled baseline, retained after inspection reconciliation.
+    public let baselineIdentity: String?
+    /// Stable journal/session digest, excluding capture-time and diagnostic-only data.
+    public let journalIdentity: String?
+    /// Stable normalized digest of the latest observation; exact checks still use RecoverySnapshot.verify.
+    public let observedTopologyIdentity: String?
     public let removals: [DisplayHandoffRemoval]
 
     public var hasUnresolvedJournal: Bool { removals.contains(where: \.isUnresolved) || state != .none }
@@ -139,6 +145,9 @@ public struct DisplayHandoffStatus: Equatable {
         observations: [DisplayHideObservation] = [],
         inspectionFailure: String? = nil,
         mirrorTopologyVerified: Bool = false,
+        baselineIdentity: String? = nil,
+        observedTopologyIdentity: String? = nil,
+        journalIdentity: String? = nil,
         removals: [DisplayHandoffRemoval] = []
     ) {
         self.state = state
@@ -153,6 +162,9 @@ public struct DisplayHandoffStatus: Equatable {
         self.observations = observations
         self.inspectionFailure = inspectionFailure
         self.mirrorTopologyVerified = mirrorTopologyVerified
+        self.baselineIdentity = baselineIdentity
+        self.observedTopologyIdentity = observedTopologyIdentity
+        self.journalIdentity = journalIdentity
         self.removals = removals
     }
 
@@ -301,7 +313,10 @@ public enum DisplayHandoff {
                 journalPath: status.journalPath, journalID: journal.id,
                 reason: journal.showRefusal ?? status.inspectionFailure,
                 recoveryCommand: nil, observations: status.observations,
-                inspectionFailure: status.inspectionFailure
+                inspectionFailure: status.inspectionFailure,
+                baselineIdentity: journal.baselineIdentity,
+                observedTopologyIdentity: journal.observedTopologyIdentity,
+                journalIdentity: journal.journalIdentity
             )
         }
         var removals = journal.removals.map { removal in
@@ -342,7 +357,10 @@ public enum DisplayHandoff {
             journalPath: status.journalPath, journalID: journal.id, reason: reason,
             canShow: unresolved.contains(where: \.canShow), recoveryCommand: recoveryCommand,
             observations: status.observations, inspectionFailure: status.inspectionFailure,
-            mirrorTopologyVerified: journal.mirrorTopologyVerified, removals: removals
+            mirrorTopologyVerified: journal.mirrorTopologyVerified,
+            baselineIdentity: journal.baselineIdentity,
+            observedTopologyIdentity: journal.observedTopologyIdentity,
+            journalIdentity: journal.journalIdentity, removals: removals
         )
     }
 }
@@ -356,6 +374,7 @@ struct HandoffController {
     var report: (String) -> Void = { print($0) }
 
     func guardedAway(target: DisplayHideIdentity, source: DisplayHideIdentity, input: UInt8?,
+                     wakeExpectation: DisplayHideWakeExpectation? = nil,
                      store: RecoveryStore) throws -> DisplayInputOutcome {
         var inputOutcome = input.map {
             DisplayInputOutcome(state: .notAttempted, requestedInput: $0,
@@ -367,7 +386,8 @@ struct HandoffController {
                 source: source.uuid,
                 store: store,
                 expectedTarget: target,
-                expectedSource: source
+                expectedSource: source,
+                wakeExpectation: wakeExpectation
             ) { capturedTarget in
                 guard input != nil else { return }
                 let outcome = selectInput(input, target: capturedTarget)

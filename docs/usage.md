@@ -95,7 +95,7 @@ The menu also offers per-display Hide/Show; each Show leaves other removed
 displays untouched. **Show and Quit** restores each healthy removed target in
 turn and quits only after all succeed. Results stay inline, including
 input-switch warnings; ordinary Hide/Show has no per-operation confirmation.
-Private disconnect is separate and requires its own scoped consent each time.
+Full disconnect (experimental) is separate and requires its own scoped consent each time.
 See [Hide styles and safety boundaries](display-hide-ux.md).
 
 ![Displays tab with experimental removal setup](displays.png)

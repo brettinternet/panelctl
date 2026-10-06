@@ -195,9 +195,9 @@ This planned style needs its own implementation and supervised qualification;
 the [power protocol](ddc-power.md#supervised-qualification-protocol) separates
 software results, visible behavior, DDC wake and physical recovery.
 
-### Private disconnect
+### Full disconnect
 
-The separate **Private disconnect · Experimental** section in Displays does
+The separate **Full disconnect · Experimental** section in Displays does
 not change either Hide style. It appears only for the qualified display while
 Experimental features are on, or while a disconnect journal exists. It supports only the recorded Dell/firmware/host/
 build/connection, requires fresh per-operation consent, and holds a fixed

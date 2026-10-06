@@ -27,8 +27,8 @@ final class ExperimentalDisconnectTests: XCTestCase {
         XCTAssertNil(production.syntheticSession)
         XCTAssertFalse(production.canDisconnect)
         XCTAssertFalse(production.canReconnect)
-        XCTAssertTrue(production.detail.contains("15 seconds"))
-        XCTAssertTrue(production.detail.contains("one monitor only"))
+        XCTAssertTrue(production.detail.contains("private macOS API"))
+        XCTAssertTrue(production.detail.contains("only for the tested Dell"))
         for command in ["disconnect", "reconnect", "experimental-disconnect"] {
             let payload = Data("{\"protocol\":1,\"command\":\"\(command)\"}".utf8)
             XCTAssertThrowsError(try JSONDecoder().decode(AppControlRequest.self, from: payload))

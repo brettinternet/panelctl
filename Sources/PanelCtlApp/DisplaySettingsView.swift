@@ -52,6 +52,7 @@ struct DisplaySettingsView: View {
                 }
             }
             .formStyle(.grouped)
+            .disclosureGroupStyle(FullRowDisclosureGroupStyle())
             // Another display is another page: replace its controls instead of
             // animating one display's settings into the next.
             .id(selected?.id)
@@ -77,6 +78,9 @@ struct DisplaySettingsView: View {
             if let result = model.displayResults[tile.id] {
                 if !result.succeeded {
                     resultLabel(result.message, attention: true)
+                    if result.message.hasPrefix("PanelCtl didn’t re-hide this display after waking.") {
+                        Button("Open Displays Settings") { openDisplaysSettings() }
+                    }
                 }
                 if let input = result.inputMessage, !result.inputWarningDismissed {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -142,7 +146,7 @@ struct DisplaySettingsView: View {
             ProgressView()
                 .controlSize(.small)
         } else if let action = tile.action, let uuid = tile.uuid {
-            let title = action == .hide ? "Hide" : "Show"
+            let title = action == .hide ? "Hide" : tile.status == .needsRecovery ? "Restore" : "Show"
             Button(title) {
                 if action == .hide {
                     model.hide(targetUUID: uuid)
@@ -426,6 +430,16 @@ struct DisplaySettingsView: View {
 
     private func recoveryDetails(_ status: DisplayHandoffStatus, targetUUID: String? = nil) -> some View {
         DisclosureGroup("Recovery details") {
+            if status.state == .recovery {
+                Text("If a guarded Restore is refused, keep the journal, correct mirroring and arrangement in System Settings → Displays, then Check Again.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button("Open Displays Settings") { openDisplaysSettings() }
+                    Button("Check Again") { model.refreshDisplays() }
+                }
+            }
             copyRow("Journal", status.journalPath)
             if let selected = targetUUID.flatMap({ status.removal(for: $0) }) {
                 removalDetails(selected)
@@ -468,6 +482,11 @@ struct DisplaySettingsView: View {
                 Text(reason).foregroundStyle(.orange).textSelection(.enabled)
             }
         }
+    }
+
+    private func openDisplaysSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Displays-Settings.extension") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private func shellQuote(_ value: String) -> String {

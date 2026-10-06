@@ -201,6 +201,61 @@ struct RecoveryJournal: Codable {
     }
 }
 
+private struct StablePublicMirrorRemovalIdentity: Codable {
+    let id: UUID
+    let targetUUID: String
+    let targetID: UInt32
+    let sourceUUID: String
+    let sourceID: UInt32
+    let beforeOperationIdentity: String?
+    let state: String
+    let failure: String?
+    let restoreFromIdentity: String?
+}
+
+private struct StablePublicMirrorSessionIdentity: Codable {
+    let version: Int
+    let baselineIdentity: String?
+    let removals: [StablePublicMirrorRemovalIdentity]
+}
+
+private struct StableMirrorJournalIdentity: Codable {
+    let id: UUID
+    let state: String
+    let trigger: String?
+    let failure: String?
+    let baselineIdentity: String?
+    let sessionIdentity: String?
+    let mirrorTargetID: UInt32?
+    let mirrorSourceID: UInt32?
+}
+
+extension RecoveryJournal {
+    func wakeResumeIdentity() -> String? {
+        let sessionIdentity = publicMirrorSession.flatMap { session -> String? in
+            let stable = StablePublicMirrorSessionIdentity(
+                version: session.version,
+                baselineIdentity: session.baseline.stableTopologyIdentity(),
+                removals: session.removals.map { removal in
+                    StablePublicMirrorRemovalIdentity(
+                        id: removal.id, targetUUID: removal.targetUUID, targetID: removal.targetID,
+                        sourceUUID: removal.sourceUUID, sourceID: removal.sourceID,
+                        beforeOperationIdentity: removal.beforeOperation.stableTopologyIdentity(),
+                        state: removal.state.rawValue, failure: removal.failure,
+                        restoreFromIdentity: removal.restoreFrom?.stableTopologyIdentity()
+                    )
+                }
+            )
+            return stableRecoveryDigest(stable)
+        }
+        return stableRecoveryDigest(StableMirrorJournalIdentity(
+            id: id, state: state.rawValue, trigger: trigger, failure: failure,
+            baselineIdentity: (publicMirrorSession?.baseline ?? snapshot).stableTopologyIdentity(),
+            sessionIdentity: sessionIdentity, mirrorTargetID: mirrorTargetID, mirrorSourceID: mirrorSourceID
+        ))
+    }
+}
+
 /// A private directory, atomic replacement, explicit fsync, and an advisory
 /// process-held lock. Unresolved journals cannot be overwritten by a new trial.
 final class RecoveryStore {
