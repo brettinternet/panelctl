@@ -151,7 +151,8 @@ final class CLIParserTests: XCTestCase {
         XCTAssertTrue(options.hiddenMirrorSourceUUIDs.isEmpty)
         XCTAssertNoThrow(try BlackoutController.validateOptions(options))
         for extra in [["--dim-to", "0"], ["--sleep-after", "30"], ["--all"],
-                      ["--mode", "working"], ["--blackout-empty-displays"], ["--caffeinate"]] {
+                      ["--mode", "working"], ["--blackout-empty-displays"], ["--caffeinate"],
+                      ["--panelctl-removal-session-overlay"]] {
             XCTAssertThrowsError(try CLIParser.parse(arguments + extra))
         }
         XCTAssertThrowsError(try CLIParser.parse(Array(arguments.dropLast(2))))

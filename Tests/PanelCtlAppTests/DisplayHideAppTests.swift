@@ -124,9 +124,11 @@ final class DisplayHideAppTests: XCTestCase {
     }
 
     func testRemainingDisplaysRunBoundedOverlaysAndPauseOnRecovery() async throws {
-        for selected in [[Self.targetUUID, Self.sourceUUID],
-                         [Self.targetUUID, Self.mainUUID],
-                         [Self.targetUUID, Self.sourceUUID, Self.mainUUID]] {
+        // nil saved selection means All displays with a stale saved selection of main only.
+        for (selected, saved) in [([Self.targetUUID, Self.sourceUUID], nil),
+                                  ([Self.targetUUID, Self.mainUUID], nil),
+                                  ([Self.targetUUID, Self.sourceUUID, Self.mainUUID], nil),
+                                  ([Self.targetUUID, Self.sourceUUID, Self.mainUUID], [Self.mainUUID])] {
             let directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("panelctl-remaining-overlay-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
@@ -138,7 +140,8 @@ final class DisplayHideAppTests: XCTestCase {
             var preferences = ProtectionPreferences()
             preferences.isEnabled = true
             preferences.didChooseDisplays = true
-            preferences.selectedDisplayUUIDs = Set(selected)
+            preferences.selectedDisplayUUIDs = Set(saved ?? selected)
+            preferences.allDisplays = saved != nil
             preferences.followUpAction = .sleepDisplays
             defaults.set(try JSONEncoder().encode(preferences), forKey: "blackoutPreferences")
             setenv("PANELCTL_HELPER", helper.path, 1)

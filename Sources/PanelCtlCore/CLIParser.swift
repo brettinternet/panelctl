@@ -642,6 +642,9 @@ public enum CLIParser {
                 guard !deferCamera else { throw CLIParseError.duplicateOption("--defer-camera") }
                 deferCamera = true
             case "--panelctl-removal-session-overlay":
+                guard !removalSessionOverlay else {
+                    throw CLIParseError.duplicateOption("--panelctl-removal-session-overlay")
+                }
                 removalSessionOverlay = true
             case "--panelctl-hidden-mirror-source":
                 i += 1

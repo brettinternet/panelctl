@@ -1020,7 +1020,11 @@ final class AppModel: ObservableObject {
                 return $0.active && $0.online && !$0.asleep && ruleTargets(rule, uuid: uuid) && !isBlackoutHidden(uuid)
             }
             let targetUUIDs = Set(targets.compactMap(\.uuid).map { $0.lowercased() })
-            let skipped = rule.settings.selectedDisplayUUIDs.filter { !targetUUIDs.contains($0.lowercased()) }.count
+            // All displays ignores any stale saved selection.
+            let candidates = rule.settings.allDisplays
+                ? Set(displays.compactMap(\.uuid).map { $0.lowercased() })
+                : Set(rule.settings.selectedDisplayUUIDs.map { $0.lowercased() })
+            let skipped = candidates.subtracting(targetUUIDs).count
             var details: [String] = []
             if skipped > 0 {
                 details.append("on " + targets.map(\.settingsName).joined(separator: ", "))
