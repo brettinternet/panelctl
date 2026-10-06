@@ -90,6 +90,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var runningDisplayActionIDs: Set<UUID> = []
     @Published private(set) var runningDisplayAction: AppControlRunningAction?
     private var runningActionInterrupted = false
+    private var actionTopologyWriteInProgress = false
     private var preflightingDisplayAction = false
     private var lastDisplayActionFinished: ContinuousClock.Instant?
     private var deferredActionHiddenDisplayReconciliation = false
@@ -2407,7 +2408,11 @@ final class AppModel: ObservableObject {
                 summary = onlyStep.desktopSummary
             } else if let stoppingAtIndex {
                 let stopped = stepResults.first(where: { $0.index == stoppingAtIndex })
-                summary = "Action stopped at Step \(stoppingAtIndex) of \(action.steps.count): \(stopped?.desktopSummary ?? "the step did not complete")"
+                if stopped?.outcome == .done || stopped?.outcome == .noOp {
+                    summary = "Action interrupted after Step \(stoppingAtIndex) of \(action.steps.count): displays are sleeping or changing."
+                } else {
+                    summary = "Action stopped at Step \(stoppingAtIndex) of \(action.steps.count): \(stopped?.desktopSummary ?? "the step did not complete")"
+                }
             } else {
                 summary = aggregate == .done ? "Action completed; steps ran in order." :
                     aggregate == .noOp ? "Action is already at the requested state." : "Action ended with \(aggregate.rawValue)."
@@ -2549,7 +2554,8 @@ final class AppModel: ObservableObject {
                     inputOutcome: result.inputOutcome?.state, inputDetail: input
                 ))
                 if resultOutcome == .done || resultOutcome == .noOp {
-                    if self.runningActionInterrupted || self.displayLifecycleTransitioning {
+                    if offset + 1 < action.steps.count &&
+                        (self.runningActionInterrupted || self.displayLifecycleTransitioning) {
                         stoppingOutcome = .partial
                         stoppingAtIndex = offset + 1
                         appendNotRun(from: offset + 1)
@@ -2858,6 +2864,19 @@ final class AppModel: ObservableObject {
             // Out-of-order duplicate notifications restart, never shorten, the settle window.
             scheduleSleepWakeSettlement()
         }
+    }
+
+    func displayParametersChanged() {
+        // Screen notifications during Remove/Show are not cancellation. Do not
+        // inspect an intermediate journal here: the writer verifies its result,
+        // and the next step refreshes and revalidates before doing any work.
+        // Sleep/wake/unlock still take the lifecycle path and latch interruption.
+        guard !actionTopologyWriteInProgress else { return }
+        // AppKit may deliver the notification after the writer has returned.
+        // If it matches our latest verified inventory, nothing new changed.
+        // Real inventory changes outside the writer still interrupt the run.
+        if runningDisplayAction != nil, displayProvider() == displays { return }
+        displayConfigurationChanged(restartWatcher: true)
     }
 
     func displayConfigurationChanged(restartWatcher: Bool) {
@@ -3867,9 +3886,14 @@ final class AppModel: ObservableObject {
                   request == hideRequest(target: configuration.target, source: source, configuration: configuration) else {
                 throw DisplayHideError.identityChanged("The displays or Hide settings changed before Hide began. Try again.")
             }
-            let inputOutcome = try hideDisplay(
-                coreIdentity(request.target), coreIdentity(request.source), request.awayInput
-            )
+            let inputOutcome: DisplayInputOutcome
+            do {
+                actionTopologyWriteInProgress = actionLeaseID != nil
+                defer { actionTopologyWriteInProgress = false }
+                inputOutcome = try hideDisplay(
+                    coreIdentity(request.target), coreIdentity(request.source), request.awayInput
+                )
+            }
             returnedInputOutcome = inputOutcome
             displays = displayProvider()
             refreshHandoffStatus()
@@ -3938,7 +3962,12 @@ final class AppModel: ObservableObject {
         do {
             let showKey = request.status.removals.count > 1
                 ? "\(expectedJournalID)|\(request.targetUUID)" : expectedJournalID
-            let inputOutcome = try showDisplay(showKey, request.returnInput)
+            let inputOutcome: DisplayInputOutcome
+            do {
+                actionTopologyWriteInProgress = actionLeaseID != nil
+                defer { actionTopologyWriteInProgress = false }
+                inputOutcome = try showDisplay(showKey, request.returnInput)
+            }
             returnedInputOutcome = inputOutcome
             displays = displayProvider()
             refreshHandoffStatus()

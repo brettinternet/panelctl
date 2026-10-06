@@ -168,7 +168,7 @@ struct AutomationSettingsView: View {
 
     @ViewBuilder
     private func actionStepResult(_ step: AppControlActionStepResult) -> some View {
-        let attention = [.refused, .busy, .failed, .partial, .recoveryNeeded].contains(step.outcome) || step.inputDetail != nil
+        let attention = DisplayActionPresentation.stepNeedsAttention(step)
         let desktopState = desktopStateText(for: step)
         let reasonPrefix = "Step \(step.index): "
         let desktopDetail = step.desktopSummary.hasPrefix(reasonPrefix)
@@ -177,7 +177,7 @@ struct AutomationSettingsView: View {
             rowStatus("Step \(step.index): \(desktopState) · \(desktopDetail)", warning: attention)
             if let input = step.inputOutcome {
                 rowStatus("Input: \(input.rawValue)\(step.inputDetail.map { " · \($0)" } ?? "")",
-                          warning: step.outcome == .partial || step.outcome == .failed || step.outcome == .recoveryNeeded)
+                          warning: attention)
             } else if let inputDetail = step.inputDetail {
                 rowStatus("Input: \(inputDetail)", warning: true)
             }

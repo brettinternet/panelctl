@@ -105,6 +105,10 @@ available after setup changes or Experimental features are turned off.
 Execution is sequential and non-atomic. The first refusal, failure, partial
 input result, recovery need or lifecycle interruption stops the later steps;
 earlier changes remain and ordinary tile/menu Show and recovery stay available.
+Screen-parameter notifications during an Action's own Remove/Show writer do not
+cancel the run: the operation must still verify, and the next step rechecks fresh
+identity and recovery state. Sleep/wake and session transitions still interrupt.
+Successful steps and verified input details are informational, not warnings.
 Automation helpers are stopped at most once for the run, remain stopped between
 steps, and are reconciled once at the end. A run-level lease makes competing
 Hide/Show/toggle requests, other Action runs, cleanup retry, Full disconnect,

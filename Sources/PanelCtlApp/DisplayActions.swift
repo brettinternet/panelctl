@@ -203,6 +203,12 @@ struct DisplayActionReviewChange: Equatable {
 }
 
 enum DisplayActionPresentation {
+    static func stepNeedsAttention(_ step: AppControlActionStepResult) -> Bool {
+        [.refused, .busy, .failed, .partial, .recoveryNeeded].contains(step.outcome) ||
+            step.inputOutcome.map { [.failed, .skipped, .unverified, .notAttempted].contains($0) } == true ||
+            ((step.inputOutcome == nil || step.inputOutcome == .notRequested) && step.inputDetail != nil)
+    }
+
     static func summary(for action: DisplayAction, displays: [DisplayRecord]) -> String {
         let summaries = action.steps.enumerated().map { index, step in
             let text = summary(for: step, displays: displays)

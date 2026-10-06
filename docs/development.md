@@ -42,7 +42,8 @@ PANELCTL_SETTINGS_FIXTURE_OUTPUT=/tmp/panelctl-settings swift test --disable-san
 
 `testDisplayActionFixtureSnapshots` writes both 680- and 440-point Automation
 Actions lists and production Action editor sheets. It shows one-step and
-multi-step rows, a running Action, a partial result, a default Hide (black out)
+multi-step rows, a successful result with verified input (no warning), a running
+Action, a partial result, a default Hide (black out)
 draft, missing Remove setup, and mixed steps with setup drift and a step
 conflict. `testDefaultDisplayActionEditorShowsMissingRemovalSetupAndNavigatesToSelectedDisplay`
 exercises the production editor's setup guidance and Displays navigation;

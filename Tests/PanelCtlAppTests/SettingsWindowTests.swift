@@ -527,6 +527,61 @@ final class SettingsWindowTests: XCTestCase {
             window.setContentSize(NSSize(width: width, height: 1080))
             try writeSnapshot(of: window, to: output, name: "actions-list-\(width)")
 
+            let successSuite = "panelctl-display-action-success-\(UUID().uuidString)"
+            let successDefaults = try XCTUnwrap(UserDefaults(suiteName: successSuite))
+            defer { successDefaults.removePersistentDomain(forName: successSuite) }
+            let successAction = DisplayAction(name: "Show displays — verified input", steps: [
+                DisplayActionStep(target: target, effect: .show),
+                DisplayActionStep(target: main, effect: .show)
+            ])
+            successDefaults.set(try JSONEncoder().encode(DisplayActionSet(actions: [successAction])), forKey: AppModel.displayActionsKey)
+            let hidden = hiddenStatus()
+            var successStatus = DisplayHandoffStatus(
+                state: .hidden, target: hidden.target, source: hidden.source,
+                journalPath: Self.journalPath, journalID: hidden.journalID,
+                canShow: true, observations: hidden.observations, mirrorTopologyVerified: true,
+                removals: [DisplayHandoffRemoval(
+                    id: "fixture-removal", target: try XCTUnwrap(hidden.target), source: try XCTUnwrap(hidden.source),
+                    state: "mirrored", isUnresolved: true, canShow: true, reason: nil, topologyVerified: true
+                )]
+            )
+            let successModel = AppModel(
+                defaults: successDefaults,
+                displayProvider: { self.displays }, idleSecondsProvider: { nil },
+                isDisplayMirrored: { _ in false }, inspectHandoff: { successStatus },
+                showDisplay: { _, _ in
+                    successStatus = DisplayHandoffStatus(state: .none, journalPath: Self.journalPath)
+                    return DisplayInputOutcome(state: .verified, requestedInput: 0x0F, observedInput: 0x0F)
+                },
+                coverDisplays: { _ in [] }, quiesceProtection: { $0(true, nil) }
+            )
+            if successModel.protectionQuiescencePending {
+                let ready = expectation(description: "fixture recovery cleanup settles")
+                successModel.onStatusChange = {
+                    if !successModel.protectionQuiescencePending {
+                        successModel.onStatusChange = nil
+                        ready.fulfill()
+                    }
+                }
+                await fulfillment(of: [ready], timeout: 2)
+            }
+            let successFinished = expectation(description: "verified input Action completes")
+            successModel.runDisplayAction(id: successAction.id) { response in
+                XCTAssertEqual(response.outcome, .done, response.summary)
+                XCTAssertEqual(response.steps?.map(\.outcome), [.done, .noOp])
+                XCTAssertNotNil(response.steps?.first?.inputDetail)
+                XCTAssertTrue(response.steps?.allSatisfy { !DisplayActionPresentation.stepNeedsAttention($0) } == true)
+                successFinished.fulfill()
+            }
+            await fulfillment(of: [successFinished], timeout: 2)
+            let successController = SettingsWindowController(model: successModel)
+            successController.present()
+            successController.select(.automation)
+            let successWindow = try XCTUnwrap(successController.window)
+            successWindow.setContentSize(NSSize(width: width, height: 720))
+            try writeSnapshot(of: successWindow, to: output, name: "actions-success-\(width)")
+            successWindow.close()
+
             let progressSuite = "panelctl-display-action-progress-\(UUID().uuidString)"
             let progressDefaults = try XCTUnwrap(UserDefaults(suiteName: progressSuite))
             defer { progressDefaults.removePersistentDomain(forName: progressSuite) }

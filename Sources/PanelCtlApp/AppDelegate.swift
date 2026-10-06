@@ -920,6 +920,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             model.displayWakeObserved(screensAwake: true)
             return
         }
+        if notification.name == NSApplication.didChangeScreenParametersNotification {
+            model.displayParametersChanged()
+            return
+        }
         // AppKit can retain stale display coordinate transforms after a display
         // transition. Replace the helper's WindowServer connection; the service
         // rearms the idle interval so replacement cannot cause a blackout.

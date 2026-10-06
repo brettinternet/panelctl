@@ -1138,6 +1138,172 @@ final class DisplayActionAppTests: XCTestCase {
         XCTAssertFalse(model.isRemovedDisplay(targetUUID), "completed Show state remains available after the later step is skipped")
     }
 
+    func testActionTopologyNotificationsContinueAfterVerifiedRemoveAndShow() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let box = StatusBox(noneStatus())
+        var model: AppModel!
+        var writes: [String] = []
+        model = makeModel(
+            defaults: defaults, box: box,
+            hide: { _, _, input in
+                writes.append("hide")
+                model.displayParametersChanged()
+                box.value = self.hiddenStatus()
+                return DisplayInputOutcome(state: .verified, requestedInput: input)
+            },
+            show: { _, input in
+                writes.append("show")
+                model.displayParametersChanged()
+                box.value = self.noneStatus()
+                return DisplayInputOutcome(state: .verified, requestedInput: input)
+            },
+            cover: { _ in writes.append("cover"); return [] }
+        )
+        var lateNotifications = 0
+        model.onStatusChange = {
+            if model.runningDisplayAction?.currentStep == 2 {
+                lateNotifications += 1
+                model.displayParametersChanged()
+            }
+        }
+        var remove = try saveRemovalAction(on: model)
+        remove.steps.append(DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == sourceUUID }))))
+        try model.saveDisplayAction(remove, replacing: remove.id)
+        let hidden = await run(model, id: remove.id)
+        XCTAssertEqual(hidden.outcome, .done)
+        XCTAssertEqual(hidden.steps?.map(\.outcome), [.done, .done])
+        XCTAssertEqual(writes.prefix(2), ["hide", "cover"])
+
+        let show = DisplayAction(name: "Show both", steps: remove.steps.map {
+            DisplayActionStep(target: $0.target, effect: .show)
+        })
+        try model.saveDisplayAction(show)
+        let shown = await run(model, id: show.id)
+        XCTAssertEqual(shown.outcome, .done)
+        XCTAssertEqual(shown.steps?.map(\.outcome), [.done, .done])
+        XCTAssertFalse(model.isBlackoutHidden(sourceUUID))
+        XCTAssertFalse(model.isRemovedDisplay(targetUUID))
+        XCTAssertGreaterThanOrEqual(lateNotifications, 2, "late own notifications must not cancel either run")
+        model.onStatusChange = nil
+    }
+
+    func testSleepDuringTopologyWriteStillStopsAction() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let box = StatusBox(noneStatus())
+        var model: AppModel!
+        model = makeModel(defaults: defaults, box: box, hide: { _, _, _ in
+            model.displayParametersChanged()
+            model.beginDisplaySleepTransition()
+            box.value = self.hiddenStatus()
+            return .notRequested
+        })
+        var action = try saveRemovalAction(on: model)
+        action.steps.append(DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == sourceUUID }))))
+        try model.saveDisplayAction(action, replacing: action.id)
+        let result = await run(model, id: action.id)
+        XCTAssertEqual(result.outcome, .partial)
+        XCTAssertEqual(result.steps?.map(\.outcome), [.done, .notRun])
+        XCTAssertTrue(result.summary.contains("interrupted after Step 1"))
+        XCTAssertTrue(result.summary.contains("sleeping or changing"))
+        XCTAssertFalse(model.isBlackoutHidden(sourceUUID))
+        XCTAssertTrue(model.isRemovedDisplay(targetUUID))
+    }
+
+    func testTopologyNotificationDoesNotBypassFreshIdentityChecks() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let box = StatusBox(noneStatus())
+        let inventory = DisplayRecordsBox(displays)
+        var model: AppModel!
+        model = makeModel(defaults: defaults, box: box, displayProvider: { inventory.value }, hide: { _, _, _ in
+            inventory.value.removeAll { $0.uuid == self.sourceUUID }
+            model.displayParametersChanged()
+            box.value = self.hiddenStatus()
+            return .notRequested
+        })
+        var action = try saveRemovalAction(on: model)
+        action.steps.append(DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == sourceUUID }))))
+        try model.saveDisplayAction(action, replacing: action.id)
+        let result = await run(model, id: action.id)
+        XCTAssertEqual(result.outcome, .partial)
+        XCTAssertEqual(result.steps?.map(\.outcome), [.done, .refused])
+        XCTAssertTrue(result.steps?.last?.desktopSummary.contains("identity changed") == true)
+        XCTAssertFalse(model.isBlackoutHidden(sourceUUID))
+    }
+
+    func testChangedInventoryNotificationBetweenStepsStillInterrupts() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let box = StatusBox(noneStatus())
+        let inventory = DisplayRecordsBox(displays)
+        let model = makeModel(defaults: defaults, box: box, displayProvider: { inventory.value }, hide: { _, _, _ in
+            box.value = self.hiddenStatus()
+            return .notRequested
+        })
+        var action = try saveRemovalAction(on: model)
+        action.steps.append(DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == sourceUUID }))))
+        try model.saveDisplayAction(action, replacing: action.id)
+        model.onStatusChange = {
+            if model.runningDisplayAction?.currentStep == 2 {
+                model.onStatusChange = nil
+                inventory.value.removeAll { $0.uuid == self.alternateUUID }
+                model.displayParametersChanged()
+            }
+        }
+        let result = await run(model, id: action.id)
+        XCTAssertEqual(result.outcome, .partial)
+        XCTAssertEqual(result.steps?.map(\.outcome), [.done, .refused])
+        XCTAssertTrue(result.steps?.last?.desktopSummary.contains("interrupted") == true)
+        XCTAssertFalse(model.isBlackoutHidden(sourceUUID))
+    }
+
+    func testInterruptionAfterFinalSuccessfulStepDoesNotContradictSuccess() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var model: AppModel!
+        var interrupted = false
+        model = makeModel(defaults: defaults, cover: { _ in
+            if !interrupted {
+                interrupted = true
+                model.displayConfigurationChanged(restartWatcher: true)
+            }
+            return []
+        })
+        let action = try saveBlackOutAction(on: model)
+        let result = await run(model, id: action.id)
+        XCTAssertEqual(result.outcome, .done)
+        XCTAssertEqual(result.steps?.map(\.outcome), [.done])
+        XCTAssertFalse(result.summary.contains("interrupted"))
+        XCTAssertFalse(result.summary.contains("stopped"))
+    }
+
+    func testSuccessfulInputDetailsAreNotWarnings() {
+        for input in [DisplayInputOutcome.State.verified, .alreadySelected] {
+            let step = AppControlActionStepResult(index: 1, targetUUID: targetUUID, effect: "show",
+                outcome: .done, desktopSummary: "Shown.", inputOutcome: input, inputDetail: "Successful input result.")
+            XCTAssertFalse(DisplayActionPresentation.stepNeedsAttention(step))
+        }
+        let omitted = AppControlActionStepResult(index: 1, targetUUID: targetUUID, effect: "show",
+            outcome: .done, desktopSummary: "Shown.", inputOutcome: .notRequested,
+            inputDetail: "Didn’t switch the monitor input: invalid saved input.")
+        XCTAssertTrue(DisplayActionPresentation.stepNeedsAttention(omitted))
+        let notRequested = AppControlActionStepResult(index: 1, targetUUID: targetUUID, effect: "show",
+            outcome: .done, desktopSummary: "Shown.", inputOutcome: .notRequested)
+        XCTAssertFalse(DisplayActionPresentation.stepNeedsAttention(notRequested))
+        for outcome in [AppControlOutcome.partial, .failed, .refused, .busy, .recoveryNeeded] {
+            let step = AppControlActionStepResult(index: 1, targetUUID: targetUUID, effect: "show",
+                outcome: outcome, desktopSummary: "Needs attention.")
+            XCTAssertTrue(DisplayActionPresentation.stepNeedsAttention(step))
+        }
+        for input in [DisplayInputOutcome.State.failed, .skipped, .unverified, .notAttempted] {
+            let step = AppControlActionStepResult(index: 1, targetUUID: targetUUID, effect: "show",
+                outcome: .partial, desktopSummary: "Shown.", inputOutcome: input)
+            XCTAssertTrue(DisplayActionPresentation.stepNeedsAttention(step))
+        }
+    }
+
     func testDisplayReconfigurationInterruptsAfterCompletedStepWithoutUndoingIt() async throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
@@ -1164,6 +1330,8 @@ final class DisplayActionAppTests: XCTestCase {
         let result = await run(model, id: action.id)
         XCTAssertEqual(result.outcome, .partial)
         XCTAssertEqual(result.steps?.map(\.outcome), [.done, .notRun])
+        XCTAssertTrue(result.summary.contains("interrupted after Step 1"))
+        XCTAssertTrue(result.summary.contains("sleeping or changing"))
         XCTAssertEqual(coverRequests, [[202], [202]], "completion replays deferred hidden-display safety reconciliation after the lifecycle transition")
         XCTAssertTrue(model.isBlackoutHidden(targetUUID), "a completed Hide is not rolled back on lifecycle interruption")
         XCTAssertFalse(model.isBlackoutHidden(sourceUUID))
