@@ -22,8 +22,8 @@ without explicit permission.
 
 Read `docs/display-disable.md` for canonical direction and
 `docs/display-disable-tool-survey.md` for evidence. Start with TASK-1, bounded
-offline ABI verification. TASK-2 reconciles existing `recovery-enable` work;
-do not duplicate its journal/helper or assume ownership of its worktree.
+offline ABI verification. The unadopted `recovery-enable`
+research branch is preserved only as the local tag `archive/recovery-enable`.
 
 TASK-1 through TASK-8 authorize offline implementation/validation only, using
 fake writers and no-write rehearsals. No private setter invocation (even enable
