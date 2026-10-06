@@ -66,6 +66,11 @@ The last recovery entry is retained until the **whole** baseline verifies. If
 a failed final Show has already cleared mirroring but left a mode or origin
 wrong, explicit Show or selected `restore` can repair that layout after the
 same identity checks; inspection and `verify` never retry the display writer.
+A failed partial Show that already cleared its target's mirror also permits an
+explicit target-only layout repair, but only while sibling topology and previous
+restorations verify. Exact target mode/origin/main verification still gates input
+return. See the [multi-display trial](display-multi-removal-trial.md) for the
+observed four-pixel origin mismatch; it is not a qualified round trip.
 
 Private disable refuses while any public removal is unresolved, and a public
 removal refuses while a private-disable journal is unresolved. Legacy

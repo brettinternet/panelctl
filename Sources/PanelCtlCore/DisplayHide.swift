@@ -403,13 +403,16 @@ public struct DisplayHideController {
                 observedSource?.mirrorUUID == nil && targetRecord?.online == true &&
                 targetRecord?.asleep == false && sourceRecord?.online == true &&
                 sourceRecord?.active == true && sourceRecord?.asleep == false
-            let canRepairFinalLayout = !removal.state.resolved &&
-                MirrorSessionTopology.canRepairFinalLayout(
+            let canRepairLayout = !removal.state.resolved &&
+                (MirrorSessionTopology.canRepairFinalLayout(
                     baseline: session.baseline, removals: session.removals, current: current
-                ) && targetRecord?.online == true && targetRecord?.asleep == false &&
+                ) || MirrorSessionTopology.canRepairTargetLayout(
+                    baseline: session.baseline, removals: session.removals,
+                    targetUUID: removal.targetUUID, current: current
+                )) && targetRecord?.online == true && targetRecord?.asleep == false &&
                 sourceRecord?.online == true && sourceRecord?.active == true && sourceRecord?.asleep == false
             let canShow = modeFailure == nil &&
-                ((removal.state == .mirrored && sessionVerified && relationVerified) || canRepairFinalLayout)
+                ((removal.state == .mirrored && sessionVerified && relationVerified) || canRepairLayout)
             let refusal: String?
             if canShow {
                 refusal = nil

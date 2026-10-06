@@ -339,6 +339,63 @@ final class DisplayMirroringTests: XCTestCase {
         }
     }
 
+    func testPartialShowOriginMismatchAllowsOnlyExplicitTargetRepair() throws {
+        let baseline = try changedSnapshot(sessionSnapshot([:], includeFourth: true)) { $0[1]["y"] = -4 }
+        var current = try sessionSnapshot([2: 1, 3: 1], includeFourth: true)
+        let removals = [2, 3].map { index in
+            PublicMirrorRemoval(target: baseline.displays[index - 1], source: baseline.displays[0],
+                                beforeOperation: baseline, state: .mirrored)
+        }
+        var journal = RecoveryJournal(snapshot: baseline, publicMirrorSession:
+            PublicMirrorSession(baseline: baseline, removals: removals))
+        journal.state = .mirrored
+        let scenarioStore = RecoveryStore(url: directory.appendingPathComponent("partial-origin-repair.json"))
+        try scenarioStore.lock(); try scenarioStore.create(journal); scenarioStore.unlock()
+        let operation = RecoveryStore(url: directory.appendingPathComponent("partial-origin-operation"))
+        var writes = 0
+        var inputCalls = 0
+        let sut = MirrorController(
+            records: { self.records(current) }, operationLock: { operation },
+            engine: RecoveryEngine(capture: { current }, apply: { _ in XCTFail("never restore siblings") }, convergencePause: {}),
+            preflightModes: { _ in }, restoreTarget: { _, targetUUID, revalidate, _ in
+                try revalidate()
+                XCTAssertEqual(targetUUID, self.snapshotUUID(2))
+                let siblingBefore = current.displays[2]
+                writes += 1
+                if writes == 1 {
+                    // Observed macOS result: mirror cleared and mode restored,
+                    // but the target's -4 origin became 0. Do not report success.
+                    current = try self.sessionSnapshot([3: 1], includeFourth: true)
+                } else {
+                    XCTAssertNil(current.displays[1].mirrorUUID)
+                    current = try self.changedSnapshot(current) { $0[1]["y"] = -4 }
+                }
+                XCTAssertEqual(current.displays[2], siblingBefore)
+            })
+        XCTAssertThrowsError(try sut.unmirror(store: scenarioStore, selector: snapshotUUID(2),
+                                             afterRestore: { _ in inputCalls += 1 }))
+        let inspector = DisplayHideController(store: scenarioStore, mirror: sut, operationLock: { operation })
+        let status = try inspector.inspect()
+        XCTAssertEqual(status.removals.first?.state, "needsAttention")
+        XCTAssertEqual(status.removals.first?.canShow, true)
+        XCTAssertThrowsError(try sut.verifyRemoval(store: scenarioStore, selector: snapshotUUID(2)))
+        XCTAssertEqual(writes, 1)
+        XCTAssertEqual(inputCalls, 0)
+        let persisted = try XCTUnwrap(scenarioStore.load().publicMirrorSession)
+        let wrongSibling = try changedSnapshot(current) { $0[2]["mirrorUUID"] = self.snapshotUUID(4) }
+        XCTAssertFalse(MirrorSessionTopology.canRepairTargetLayout(
+            baseline: baseline, removals: persisted.removals, targetUUID: snapshotUUID(2), current: wrongSibling))
+        let wrongIdentity = try changedSnapshot(current) { $0[1]["serial"] = 999 }
+        XCTAssertFalse(MirrorSessionTopology.canRepairTargetLayout(
+            baseline: baseline, removals: persisted.removals, targetUUID: snapshotUUID(2), current: wrongIdentity))
+        let repaired = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(2),
+                                        afterRestore: { _ in inputCalls += 1 })
+        XCTAssertEqual(writes, 2, "only a separate explicit Show retries the failed target layout")
+        XCTAssertEqual(inputCalls, 1, "input return happens only after exact target verification")
+        XCTAssertEqual(repaired.publicMirrorSession?.removals.map(\.state), [.restored, .mirrored])
+        XCTAssertEqual(current.displays[1].y, -4)
+    }
+
     func testUntouchedSecondHideAfterMainOriginShiftDoesNotBlockFirstShow() throws {
         let baseline = try sessionSnapshot([:], includeFourth: true)
         var current = baseline

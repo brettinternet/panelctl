@@ -263,8 +263,8 @@ enum RecoveryConfiguration {
         try baseline.validateRestoration(to: before)
         guard let target = baseline.displays.first(where: { $0.uuid == targetUUID }),
               let currentTarget = before.displays.first(where: { $0.uuid == targetUUID }),
-              !target.builtin, currentTarget.mirrorUUID != nil else {
-            throw RecoveryError.unsafe("target is not currently removed by the public-mirror session")
+              !target.builtin, currentTarget.mirrorUUID != nil || currentTarget.active else {
+            throw RecoveryError.unsafe("target is unavailable for public-mirror restoration")
         }
         let options = [kCGDisplayShowDuplicateLowResolutionModes as String: true] as CFDictionary
         let available = CGDisplayCopyAllDisplayModes(target.id, options) as? [CGDisplayMode] ?? []
@@ -277,7 +277,9 @@ enum RecoveryConfiguration {
         guard let config else { throw RecoveryError.unsafe("missing configuration transaction") }
         var completed = false
         defer { if !completed { CGCancelDisplayConfiguration(config) } }
-        try checked(CGConfigureDisplayMirrorOfDisplay(config, target.id, kCGNullDirectDisplay), "restore target mirror")
+        if currentTarget.mirrorUUID != nil {
+            try checked(CGConfigureDisplayMirrorOfDisplay(config, target.id, kCGNullDirectDisplay), "restore target mirror")
+        }
         if currentTarget.mode != target.mode {
             try checked(CGConfigureDisplayWithDisplayMode(config, target.id, mode, nil), "restore target mode")
         }

@@ -150,6 +150,21 @@ enum MirrorSessionTopology {
             current.displays.allSatisfy { $0.mirrorUUID == nil }
     }
 
+    /// A partial Show can clear its mirror yet fail exact layout verification.
+    /// Only that recorded failed target may be repaired; all sibling topology
+    /// and previously restored targets must still verify before another write.
+    static func canRepairTargetLayout(baseline: RecoverySnapshot, removals: [PublicMirrorRemoval],
+                                      targetUUID: String, current: RecoverySnapshot) -> Bool {
+        guard activeRemovals(removals).count > 1,
+              let index = removals.firstIndex(where: { $0.targetUUID == targetUUID && !$0.state.resolved }),
+              removals[index].state == .needsAttention || removals[index].state == .restoring,
+              let target = current.displays.first(where: { $0.uuid == targetUUID }),
+              target.mirrorUUID == nil, target.active else { return false }
+        var siblings = removals
+        siblings[index].state = .cancelled
+        return matches(baseline: baseline, removals: siblings, current: current)
+    }
+
     static func targetMatchesBaseline(_ targetUUID: String, baseline: RecoverySnapshot,
                                       current: RecoverySnapshot) -> Bool {
         guard (try? baseline.validateRestoration(to: current)) != nil,
@@ -469,7 +484,9 @@ struct MirrorController {
         try session.baseline.validateRestoration(to: current)
         try preflightModes(session.baseline)
         guard MirrorSessionTopology.matches(baseline: session.baseline, removals: session.removals, current: current) ||
-                MirrorSessionTopology.canRepairFinalLayout(baseline: session.baseline, removals: session.removals, current: current) else {
+                MirrorSessionTopology.canRepairFinalLayout(baseline: session.baseline, removals: session.removals, current: current) ||
+                MirrorSessionTopology.canRepairTargetLayout(baseline: session.baseline, removals: session.removals,
+                                                           targetUUID: selected.targetUUID, current: current) else {
             let reason = "current topology does not match the recorded removal session; no other removal was changed"
             markRemovalNeedsAttention(&journal, removalID: selected.id, reason: reason)
             throw RecoveryError.unsafe(reason)
