@@ -72,7 +72,7 @@ struct ExperimentalDisconnectControls: View {
                 Text("Unplug for 15 seconds")
                 Group {
                     if let blocker {
-                        Label(blocker, systemImage: "lock")
+                        Text("\(Image(systemName: "lock")) \(blocker)")
                     } else {
                         Text("macOS treats this display as unplugged, then PanelCtl reconnects it.")
                     }
