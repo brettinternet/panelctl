@@ -64,6 +64,10 @@ final class DisplayActionAppTests: XCTestCase {
         XCTAssertTrue(change.message.contains("Mirror onto Main display → Alternate source"))
         XCTAssertTrue(change.message.contains("Switch monitor to HDMI 1 → HDMI 2"))
         XCTAssertTrue(model.displayActionRunBlocker(for: action)?.contains("Needs review") == true)
+        XCTAssertEqual(model.displayActionStatus(for: action), "Display setup changed. Edit to review.")
+        var unreviewed = action
+        unreviewed.reviewedRemoval = nil
+        XCTAssertEqual(model.displayActionStatus(for: unreviewed), "Display setup changed. Edit to review.")
 
         model.setHideEnabled(true, for: try XCTUnwrap(displays.first { $0.uuid == targetUUID }))
         var reviewedAgain = action

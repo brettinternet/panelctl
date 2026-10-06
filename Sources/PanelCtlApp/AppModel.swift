@@ -849,7 +849,8 @@ final class AppModel: ObservableObject {
 
     func displayActionStatus(for action: DisplayAction) -> String {
         if runningDisplayActionIDs.contains(action.id) { return "Running…" }
-        if displayActionReviewChange(for: action) != nil {
+        if action.effect == .removeFromDesktop, action.target != nil,
+           action.reviewedRemoval == nil || displayActionReviewChange(for: action) != nil {
             return "Display setup changed. Edit to review."
         }
         if let blocker = displayActionRunBlocker(for: action) {
