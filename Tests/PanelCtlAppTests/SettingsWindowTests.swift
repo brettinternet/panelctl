@@ -214,8 +214,8 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testExperimentalToggleAsksForConsentBeforeTurningOn() throws {
-        // macOS 15 does not reliably present SwiftUI alerts for a prohibited
-        // test host. Accessory permits sheets without putting XCTest in the Dock.
+        // SwiftUI consent sheets require a key window on macOS 15. Activate
+        // this fixture as an accessory, never a Dock application.
         let app = NSApplication.shared
         let originalPolicy = app.activationPolicy()
         app.setActivationPolicy(.accessory)
@@ -226,6 +226,10 @@ final class SettingsWindowTests: XCTestCase {
         controller.present()
         controller.select(.general)
         let window = try XCTUnwrap(controller.window)
+        app.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        spin { window.isKeyWindow }
+        XCTAssertTrue(window.isKeyWindow, "consent fixture needs a key window")
         // Wait for the selected tab to mount before changing its alert binding.
         spin {
             window.contentView?.layoutSubtreeIfNeeded()
@@ -525,6 +529,12 @@ final class SettingsWindowTests: XCTestCase {
     private func spin(timeout: TimeInterval = 2, until condition: () -> Bool) {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline {
+            // Like DisplayHideAppTests, drive AppKit lifecycle events: XCTest
+            // runs the run loop but does not provide an NSApplication event loop.
+            for _ in 0..<100 {
+                guard let event = NSApp.nextEvent(matching: .any, until: Date(), inMode: .default, dequeue: true) else { break }
+                NSApp.sendEvent(event)
+            }
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))
         }
     }
