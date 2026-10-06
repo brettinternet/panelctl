@@ -1,10 +1,10 @@
 ---
 id: TASK-35
 title: Manage named protection rules in the Automations tab
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-05 22:29'
-updated_date: '2026-10-05 22:42'
+updated_date: '2026-10-06 14:07'
 labels:
   - app
   - automation
@@ -33,12 +33,12 @@ The current Automation form represents one global configuration. Users need to s
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Settings labels the tab Automations (Cmd-2 unchanged). It keeps the master Automation switch with the aggregate status and existing cleanup retry, shows Resume while paused, and lists rules with name, an effect/target/afterward summary, a per-rule switch, an Edit button and truthful status (off, watching, active, paused, waiting or blocked with reason). The migrated rule appears without enabling or changing anything. The global display sleep timer setting appears only when a rule ends with Sleep all displays.
-- [ ] #2 Add Rule and Edit open a sheet with Name, On, When, Displays, Action, Afterward, Pause while and Advanced sections built from the existing controls; changes apply only on Save, Cancel discards, and Return or Escape map to Save or Cancel. Validation comes from the TASK-34 validator: blocking problems (empty or duplicate name, conflicts naming the other rule, missing all-display limit) disable Save while the rule is on, while waiting conditions show a note. New rules default to no displays and Stay black until activity. Delete asks for confirmation.
-- [ ] #3 Summaries name the actual effect (Black out or Dim) rather than Hide. Missing saved targets remain visible with reasons and stable target identities survive renaming. Turning on a conflicting or invalid rule from the list is refused inline with the reason, without an alert. Blocked causes that live in Displays offer direct navigation there; Automations adds no Displays setup or recovery controls.
-- [ ] #4 Pause, Resume, the master switch, per-rule switches and Restore have stated scope: Pause, Resume and Restore stay global in the menu and app commands, and the menu gains no rule list. Black Out Now is titled for the enabled rules’ effects and is disabled with a reason when no rule is on. Turning off or deleting a running rule verifies its automation-owned cleanup without showing Hides or switching inputs; cleanup failure remains visible and retryable even with every rule off or deleted.
-- [ ] #5 Native keyboard and accessibility navigation covers the rule list, row switches (labelled per rule), editor, validation and recovery navigation. Rendered fixtures at 680 and 440 pt widths are inspected for migrated single-rule, multiple-rule, active, missing-target, conflicting-rule, cleanup-failure and editor states; tests cover editing, cancel, persistence, refusals and summaries with fake services.
-- [ ] #6 Full offline tests and warnings-as-errors builds pass. Update the existing UX contract, usage documentation and add an Automations screenshot rendered from fixtures, distinguishing shipped protection rules from deferred manual actions and unavailable unattended hardware actions.
+- [x] #1 Settings labels the tab Automations (Cmd-2 unchanged). It keeps the master Automation switch with the aggregate status and existing cleanup retry, shows Resume while paused, and lists rules with name, an effect/target/afterward summary, a per-rule switch, an Edit button and truthful status (off, watching, active, paused, waiting or blocked with reason). The migrated rule appears without enabling or changing anything. The global display sleep timer setting appears only when a rule ends with Sleep all displays.
+- [x] #2 Add Rule and Edit open a sheet with Name, On, When, Displays, Action, Afterward, Pause while and Advanced sections built from the existing controls; changes apply only on Save, Cancel discards, and Return or Escape map to Save or Cancel. Validation comes from the TASK-34 validator: blocking problems (empty or duplicate name, conflicts naming the other rule, missing all-display limit) disable Save while the rule is on, while waiting conditions show a note. New rules default to no displays and Stay black until activity. Delete asks for confirmation.
+- [x] #3 Summaries name the actual effect (Black out or Dim) rather than Hide. Missing saved targets remain visible with reasons and stable target identities survive renaming. Turning on a conflicting or invalid rule from the list is refused inline with the reason, without an alert. Blocked causes that live in Displays offer direct navigation there; Automations adds no Displays setup or recovery controls.
+- [x] #4 Pause, Resume, the master switch, per-rule switches and Restore have stated scope: Pause, Resume and Restore stay global in the menu and app commands, and the menu gains no rule list. Black Out Now is titled for the enabled rules’ effects and is disabled with a reason when no rule is on. Turning off or deleting a running rule verifies its automation-owned cleanup without showing Hides or switching inputs; cleanup failure remains visible and retryable even with every rule off or deleted.
+- [x] #5 Native keyboard and accessibility navigation covers the rule list, row switches (labelled per rule), editor, validation and recovery navigation. Rendered fixtures at 680 and 440 pt widths are inspected for migrated single-rule, multiple-rule, active, missing-target, conflicting-rule, cleanup-failure and editor states; tests cover editing, cancel, persistence, refusals and summaries with fake services.
+- [x] #6 Full offline tests and warnings-as-errors builds pass. Update the existing UX contract, usage documentation and add an Automations screenshot rendered from fixtures, distinguishing shipped protection rules from deferred manual actions and unavailable unattended hardware actions.
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -131,4 +131,24 @@ Structure unchanged. Status line = aggregate summary. Black Out Now title: all e
 ## Do not add
 
 Rule duplication, import/export, reordering, per-rule colors/icons, schedules, trigger pickers, a menu rule list, per-rule Restore/Pause, completion dialogs, or any Displays setup/recovery controls inside Automations.
+
+Execution: implement the settled TASK-35 plan in an isolated worktree; offline fake-backed validation and native fixture inspection only, followed by one independent scoped review, commit, merge to main, and owned-worktree cleanup.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Claimed by Pi session 01a10fe0-cb7e-717a-9b32-5881af68425c. Worktrunk created /Users/brett/dev/me/panelctl/.worktrees/automation-rule-settings on branch automation-rule-settings from 974546e6f8a7fbb92d7dc4ff98b5295a029d5968. Receipt: .git/worktrees/automation-rule-settings/agent-creation.json; transcript /Users/brett/.pi/agent/sessions/--Users-brett-dev-me-panelctl--/2026-10-06T06-22-32-830Z_01a10fe0-cb7e-717a-9b32-5881af68425c.jsonl. Workflow 682b06a6-6147-46f7-92be-9fe83992c0cb implements then performs one independent review. Parent owns final acceptance, commit, merge and cleanup. Existing recovery-enable is unrelated and remains untouched. Offline validation only; no hardware writes.
+
+Implementation and 14 native fixture inspections (680/440 pt) completed. Both products debug/release warnings-as-errors builds passed. Single independent review found two scoped defects: candidate-only admission can newly block another enabled rule; hidden-mirror forced-blackout effect is mislabeled Dim. Executor resumed as 2ce9702a-0851-4fe0-98e8-86730ce1891c for fixes and regressions, plus stronger draft-edit/dismissal test; no second general review planned. Original full-suite consent failure matched locked console (IORegistry confirmed); user unlocked. Parent rerun passed 272 core tests and consent test but failed existing native menu-arrow fixture (4 assertions), now under focused investigation. Parent LSP unknown due bounded diagnostic timeout. Concurrent unrelated main changes discovered and will be preserved. Still uncommitted; next: finish corrections/checks, integrate without discarding main work, commit/merge/cleanup.
+
+Delivered 0080f03, integrated concurrent TASK-41 main changes in b60316c and fast-forwarded main to the tested merge. Single review findings fixed with regressions: admission refuses newly blocked siblings without persistence/helper restart; hidden-mirror effective blocking mode drives menu/active labels. Stronger production-sheet test edits Name, verifies Cancel preserves persistence and Return saves/dismisses. Parent fixed its NSWindow release-on-close lifetime (isReleasedWhenClosed=false); focused keyboard and complete offline suite then passed. Integrated full suite passed 272 core and 201 app tests (6 opt-in skips total); both products debug/release warnings-as-errors builds, release-version script and diff check passed. Native 680/440 fixtures inspected by executor; docs screenshot updated. Native keyboard and accessibility labels covered by tests; connected-client VoiceOver remains separate manual verification, not claimed. LSP unknown, compiler checks passed. No hardware writes. Worktrunk receipt/list verified, exact Herdr w2E pane was idle zsh; removal deleted owned checkout/branch and workspace disappearance verified. Unrelated recovery-enable and sleep-hide-recovery checkouts/workspaces retained untouched. Claim released; no remaining implementation blocker or owned attempt.
+
+Verification count correction: the final integrated run was 279 core + 201 app tests (480 total, 6 opt-in skips), all passing; 272 core was the pre-integration run. Final log: /tmp/panelctl-task35-integrated-tests.log.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Named protection rules now have draft Save/Cancel editing, inline validation/status, global effect-aware menu wording and cleanup recovery. Verified native fixtures at 680/440 pt, draft keyboard behavior, model/safety regressions, full integrated offline suite and debug/release warnings-as-errors builds. Committed 0080f03, merged on main as b60316c; owned worktree/branch/workspace removed. No push or hardware writes.
+<!-- SECTION:FINAL_SUMMARY:END -->
