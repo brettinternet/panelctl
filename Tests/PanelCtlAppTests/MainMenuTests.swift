@@ -5,6 +5,7 @@ import XCTest
 @MainActor
 final class MainMenuTests: XCTestCase {
     func testStandardMenusAndEditingShortcuts() throws {
+        try requireInteractiveUI()
         let app = NSApplication.shared
         let originalMenu = app.mainMenu
         let originalWindowsMenu = app.windowsMenu

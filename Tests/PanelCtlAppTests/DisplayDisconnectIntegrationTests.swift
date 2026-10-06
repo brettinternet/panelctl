@@ -936,6 +936,7 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
     }
 
     func testNativeProductionControlsWithFakeStatusRender() async throws {
+        try requireInteractiveUI()
         _ = NSApplication.shared
         let f = try fixture(), app = model(f)
         func render(_ name: String, targetUUID: String?, model renderingModel: AppModel) throws {

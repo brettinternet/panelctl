@@ -16,6 +16,10 @@ defaults:
   run:
     shell: bash
 
+# CI runners are dedicated to testing; local runs remain noninteractive by default.
+env:
+  PANELCTL_TEST_INTERACTIVE_UI: '1'
+
 jobs:
   test:
     name: Swift tests

@@ -906,6 +906,7 @@ final class DisplayHideAppTests: XCTestCase {
     }
 
     func testNativeMainTargetSetupRequiresSourceAndUsesTheSharedHideControls() throws {
+        try requireInteractiveUI()
         let defaults = try makeDefaults()
         defer {
             defaults.removePersistentDomain(forName: suiteName(defaults))
@@ -2574,6 +2575,7 @@ final class DisplayHideAppTests: XCTestCase {
     }
 
     func testNativeHideSetupDefaultsSourceAndDetectsTheMacInput() throws {
+        try requireInteractiveUI()
         let defaults = try makeDefaults()
         defer {
             defaults.removePersistentDomain(forName: suiteName(defaults))
@@ -2658,6 +2660,7 @@ final class DisplayHideAppTests: XCTestCase {
     }
 
     func testNativeMissingJournalTargetStaysSelectedAndKeepsOtherSetupEditable() throws {
+        try requireInteractiveUI()
         let defaults = try makeDefaults()
         defer {
             defaults.removePersistentDomain(forName: suiteName(defaults))
@@ -2700,6 +2703,7 @@ final class DisplayHideAppTests: XCTestCase {
     }
 
     func testNativeMenuArrowEventsReachShowAction() throws {
+        try requireInteractiveUI()
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
         let box = StatusBox(handoffStatus(.hidden, target: displays[1], source: displays[0], journalID: "keyboard-menu-journal", canShow: true))
@@ -2791,6 +2795,7 @@ final class DisplayHideAppTests: XCTestCase {
     }
 
     func testNativeShowRunsWithoutDialogsAndResultsStayInline() async throws {
+        try requireInteractiveUI()
         for succeeds in [true, false] {
             let defaults = try makeDefaults()
             defer {
@@ -2845,6 +2850,7 @@ final class DisplayHideAppTests: XCTestCase {
     }
 
     func testNativeLongContentFitsMinimumWidthSettings() throws {
+        try requireInteractiveUI()
         let defaults = try makeDefaults()
         defer {
             defaults.removePersistentDomain(forName: suiteName(defaults))
@@ -2881,6 +2887,7 @@ final class DisplayHideAppTests: XCTestCase {
     }
 
     func testNativeMenuAndSettingsKeepShowReachableForAHiddenDisplay() throws {
+        try requireInteractiveUI()
         let defaults = try makeDefaults()
         defer {
             defaults.removePersistentDomain(forName: suiteName(defaults))
@@ -2919,6 +2926,7 @@ final class DisplayHideAppTests: XCTestCase {
     }
 
     func testQuitWhileHiddenWarnsAndKeepsRunningWhenShowFails() throws {
+        try requireInteractiveUI()
         let defaults = try makeDefaults()
         defer {
             defaults.removePersistentDomain(forName: suiteName(defaults))
@@ -2986,6 +2994,7 @@ final class DisplayHideAppTests: XCTestCase {
     }
 
     func testRecoveryProblemOpensItsDisplayFromReopenAndMenu() throws {
+        try requireInteractiveUI()
         let defaults = try makeDefaults()
         defer {
             defaults.removePersistentDomain(forName: suiteName(defaults))
@@ -3023,6 +3032,7 @@ final class DisplayHideAppTests: XCTestCase {
     }
 
     func testRecoveryJournalWithoutATargetDisplayIsShownAboveTheDisplays() throws {
+        try requireInteractiveUI()
         let defaults = try makeDefaults()
         defaults.set(false, forKey: "experimentalFeaturesEnabled")
         defer {

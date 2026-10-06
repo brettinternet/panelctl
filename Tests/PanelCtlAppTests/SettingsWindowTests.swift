@@ -26,6 +26,7 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testDockPresenceFollowsSettingsLifetime() throws {
+        try requireInteractiveUI()
         let app = NSApplication.shared
         let originalPolicy = app.activationPolicy()
         let originalMenu = app.mainMenu
@@ -83,6 +84,7 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testDefaultSettingsFixtureLeavesHostActivationPolicyUnchanged() throws {
+        try requireInteractiveUI()
         let app = NSApplication.shared
         let originalPolicy = app.activationPolicy()
         let (model, defaults) = try makeModel()
@@ -95,6 +97,7 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testDelegateForwardsSettingsPresentationWithoutPromotingTestHost() throws {
+        try requireInteractiveUI()
         let app = NSApplication.shared
         let originalPolicy = app.activationPolicy()
         let (model, defaults) = try makeModel()
@@ -117,6 +120,7 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testToolbarTabsAndKeyboardShortcutsReachEveryTab() throws {
+        try requireInteractiveUI()
         let (model, defaults) = try makeModel()
         defer { defaults.removePersistentDomain(forName: Self.suiteName) }
         let controller = SettingsWindowController(model: model)
@@ -251,6 +255,7 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testRuleEditorCancelSaveAndKeyboardShortcuts() throws {
+        try requireInteractiveUI()
         let app = NSApplication.shared
         let originalPolicy = app.activationPolicy()
         app.setActivationPolicy(.accessory)
@@ -323,6 +328,7 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testDisplayActionEditorCancelSaveAndStableID() throws {
+        try requireInteractiveUI()
         let app = NSApplication.shared
         let originalPolicy = app.activationPolicy()
         app.setActivationPolicy(.accessory)
@@ -398,6 +404,7 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testDefaultDisplayActionEditorShowsMissingRemovalSetupAndNavigatesToSelectedDisplay() throws {
+        try requireInteractiveUI()
         let app = NSApplication.shared
         let originalPolicy = app.activationPolicy()
         app.setActivationPolicy(.accessory)
@@ -448,6 +455,7 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testDisplayActionFixtureSnapshots() async throws {
+        try requireInteractiveUI()
         guard let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] else {
             throw XCTSkip("Set PANELCTL_SETTINGS_FIXTURE_OUTPUT to a directory to write Settings PNGs.")
         }
@@ -776,6 +784,7 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testExperimentalFlagDefaultsOffPersistsAndGatesRemovalButNotShow() throws {
+        try requireInteractiveUI()
         var hidden: DisplayHandoffStatus?
         let (model, defaults) = try makeModel(status: { hidden }, configure: { defaults in
             var hidePreferences = DisplayHidePreferences()
@@ -838,6 +847,7 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testRecoveryDetailsDisclosureRespondsAcrossItsFullRowAndToKeyboard() throws {
+        try requireInteractiveUI()
         let status = DisplayHandoffStatus(
             state: .recovery,
             target: hiddenStatus().target,
@@ -890,6 +900,7 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testBlackedOutDisplayStaysHiddenAfterSettingsCloses() throws {
+        try requireInteractiveUI()
         let (model, defaults) = try makeModel()
         defer { defaults.removePersistentDomain(forName: Self.suiteName) }
         let controller = SettingsWindowController(model: model)
@@ -905,6 +916,7 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testExperimentalToggleAsksForConsentBeforeTurningOn() throws {
+        try requireInteractiveUI()
         // SwiftUI consent sheets require a key window on macOS 15. Activate
         // this fixture as an accessory, never a Dock application.
         let app = NSApplication.shared
@@ -1011,6 +1023,7 @@ final class SettingsWindowTests: XCTestCase {
 
     /// Opt-in visual fixtures for every task-35 state at each requested width.
     func testAutomationFixtureSnapshots() throws {
+        try requireInteractiveUI()
         guard let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] else {
             throw XCTSkip("Set PANELCTL_SETTINGS_FIXTURE_OUTPUT to a directory to write Settings PNGs.")
         }
@@ -1193,6 +1206,7 @@ final class SettingsWindowTests: XCTestCase {
 
     /// Opt-in visual fixture: writes one PNG per tab for review and docs.
     func testSettingsFixtureSnapshots() throws {
+        try requireInteractiveUI()
         guard let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] else {
             throw XCTSkip("Set PANELCTL_SETTINGS_FIXTURE_OUTPUT to a directory to write Settings PNGs.")
         }
@@ -1229,6 +1243,7 @@ final class SettingsWindowTests: XCTestCase {
 
     /// Opt-in visual fixture: writes one PNG per Displays state for review and docs.
     func testDisplaysFixtureSnapshots() throws {
+        try requireInteractiveUI()
         guard let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] else {
             throw XCTSkip("Set PANELCTL_SETTINGS_FIXTURE_OUTPUT to a directory to write Settings PNGs.")
         }
@@ -1373,6 +1388,7 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testDismissInputWarningFixtureSnapshots() throws {
+        try requireInteractiveUI()
         for portrait in [false, true] {
             let records = [displays[0], Self.display(
                 index: 2, id: displays[1].id, uuid: Self.sideUUID, name: "DELL S2721DGF",

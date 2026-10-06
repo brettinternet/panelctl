@@ -18,6 +18,19 @@ Respect dependencies. Record concrete blockers and resume conditions in the task
 when acceptance criteria and delivery evidence are met. Do not push or open a PR
 without explicit permission.
 
+## Test selection
+
+Start with `swift test --disable-sandbox --filter '<Suite>.<test>'` (or the
+smallest affected suite); expand only for shared behavior or integration risk.
+Do not repeatedly run the full suite for a focused fix. Native windows, menus
+and sheets are skipped unless `PANELCTL_TEST_INTERACTIVE_UI=1`. Do not set that
+flag for model/core changes. For changes requiring native interaction, get user
+approval before presenting UI on their desktop, then opt in with a narrow
+`--filter`; do not rerun focus-sensitive failures in a loop. CI opts in on its
+dedicated runner. New tests that present UI must call `requireInteractiveUI()`
+before setup; keep fake-backed model tests ungated. Fixture-output variables
+alone do not enable interactive tests. See `docs/development.md`.
+
 ## Display-disable work
 
 Read `docs/display-disable.md` for canonical direction and

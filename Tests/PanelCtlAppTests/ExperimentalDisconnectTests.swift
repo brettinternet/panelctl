@@ -131,6 +131,7 @@ final class ExperimentalDisconnectTests: XCTestCase {
     }
 
     func testNativeSyntheticCardsRenderAtMinimumWidth() throws {
+        try requireInteractiveUI()
         _ = NSApplication.shared
         let values = [ExperimentalDisconnectPresentation.production]
             + ExperimentalDisconnectPresentation.Phase.allCases.map { presentation($0) }
