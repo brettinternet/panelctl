@@ -11,6 +11,11 @@ on:
 permissions:
   contents: read
 
+# Explicit bash enables pipefail, preserving test failures through tee.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   test:
     name: Swift tests

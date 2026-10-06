@@ -19,7 +19,7 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     override func tearDown() {
-        NSApp.windows
+        NSApplication.shared.windows
             .filter { $0.identifier == SettingsWindowController.windowIdentifier }
             .forEach { $0.close() }
         super.tearDown()
@@ -410,8 +410,9 @@ final class SettingsWindowTests: XCTestCase {
             timestamp: ProcessInfo.processInfo.systemUptime + 0.01, windowNumber: sheet.windowNumber,
             context: nil, eventNumber: 1, clickCount: 1, pressure: 0
         ))
+        // AppKit may track mouse-down synchronously until it dequeues mouse-up.
+        app.postEvent(up, atStart: true)
         sheet.sendEvent(down)
-        sheet.sendEvent(up)
         spin { parent.attachedSheet == nil && navigation.tab == .displays &&
             navigation.selectedDisplayID == Self.sideUUID.lowercased() }
         XCTAssertNil(parent.attachedSheet)
@@ -1370,8 +1371,9 @@ final class SettingsWindowTests: XCTestCase {
                                     timestamp: ProcessInfo.processInfo.systemUptime + 0.01,
                                     windowNumber: window.windowNumber, context: nil,
                                     eventNumber: 1, clickCount: 1, pressure: 0)!
+        // Queue the release before entering NSButton's synchronous tracking loop.
+        NSApp.postEvent(up, atStart: true)
         window.sendEvent(down)
-        window.sendEvent(up)
     }
 
     private func sendSpaceKey(to window: NSWindow) {
