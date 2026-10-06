@@ -37,7 +37,7 @@ final class DisplayHideAppTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: directory) }
         let log = directory.appendingPathComponent("helper.log")
-        let helper = try writeHiddenOverlayHelper(in: directory, log: log)
+        let helper = try writeHiddenOverlayHelper(in: directory, log: log, initiallyWaiting: true)
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
         var preferences = ProtectionPreferences()
@@ -75,12 +75,18 @@ final class DisplayHideAppTests: XCTestCase {
                 return .notRequested
             }
         )
-        try await waitUntil { model.runtimeState == .blackedOut }
+        try await waitUntil { model.runtimeState == .waiting }
         var lines = try await waitForLogLines(1, at: log)
+        let rule = try XCTUnwrap(model.automationPreferences.rules.first)
+        let delegate = AppDelegate()
+        delegate.model = model
         XCTAssertTrue(model.protectionPausedForDisplayRecovery)
         XCTAssertTrue(model.hiddenMirrorOverlayPolicyEligible)
         XCTAssertEqual(model.effectiveBlackoutMode, .blocking)
-        XCTAssertTrue(model.statusSummary.contains("Mirror source blacked out by automation"))
+        XCTAssertEqual(model.protectionRuleRowStatus(for: rule).text, "Watching for inactivity")
+        let waitingMenuTitles = delegate.makeMenu().items.map(\.title)
+        XCTAssertTrue(waitingMenuTitles.contains("Black Out Now"), "a hidden mirror source turns Dim Now into Black Out Now while waiting")
+        XCTAssertFalse(waitingMenuTitles.contains("Dim Now"))
         XCTAssertTrue(lines[0].contains("--display \(Self.sourceUUID)"))
         XCTAssertTrue(lines[0].contains("--panelctl-hidden-mirror-source \(Self.sourceUUID)"))
         XCTAssertFalse(lines[0].contains(Self.targetUUID))
@@ -88,14 +94,17 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertFalse(lines[0].contains("--sleep-after"))
         XCTAssertFalse(lines[0].contains("--keep-displays-awake"))
 
-        let delegate = AppDelegate()
-        delegate.model = model
+        try model.blackoutNow()
+        try await waitUntil { model.runtimeState == .blackedOut }
+        XCTAssertEqual(model.protectionRuleRowStatus(for: rule).text, "Blackout active")
+        XCTAssertTrue(model.statusSummary.contains("Mirror source blacked out by automation"))
+
         let menuTitles = delegate.makeMenu().items.map(\.title)
         XCTAssertTrue(menuTitles.contains("Show Target"), "Show stays reachable over a source overlay")
         XCTAssertTrue(menuTitles.contains("Restore"), "protection Restore stays available over a source overlay")
         XCTAssertTrue(try model.restoreBlackout(), "Restore controls the overlay while the journal remains hidden")
-        lines = try await waitForLogLines(2, at: log)
-        XCTAssertEqual(lines[1], "command:restore")
+        lines = try await waitForLogLines(3, at: log)
+        XCTAssertEqual(lines[2], "command:restore")
         XCTAssertEqual(showCalls, 0, "Restore never invokes Show")
         XCTAssertEqual(model.handoffStatus?.state, .hidden)
 
@@ -2327,12 +2336,19 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(controller.selectedTab, .displays)
     }
 
-    private func writeHiddenOverlayHelper(in directory: URL, log: URL) throws -> URL {
+    private func writeHiddenOverlayHelper(
+        in directory: URL,
+        log: URL,
+        initiallyWaiting: Bool = false
+    ) throws -> URL {
         let helper = directory.appendingPathComponent("fake-panelctl")
+        let initialStatus = initiallyWaiting
+            ? "printf '{\"state\":\"waiting\",\"blackedOutDisplayIDs\":[]}\\n'"
+            : "printf '{\"state\":\"blacked_out\",\"blackedOutDisplayIDs\":[303]}\\n'"
         let script = """
         #!/bin/bash
         printf 'launch:%s\\n' "$*" >> "$PANELCTL_TEST_LOG"
-        printf '{"state":"blacked_out","blackedOutDisplayIDs":[303]}\\n'
+        \(initialStatus)
         trap 'printf "stop\\n" >> "$PANELCTL_TEST_LOG"; printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":true}\\n"; exit 0' TERM
         while IFS= read -r command; do
             printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"

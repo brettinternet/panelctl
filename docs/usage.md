@@ -50,9 +50,24 @@ Rules:
 ## Menu-bar app
 
 Move `PanelCtl.app` to `/Applications` and open it. Settings has three tabs:
-**Displays** (per-display Hide/Show, input switching, scripts), **Automation**
-(idle blackout, dimming, timers, pause rules) and **General** (launch at login,
-menu icon, Experimental features).
+**Displays** (per-display Hide/Show, input switching, scripts), **Automations**
+(named idle protection rules) and **General** (launch at login, menu icon,
+Experimental features).
+
+The Automations tab keeps the master switch and global pause, and lists named
+rules with their effect, displays, Afterward behavior and current status. A
+migrated **Display protection** rule appears without changing its settings.
+**Add Rule…**
+and **Edit…** open a draft sheet; **Save** applies changes and **Cancel**
+discards them. Each rule has its own switch. Conflicts are explained inline,
+missing saved targets remain visible, and the global display-sleep timer setting
+appears only when a rule sleeps all displays. **Black Out Now** in the menu is
+titled for the enabled rules' effects; Restore and Pause remain global.
+
+Named idle blackout/dimming rules are shipped. Schedules, arbitrary action
+chains and manual display actions are deferred. Rules do not support unattended
+Hide/Show, topology, monitor-input, power or private-disconnect actions; those
+hardware-changing operations are not implicit rule triggers.
 
 Select a display tile to see its state, Hide/Show button, setup and inline
 results. Hide defaults to **Black out**: it leaves the desktop in place and
@@ -83,9 +98,11 @@ input-switch warnings; ordinary Hide/Show has no per-operation confirmation.
 Private disconnect is separate and requires its own scoped consent each time.
 See [Hide styles and safety boundaries](display-hide-ux.md).
 
-![Displays tab with experimental removal setup](settings.png)
+![Displays tab with experimental removal setup](displays.png)
 
-*Rendered using fake display fixtures, not a live monitor trial.*
+![Automations tab with named protection rules and aggregate status](automations.png)
+
+*Rendered from fake display and helper fixtures, not a live hardware trial.*
 
 Closing Settings keeps automation and Black out Hides running. Quitting clears
 app-owned covers and stops the watcher, but a removed desktop may remain hidden;

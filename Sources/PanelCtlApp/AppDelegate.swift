@@ -252,6 +252,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mode == .working ? "Dim Now" : "Black Out Now"
     }
 
+    static func blackoutActionTitle(for rules: [ProtectionRule]) -> String {
+        blackoutActionTitle(for: rules.filter(\.isEnabled).map { $0.settings.mode })
+    }
+
+    static func blackoutActionTitle(for modes: [BlackoutMode]) -> String {
+        switch Set(modes) {
+        case [.working]: return "Dim Now"
+        case [.blocking]: return "Black Out Now"
+        case [.working, .blocking]: return "Black Out and Dim Now"
+        default: return "Black Out Now"
+        }
+    }
+
     static func blackoutRequestSummary(
         for mode: BlackoutMode,
         succeeded: Bool
@@ -261,6 +274,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case (.working, false): return "Dimming request failed"
         case (.blocking, true): return "Blackout requested"
         case (.blocking, false): return "Blackout request failed"
+        }
+    }
+
+    static func blackoutRequestSummary(
+        for rules: [ProtectionRule],
+        succeeded: Bool
+    ) -> String {
+        let modes = Set(rules.filter(\.isEnabled).map { $0.settings.mode })
+        switch (modes, succeeded) {
+        case ([.working], true): return "Dimming requested"
+        case ([.working], false): return "Dimming request failed"
+        case ([.blocking], true): return "Blackout requested"
+        case ([.blocking], false): return "Blackout request failed"
+        case ([.working, .blocking], true): return "Blackout and dimming requested"
+        case ([.working, .blocking], false): return "Blackout and dimming request failed"
+        default: return succeeded ? "Protection requested" : "Protection request failed"
         }
     }
 
@@ -352,10 +381,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .blackedOut, .sleeping:
             menu.addItem(restoreMenuItem())
         default:
-            menu.addItem(item(
-                Self.blackoutActionTitle(for: model.effectiveBlackoutMode),
+            let effectiveModes = model.automationPreferences.rules
+                .filter(\.isEnabled)
+                .map { model.effectiveBlackoutMode(for: $0) }
+            let blackout = item(
+                Self.blackoutActionTitle(for: effectiveModes),
                 action: #selector(blackoutNow)
-            ))
+            )
+            if !model.automationPreferences.rules.contains(where: \.isEnabled) {
+                blackout.isEnabled = false
+                blackout.toolTip = "Turn on a rule in Settings → Automations."
+            }
+            menu.addItem(blackout)
             if !model.blackedOutDisplayIDs.isEmpty {
                 menu.addItem(restoreMenuItem())
             }
@@ -460,7 +497,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func restoreMenuItem() -> NSMenuItem {
         let restore = item("Restore", action: #selector(restoreNow))
-        restore.toolTip = "Ends automation blackout or dimming. Hidden displays stay hidden."
+        restore.toolTip = "Ends blackout or dimming from every rule. Hidden displays stay hidden."
         return restore
     }
 
@@ -640,7 +677,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return controlResponse(
                     ok: true,
                     summary: Self.blackoutRequestSummary(
-                        for: model.preferences.mode,
+                        for: model.automationPreferences.rules,
                         succeeded: true
                     ),
                     detail: model.statusDetail
@@ -649,7 +686,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return controlResponse(
                     ok: false,
                     summary: Self.blackoutRequestSummary(
-                        for: model.preferences.mode,
+                        for: model.automationPreferences.rules,
                         succeeded: false
                     ),
                     error: error.localizedDescription,

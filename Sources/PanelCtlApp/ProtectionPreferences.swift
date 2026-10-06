@@ -545,11 +545,167 @@ struct ProtectionRuleValidation {
     let blockingReason: String?
     let waitingReason: String?
     let arguments: [String]?
+    let nameBlockingReason: String?
+
+    init(
+        blockingReason: String?,
+        waitingReason: String?,
+        arguments: [String]?,
+        nameBlockingReason: String? = nil
+    ) {
+        self.blockingReason = blockingReason
+        self.waitingReason = waitingReason
+        self.arguments = arguments
+        self.nameBlockingReason = nameBlockingReason
+    }
 
     var isRunnable: Bool { blockingReason == nil && waitingReason == nil && arguments != nil }
+
+    func allowsSave(isEnabled: Bool) -> Bool {
+        guard nameBlockingReason == nil else { return false }
+        return !isEnabled || blockingReason == nil
+    }
+}
+
+struct ProtectionRuleRowStatus: Equatable {
+    let text: String
+    let blockedReason: String?
+
+    var isBlocked: Bool { blockedReason != nil }
+}
+
+enum ProtectionRulePresentation {
+    static func ruleSwitchAccessibilityLabel(for name: String) -> String {
+        "Turn on \(name)"
+    }
+
+    static func editAccessibilityLabel(for name: String) -> String {
+        "Edit \(name)"
+    }
+
+    static func summary(for rule: ProtectionRule, displays: [DisplayRecord]) -> String {
+        let settings = rule.settings
+        let effect = settings.mode == .working ? "Dim" : "Black out"
+        let emptySuffix = settings.blackoutEmptyDisplays ? " or when empty" : ""
+        let targets = targetSummary(for: settings, displays: displays)
+        let afterward: String
+        switch settings.followUpAction {
+        case .untilActivity:
+            afterward = "until activity"
+        case .restore:
+            afterward = "restore after \(AppModel.durationLabel(settings.followUpSeconds))"
+        case .sleepDisplays:
+            afterward = "sleep all displays after \(AppModel.durationLabel(settings.followUpSeconds))"
+        }
+        return "\(effect) after \(AppModel.durationLabel(settings.idleSeconds))\(emptySuffix) · \(targets) · \(afterward)"
+    }
+
+    static func status(
+        for rule: ProtectionRule,
+        state: ProtectionRuntimeState,
+        validation: ProtectionRuleValidation,
+        enableRefusal: String? = nil,
+        displays: [DisplayRecord],
+        effectiveMode: BlackoutMode? = nil
+    ) -> ProtectionRuleRowStatus {
+        if let enableRefusal {
+            return .init(text: "Can’t turn on: \(enableRefusal)", blockedReason: enableRefusal)
+        }
+        guard rule.isEnabled else { return .init(text: "Off", blockedReason: nil) }
+        if case .disabled = state {
+            return .init(text: ProtectionRuntimeState.disabled.label, blockedReason: nil)
+        }
+        if case .failed(let reason) = state {
+            let blocked = validation.blockingReason ?? reason
+            return .init(text: "Blocked: \(blocked)", blockedReason: blocked)
+        }
+        if case .waitingForDisplays(let reason) = state {
+            if let unavailable = unavailableTargetName(for: rule, displays: displays) {
+                return .init(text: "Waiting: \(unavailable) unavailable", blockedReason: nil)
+            }
+            return .init(text: "Waiting: \(validation.waitingReason ?? reason)", blockedReason: nil)
+        }
+        if case .waitingForPlayback = state {
+            return .init(text: "Paused for media or camera", blockedReason: nil)
+        }
+        if case .blackedOut = state, (effectiveMode ?? rule.settings.mode) == .working {
+            return .init(text: "Dimming active", blockedReason: nil)
+        }
+        return .init(text: state.label, blockedReason: nil)
+    }
+
+    private static func targetSummary(
+        for settings: ProtectionPreferences,
+        displays: [DisplayRecord]
+    ) -> String {
+        guard !settings.allDisplays else { return "All displays" }
+        guard !settings.selectedDisplayUUIDs.isEmpty else { return "No displays selected" }
+        let targets = settings.selectedDisplayUUIDs.sorted { lhs, rhs in
+            let leftOrder = displayOrder(for: lhs, displays: displays)
+            let rightOrder = displayOrder(for: rhs, displays: displays)
+            if leftOrder != rightOrder { return leftOrder < rightOrder }
+            return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+        }.map { uuid in
+            let match = displays.first {
+                $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame
+            }
+            let name = match?.settingsName ?? "\(uuid.prefix(8))…"
+            return isAvailable(match) ? name : "\(name) (unavailable)"
+        }
+        if targets.count <= 2 { return targets.joined(separator: ", ") }
+        return "\(targets[0]) and \(targets.count - 1) others"
+    }
+
+    private static func unavailableTargetName(
+        for rule: ProtectionRule,
+        displays: [DisplayRecord]
+    ) -> String? {
+        let availableUUIDs = Set(displays.compactMap { display -> String? in
+            guard isAvailable(display), let uuid = display.uuid else { return nil }
+            return uuid.lowercased()
+        })
+        guard let uuid = rule.settings.selectedDisplayUUIDs
+            .sorted(by: { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending })
+            .first(where: { !availableUUIDs.contains($0.lowercased()) }) else { return nil }
+        let match = displays.first { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame }
+        return match?.settingsName ?? "\(uuid.prefix(8))…"
+    }
+
+    private static func displayOrder(for uuid: String, displays: [DisplayRecord]) -> Int {
+        displays.firstIndex { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame } ?? Int.max
+    }
+
+    private static func isAvailable(_ display: DisplayRecord?) -> Bool {
+        guard let display else { return false }
+        return display.active && display.online && display.bounds.width > 0 && display.bounds.height > 0
+    }
 }
 
 enum ProtectionRuleValidator {
+    static func conflictingEnabledRule(
+        for rule: ProtectionRule,
+        in ruleSet: AutomationPreferences,
+        sharing displayUUID: String? = nil
+    ) -> ProtectionRule? {
+        guard rule.isEnabled else { return nil }
+        return ruleSet.rules.first { other in
+            guard other.id != rule.id, other.isEnabled else { return false }
+            if rule.settings.allDisplays || other.settings.allDisplays { return true }
+            if let displayUUID {
+                return rule.settings.selectedDisplayUUIDs.contains {
+                    $0.caseInsensitiveCompare(displayUUID) == .orderedSame
+                } && other.settings.selectedDisplayUUIDs.contains {
+                    $0.caseInsensitiveCompare(displayUUID) == .orderedSame
+                }
+            }
+            return rule.settings.selectedDisplayUUIDs.contains { uuid in
+                other.settings.selectedDisplayUUIDs.contains {
+                    $0.caseInsensitiveCompare(uuid) == .orderedSame
+                }
+            }
+        }
+    }
+
     static func validate(
         _ rule: ProtectionRule,
         in ruleSet: AutomationPreferences,
@@ -565,10 +721,12 @@ enum ProtectionRuleValidator {
         }
         let trimmedName = rule.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty, trimmedName == rule.name else {
+            let reason = ProtectionConfigurationError.invalidRuleName.localizedDescription
             return .init(
-                blockingReason: ProtectionConfigurationError.invalidRuleName.localizedDescription,
+                blockingReason: reason,
                 waitingReason: nil,
-                arguments: nil
+                arguments: nil,
+                nameBlockingReason: reason
             )
         }
         let duplicateName = ruleSet.rules.first {
@@ -576,34 +734,32 @@ enum ProtectionRuleValidator {
                 .caseInsensitiveCompare(rule.name.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
         }
         if let duplicateName {
+            let reason = ProtectionConfigurationError.duplicateRuleName(duplicateName.name).localizedDescription
             return .init(
-                blockingReason: ProtectionConfigurationError.duplicateRuleName(duplicateName.name).localizedDescription,
+                blockingReason: reason,
                 waitingReason: nil,
-                arguments: nil
+                arguments: nil,
+                nameBlockingReason: reason
             )
         }
         let otherEnabled = ruleSet.rules.filter { $0.id != rule.id && $0.isEnabled }
-        if rule.isEnabled {
-            for other in otherEnabled {
-                let sharedUUID = !rule.settings.allDisplays && !other.settings.allDisplays
-                    ? rule.settings.selectedDisplayUUIDs.first { left in
-                        other.settings.selectedDisplayUUIDs.contains {
-                            $0.caseInsensitiveCompare(left) == .orderedSame
-                        }
+        if rule.isEnabled, let other = conflictingEnabledRule(for: rule, in: ruleSet) {
+            let sharedUUID = !rule.settings.allDisplays && !other.settings.allDisplays
+                ? rule.settings.selectedDisplayUUIDs.first { left in
+                    other.settings.selectedDisplayUUIDs.contains {
+                        $0.caseInsensitiveCompare(left) == .orderedSame
                     }
-                    : nil
-                if rule.settings.allDisplays || other.settings.allDisplays || sharedUUID != nil {
-                    let sharedName = sharedUUID.flatMap { uuid in
-                        displays.first { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame }?.name
-                    } ?? (sharedUUID.map { String($0.prefix(8)) } ?? "All displays")
-                    let message = "\(sharedName) is also in “\(other.name)”. Remove it from one rule, or turn one off."
-                    return .init(
-                        blockingReason: ProtectionConfigurationError.ruleConflict(message).localizedDescription,
-                        waitingReason: nil,
-                        arguments: nil
-                    )
                 }
-            }
+                : nil
+            let sharedName = sharedUUID.flatMap { uuid in
+                displays.first { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame }?.name
+            } ?? (sharedUUID.map { String($0.prefix(8)) } ?? "All displays")
+            let message = "\(sharedName) is also in “\(other.name)”. Remove it from one rule, or turn one off."
+            return .init(
+                blockingReason: ProtectionConfigurationError.ruleConflict(message).localizedDescription,
+                waitingReason: nil,
+                arguments: nil
+            )
         }
         let siblingUUIDs = Set(otherEnabled.flatMap { sibling in
             sibling.settings.allDisplays ? [] : Array(sibling.settings.selectedDisplayUUIDs)

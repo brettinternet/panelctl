@@ -191,6 +191,298 @@ final class AutomationRulesTests: XCTestCase {
         }
     }
 
+    func testRuleSummariesNameEffectTargetsAndAfterward() throws {
+        var settings = ProtectionPreferences()
+        settings.mode = .working
+        settings.idleSeconds = 10 * 60
+        settings.followUpAction = .restore
+        settings.followUpSeconds = 30 * 60
+        settings.selectedDisplayUUIDs = [inventory[0].uuid!, inventory[1].uuid!]
+        settings.blackoutEmptyDisplays = true
+        let rule = ProtectionRule(name: "Desk", settings: settings)
+        XCTAssertEqual(
+            ProtectionRulePresentation.summary(for: rule, displays: inventory),
+            "Dim after 10 minutes or when empty · Display 1, Display 2 · restore after 30 minutes"
+        )
+
+        var missingSettings = settings
+        missingSettings.mode = .blocking
+        missingSettings.blackoutEmptyDisplays = false
+        missingSettings.allDisplays = false
+        missingSettings.selectedDisplayUUIDs = ["12345678-0000-0000-0000-000000000000"]
+        missingSettings.followUpAction = .sleepDisplays
+        let missing = ProtectionRule(name: "Missing", settings: missingSettings)
+        XCTAssertEqual(
+            ProtectionRulePresentation.summary(for: missing, displays: inventory),
+            "Black out after 10 minutes · 12345678… (unavailable) · sleep all displays after 30 minutes"
+        )
+
+        missingSettings.allDisplays = true
+        let all = ProtectionRule(name: "Every display", settings: missingSettings)
+        XCTAssertTrue(ProtectionRulePresentation.summary(for: all, displays: inventory)
+            .contains("· All displays · sleep all displays after 30 minutes"))
+    }
+
+    func testEditorSaveEligibilityBlocksInvalidRulesButAllowsWaitingAndOffAlternatives() throws {
+        var selected = ProtectionPreferences()
+        selected.selectedDisplayUUIDs = [inventory[0].uuid!]
+        selected.followUpAction = .restore
+        let enabled = ProtectionRule(name: "Existing", isEnabled: true, settings: selected)
+        var overlapping = ProtectionRule(name: "New", isEnabled: true, settings: selected)
+
+        let conflictSet = AutomationPreferences(isEnabled: true, rules: [enabled, overlapping])
+        let conflict = ProtectionRuleValidator.validate(overlapping, in: conflictSet, displays: inventory)
+        XCTAssertNotNil(conflict.blockingReason)
+        XCTAssertFalse(conflict.allowsSave(isEnabled: true))
+        overlapping.isEnabled = false
+        let disabledOverlapSet = AutomationPreferences(isEnabled: true, rules: [enabled, overlapping])
+        let disabledOverlap = ProtectionRuleValidator.validate(overlapping, in: disabledOverlapSet, displays: inventory)
+        XCTAssertTrue(disabledOverlap.allowsSave(isEnabled: false), "disabled rules may overlap")
+
+        var invalidName = overlapping
+        invalidName.name = "  "
+        let invalidNameSet = AutomationPreferences(isEnabled: true, rules: [enabled, invalidName])
+        let emptyName = ProtectionRuleValidator.validate(invalidName, in: invalidNameSet, displays: inventory)
+        XCTAssertFalse(emptyName.allowsSave(isEnabled: false), "names are required even while Off")
+
+        var duplicateName = overlapping
+        duplicateName.name = "existing"
+        let duplicateNameSet = AutomationPreferences(isEnabled: true, rules: [enabled, duplicateName])
+        let duplicate = ProtectionRuleValidator.validate(duplicateName, in: duplicateNameSet, displays: inventory)
+        XCTAssertNotNil(duplicate.nameBlockingReason)
+        XCTAssertFalse(duplicate.allowsSave(isEnabled: false), "duplicate names block even while Off")
+
+        var unlimited = ProtectionPreferences()
+        unlimited.allDisplays = true
+        unlimited.followUpAction = .untilActivity
+        let limitRule = ProtectionRule(name: "Unlimited", isEnabled: true, settings: unlimited)
+        let limit = ProtectionRuleValidator.validate(limitRule, in: AutomationPreferences(rules: [limitRule]), displays: inventory)
+        XCTAssertTrue(limit.blockingReason?.localizedCaseInsensitiveContains("Choose Restore or Sleep") == true)
+        XCTAssertFalse(limit.allowsSave(isEnabled: true))
+
+        var missingSettings = selected
+        missingSettings.selectedDisplayUUIDs = ["12345678-0000-0000-0000-000000000000"]
+        let missing = ProtectionRule(name: "Missing", isEnabled: true, settings: missingSettings)
+        let waiting = ProtectionRuleValidator.validate(missing, in: AutomationPreferences(rules: [missing]), displays: inventory)
+        XCTAssertNotNil(waiting.waitingReason)
+        XCTAssertNil(waiting.blockingReason)
+        XCTAssertTrue(waiting.allowsSave(isEnabled: true), "waiting for a display is a note, not a save blocker")
+    }
+
+    func testRuleRowStatusesAreTruthfulAndShortenPlayback() throws {
+        var settings = ProtectionPreferences()
+        settings.mode = .working
+        settings.selectedDisplayUUIDs = ["12345678-0000-0000-0000-000000000000"]
+        let rule = ProtectionRule(name: "Desk dimming", isEnabled: true, settings: settings)
+        XCTAssertEqual(ProtectionRulePresentation.ruleSwitchAccessibilityLabel(for: rule.name), "Turn on Desk dimming")
+        XCTAssertEqual(ProtectionRulePresentation.editAccessibilityLabel(for: rule.name), "Edit Desk dimming")
+        let set = AutomationPreferences(isEnabled: true, rules: [rule])
+        let waiting = ProtectionRuleValidator.validate(rule, in: set, displays: inventory)
+        XCTAssertEqual(ProtectionRulePresentation.status(
+            for: rule, state: .waitingForDisplays("missing target"), validation: waiting,
+            displays: inventory
+        ).text, "Waiting: 12345678… unavailable")
+        XCTAssertEqual(ProtectionRulePresentation.status(
+            for: rule, state: .waitingForPlayback, validation: waiting, displays: inventory
+        ).text, "Paused for media or camera")
+        XCTAssertEqual(ProtectionRulePresentation.status(
+            for: rule, state: .blackedOut, validation: waiting, displays: inventory
+        ).text, "Dimming active")
+        XCTAssertEqual(ProtectionRulePresentation.status(
+            for: rule, state: .blackedOut, validation: waiting, displays: inventory, effectiveMode: .blocking
+        ).text, "Blackout active", "hidden-mirror overlays are fully opaque even for Dim rules")
+        XCTAssertEqual(ProtectionRulePresentation.status(
+            for: rule, state: .blackedOut, validation: waiting, enableRefusal: "overlap", displays: inventory
+        ).text, "Can’t turn on: overlap")
+
+        var off = rule
+        off.isEnabled = false
+        XCTAssertEqual(ProtectionRulePresentation.status(
+            for: off, state: .disabled, validation: waiting, displays: inventory
+        ).text, "Off")
+    }
+
+    @MainActor
+    func testRuleDraftSavePreservesIdentityAndRefusesConflictingEnableInline() async throws {
+        let suite = "panelctl-rule-editor-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var firstSettings = ProtectionPreferences()
+        firstSettings.selectedDisplayUUIDs = [inventory[0].uuid!]
+        firstSettings.followUpAction = .restore
+        let secondSettings = firstSettings
+        let first = ProtectionRule(name: "First", isEnabled: true, settings: firstSettings)
+        let second = ProtectionRule(name: "Second", isEnabled: false, settings: secondSettings)
+        defaults.set(try JSONEncoder().encode(AutomationPreferences(rules: [first, second])), forKey: "automationRules")
+        let model = AppModel(
+            defaults: defaults,
+            displayProvider: { self.inventory },
+            idleSecondsProvider: { nil },
+            inspectHandoff: { DisplayHandoffStatus(state: .none, journalPath: "/tmp/no-display-recovery.json") },
+            protectionCoordinator: makeCoordinator(directory: temporaryDirectory())
+        )
+
+        var renamed = try XCTUnwrap(model.automationPreferences.rule(namedID: second.id))
+        let unchangedPreferences = model.automationPreferences
+        let unchangedData = try XCTUnwrap(defaults.data(forKey: "automationRules"))
+        renamed.name = "  Desk  "
+        XCTAssertEqual(model.automationPreferences, unchangedPreferences, "editing a value copy does not change saved state")
+        XCTAssertEqual(defaults.data(forKey: "automationRules"), unchangedData, "Cancel can discard the unchanged draft without persistence")
+        try model.saveProtectionRule(renamed, replacing: second.id)
+        XCTAssertEqual(model.automationPreferences.rule(namedID: second.id)?.name, "Desk")
+        XCTAssertEqual(
+            model.automationPreferences.rule(namedID: second.id)?.settings.selectedDisplayUUIDs.map { $0.lowercased() },
+            secondSettings.selectedDisplayUUIDs.map { $0.lowercased() }
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(AutomationPreferences.self, from: XCTUnwrap(defaults.data(forKey: "automationRules"))),
+            model.automationPreferences,
+            "Save persists the complete rule set while retaining stable IDs and target UUIDs"
+        )
+
+        model.setProtectionRuleEnabled(true, id: second.id)
+        XCTAssertFalse(try XCTUnwrap(model.automationPreferences.rule(namedID: second.id)).isEnabled)
+        XCTAssertTrue(model.ruleEnableRefusals[second.id]?.contains("First") == true)
+        XCTAssertTrue(model.protectionRuleRowStatus(for: try XCTUnwrap(model.automationPreferences.rule(namedID: second.id)))
+            .text.contains("Can’t turn on:"))
+
+        model.setProtectionRuleEnabled(false, id: first.id)
+        XCTAssertNil(model.ruleEnableRefusals[second.id], "a later preference change clears the refusal")
+        model.setProtectionRuleEnabled(true, id: second.id)
+        XCTAssertTrue(try XCTUnwrap(model.automationPreferences.rule(namedID: second.id)).isEnabled)
+
+        let newRule = model.makeNewProtectionRule()
+        XCTAssertEqual(newRule.name, "New Rule")
+        XCTAssertTrue(newRule.isEnabled)
+        XCTAssertTrue(newRule.settings.selectedDisplayUUIDs.isEmpty)
+        XCTAssertEqual(newRule.settings.followUpAction, .untilActivity)
+        let duplicateNamed = ProtectionRule(name: "New Rule")
+        var ruleSet = model.automationPreferences
+        ruleSet.rules.append(duplicateNamed)
+        model.automationPreferences = ruleSet
+        XCTAssertEqual(model.makeNewProtectionRule().name, "New Rule 2")
+        await withCheckedContinuation { continuation in model.shutdown { continuation.resume() } }
+    }
+
+    @MainActor
+    func testAdmissionRefusesRuleThatWouldNewlyBlockAnEnabledSibling() async throws {
+        let helper = try makeHelper(cleanup: false)
+        defer { try? FileManager.default.removeItem(at: helper.deletingLastPathComponent()) }
+        let log = helper.deletingLastPathComponent().appendingPathComponent("events.log")
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        defer { unsetenv("PANELCTL_HELPER"); unsetenv("PANELCTL_TEST_LOG") }
+
+        let suite = "panelctl-rules-admission-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var waitingSettings = ProtectionPreferences()
+        waitingSettings.selectedDisplayUUIDs = [inventory[0].uuid!]
+        waitingSettings.followUpAction = .untilActivity
+        var candidateSettings = ProtectionPreferences()
+        candidateSettings.selectedDisplayUUIDs = [inventory[1].uuid!]
+        candidateSettings.followUpAction = .restore
+        let waitingRule = ProtectionRule(name: "Stay black", isEnabled: true, settings: waitingSettings)
+        let candidateRule = ProtectionRule(name: "Second display", isEnabled: false, settings: candidateSettings)
+        let initial = AutomationPreferences(isEnabled: true, rules: [waitingRule, candidateRule])
+        defaults.set(try JSONEncoder().encode(initial), forKey: "automationRules")
+
+        let coordinatorDirectory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: coordinatorDirectory) }
+        let model = AppModel(
+            defaults: defaults,
+            displayProvider: { Array(self.inventory.prefix(2)) },
+            idleSecondsProvider: { nil },
+            inspectHandoff: { DisplayHandoffStatus(state: .none, journalPath: "/tmp/no-display-recovery.json") },
+            protectionCoordinator: makeCoordinator(directory: coordinatorDirectory)
+        )
+        try await waitForLogLines(1, at: log)
+        let before = model.automationPreferences
+        let storedBefore = try XCTUnwrap(defaults.data(forKey: "automationRules"))
+        let helperEventsBefore = try String(contentsOf: log, encoding: .utf8)
+
+        var draft = try XCTUnwrap(model.automationPreferences.rule(namedID: candidateRule.id))
+        draft.isEnabled = true
+        let editorValidation = model.protectionRuleValidation(for: draft, replacing: candidateRule.id)
+        XCTAssertFalse(editorValidation.allowsSave(isEnabled: true))
+        XCTAssertTrue(editorValidation.blockingReason?.contains("Second display") == true)
+        XCTAssertTrue(editorValidation.blockingReason?.contains("Stay black") == true)
+        XCTAssertThrowsError(try model.saveProtectionRule(draft, replacing: candidateRule.id)) {
+            guard case ProtectionConfigurationError.ruleConflict(let message) = $0 else {
+                return XCTFail("unexpected admission error: \($0)")
+            }
+            XCTAssertTrue(message.contains("Second display"))
+            XCTAssertTrue(message.contains("Stay black"))
+        }
+        XCTAssertEqual(model.automationPreferences, before, "refused Save changes no rules")
+        XCTAssertEqual(defaults.data(forKey: "automationRules"), storedBefore, "refused Save does not persist")
+
+        model.setProtectionRuleEnabled(true, id: candidateRule.id)
+        XCTAssertEqual(model.automationPreferences, before, "refused inline enable leaves both switches unchanged")
+        XCTAssertEqual(defaults.data(forKey: "automationRules"), storedBefore, "refused inline enable does not persist")
+        XCTAssertTrue(model.ruleEnableRefusals[candidateRule.id]?.contains("Stay black") == true)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(
+            try String(contentsOf: log, encoding: .utf8), helperEventsBefore,
+            "neither refusal stops or restarts the existing enabled rule"
+        )
+        await withCheckedContinuation { continuation in model.shutdown { continuation.resume() } }
+    }
+
+    @MainActor
+    func testDeletingActiveRuleLeavesCleanupFailureVisibleAndRetryable() async throws {
+        let directory = temporaryDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let script = """
+        #!/bin/bash
+        if [[ "$PANELCTL_CLEANUP_ONLY" == "1" ]]; then
+            printf '{"state":"stopped","blackedOutDisplayIDs":[],"cleanupSucceeded":true}\\n'
+            exit 0
+        fi
+        printf '{"state":"blacked_out","blackedOutDisplayIDs":[1]}\\n'
+        trap 'printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":false}\\n"; exit 0' TERM
+        while IFS= read -r command; do :; done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        defer { unsetenv("PANELCTL_HELPER") }
+
+        var settings = ProtectionPreferences()
+        settings.selectedDisplayUUIDs = [inventory[0].uuid!]
+        settings.followUpAction = .restore
+        let rule = ProtectionRule(name: "Active rule", isEnabled: true, settings: settings)
+        let suite = "panelctl-rule-cleanup-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(try JSONEncoder().encode(AutomationPreferences(isEnabled: true, rules: [rule])), forKey: "automationRules")
+        let coordinator = ProtectionCoordinator(
+            verifyJournal: { _ in true },
+            ruleJournalDirectory: directory,
+            removeDeletedDirectories: false,
+            serviceFactory: { id in ProtectionService(cleanupRuleID: id, cleanupIsVerified: { true }) }
+        )
+        let model = AppModel(
+            defaults: defaults,
+            displayProvider: { self.inventory },
+            idleSecondsProvider: { 0 },
+            inspectHandoff: { DisplayHandoffStatus(state: .none, journalPath: "/tmp/no-display-recovery.json") },
+            protectionCoordinator: coordinator
+        )
+        try await waitUntil { model.blackedOutDisplayIDs == [1] }
+        model.deleteProtectionRule(id: rule.id)
+        try await waitUntil { model.protectionQuiescenceFailure != nil }
+        XCTAssertTrue(model.automationPreferences.rules.isEmpty)
+        XCTAssertNotNil(model.protectionQuiescenceFailure, "failed cleanup survives deleting the final rule")
+
+        model.retryAutomationCleanup()
+        try await waitUntil { !model.protectionQuiescencePending && model.protectionQuiescenceFailure == nil }
+        XCTAssertTrue(model.automationPreferences.rules.isEmpty, "cleanup retry never recreates a deleted rule")
+        await withCheckedContinuation { continuation in model.shutdown { continuation.resume() } }
+    }
+
     @MainActor
     func testCoordinatorRestartsEveryHelperForEffectiveRuleSetChangeAndFansOutControl() async throws {
         let helper = try makeHelper(cleanup: false)

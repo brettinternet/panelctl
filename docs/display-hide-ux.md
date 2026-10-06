@@ -4,8 +4,8 @@ This is the current app contract. **Settings → Displays** shows display tiles
 in arrangement order. Select a tile to see its state, Hide/Show action, setup,
 inline result and Scripts command. The menu's **Hide _display_** / **Show
 _display_** actions and [scripts](#scripting) use the same per-display behavior.
-**Automation** configures idle protection; **General** holds app preferences
-and the Experimental features gate.
+**Automations** configures named idle protection rules; **General** holds app
+preferences and the Experimental features gate.
 
 ## Hide styles
 
@@ -16,7 +16,7 @@ and the Experimental features gate.
 
 Neither style removes the Mac's signal, puts the monitor in standby, or
 guarantees OLED maintenance. Hide is independent of the displays selected for
-Automation. There is no separate Hide-style picker.
+Automations. There is no separate Hide-style picker.
 
 ### Black out
 
@@ -37,11 +37,22 @@ never show them. Black out Hide does not switch monitor inputs or dim via DDC.
 
 ## Automation rules
 
-Automation keeps its master switch and global snooze. Each named rule has its own
-stable identity, enabled state, display selection, inactivity delay, optional
-empty-display add-on, blackout/dimming settings and Afterward behavior. The
-current single-rule Settings form edits the migrated **Display protection**
-rule; it does not create additional rules.
+The Automations tab keeps its master switch and global snooze. Each named rule
+has its own stable identity, enabled state, display selection, inactivity delay,
+optional empty-display add-on, blackout/dimming settings and Afterward behavior. The
+migrated **Display protection** rule appears without changing its saved
+settings. **Add Rule…** and **Edit…** open a draft sheet: **Save** applies the
+changes, while **Cancel** discards them. The rule list states the actual effect,
+targets and Afterward behavior; conflicts are refused inline, and missing saved
+targets remain visible as unavailable. When any rule sleeps displays, the global
+PanelCtl display-sleep timer setting appears separately from rule settings.
+
+Pause/Resume, the master switch and Restore stay global. The menu keeps no rule
+list; **Black Out Now** reflects the effects of enabled rules. These shipped
+rules perform automatic display protection only. Scheduled triggers, arbitrary
+action chains and manual display actions are separate deferred work; unattended
+Hide/Show, topology changes, monitor-input writes, power writes and private
+disconnect are unavailable as rule actions.
 
 Each enabled, runnable rule uses its own existing blackout helper and brightness
 journal. Two enabled rules may not overlap by display UUID (UUID comparison is
@@ -259,7 +270,7 @@ resolves only the entry whose topology matches; other entries remain intact.
 
 A healthy removed display has its own recovery details on its selected tile,
 not an error banner. Problems appear on the affected tile, or above the tiles if
-no target can represent them. **Automation** and **General** show a recovery
+no target can represent them. **Automations** and **General** show a recovery
 banner with **Review…**. The menu offers **Review Display Recovery…**; reopening
 the app from Finder focuses the affected recovery tile even when the menu icon
 is hidden. Login launch only reports recovery. Custom CLI journals are not
@@ -305,7 +316,7 @@ before deciding what to do. See [exit codes and status fields](usage.md#scripted
 ## Automation cleanup
 
 If brightness restoration cannot be confirmed, **Retry Automation Cleanup** is
-available in the menu and in both **Displays** and **Automation**, even with
+available in the menu and in both **Displays** and **Automations**, even with
 automation off and no desktop hidden. It only restores saved luminance-journal
 values; it never hides/shows a display, switches inputs or starts blackout.
 Automation resumes with a fresh countdown only if enabled and no other recovery
@@ -376,10 +387,10 @@ checked. No private setter, monitor-power write or disruptive recovery was used.
 
 ## Keyboard and accessibility
 
-Cmd-comma opens Settings; Cmd-1, Cmd-2 and Cmd-3 select Displays, Automation and
-General. Native controls expose display names and states to accessibility.
-Tab/Shift-Tab, Space and arrow keys navigate controls according to macOS keyboard
-navigation settings. There is no global Hide hotkey. Disabled actions have a
-visible explanation, not only a tooltip or color; errors and recovery commands
-are selectable text. Results stay on the selected display rather than opening
-a modal completion dialog.
+Cmd-comma opens Settings; Cmd-1, Cmd-2 and Cmd-3 select Displays, Automations
+and General. The rule switches are labelled with their rule name. In an editor
+sheet, Return saves and Escape cancels; Tab/Shift-Tab and arrow keys navigate
+native controls according to macOS keyboard navigation settings. There is no
+global Hide hotkey. Disabled actions have a visible explanation, not only a
+tooltip or color; errors and recovery commands are selectable text. Results stay
+on the selected display rather than opening a modal completion dialog.

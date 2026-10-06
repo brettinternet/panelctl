@@ -51,7 +51,7 @@ struct SettingsView: View {
             case .displays:
                 DisplaySettingsView(model: model, navigation: navigation)
             case .automation:
-                AutomationSettingsView(model: model)
+                AutomationSettingsView(model: model, navigation: navigation)
             case .general:
                 GeneralSettingsView(model: model)
             }

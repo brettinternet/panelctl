@@ -20,6 +20,7 @@ final class AppModel: ObservableObject {
     @Published var automationPreferences: AutomationPreferences {
         didSet {
             guard automationPreferences != oldValue else { return }
+            if !ruleEnableRefusals.isEmpty { ruleEnableRefusals.removeAll() }
             saveAutomationPreferences()
             reconcileProtection()
             onStatusChange?()
@@ -113,6 +114,7 @@ final class AppModel: ObservableObject {
     }
     private var observedRuleStates: [UUID: ProtectionRuntimeState] = [:]
     private var ruleStateBeganAt: [UUID: Date] = [:]
+    @Published private(set) var ruleEnableRefusals: [UUID: String] = [:]
     @Published private(set) var blackedOutDisplayIDs: Set<UInt32> = [] {
         didSet {
             if oldValue != blackedOutDisplayIDs {
@@ -432,6 +434,10 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func effectiveBlackoutMode(for rule: ProtectionRule) -> BlackoutMode {
+        hiddenOverlayRuleIDs.contains(rule.id) ? .blocking : rule.settings.mode
+    }
+
     var effectiveBlackoutMode: BlackoutMode {
         guard hiddenMirrorOverlayPolicyEligible,
               let source = selectedHiddenMirrorSource,
@@ -439,7 +445,7 @@ final class AppModel: ObservableObject {
               let rule = automationPreferences.rules.first(where: { ruleTargets($0, uuid: uuid) }) else {
             return preferences.mode
         }
-        return rule.settings.mode == .working ? .blocking : rule.settings.mode
+        return effectiveBlackoutMode(for: rule)
     }
 
     var hiddenMirrorProtectionSummary: String {
@@ -514,21 +520,228 @@ final class AppModel: ObservableObject {
     }
 
     var unavailableSelectedDisplayUUIDs: [String] {
-        guard !preferences.allDisplays else { return [] }
+        unavailableSelectedDisplayUUIDs(for: preferences)
+    }
+
+    func unavailableSelectedDisplayUUIDs(for settings: ProtectionPreferences) -> [String] {
+        guard !settings.allDisplays else { return [] }
         let available = Set(activeDisplays.compactMap(\.uuid).map { $0.uppercased() })
-        return preferences.selectedDisplayUUIDs
+        return settings.selectedDisplayUUIDs
             .map { $0.uppercased() }
             .filter { !available.contains($0) }
             .sorted()
     }
 
     var validationMessage: String? {
-        guard let rule = automationPreferences.rules.first else { return nil }
-        let result = ProtectionRuleValidator.validate(
+        for rule in automationPreferences.rules where rule.isEnabled {
+            let result = ProtectionRuleValidator.validate(
+                rule, in: automationPreferences, displays: displays,
+                hiddenUUIDs: Set(blackoutHiddenDisplays.keys)
+            )
+            if let reason = result.blockingReason ?? result.waitingReason { return reason }
+        }
+        return nil
+    }
+
+    func makeNewProtectionRule() -> ProtectionRule {
+        let existingNames = Set(automationPreferences.rules.map { $0.name.lowercased() })
+        var name = "New Rule"
+        var suffix = 2
+        while existingNames.contains(name.lowercased()) {
+            name = "New Rule \(suffix)"
+            suffix += 1
+        }
+        var settings = ProtectionPreferences()
+        settings.selectedDisplayUUIDs = []
+        settings.didChooseDisplays = true
+        settings.followUpAction = .untilActivity
+        settings.keepDisplaysAwake = automationPreferences.keepDisplaysAwake
+        return ProtectionRule(name: name, isEnabled: true, settings: settings)
+    }
+
+    private func protectionRuleAdmissionValidation(
+        _ candidate: ProtectionRule,
+        in proposed: AutomationPreferences
+    ) -> ProtectionRuleValidation {
+        let hiddenUUIDs = Set(blackoutHiddenDisplays.keys)
+        let candidateValidation = ProtectionRuleValidator.validate(
+            candidate, in: proposed, displays: displays, hiddenUUIDs: hiddenUUIDs
+        )
+        guard candidate.isEnabled,
+              candidateValidation.blockingReason == nil,
+              candidateValidation.nameBlockingReason == nil else {
+            return candidateValidation
+        }
+
+        for affectedRule in proposed.rules where affectedRule.id != candidate.id && affectedRule.isEnabled {
+            guard let previousRule = automationPreferences.rule(namedID: affectedRule.id), previousRule.isEnabled else {
+                continue
+            }
+            let previousValidation = ProtectionRuleValidator.validate(
+                previousRule, in: automationPreferences, displays: displays, hiddenUUIDs: hiddenUUIDs
+            )
+            guard previousValidation.blockingReason == nil else { continue }
+
+            let nextValidation = ProtectionRuleValidator.validate(
+                affectedRule, in: proposed, displays: displays, hiddenUUIDs: hiddenUUIDs
+            )
+            guard let reason = nextValidation.blockingReason else { continue }
+            let message = "“\(candidate.name)” would block “\(affectedRule.name)”: \(reason)"
+            return ProtectionRuleValidation(
+                blockingReason: message,
+                waitingReason: candidateValidation.waitingReason,
+                arguments: nil,
+                nameBlockingReason: candidateValidation.nameBlockingReason
+            )
+        }
+        return candidateValidation
+    }
+
+    func protectionRuleValidation(
+        for draft: ProtectionRule,
+        replacing existingID: UUID? = nil
+    ) -> ProtectionRuleValidation {
+        var candidate = draft
+        candidate.name = candidate.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        var proposed = automationPreferences
+        if let existingID {
+            guard candidate.id == existingID,
+                  let index = proposed.rules.firstIndex(where: { $0.id == existingID }) else {
+                let reason = ProtectionConfigurationError.duplicateRuleIdentity.localizedDescription
+                return ProtectionRuleValidation(blockingReason: reason, waitingReason: nil, arguments: nil)
+            }
+            proposed.rules[index] = candidate
+        } else {
+            guard !proposed.rules.contains(where: { $0.id == candidate.id }) else {
+                let reason = ProtectionConfigurationError.duplicateRuleIdentity.localizedDescription
+                return ProtectionRuleValidation(blockingReason: reason, waitingReason: nil, arguments: nil)
+            }
+            proposed.rules.append(candidate)
+        }
+        return protectionRuleAdmissionValidation(candidate, in: proposed)
+    }
+
+    func saveProtectionRule(
+        _ draft: ProtectionRule,
+        replacing existingID: UUID? = nil
+    ) throws {
+        var candidate = draft
+        candidate.name = candidate.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        candidate.settings.isEnabled = false
+        candidate.settings.keepDisplaysAwake = automationPreferences.keepDisplaysAwake
+        var proposed = automationPreferences
+        if let existingID {
+            guard candidate.id == existingID,
+                  let index = proposed.rules.firstIndex(where: { $0.id == existingID }) else {
+                throw ProtectionConfigurationError.duplicateRuleIdentity
+            }
+            proposed.rules[index] = candidate
+        } else {
+            guard !proposed.rules.contains(where: { $0.id == candidate.id }) else {
+                throw ProtectionConfigurationError.duplicateRuleIdentity
+            }
+            proposed.rules.append(candidate)
+        }
+        let validation = protectionRuleAdmissionValidation(candidate, in: proposed)
+        if let nameReason = validation.nameBlockingReason {
+            if candidate.name.isEmpty { throw ProtectionConfigurationError.invalidRuleName }
+            throw ProtectionConfigurationError.ruleConflict(nameReason)
+        }
+        if candidate.isEnabled, let blockingReason = validation.blockingReason {
+            throw ProtectionConfigurationError.ruleConflict(blockingReason)
+        }
+        automationPreferences = proposed
+    }
+
+    func setProtectionRuleEnabled(_ enabled: Bool, id: UUID) {
+        guard let index = automationPreferences.rules.firstIndex(where: { $0.id == id }) else { return }
+        var candidate = automationPreferences.rules[index]
+        ruleEnableRefusals[id] = nil
+        guard candidate.isEnabled != enabled else { return }
+        candidate.isEnabled = enabled
+        if enabled {
+            var proposed = automationPreferences
+            proposed.rules[index] = candidate
+            let validation = protectionRuleAdmissionValidation(candidate, in: proposed)
+            if let reason = validation.blockingReason {
+                ruleEnableRefusals[id] = reason
+                onStatusChange?()
+                return
+            }
+        }
+        var proposed = automationPreferences
+        proposed.rules[index] = candidate
+        automationPreferences = proposed
+    }
+
+    func deleteProtectionRule(id: UUID) {
+        var proposed = automationPreferences
+        guard let index = proposed.rules.firstIndex(where: { $0.id == id }) else { return }
+        proposed.rules.remove(at: index)
+        automationPreferences = proposed
+    }
+
+    func setKeepDisplaysAwake(_ enabled: Bool) {
+        guard automationPreferences.keepDisplaysAwake != enabled else { return }
+        var proposed = automationPreferences
+        proposed.keepDisplaysAwake = enabled
+        for index in proposed.rules.indices {
+            proposed.rules[index].settings.keepDisplaysAwake = enabled
+        }
+        automationPreferences = proposed
+    }
+
+    func protectionRuleRowStatus(for rule: ProtectionRule) -> ProtectionRuleRowStatus {
+        let validation = ProtectionRuleValidator.validate(
             rule, in: automationPreferences, displays: displays,
             hiddenUUIDs: Set(blackoutHiddenDisplays.keys)
         )
-        return result.blockingReason ?? result.waitingReason
+        var state = runtimeState(for: rule)
+        if rule.isEnabled, protectionPausedForDisplayRecovery,
+           protectionRuleNeedsDisplayReview(rule),
+           let reason = displayRecoveryProblem {
+            state = .failed(reason)
+        } else if rule.isEnabled, protectionPausedForDisplayRecovery,
+                  protectionRuleNeedsDisplayReview(rule), handoffStatus?.hasUnresolvedJournal == true {
+            state = .failed("Automation is paused while a display is removed.")
+        }
+        return ProtectionRulePresentation.status(
+            for: rule,
+            state: state,
+            validation: validation,
+            enableRefusal: ruleEnableRefusals[rule.id],
+            displays: displays,
+            effectiveMode: effectiveBlackoutMode(for: rule)
+        )
+    }
+
+    func protectionRuleNeedsDisplayReview(_ rule: ProtectionRule) -> Bool {
+        if displayRecoveryProblem != nil { return true }
+        for uuid in rule.settings.selectedDisplayUUIDs {
+            if isRemovedDisplay(uuid) || isBlackoutHidden(uuid) { return true }
+            if displayResults[uuid.lowercased()]?.message.localizedCaseInsensitiveContains(
+                "couldn’t confirm automation stopped"
+            ) == true { return true }
+        }
+        if rule.settings.allDisplays, protectionQuiescenceFailure != nil {
+            return displayResults.values.contains {
+                $0.message.localizedCaseInsensitiveContains("couldn’t confirm automation stopped")
+            }
+        }
+        return false
+    }
+
+    func protectionRuleReviewDisplayUUID(_ rule: ProtectionRule) -> String? {
+        let reviewable = handoffStatus?.removals.filter(\.isUnresolved).map { $0.target.uuid } ?? []
+        for uuid in rule.settings.selectedDisplayUUIDs.sorted() {
+            if reviewable.contains(where: { $0.caseInsensitiveCompare(uuid) == .orderedSame }) ||
+                isBlackoutHidden(uuid) || displayResults[uuid.lowercased()]?.message.localizedCaseInsensitiveContains(
+                    "couldn’t confirm automation stopped"
+                ) == true {
+                return uuid
+            }
+        }
+        return handoffStatus?.target?.uuid
     }
 
     /// Automation skips displays Hide blacked out.
@@ -2488,7 +2701,7 @@ final class AppModel: ObservableObject {
         return "\(seconds)s"
     }
 
-    static func durationLabel(_ seconds: TimeInterval) -> String {
+    nonisolated static func durationLabel(_ seconds: TimeInterval) -> String {
         if seconds >= 3600, seconds.truncatingRemainder(dividingBy: 3600) == 0 {
             let hours = Int(seconds / 3600)
             return "\(hours) \(hours == 1 ? "hour" : "hours")"

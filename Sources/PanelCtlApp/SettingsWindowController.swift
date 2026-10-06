@@ -10,7 +10,7 @@ enum SettingsTab: String, CaseIterable {
     var title: String {
         switch self {
         case .displays: return "Displays"
-        case .automation: return "Automation"
+        case .automation: return "Automations"
         case .general: return "General"
         }
     }
