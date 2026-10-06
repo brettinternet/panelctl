@@ -167,6 +167,61 @@ final class CLIParserTests: XCTestCase {
         }
     }
 
+    func testSiblingRuleAndRuleJournalFlagsArePrivateAndStrict() throws {
+        let target = "00000000-0000-0000-0000-000000000001"
+        let sibling = "00000000-0000-0000-0000-000000000002"
+        let ruleID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+        let valid = [
+            "blackout", "--display", target,
+            "--panelctl-other-rule-display", sibling,
+            "--panelctl-rule", ruleID.uuidString,
+            "--watch", "--idle-after", "10", "--timeout", "30"
+        ]
+        guard case .blackout(let options) = try CLIParser.parse(valid) else {
+            return XCTFail("expected blackout options")
+        }
+        XCTAssertEqual(options.ruleID, ruleID)
+        XCTAssertEqual(options.otherRuleDisplayUUIDs, [sibling])
+        XCTAssertNoThrow(try BlackoutController.validateOptions(options))
+
+        let invalid: [[String]] = [
+            ["--display", target, "--panelctl-other-rule-display", "not-a-uuid"] + ["--watch", "--idle-after", "10"],
+            ["--display", target, "--panelctl-other-rule-display", sibling,
+             "--panelctl-other-rule-display", sibling.lowercased()] + ["--watch", "--idle-after", "10"],
+            ["--display", target, "--panelctl-other-rule-display", target.lowercased()] + ["--watch", "--idle-after", "10"],
+            ["--all", "--panelctl-other-rule-display", sibling, "--timeout", "30"],
+            ["--display", target, "--panelctl-hidden-display", sibling,
+             "--panelctl-other-rule-display", sibling] + ["--watch", "--idle-after", "10"]
+        ]
+        for arguments in invalid {
+            XCTAssertThrowsError(try CLIParser.parse(["blackout"] + arguments)) { error in
+                if arguments.contains("--all") {
+                    XCTAssertEqual(error as? CLIParseError, .invalidOtherRuleDisplay)
+                } else if arguments.contains("--panelctl-hidden-display") {
+                    XCTAssertEqual(error as? CLIParseError, .invalidOtherRuleDisplay)
+                } else {
+                    XCTAssertEqual(error as? CLIParseError, .invalidOtherRuleDisplay)
+                }
+            }
+        }
+        XCTAssertThrowsError(try CLIParser.parse([
+            "blackout", "--display", target, "--panelctl-other-rule-display"
+        ] + ["--watch", "--idle-after", "10"])) {
+            XCTAssertEqual($0 as? CLIParseError, .missingValue("--panelctl-other-rule-display"))
+        }
+        XCTAssertThrowsError(try CLIParser.parse([
+            "blackout", "--display", target, "--panelctl-rule", "invalid"
+        ])) {
+            XCTAssertEqual($0 as? CLIParseError, .invalidRuleID)
+        }
+        XCTAssertThrowsError(try CLIParser.parse([
+            "blackout", "--display", target, "--panelctl-rule", ruleID.uuidString,
+            "--panelctl-rule", ruleID.uuidString
+        ])) {
+            XCTAssertEqual($0 as? CLIParseError, .duplicateOption("--panelctl-rule"))
+        }
+    }
+
     func testBlackoutModeAndChannelDefaults() throws {
         let command = try CLIParser.parse(["blackout", "--display", "1"])
         guard case .blackout(let options) = command else {

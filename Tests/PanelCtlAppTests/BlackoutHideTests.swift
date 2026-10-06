@@ -389,8 +389,10 @@ final class BlackoutHideTests: XCTestCase {
             defaults.set(try JSONEncoder().encode(preferences), forKey: "blackoutPreferences")
         })
         let options = "--mode blocking --overlay-opacity 100 --idle-after 120 --watch --timeout 15"
-        let both = "launch:blackout --display \(Self.mainUUID) --display \(Self.sideUUID) \(options)"
-        let skippingSide = "launch:blackout --display \(Self.mainUUID) --panelctl-hidden-display \(Self.sideUUID) \(options)"
+        let ruleID = try XCTUnwrap(model.automationPreferences.rules.first?.id.uuidString)
+        let ruleOption = "--panelctl-rule \(ruleID)"
+        let both = "launch:blackout --display \(Self.mainUUID) --display \(Self.sideUUID) \(ruleOption) \(options)"
+        let skippingSide = "launch:blackout --display \(Self.mainUUID) --panelctl-hidden-display \(Self.sideUUID) \(ruleOption) \(options)"
         var lines = try await waitForLines(1, at: log)
         XCTAssertEqual(lines, [both])
 

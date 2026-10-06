@@ -70,6 +70,32 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
     }
 }
 
+public struct AppControlRuleStatus: Codable, Equatable, Sendable {
+    public let id: UUID
+    public let name: String
+    public let enabled: Bool
+    public let state: String
+    public let summary: String
+    public let detail: String?
+    public let displays: [String]
+    public let nextAction: String?
+    public let secondsRemaining: Int?
+
+    public init(id: UUID, name: String, enabled: Bool, state: String, summary: String,
+                detail: String? = nil, displays: [String], nextAction: String? = nil,
+                secondsRemaining: Int? = nil) {
+        self.id = id
+        self.name = name
+        self.enabled = enabled
+        self.state = state
+        self.summary = summary
+        self.detail = detail
+        self.displays = displays
+        self.nextAction = nextAction
+        self.secondsRemaining = secondsRemaining
+    }
+}
+
 /// Versioned response returned by PanelCtl.app.  `detail` and `error` are
 /// omitted from JSON when they are not present.
 public struct AppControlResponse: Codable, Equatable, Sendable {
@@ -86,6 +112,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
     public let snoozedUntil: String?
     public let outcome: AppControlOutcome?
     public let displays: [AppControlDisplayStatus]?
+    public let rules: [AppControlRuleStatus]?
 
     public var exitCode: Int32 {
         if !running { return 3 }
@@ -106,7 +133,8 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         secondsRemaining: Int? = nil,
         snoozedUntil: String? = nil,
         outcome: AppControlOutcome? = nil,
-        displays: [AppControlDisplayStatus]? = nil
+        displays: [AppControlDisplayStatus]? = nil,
+        rules: [AppControlRuleStatus]? = nil
     ) {
         self.protocolVersion = protocolVersion
         self.ok = ok
@@ -121,6 +149,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         self.snoozedUntil = snoozedUntil
         self.outcome = outcome
         self.displays = displays
+        self.rules = rules
     }
 
     public static func unavailable(_ message: String = "PanelCtl.app is not running") -> Self {
@@ -137,7 +166,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol"
         case ok, running, enabled, state, summary, detail, error
-        case nextAction, secondsRemaining, snoozedUntil, outcome, displays
+        case nextAction, secondsRemaining, snoozedUntil, outcome, displays, rules
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -155,6 +184,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         try container.encodeIfPresent(snoozedUntil, forKey: .snoozedUntil)
         try container.encodeIfPresent(outcome, forKey: .outcome)
         try container.encodeIfPresent(displays, forKey: .displays)
+        try container.encodeIfPresent(rules, forKey: .rules)
     }
 }
 

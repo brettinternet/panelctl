@@ -180,13 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateBlackoutFocus() {
         guard let model else { return }
         var focusDisplayIDs = model.coveredHiddenDisplayIDs
-        if Self.shouldEngageBlackoutFocus(
-            runtimeState: model.runtimeState,
-            mode: model.effectiveBlackoutMode,
-            hasBlackedOutDisplays: !model.blackedOutDisplayIDs.isEmpty
-        ) {
-            focusDisplayIDs.formUnion(model.blackedOutDisplayIDs)
-        }
+        focusDisplayIDs.formUnion(model.automationBlockingDisplayIDs)
         if !focusDisplayIDs.isEmpty {
             if blackoutFocusTimer == nil {
                 let timer = Timer(
@@ -638,7 +632,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .status:
             model.refreshDisplays()
             return controlResponse(ok: true, outcome: model.controlDisplayOutcome,
-                                   displays: model.controlDisplayStatuses)
+                                   displays: model.controlDisplayStatuses,
+                                   rules: model.controlRuleStatuses)
         case .blackoutNow:
             do {
                 try model.blackoutNow()
@@ -647,7 +642,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     summary: Self.blackoutRequestSummary(
                         for: model.preferences.mode,
                         succeeded: true
-                    )
+                    ),
+                    detail: model.statusDetail
                 )
             } catch {
                 return controlResponse(
@@ -656,7 +652,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         for: model.preferences.mode,
                         succeeded: false
                     ),
-                    error: error.localizedDescription
+                    error: error.localizedDescription,
+                    detail: model.statusDetail
                 )
             }
         case .sleepNow:
@@ -712,7 +709,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         summary: String? = nil,
         error: String? = nil,
         outcome: AppControlOutcome? = nil,
-        displays: [AppControlDisplayStatus]? = nil
+        displays: [AppControlDisplayStatus]? = nil,
+        rules: [AppControlRuleStatus]? = nil,
+        detail: String? = nil
     ) -> AppControlResponse {
         AppControlResponse(
             ok: ok,
@@ -720,13 +719,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             enabled: model.preferences.isEnabled,
             state: model.runtimeState.controlIdentifier,
             summary: summary ?? model.statusSummary,
-            detail: model.runtimeState.detailMessage,
+            detail: detail ?? model.statusDetail,
             error: error,
             nextAction: model.nextAction,
             secondsRemaining: model.secondsRemaining,
             snoozedUntil: model.snoozedUntil.map(Self.iso8601.string),
             outcome: outcome,
-            displays: displays
+            displays: displays,
+            rules: rules
         )
     }
 
@@ -749,6 +749,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         if notification.name == NSWorkspace.screensDidWakeNotification {
+            DisplaySleepController.automationScreensDidWake()
             model.setDisplayLifecycleTransitioning(true)
             model.refreshDisplays(restartWatcher: true)
             systemSleeping = false

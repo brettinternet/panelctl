@@ -522,6 +522,7 @@ final class ProtectionPreferencesTests: XCTestCase {
             displayProvider: { [self.displays[0], self.displays[1]] }
         )
         XCTAssertFalse(try model.restoreBlackout())
+        let ruleID = try XCTUnwrap(model.automationPreferences.rules.first?.id.uuidString)
 
         try model.blackoutNow()
         XCTAssertTrue(model.preferences.isEnabled)
@@ -529,7 +530,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertEqual(
             lines,
             [
-                "launch:blackout --display AAAA-UUID --mode blocking --overlay-opacity 100 --idle-after 120 --watch --timeout 15",
+                "launch:blackout --display AAAA-UUID --panelctl-rule \(ruleID) --mode blocking --overlay-opacity 100 --idle-after 120 --watch --timeout 15",
                 "command:blackout-now"
             ]
         )
@@ -587,13 +588,9 @@ final class ProtectionPreferencesTests: XCTestCase {
         )
         let model = isolatedModel(defaults: defaults, displayProvider: { self.displays })
 
-        XCTAssertThrowsError(try model.blackoutNow()) {
-            XCTAssertEqual(
-                $0 as? ProtectionConfigurationError,
-                .noSelection
-            )
-        }
-        XCTAssertFalse(model.preferences.isEnabled)
+        XCTAssertNoThrow(try model.blackoutNow())
+        XCTAssertTrue(model.preferences.isEnabled)
+        XCTAssertEqual(model.statusDetail, ProtectionConfigurationError.noSelection.localizedDescription)
     }
 
     @MainActor
@@ -1048,9 +1045,10 @@ final class ProtectionPreferencesTests: XCTestCase {
         )
         try await waitUntil { model.runtimeState == .waiting }
         try await waitUntil { model.blackedOutDisplayIDs == [202] }
+        let ruleID = try XCTUnwrap(model.automationPreferences.rules.first?.id.uuidString)
         let initialLaunches = try await waitForLaunches(1, at: log)
         XCTAssertEqual(initialLaunches, [
-            "launch:blackout --display AAAA-UUID --display BBBB-UUID --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake"
+            "launch:blackout --display AAAA-UUID --display BBBB-UUID --panelctl-rule \(ruleID) --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake"
         ])
 
         currentDisplays = [displays[0], displays[2]]
@@ -1059,8 +1057,8 @@ final class ProtectionPreferencesTests: XCTestCase {
         try await waitUntil { model.runtimeState == .waiting }
         let partialLaunches = try await waitForLaunches(2, at: log)
         XCTAssertEqual(partialLaunches, [
-            "launch:blackout --display AAAA-UUID --display BBBB-UUID --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake",
-            "launch:blackout --display AAAA-UUID --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake"
+            "launch:blackout --display AAAA-UUID --display BBBB-UUID --panelctl-rule \(ruleID) --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake",
+            "launch:blackout --display AAAA-UUID --panelctl-rule \(ruleID) --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake"
         ])
 
         currentDisplays = displays
@@ -1069,9 +1067,9 @@ final class ProtectionPreferencesTests: XCTestCase {
         try await waitUntil { model.blackedOutDisplayIDs == [202] }
         let recoveredLaunches = try await waitForLaunches(3, at: log)
         XCTAssertEqual(recoveredLaunches, [
-            "launch:blackout --display AAAA-UUID --display BBBB-UUID --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake",
-            "launch:blackout --display AAAA-UUID --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake",
-            "launch:blackout --display AAAA-UUID --display BBBB-UUID --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake"
+            "launch:blackout --display AAAA-UUID --display BBBB-UUID --panelctl-rule \(ruleID) --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake",
+            "launch:blackout --display AAAA-UUID --panelctl-rule \(ruleID) --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake",
+            "launch:blackout --display AAAA-UUID --display BBBB-UUID --panelctl-rule \(ruleID) --mode blocking --overlay-opacity 100 --idle-after 300 --watch --sleep-after 1800 --keep-displays-awake"
         ])
 
         currentDisplays = [displays[2]]

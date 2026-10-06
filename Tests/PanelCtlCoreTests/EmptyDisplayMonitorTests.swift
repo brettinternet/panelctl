@@ -59,6 +59,39 @@ final class EmptyDisplayMonitorTests: XCTestCase {
         ), [1])
     }
 
+    func testRestoredEmptyCoverWaitsForOccupiedThenEmptyBeforeRearming() {
+        var policy = EmptyDisplayPolicy()
+        let activeBounds = [left.bounds, right.bounds]
+        let emptySample = sample(pointer: CGPoint(x: 50, y: 50))
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [left], activeDisplayBounds: activeBounds, sample: emptySample, uptime: 0
+        ), [])
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [left], activeDisplayBounds: activeBounds, sample: emptySample, uptime: 1
+        ), [left.id])
+
+        policy.restoredCoveredDisplays([left.id])
+        for uptime in [2.0, 20, 21] {
+            XCTAssertEqual(policy.desiredDisplayIDs(
+                targets: [left], activeDisplayBounds: activeBounds, sample: emptySample, uptime: uptime
+            ), [], "unchanged empty observations cannot re-cover a restored display")
+        }
+
+        let occupied = sample(pointer: CGPoint(x: -50, y: 50))
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [left], activeDisplayBounds: activeBounds, sample: occupied, uptime: 22
+        ), [])
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [left], activeDisplayBounds: activeBounds, sample: emptySample, uptime: 22.1
+        ), [])
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [left], activeDisplayBounds: activeBounds, sample: emptySample, uptime: 23.1
+        ), [left.id])
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [left], activeDisplayBounds: activeBounds, sample: emptySample, uptime: 24
+        ), [left.id], "the desired cover stays stable for unchanged observations")
+    }
+
     func testPointerOnAHiddenDisplayCoversNothing() {
         var policy = EmptyDisplayPolicy()
         let activeBounds = [left.bounds, right.bounds]

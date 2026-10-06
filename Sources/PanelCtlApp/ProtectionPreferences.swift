@@ -30,6 +30,12 @@ enum ProtectionConfigurationError: Error, Equatable, LocalizedError {
     case invalidHardwareBrightnessPercent
     case invalidIdleDuration
     case invalidFollowUpDuration
+    case ruleConflict(String)
+    case combinedCoverage(String)
+    case duplicateRuleName(String)
+    case invalidRuleName
+    case duplicateRuleIdentity
+    case noEnabledRules
 
     var errorDescription: String? {
         switch self {
@@ -57,6 +63,16 @@ enum ProtectionConfigurationError: Error, Equatable, LocalizedError {
             return "Choose a valid inactivity delay."
         case .invalidFollowUpDuration:
             return "Choose a valid Restore or Sleep delay."
+        case .ruleConflict(let message), .combinedCoverage(let message):
+            return message
+        case .duplicateRuleName(let name):
+            return "Rule names must be unique. “\(name)” is already in use."
+        case .invalidRuleName:
+            return "Enter a non-empty rule name."
+        case .duplicateRuleIdentity:
+            return "This rule has a duplicate ID. Remove the duplicate before enabling protection."
+        case .noEnabledRules:
+            return "No rules are on. Turn one on in Settings → Automations."
         }
     }
 
@@ -182,14 +198,18 @@ struct ProtectionPreferences: Codable, Equatable {
     /// once the source and every hidden display are black.
     func hiddenMirrorOverlayArguments(
         for source: DisplayRecord,
-        hiddenDisplays: [DisplayRecord] = []
+        hiddenDisplays: [DisplayRecord] = [],
+        otherRuleDisplays: [DisplayRecord] = []
     ) throws -> [String]? {
-        try hiddenMirrorOverlayArguments(for: [source], hiddenDisplays: hiddenDisplays)
+        try hiddenMirrorOverlayArguments(
+            for: [source], hiddenDisplays: hiddenDisplays, otherRuleDisplays: otherRuleDisplays
+        )
     }
 
     func hiddenMirrorOverlayArguments(
         for sources: [DisplayRecord],
-        hiddenDisplays: [DisplayRecord] = []
+        hiddenDisplays: [DisplayRecord] = [],
+        otherRuleDisplays: [DisplayRecord] = []
     ) throws -> [String]? {
         guard !sources.isEmpty else { return nil }
         var sourceUUIDs: [String] = []
@@ -231,9 +251,21 @@ struct ProtectionPreferences: Codable, Equatable {
             arguments += ["--display", uuid, "--panelctl-hidden-mirror-source", uuid]
         }
         let sourceKeys = Set(sourceUUIDs.map { $0.lowercased() })
-        let hidden = hiddenDisplays.compactMap(\.uuid).filter { !sourceKeys.contains($0.lowercased()) }
-        for hiddenUUID in Set(hidden).sorted() {
+        var emittedHidden = Set<String>()
+        let hidden = hiddenDisplays.compactMap(\.uuid).filter {
+            !sourceKeys.contains($0.lowercased()) && emittedHidden.insert($0.lowercased()).inserted
+        }
+        let hiddenKeys = Set(hidden.map { $0.lowercased() })
+        for hiddenUUID in hidden.sorted() {
             arguments += ["--panelctl-hidden-display", hiddenUUID]
+        }
+        var emittedSiblings = Set<String>()
+        let siblings = otherRuleDisplays.compactMap(\.uuid).filter {
+            let key = $0.lowercased()
+            return !sourceKeys.contains(key) && !hiddenKeys.contains(key) && emittedSiblings.insert(key).inserted
+        }
+        for siblingUUID in siblings.sorted() {
+            arguments += ["--panelctl-other-rule-display", siblingUUID]
         }
         arguments += [
             "--mode", "blocking", "--overlay-opacity", "100",
@@ -256,7 +288,9 @@ struct ProtectionPreferences: Codable, Equatable {
     /// rules treat them as already black.
     func commandArguments(
         for displays: [DisplayRecord],
-        hiddenDisplayUUIDs: Set<String> = []
+        hiddenDisplayUUIDs: Set<String> = [],
+        otherRuleDisplayUUIDs: Set<String> = [],
+        ruleID: UUID? = nil
     ) throws -> [String] {
         guard Self.isValidDuration(idleSeconds) else {
             throw ProtectionConfigurationError.invalidIdleDuration
@@ -288,7 +322,12 @@ struct ProtectionPreferences: Codable, Equatable {
             return uuids.contains { $0.caseInsensitiveCompare(uuid) == .orderedSame }
         }
         let hidden = drawable.filter { matches($0, hiddenDisplayUUIDs) }
-        let shown = drawable.filter { !matches($0, hiddenDisplayUUIDs) }
+        let hiddenIDs = Set(hidden.map(\.id))
+        let otherRuleDisplays = drawable.filter {
+            matches($0, otherRuleDisplayUUIDs) && !hiddenIDs.contains($0.id)
+        }
+        let covered = Set((hidden + otherRuleDisplays).map(\.id))
+        let shown = drawable.filter { !covered.contains($0.id) }
 
         let selected: [DisplayRecord]
         if allDisplays {
@@ -313,12 +352,13 @@ struct ProtectionPreferences: Codable, Equatable {
             }
         }
         guard !selected.isEmpty else { throw ProtectionConfigurationError.selectedDisplaysHidden }
-        if !allDisplays,
-           followUpAction == .untilActivity,
-           Set(selected.map(\.id)) == Set(shown.map(\.id)) {
-            throw hidden.isEmpty
-                ? ProtectionConfigurationError.selectionWouldCoverAllDisplays
-                : ProtectionConfigurationError.selectionWouldCoverEveryShownDisplay
+        if followUpAction == .untilActivity {
+            let totalCovered = Set(selected.map(\.id)).union(covered)
+            if totalCovered.count == drawable.count {
+                throw hidden.isEmpty && otherRuleDisplays.isEmpty
+                    ? ProtectionConfigurationError.selectionWouldCoverAllDisplays
+                    : ProtectionConfigurationError.selectionWouldCoverEveryShownDisplay
+            }
         }
 
         var arguments = ["blackout"]
@@ -336,6 +376,12 @@ struct ProtectionPreferences: Codable, Equatable {
         }
         for uuid in hidden.compactMap(\.uuid).sorted() {
             arguments += ["--panelctl-hidden-display", uuid]
+        }
+        for uuid in otherRuleDisplays.compactMap(\.uuid).sorted() {
+            arguments += ["--panelctl-other-rule-display", uuid]
+        }
+        if let ruleID {
+            arguments += ["--panelctl-rule", ruleID.uuidString]
         }
         arguments += ["--mode", mode.rawValue]
         if mode == .working {
@@ -388,5 +434,227 @@ struct ProtectionPreferences: Codable, Equatable {
 
     private static func isValidDuration(_ seconds: TimeInterval) -> Bool {
         seconds.isFinite && seconds >= 1 && seconds <= 30 * 24 * 60 * 60
+    }
+}
+
+struct ProtectionRule: Codable, Equatable, Identifiable {
+    var id: UUID
+    var name: String
+    var isEnabled: Bool
+    var settings: ProtectionPreferences
+
+    init(
+        id: UUID = UUID(),
+        name: String = "Display protection",
+        isEnabled: Bool = true,
+        settings: ProtectionPreferences = ProtectionPreferences()
+    ) {
+        self.id = id
+        self.name = name
+        self.isEnabled = isEnabled
+        self.settings = settings
+        self.settings.isEnabled = false
+    }
+}
+
+struct AutomationPreferences: Codable, Equatable {
+    static let currentVersion = 1
+
+    var version: Int = currentVersion
+    var isEnabled = false
+    var keepDisplaysAwake = true
+    var rules: [ProtectionRule]
+
+    init(
+        isEnabled: Bool = false,
+        keepDisplaysAwake: Bool = true,
+        rules: [ProtectionRule]
+    ) {
+        self.version = Self.currentVersion
+        self.isEnabled = isEnabled
+        self.keepDisplaysAwake = keepDisplaysAwake
+        self.rules = rules
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, isEnabled, keepDisplaysAwake, rules
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decode(Int.self, forKey: .version)
+        guard version == Self.currentVersion else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .version, in: values,
+                debugDescription: "Unsupported automation rule-set version."
+            )
+        }
+        isEnabled = try values.decode(Bool.self, forKey: .isEnabled)
+        keepDisplaysAwake = try values.decode(Bool.self, forKey: .keepDisplaysAwake)
+        rules = try values.decode([ProtectionRule].self, forKey: .rules)
+    }
+
+    static func migrate(legacyData: Data?, displays: [DisplayRecord]) -> Self {
+        var legacy = legacyData.flatMap { try? JSONDecoder().decode(ProtectionPreferences.self, from: $0) }
+            ?? ProtectionPreferences()
+        legacy.selectedDisplayUUIDs = Set(legacy.selectedDisplayUUIDs.map { $0.uppercased() })
+        if !legacy.didChooseDisplays {
+            let drawable = displays.filter {
+                $0.active && $0.online && $0.bounds.width > 0 && $0.bounds.height > 0
+            }
+            let selectable = drawable.filter { $0.uuid != nil }
+            let preferred = selectable.filter { !$0.builtin }
+            let initial = preferred.first ?? selectable.first
+            legacy.allDisplays = false
+            legacy.selectedDisplayUUIDs = initial?.uuid.map { Set([$0.uppercased()]) } ?? []
+            legacy.didChooseDisplays = true
+        }
+        let masterEnabled = legacy.isEnabled
+        let keepAwake = legacy.keepDisplaysAwake
+        legacy.isEnabled = false
+        return Self(
+            isEnabled: masterEnabled,
+            keepDisplaysAwake: keepAwake,
+            rules: [ProtectionRule(name: "Display protection", isEnabled: true, settings: legacy)]
+        )
+    }
+
+    var firstRule: ProtectionRule? { rules.first }
+
+    func rule(namedID id: UUID) -> ProtectionRule? {
+        rules.first { $0.id == id }
+    }
+
+    mutating func renameRule(id: UUID, to proposedName: String) throws {
+        let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw ProtectionConfigurationError.invalidRuleName }
+        guard !rules.contains(where: {
+            $0.id != id && $0.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                .caseInsensitiveCompare(name) == .orderedSame
+        }) else {
+            throw ProtectionConfigurationError.duplicateRuleName(name)
+        }
+        guard let index = rules.firstIndex(where: { $0.id == id }) else {
+            throw ProtectionConfigurationError.duplicateRuleIdentity
+        }
+        rules[index].name = name
+    }
+}
+
+struct ProtectionRuleValidation {
+    let blockingReason: String?
+    let waitingReason: String?
+    let arguments: [String]?
+
+    var isRunnable: Bool { blockingReason == nil && waitingReason == nil && arguments != nil }
+}
+
+enum ProtectionRuleValidator {
+    static func validate(
+        _ rule: ProtectionRule,
+        in ruleSet: AutomationPreferences,
+        displays: [DisplayRecord],
+        hiddenUUIDs: Set<String> = []
+    ) -> ProtectionRuleValidation {
+        guard ruleSet.rules.filter({ $0.id == rule.id }).count == 1 else {
+            return .init(
+                blockingReason: ProtectionConfigurationError.duplicateRuleIdentity.localizedDescription,
+                waitingReason: nil,
+                arguments: nil
+            )
+        }
+        let trimmedName = rule.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty, trimmedName == rule.name else {
+            return .init(
+                blockingReason: ProtectionConfigurationError.invalidRuleName.localizedDescription,
+                waitingReason: nil,
+                arguments: nil
+            )
+        }
+        let duplicateName = ruleSet.rules.first {
+            $0.id != rule.id && $0.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                .caseInsensitiveCompare(rule.name.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
+        }
+        if let duplicateName {
+            return .init(
+                blockingReason: ProtectionConfigurationError.duplicateRuleName(duplicateName.name).localizedDescription,
+                waitingReason: nil,
+                arguments: nil
+            )
+        }
+        let otherEnabled = ruleSet.rules.filter { $0.id != rule.id && $0.isEnabled }
+        if rule.isEnabled {
+            for other in otherEnabled {
+                let sharedUUID = !rule.settings.allDisplays && !other.settings.allDisplays
+                    ? rule.settings.selectedDisplayUUIDs.first { left in
+                        other.settings.selectedDisplayUUIDs.contains {
+                            $0.caseInsensitiveCompare(left) == .orderedSame
+                        }
+                    }
+                    : nil
+                if rule.settings.allDisplays || other.settings.allDisplays || sharedUUID != nil {
+                    let sharedName = sharedUUID.flatMap { uuid in
+                        displays.first { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame }?.name
+                    } ?? (sharedUUID.map { String($0.prefix(8)) } ?? "All displays")
+                    let message = "\(sharedName) is also in “\(other.name)”. Remove it from one rule, or turn one off."
+                    return .init(
+                        blockingReason: ProtectionConfigurationError.ruleConflict(message).localizedDescription,
+                        waitingReason: nil,
+                        arguments: nil
+                    )
+                }
+            }
+        }
+        let siblingUUIDs = Set(otherEnabled.flatMap { sibling in
+            sibling.settings.allDisplays ? [] : Array(sibling.settings.selectedDisplayUUIDs)
+        })
+        let drawable = displays.filter {
+            $0.active && $0.online && $0.bounds.width > 0 && $0.bounds.height > 0
+        }
+        let ownUUIDs = rule.settings.allDisplays ? [] : rule.settings.selectedDisplayUUIDs
+        func contains(_ set: Set<String>, _ uuid: String?) -> Bool {
+            guard let uuid else { return false }
+            return set.contains { $0.caseInsensitiveCompare(uuid) == .orderedSame }
+        }
+        if rule.settings.followUpAction == .untilActivity {
+            let targets = drawable.filter { display in
+                rule.settings.allDisplays || contains(ownUUIDs, display.uuid)
+            }
+            let siblingDisplayIDs = Set(drawable.compactMap { display -> UInt32? in
+                contains(siblingUUIDs, display.uuid) ? display.id : nil
+            })
+            let hiddenDisplayIDs = Set(drawable.compactMap { display -> UInt32? in
+                contains(hiddenUUIDs, display.uuid) ? display.id : nil
+            })
+            let covered = Set(targets.map(\.id)).union(siblingDisplayIDs).union(hiddenDisplayIDs)
+            if !drawable.isEmpty && covered.count == drawable.count {
+                let siblingNames = otherEnabled.filter { sibling in
+                    sibling.settings.allDisplays || !sibling.settings.selectedDisplayUUIDs.isEmpty
+                }.map { "“\($0.name)”" }
+                let companion = siblingNames.isEmpty ? "" : "With \(siblingNames.joined(separator: ", ")), "
+                let message = "\(companion)this covers every display. Choose Restore or Sleep under Afterward."
+                return .init(
+                    blockingReason: ProtectionConfigurationError.combinedCoverage(message).localizedDescription,
+                    waitingReason: nil,
+                    arguments: nil
+                )
+            }
+        }
+        do {
+            var settings = rule.settings
+            settings.keepDisplaysAwake = ruleSet.keepDisplaysAwake
+            settings.isEnabled = false
+            let arguments = try settings.commandArguments(
+                for: displays,
+                hiddenDisplayUUIDs: hiddenUUIDs,
+                otherRuleDisplayUUIDs: siblingUUIDs,
+                ruleID: rule.id
+            )
+            return .init(blockingReason: nil, waitingReason: nil, arguments: arguments)
+        } catch let error as ProtectionConfigurationError where error.waitsForDisplays {
+            return .init(blockingReason: nil, waitingReason: error.localizedDescription, arguments: nil)
+        } catch {
+            return .init(blockingReason: error.localizedDescription, waitingReason: nil, arguments: nil)
+        }
     }
 }

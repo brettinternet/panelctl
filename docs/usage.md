@@ -110,8 +110,13 @@ Without a standalone install, use the bundled CLI:
 `/Applications/PanelCtl.app/Contents/Helpers/panelctl`.
 
 `status`, `hide`, `show` and `toggle-hide` never launch the app. Other commands
-start it in the background; only `open-settings` shows a window. `restore` only
-removes protection; it never shows a hidden display or switches inputs.
+start it in the background; only `open-settings` shows a window. `enable`,
+`disable` and `toggle` change the Automation master switch; each rule also has
+its own enabled flag. Snooze and resume apply to Automation as a whole.
+`blackout-now` turns the master switch on and triggers every runnable enabled
+rule; it refuses when no rules are on. `restore` restores all automation covers,
+never a manually hidden display or monitor input. `sleep-now` keeps its existing
+global behavior.
 
 ### Scripted Hide and Show
 
@@ -153,12 +158,31 @@ On `response-lost`, check `app status --json` before doing anything else.
 {
   "ok": true, "running": true, "enabled": true, "state": "waiting",
   "summary": "…", "nextAction": "blackout", "secondsRemaining": 240,
+  "rules": [
+    {
+      "id": "…", "name": "Desk dimming", "enabled": true,
+      "state": "waiting", "summary": "Watching for inactivity",
+      "displays": ["DISPLAY_UUID"], "nextAction": "dim", "secondsRemaining": 180
+    },
+    {
+      "id": "…", "name": "Display protection", "enabled": false,
+      "state": "disabled", "summary": "Disabled", "displays": ["OTHER_UUID"]
+    }
+  ],
   "displays": [
     { "targetUUID": "…", "observedState": "hidden-by-panelctl", "operation": "idle", "recoveryNeeded": false },
     { "targetUUID": "…", "observedState": "hidden-by-panelctl", "operation": "idle", "recoveryNeeded": false }
   ]
 }
 ```
+
+The optional `rules` array is additive to protocol 1; old clients may ignore
+it. Each entry reports one rule's stable `id`, `name`, enablement, state and
+summary, plus optional detail and countdown fields and its target UUIDs. The
+existing top-level fields stay aggregate: `enabled` is the master switch,
+`state` reflects the highest-priority rule state, and `nextAction` and
+`secondsRemaining` describe the soonest rule timer. With exactly one enabled
+rule, top-level status text remains unchanged.
 
 The `displays` array includes one status entry per discovered or journaled
 target. A disconnected removed display remains listed as unavailable/recovery

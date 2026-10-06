@@ -97,9 +97,15 @@ struct EmptyDisplayPolicy {
     static let gracePeriod: TimeInterval = 1
 
     private(set) var emptySince: [CGDirectDisplayID: TimeInterval] = [:]
+    private(set) var requiresOccupiedBeforeRearming: Set<CGDirectDisplayID> = []
 
     mutating func reset() {
         emptySince.removeAll(keepingCapacity: true)
+    }
+
+    mutating func restoredCoveredDisplays(_ displayIDs: Set<CGDirectDisplayID>) {
+        requiresOccupiedBeforeRearming.formUnion(displayIDs)
+        for id in displayIDs { emptySince.removeValue(forKey: id) }
     }
 
     /// With the pointer on a display PanelCtl hides, nothing is covered:
@@ -127,6 +133,7 @@ struct EmptyDisplayPolicy {
 
         let targetIDs = Set(targets.map(\.id))
         emptySince = emptySince.filter { targetIDs.contains($0.key) }
+        requiresOccupiedBeforeRearming.formIntersection(targetIDs)
         var desired: Set<CGDirectDisplayID> = []
         for target in targets {
             let pointerOccupies = target.bounds.contains(sample.pointerLocation)
@@ -135,8 +142,10 @@ struct EmptyDisplayPolicy {
             }
             if pointerOccupies || windowOccupies {
                 emptySince.removeValue(forKey: target.id)
+                requiresOccupiedBeforeRearming.remove(target.id)
                 continue
             }
+            guard !requiresOccupiedBeforeRearming.contains(target.id) else { continue }
             let beganAt = emptySince[target.id] ?? uptime
             emptySince[target.id] = beganAt
             if uptime - beganAt >= Self.gracePeriod {

@@ -1,5 +1,6 @@
 import Foundation
 import IOKit.pwr_mgt
+import Darwin
 
 public enum DisplaySleepError: Error, CustomStringConvertible {
     case commandFailed(String, Int32, String)
@@ -10,6 +11,99 @@ public enum DisplaySleepError: Error, CustomStringConvertible {
             let detail = stderr.isEmpty ? "" : ": \(stderr)"
             return "\(command) failed with status \(status)\(detail)"
         }
+    }
+}
+
+final class AutomationSleepGate {
+    private let markerURL: URL
+    private let lockURL: URL
+    private var leaseFD: Int32?
+
+    init(markerURL: URL = BlackoutController.automationSleepMarkerURL) {
+        self.markerURL = markerURL
+        self.lockURL = markerURL.appendingPathExtension("lock")
+    }
+
+    deinit {
+        releaseLease(clearMarker: false)
+    }
+
+    @discardableResult
+    func sleepOnce(_ sleep: () throws -> Void) throws -> Bool {
+        guard leaseFD == nil else { return false }
+        let directory = markerURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fd = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { throw DisplaySleepError.commandFailed("open", errno, String(cString: strerror(errno))) }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            close(fd)
+            return false
+        }
+        var leaseAdopted = false
+        do {
+            try removeMarkerWhileLocked()
+            let markerFD = open(
+                markerURL.path,
+                O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW,
+                S_IRUSR | S_IWUSR
+            )
+            guard markerFD >= 0 else {
+                throw DisplaySleepError.commandFailed("create sleep marker", errno, String(cString: strerror(errno)))
+            }
+            close(markerFD)
+            leaseFD = fd
+            leaseAdopted = true
+            try sleep()
+            return true
+        } catch {
+            if leaseAdopted {
+                if leaseFD == fd { releaseLease(clearMarker: true) }
+            } else {
+                _ = flock(fd, LOCK_UN)
+                close(fd)
+            }
+            throw error
+        }
+    }
+
+    func wakeObserved() {
+        if leaseFD != nil {
+            releaseLease(clearMarker: true)
+            return
+        }
+        let fd = open(lockURL.path, O_RDWR | O_CLOEXEC | O_NOFOLLOW)
+        guard fd >= 0 else { return }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            close(fd)
+            return
+        }
+        defer {
+            _ = flock(fd, LOCK_UN)
+            close(fd)
+        }
+        try? removeMarkerWhileLocked()
+    }
+
+    private func removeMarkerWhileLocked() throws {
+        var info = stat()
+        guard lstat(markerURL.path, &info) == 0 else {
+            if errno == ENOENT { return }
+            throw DisplaySleepError.commandFailed("inspect sleep marker", errno, String(cString: strerror(errno)))
+        }
+        guard info.st_uid == getuid(), info.st_mode & S_IFMT == S_IFREG else {
+            throw DisplaySleepError.commandFailed("inspect sleep marker", EPERM, "unsafe marker type or owner")
+        }
+        guard unlink(markerURL.path) == 0 else {
+            throw DisplaySleepError.commandFailed("remove stale sleep marker", errno, String(cString: strerror(errno)))
+        }
+    }
+
+    private func releaseLease(clearMarker: Bool) {
+        guard let fd = leaseFD else { return }
+        if clearMarker { try? removeMarkerWhileLocked() }
+        leaseFD = nil
+        _ = flock(fd, LOCK_UN)
+        close(fd)
     }
 }
 
@@ -73,6 +167,15 @@ public final class DisplaySleepController {
 
     public static func sleep() throws {
         try run("/usr/bin/pmset", arguments: ["displaysleepnow"])
+    }
+
+    @discardableResult
+    static func sleepForAutomation(gate: AutomationSleepGate) throws -> Bool {
+        try gate.sleepOnce { try sleep() }
+    }
+
+    public static func automationScreensDidWake() {
+        AutomationSleepGate().wakeObserved()
     }
 
     private static func run(_ executable: String, arguments: [String]) throws {

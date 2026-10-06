@@ -35,6 +35,35 @@ is not persisted as a recovery transaction.
 Automation skips displays hidden this way. Its **Restore** action and timeouts
 never show them. Black out Hide does not switch monitor inputs or dim via DDC.
 
+## Automation rules
+
+Automation keeps its master switch and global snooze. Each named rule has its own
+stable identity, enabled state, display selection, inactivity delay, optional
+empty-display add-on, blackout/dimming settings and Afterward behavior. The
+current single-rule Settings form edits the migrated **Display protection**
+rule; it does not create additional rules.
+
+Each enabled, runnable rule uses its own existing blackout helper and brightness
+journal. Two enabled rules may not overlap by display UUID (UUID comparison is
+case-insensitive), and an **All displays** rule conflicts with every other
+enabled rule. There is no priority or winner: persisted conflicts block every
+involved rule and identify the other rule. Disabled rules may overlap.
+
+For conservative all-display checks, displays selected by sibling enabled rules
+count as already covered. If enabled rules together cover every usable display,
+each rule must use **Restore** or **Sleep** afterward. The helper rechecks this
+against the current display inventory when it treats a rule, so hotplug or
+missing displays cannot bypass the safety limit. A sibling rule is not a Hide:
+empty-display pointer safety still uncovers its cover when the pointer moves.
+
+Restore, timeout, Escape, disable, deletion and pausing stop only automation
+covers; they never show a manually hidden or removed display or switch monitor
+inputs. **Sleep** is a global follow-up: the first rule to reach its deadline
+sleeps displays once, while other helpers suspend for display sleep and require
+fresh input after wake. Cleanup checks cover the legacy brightness journal,
+each rule journal and journals of deleted rules. An unresolved journal blocks
+all rules until verified cleanup succeeds.
+
 ## Experimental features
 
 In **General**, turn on **Experimental features** and accept the prompt. The

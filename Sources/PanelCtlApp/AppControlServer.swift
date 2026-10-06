@@ -236,7 +236,7 @@ final class AppControlServer {
 
         // Status can't drop its display evidence, so an oversized status
         // fails. Any other response, such as a Hide's, keeps its result.
-        let failsStatus = command == .status && response.displays != nil
+        let failsStatus = command == .status && (response.displays != nil || response.rules != nil)
         let requiredFieldsOnly = AppControlResponse(
             protocolVersion: response.protocolVersion,
             ok: failsStatus ? false : response.ok,

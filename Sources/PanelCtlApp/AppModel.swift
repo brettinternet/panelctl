@@ -17,12 +17,34 @@ final class AppModel: ObservableObject {
     static let scriptingDocsURL = URL(string: "https://github.com/brettinternet/panelctl/blob/main/docs/usage.md#scripted-hide-and-show")!
     static let experimentalDocsURL = URL(string: "https://github.com/brettinternet/panelctl/blob/main/docs/display-hide-ux.md#experimental-features")!
 
-    @Published var preferences: ProtectionPreferences {
+    @Published var automationPreferences: AutomationPreferences {
         didSet {
-            guard preferences != oldValue else { return }
-            savePreferences()
+            guard automationPreferences != oldValue else { return }
+            saveAutomationPreferences()
             reconcileProtection()
             onStatusChange?()
+        }
+    }
+    /// Compatibility facade for the pre-rule Settings form and its tests.
+    /// It edits the first (migrated) rule while keeping global controls global.
+    var preferences: ProtectionPreferences {
+        get {
+            var value = automationPreferences.rules.first?.settings ?? ProtectionPreferences()
+            value.isEnabled = automationPreferences.isEnabled
+            value.keepDisplaysAwake = automationPreferences.keepDisplaysAwake
+            return value
+        }
+        set {
+            var ruleSet = automationPreferences
+            ruleSet.isEnabled = newValue.isEnabled
+            ruleSet.keepDisplaysAwake = newValue.keepDisplaysAwake
+            if !ruleSet.rules.isEmpty {
+                var settings = newValue
+                settings.isEnabled = false
+                settings.keepDisplaysAwake = ruleSet.keepDisplaysAwake
+                ruleSet.rules[0].settings = settings
+            }
+            automationPreferences = ruleSet
         }
     }
     @Published var showMenuBarIcon: Bool {
@@ -89,6 +111,8 @@ final class AppModel: ObservableObject {
             }
         }
     }
+    private var observedRuleStates: [UUID: ProtectionRuntimeState] = [:]
+    private var ruleStateBeganAt: [UUID: Date] = [:]
     @Published private(set) var blackedOutDisplayIDs: Set<UInt32> = [] {
         didSet {
             if oldValue != blackedOutDisplayIDs {
@@ -122,11 +146,13 @@ final class AppModel: ObservableObject {
     private let checkDDCInput: (DisplayHideIdentity) throws -> DDCInputReading
     private let coverDisplays: @MainActor (Set<UInt32>) -> Set<UInt32>
     private let quiesceProtection: ProtectionQuiesce?
-    private let service: ProtectionService
+    private let protectionCoordinator: ProtectionCoordinator
     private var snoozeTimer: Timer?
     private var manualActivityDate: Date?
+    private var waitingForDisplayRuleIDs = Set<UUID>()
     private var protectionRearmRequired = false
     private static let preferencesKey = "blackoutPreferences"
+    private static let automationPreferencesKey = "automationRules"
     private static let hidePreferencesKey = "displayHidePreferences"
     private static let showMenuBarIconKey = "showMenuBarIcon"
     private static let experimentalFeaturesKey = "experimentalFeaturesEnabled"
@@ -164,6 +190,7 @@ final class AppModel: ObservableObject {
         coverDisplays: (@MainActor (Set<UInt32>) -> Set<UInt32>)? = nil,
         quiesceProtection: ProtectionQuiesce? = nil,
         protectionService: ProtectionService? = nil,
+        protectionCoordinator injectedProtectionCoordinator: ProtectionCoordinator? = nil,
         disconnectController: DisplayDisconnectController = DisplayDisconnectController(),
         disconnectExecutable: @escaping @MainActor () throws -> URL = ProtectionService.helperExecutableURL
     ) {
@@ -186,57 +213,67 @@ final class AppModel: ObservableObject {
         let loadedHidePreferences = defaults.data(forKey: Self.hidePreferencesKey)
             .flatMap { try? JSONDecoder().decode(DisplayHidePreferences.self, from: $0) }
         self.hidePreferences = loadedHidePreferences ?? DisplayHidePreferences()
-        let loadedPreferences = defaults.data(forKey: Self.preferencesKey)
-            .flatMap { try? JSONDecoder().decode(ProtectionPreferences.self, from: $0) }
-
-        var preferences = loadedPreferences ?? ProtectionPreferences()
-        preferences.selectedDisplayUUIDs = Set(
-            preferences.selectedDisplayUUIDs.map { $0.uppercased() }
-        )
         let displays = displayProvider()
-        if !preferences.didChooseDisplays {
-            let drawable = displays.filter {
-                $0.active && $0.online && $0.bounds.width > 0 && $0.bounds.height > 0
-            }
-            let selectable = drawable.filter { $0.uuid != nil }
-            let preferred = selectable.filter { !$0.builtin }
-            let initial = preferred.first ?? selectable.first
-            preferences.allDisplays = false
-            preferences.selectedDisplayUUIDs = initial?.uuid
-                .map { Set([$0.uppercased()]) } ?? []
-            preferences.didChooseDisplays = true
+        let loadedRuleSet: AutomationPreferences
+        if let stored = defaults.data(forKey: Self.automationPreferencesKey) {
+            loadedRuleSet = (try? JSONDecoder().decode(AutomationPreferences.self, from: stored))
+                ?? AutomationPreferences.migrate(legacyData: nil, displays: displays)
+        } else {
+            loadedRuleSet = AutomationPreferences.migrate(
+                legacyData: defaults.data(forKey: Self.preferencesKey),
+                displays: displays
+            )
+        }
+        var ruleSet = loadedRuleSet
+        for index in ruleSet.rules.indices {
+            ruleSet.rules[index].settings.selectedDisplayUUIDs = Set(
+                ruleSet.rules[index].settings.selectedDisplayUUIDs.map { $0.uppercased() }
+            )
+            ruleSet.rules[index].settings.isEnabled = false
+            ruleSet.rules[index].settings.keepDisplaysAwake = ruleSet.keepDisplaysAwake
         }
 
-        self.preferences = preferences
+        self.automationPreferences = ruleSet
         self.displays = displays
         launchAtLoginEnabled = LaunchAtLogin.isEnabled
-        service = protectionService ?? ProtectionService(
-            initialCleanupFailure: defaults.string(forKey: Self.cleanupFailureKey)
+        protectionCoordinator = injectedProtectionCoordinator ?? ProtectionCoordinator(
+            initialCleanupFailure: defaults.string(forKey: Self.cleanupFailureKey),
+            initialService: protectionService
         )
         protectionQuiescenceFailure = defaults.string(forKey: Self.cleanupFailureKey) ??
-            service.unresolvedCleanupFailure
+            protectionCoordinator.unresolvedCleanupFailure
         let storedSnooze = defaults.object(forKey: Self.snoozedUntilKey) as? Date
-        if let storedSnooze, storedSnooze > now(), preferences.isEnabled {
+        if let storedSnooze, storedSnooze > now(), ruleSet.isEnabled {
             runtimeState = .snoozed(storedSnooze)
         } else {
             defaults.removeObject(forKey: Self.snoozedUntilKey)
         }
-        service.onStateChange = { [weak self] state in
+        protectionCoordinator.onStateChange = { [weak self] in
             guard let self else { return }
-            if let failure = self.service.unresolvedCleanupFailure {
-                self.protectionQuiescenceFailure = failure
+            if let cleanupFailure = self.protectionCoordinator.unresolvedCleanupFailure {
+                self.protectionQuiescenceFailure = cleanupFailure
             }
-            self.runtimeState = self.presentedRuntimeState(for: state)
-            if case .waitingForDisplays = state {
-                DispatchQueue.main.async {
-                    self.refreshDisplays()
+            self.blackedOutDisplayIDs = self.protectionCoordinator.blackedOutDisplayIDs
+            self.runtimeState = self.aggregateRuntimeState
+            let waitingRuleIDs = Set(self.automationPreferences.rules.compactMap { rule -> UUID? in
+                if case .waitingForDisplays = self.protectionCoordinator.runtimeState(
+                    for: rule.id,
+                    automationEnabled: self.automationPreferences.isEnabled,
+                    snoozedUntil: self.snoozedUntil
+                ) { return rule.id }
+                return nil
+            })
+            if waitingRuleIDs != self.waitingForDisplayRuleIDs {
+                self.waitingForDisplayRuleIDs = waitingRuleIDs
+                if !waitingRuleIDs.isEmpty {
+                    DispatchQueue.main.async { [weak self] in self?.refreshDisplays() }
                 }
             }
         }
-        service.onMembershipChange = { [weak self] displayIDs in
-            self?.blackedOutDisplayIDs = displayIDs
+        protectionCoordinator.onMembershipChange = { [weak self] ids in
+            self?.blackedOutDisplayIDs = ids
         }
-        savePreferences()
+        saveAutomationPreferences()
         defaults.set(showMenuBarIcon, forKey: Self.showMenuBarIconKey)
         refreshHandoffStatus()
         refreshDisconnectStatus()
@@ -332,8 +369,11 @@ final class AppModel: ObservableObject {
         guard !sources.isEmpty, sources.count == journalVerifiedHiddenMirrorSources.count,
               sources.allSatisfy({ source in
                   guard let uuid = source.uuid else { return false }
-                  return isBlackoutHidden(uuid) || preferences.allDisplays ||
-                      preferences.selectedDisplayUUIDs.contains(where: { $0.caseInsensitiveCompare(uuid) == .orderedSame })
+                  return isBlackoutHidden(uuid) || automationPreferences.rules.contains { rule in
+                      rule.isEnabled && (rule.settings.allDisplays || rule.settings.selectedDisplayUUIDs.contains {
+                          $0.caseInsensitiveCompare(uuid) == .orderedSame
+                      })
+                  }
               }) else { return [] }
         return sources.filter { !isBlackoutHidden($0.uuid) }
     }
@@ -341,12 +381,65 @@ final class AppModel: ObservableObject {
     var selectedHiddenMirrorSource: DisplayRecord? { selectedHiddenMirrorSources.first }
 
     var hiddenMirrorOverlayPolicyEligible: Bool {
-        protectionPausedForDisplayRecovery && preferences.isEnabled &&
-            snoozedUntil == nil && !selectedHiddenMirrorSources.isEmpty
+        protectionPausedForDisplayRecovery && automationPreferences.isEnabled &&
+            snoozedUntil == nil && !hiddenOverlayRuleIDs.isEmpty
+    }
+
+    private var hiddenOverlayRuleIDs: Set<UUID> {
+        guard automationPreferences.isEnabled, snoozedUntil == nil,
+              protectionQuiescenceFailure == nil, !protectionQuiescencePending,
+              !hideOperation.isBusy, !displayLifecycleTransitioning else { return [] }
+        let sources = verifiedHiddenMirrorSources
+        let selectableSources = sources.filter { !isBlackoutHidden($0.uuid) }
+        guard !sources.isEmpty,
+              sources.count == journalVerifiedHiddenMirrorSources.count,
+              selectedHiddenMirrorSources.count == selectableSources.count else { return [] }
+        var result = Set<UUID>()
+        for rule in automationPreferences.rules where rule.isEnabled && !hasEnabledConflict(rule) {
+            let sources = verifiedHiddenMirrorSources.filter { source in
+                guard let uuid = source.uuid else { return false }
+                return ruleTargets(rule, uuid: uuid) && !isBlackoutHidden(uuid)
+            }
+            guard !sources.isEmpty,
+                  (try? hiddenMirrorArguments(
+                      for: sources,
+                      settings: rule.settings,
+                      otherRuleDisplays: hiddenMirrorSiblingDisplays(for: rule)
+                  )) != nil else { continue }
+            result.insert(rule.id)
+        }
+        return result
+    }
+
+    private func hasEnabledConflict(_ rule: ProtectionRule) -> Bool {
+        guard rule.isEnabled else { return false }
+        return automationPreferences.rules.contains { other in
+            guard other.id != rule.id, other.isEnabled else { return false }
+            if rule.settings.allDisplays || other.settings.allDisplays { return true }
+            return rule.settings.selectedDisplayUUIDs.contains { uuid in
+                other.settings.selectedDisplayUUIDs.contains {
+                    $0.caseInsensitiveCompare(uuid) == .orderedSame
+                }
+            }
+        }
+    }
+
+    var automationBlockingDisplayIDs: Set<UInt32> {
+        automationPreferences.rules.reduce(into: Set<UInt32>()) { result, rule in
+            guard rule.isEnabled,
+                  rule.settings.mode == .blocking || hiddenOverlayRuleIDs.contains(rule.id) else { return }
+            result.formUnion(protectionCoordinator.blackedOutDisplayIDs(forRule: rule.id))
+        }
     }
 
     var effectiveBlackoutMode: BlackoutMode {
-        hiddenMirrorOverlayPolicyEligible ? .blocking : preferences.mode
+        guard hiddenMirrorOverlayPolicyEligible,
+              let source = selectedHiddenMirrorSource,
+              let uuid = source.uuid,
+              let rule = automationPreferences.rules.first(where: { ruleTargets($0, uuid: uuid) }) else {
+            return preferences.mode
+        }
+        return rule.settings.mode == .working ? .blocking : rule.settings.mode
     }
 
     var hiddenMirrorProtectionSummary: String {
@@ -430,25 +523,60 @@ final class AppModel: ObservableObject {
     }
 
     var validationMessage: String? {
-        do {
-            _ = try protectionArguments()
-            return nil
-        } catch {
-            return error.localizedDescription
-        }
+        guard let rule = automationPreferences.rules.first else { return nil }
+        let result = ProtectionRuleValidator.validate(
+            rule, in: automationPreferences, displays: displays,
+            hiddenUUIDs: Set(blackoutHiddenDisplays.keys)
+        )
+        return result.blockingReason ?? result.waitingReason
     }
 
     /// Automation skips displays Hide blacked out.
     private func protectionArguments() throws -> [String] {
-        try preferences.commandArguments(for: displays, hiddenDisplayUUIDs: Set(blackoutHiddenDisplays.keys))
+        guard let rule = automationPreferences.rules.first else {
+            throw ProtectionConfigurationError.noSelection
+        }
+        let result = ProtectionRuleValidator.validate(
+            rule, in: automationPreferences, displays: displays,
+            hiddenUUIDs: Set(blackoutHiddenDisplays.keys)
+        )
+        if let reason = result.blockingReason ?? result.waitingReason {
+            throw ProtectionConfigurationError.ruleConflict(reason)
+        }
+        return try rule.settings.commandArguments(
+            for: displays,
+            hiddenDisplayUUIDs: Set(blackoutHiddenDisplays.keys),
+            ruleID: rule.id
+        )
     }
 
     /// The source-only overlay counts displays Hide blacked out as covered.
-    private func hiddenMirrorArguments(for sources: [DisplayRecord]) throws -> [String]? {
-        try preferences.hiddenMirrorOverlayArguments(
+    private func hiddenMirrorArguments(
+        for sources: [DisplayRecord],
+        settings: ProtectionPreferences,
+        otherRuleDisplays: [DisplayRecord] = []
+    ) throws -> [String]? {
+        try settings.hiddenMirrorOverlayArguments(
             for: sources,
-            hiddenDisplays: activeDisplays.filter { isBlackoutHidden($0.uuid) }
+            hiddenDisplays: activeDisplays.filter { isBlackoutHidden($0.uuid) },
+            otherRuleDisplays: otherRuleDisplays
         )
+    }
+
+    private func hiddenMirrorSiblingDisplays(for rule: ProtectionRule) -> [DisplayRecord] {
+        let siblingUUIDs = Set(automationPreferences.rules
+            .filter { $0.id != rule.id && $0.isEnabled && !$0.settings.allDisplays }
+            .flatMap(\.settings.selectedDisplayUUIDs)
+            .map { $0.lowercased() })
+        return activeDisplays.filter { display in
+            display.uuid.map { siblingUUIDs.contains($0.lowercased()) } == true
+        }
+    }
+
+    private func ruleTargets(_ rule: ProtectionRule, uuid: String) -> Bool {
+        rule.settings.allDisplays || rule.settings.selectedDisplayUUIDs.contains {
+            $0.caseInsensitiveCompare(uuid) == .orderedSame
+        }
     }
 
     func identityIsCurrent(_ identity: DisplayIdentitySnapshot) -> Bool {
@@ -711,7 +839,7 @@ final class AppModel: ObservableObject {
         }
         let identity = DisplayIdentitySnapshot(display)
         if journalVerifiedHiddenMirrorSources.contains(where: { $0.id == display.id }),
-           service.hasManagedProcess || protectionQuiescencePending || hiddenMirrorOverlayPolicyEligible {
+           protectionCoordinator.hasManagedProcess || protectionQuiescencePending || hiddenMirrorOverlayPolicyEligible {
             hideOperation = .hiding(targetUUID)
             onStatusChange?()
             stopManagedProtection { [weak self] succeeded, message in
@@ -1364,7 +1492,7 @@ final class AppModel: ObservableObject {
         if handoffStatus?.hasUnresolvedJournal == true {
             if transitioning {
                 protectionRearmRequired = true
-                service.disable()
+                protectionCoordinator.disable()
             } else {
                 reconcileProtection(restartWatcher: true)
             }
@@ -1422,27 +1550,105 @@ final class AppModel: ObservableObject {
     }
 
     var statusSummary: String {
-        if protectionPausedForDisplayRecovery {
-            return hiddenMirrorProtectionSummary
+        if protectionPausedForDisplayRecovery { return hiddenMirrorProtectionSummary }
+        let enabledRules = automationPreferences.rules.filter(\.isEnabled)
+        if let failure = protectionQuiescenceFailure {
+            return ProtectionRuntimeState.failed(failure).label
         }
-        let label = runtimeState == .blackedOut && preferences.mode == .working
-            ? "Dimming active"
-            : runtimeState.label
-        if !blackedOutDisplayIDs.isEmpty, runtimeState != .blackedOut {
-            if let secondsRemaining, let nextAction {
-                return "Empty-display blackout active · \(Self.countdownLabel(secondsRemaining)) to \(nextAction)"
+        if !automationPreferences.isEnabled { return ProtectionRuntimeState.disabled.label }
+        if let until = snoozedUntil {
+            let label = ProtectionRuntimeState.snoozed(until).label
+            if let remaining = secondsRemaining, let action = nextAction {
+                return "\(label) until \(Self.expiryFormatter.string(from: until)) · \(Self.countdownLabel(remaining)) to \(action)"
             }
-            return "Empty-display blackout active · \(runtimeState.label)"
+            return label
         }
-        if let secondsRemaining, let nextAction {
-            switch runtimeState {
-            case .snoozed(let until):
-                return "\(label) until \(Self.expiryFormatter.string(from: until)) · \(Self.countdownLabel(secondsRemaining)) to \(nextAction)"
-            default:
-                return "\(label) · \(Self.countdownLabel(secondsRemaining)) to \(nextAction)"
+        guard !enabledRules.isEmpty else { return "No rules on" }
+        if enabledRules.count == 1 {
+            return singleRuleStatusSummary(enabledRules[0])
+        }
+        let states = enabledRules.map { (rule: $0, state: runtimeState(for: $0)) }
+        let topState = states.map(\.state).min { Self.statePriority($0) < Self.statePriority($1) } ?? runtimeState
+        let label = Self.statusLabel(for: topState, rule: states.first { $0.state == topState }?.rule)
+        let peers = states.filter { Self.sameStateCategory($0.state, topState) }
+        let suffix = peers.count == 1 ? peers[0].rule.name : "\(peers.count) rules"
+        let base = "\(label) · \(suffix)"
+        if let remaining = secondsRemaining, let action = nextAction {
+            return "\(base) · \(Self.countdownLabel(remaining)) to \(action)"
+        }
+        return base
+    }
+
+    var statusDetail: String? {
+        for rule in automationPreferences.rules where rule.isEnabled {
+            let state = runtimeState(for: rule)
+            if case .failed(let reason) = state { return reason }
+            if case .waitingForDisplays(let reason) = state { return reason }
+        }
+        return runtimeState.detailMessage
+    }
+
+    var controlRuleStatuses: [AppControlRuleStatus] {
+        automationPreferences.rules.map { rule in
+            let state = runtimeState(for: rule)
+            let targetUUIDs = rule.settings.allDisplays
+                ? activeDisplays.compactMap(\.uuid).sorted()
+                : rule.settings.selectedDisplayUUIDs.sorted()
+            let timer = ruleTimer(for: rule, state: state)
+            return AppControlRuleStatus(
+                id: rule.id, name: rule.name, enabled: rule.isEnabled,
+                state: state.controlIdentifier, summary: state.label,
+                detail: state.detailMessage, displays: targetUUIDs,
+                nextAction: timer?.action ?? nil, secondsRemaining: timer?.remaining ?? nil
+            )
+        }
+    }
+
+    private func singleRuleStatusSummary(_ rule: ProtectionRule) -> String {
+        let state = runtimeState(for: rule)
+        let label = Self.statusLabel(for: state, rule: rule)
+        if !blackedOutDisplayIDs.isEmpty, state != .blackedOut {
+            if let timer = ruleTimer(for: rule, state: state),
+               let remaining = timer.remaining, let action = timer.action {
+                return "Empty-display blackout active · \(Self.countdownLabel(remaining)) to \(action)"
             }
+            return "Empty-display blackout active · \(state.label)"
+        }
+        if let timer = ruleTimer(for: rule, state: state),
+           let remaining = timer.remaining, let action = timer.action {
+            if case .snoozed(let until) = state {
+                return "\(label) until \(Self.expiryFormatter.string(from: until)) · \(Self.countdownLabel(remaining)) to \(action)"
+            }
+            return "\(label) · \(Self.countdownLabel(remaining)) to \(action)"
         }
         return label
+    }
+
+    private static func statusLabel(for state: ProtectionRuntimeState, rule: ProtectionRule?) -> String {
+        state == .blackedOut && rule?.settings.mode == .working ? "Dimming active" : state.label
+    }
+
+    private static func sameStateCategory(_ lhs: ProtectionRuntimeState, _ rhs: ProtectionRuntimeState) -> Bool {
+        switch (lhs, rhs) {
+        case (.failed, .failed), (.waitingForDisplays, .waitingForDisplays),
+             (.snoozed, .snoozed): return true
+        default: return lhs == rhs
+        }
+    }
+
+    private static func statePriority(_ state: ProtectionRuntimeState) -> Int {
+        switch state {
+        case .failed: return 0
+        case .blackedOut: return 1
+        case .sleeping: return 2
+        case .waitingForPlayback: return 3
+        case .waitingForDisplays: return 4
+        case .waitingForInput: return 5
+        case .waiting: return 6
+        case .starting: return 7
+        case .stopping: return 8
+        case .disabled, .snoozed: return 9
+        }
     }
 
     func setProtectionEnabled(_ enabled: Bool) {
@@ -1467,7 +1673,7 @@ final class AppModel: ObservableObject {
         guard !protectionQuiescencePending, !hideOperation.isBusy else { return }
         protectionQuiescencePending = true
         onStatusChange?()
-        service.retryCleanup { [weak self] succeeded, message in
+        protectionCoordinator.retryCleanup { [weak self] succeeded, message in
             guard let self else { return }
             self.protectionQuiescencePending = false
             if succeeded {
@@ -1482,53 +1688,29 @@ final class AppModel: ObservableObject {
     }
 
     func blackoutNow() throws {
-        let hiddenOverlaySources: [DisplayRecord]?
-        if protectionPausedForDisplayRecovery {
-            hiddenOverlaySources = selectedHiddenMirrorSources
-            guard hiddenOverlaySources?.isEmpty == false else {
-                throw DisplayHideError.recoveryBlocksAction(
-                    "Black Out Now is unavailable during display recovery unless the shared journal verifies Hidden by PanelCtl and its exact mirror source is in the idle display list. Show or review recovery; no display change was requested."
-                )
-            }
-        } else {
-            hiddenOverlaySources = nil
+        guard automationPreferences.rules.contains(where: \.isEnabled) else {
+            throw ProtectionConfigurationError.noEnabledRules
         }
         let wasSnoozed = cancelSnooze()
         displays = displayProvider()
-        let arguments: [String]
-        do {
-            if let hiddenOverlaySources {
-                guard let overlayArguments = try hiddenMirrorArguments(for: hiddenOverlaySources) else {
-                    throw DisplayHideError.recoveryBlocksAction("Add every journaled mirror source to the idle display list before using Black Out Now.")
-                }
-                arguments = overlayArguments
-            } else {
-                arguments = try protectionArguments()
-            }
-        } catch {
-            if wasSnoozed {
-                reconcileProtection()
-            }
-            throw error
+        if wasSnoozed { manualActivityDate = now() }
+        if !automationPreferences.isEnabled {
+            var ruleSet = automationPreferences
+            ruleSet.isEnabled = true
+            automationPreferences = ruleSet
         }
-        if !preferences.isEnabled {
-            preferences.isEnabled = true
-        }
-        service.run(arguments: arguments)
-        try service.sendControl(.blackoutNow)
+        reconcileProtection()
+        _ = try protectionCoordinator.sendControl(.blackoutNow)
     }
 
     @discardableResult
     func restoreBlackout() throws -> Bool {
         if protectionPausedForDisplayRecovery && !hiddenMirrorOverlayPolicyEligible { return false }
-        guard snoozedUntil == nil else { return false }
-        guard preferences.isEnabled, service.canReceiveControl else {
-            return false
-        }
-        let restored = try service.sendControl(.restore)
-        if restored {
-            manualActivityDate = now()
-        }
+        guard snoozedUntil == nil, automationPreferences.isEnabled,
+              automationPreferences.rules.contains(where: \.isEnabled),
+              protectionCoordinator.canReceiveControl else { return false }
+        let restored = try protectionCoordinator.sendControl(.restore)
+        if restored { manualActivityDate = now() }
         return restored
     }
 
@@ -1577,10 +1759,8 @@ final class AppModel: ObservableObject {
         displays = displayProvider()
         refreshHandoffStatus()
         reconcileHiddenDisplays()
-        if preferences.isEnabled {
-            reconcileProtection(restartWatcher: restartWatcher)
-        }
-        runtimeState = presentedRuntimeState(for: service.state)
+        reconcileProtection(restartWatcher: restartWatcher)
+        runtimeState = aggregateRuntimeState
         onStatusChange?()
     }
 
@@ -1641,7 +1821,7 @@ final class AppModel: ObservableObject {
 
     func shutdown(completion: @escaping () -> Void) {
         snoozeTimer?.invalidate()
-        service.shutdown(completion: completion)
+        protectionCoordinator.shutdown(completion: completion)
     }
 
     var snoozedUntil: Date? {
@@ -1652,27 +1832,76 @@ final class AppModel: ObservableObject {
         return date
     }
 
-    var nextAction: String? {
-        switch runtimeState {
-        case .snoozed:
-            return "resume"
-        case .waiting:
-            return preferences.mode == .working ? "dim" : "blackout"
-        case .blackedOut:
-            if hiddenMirrorOverlayPolicyEligible { return "restore overlay" }
-            switch preferences.followUpAction {
-            case .restore: return "restore"
-            case .sleepDisplays: return "sleep"
-            case .untilActivity: return nil
-            }
-        default:
-            return nil
-        }
+    var nextAction: String? { soonestRuleTimer?.action }
+    var secondsRemaining: Int? { soonestRuleTimer?.remaining }
+
+    private var soonestRuleTimer: (action: String?, remaining: Int?)? {
+        let timers = automationPreferences.rules.filter(\.isEnabled).compactMap { rule in
+            ruleTimer(for: rule, state: runtimeState(for: rule))
+        }.filter { $0.action != nil && $0.remaining != nil }
+        return timers.min { ($0.remaining ?? Int.max) < ($1.remaining ?? Int.max) }
     }
 
-    var secondsRemaining: Int? {
+    private var stateBeganAt: Date?
+
+    private func runtimeState(for rule: ProtectionRule) -> ProtectionRuntimeState {
+        guard rule.isEnabled else { return .disabled }
+        let state = protectionCoordinator.runtimeState(
+            for: rule.id,
+            automationEnabled: automationPreferences.isEnabled,
+            snoozedUntil: snoozedUntil
+        )
+        if protectionPausedForDisplayRecovery && !hiddenOverlayRuleIDs.contains(rule.id) {
+            switch state {
+            case .failed, .waitingForDisplays: break
+            default: return .disabled
+            }
+        }
+        if observedRuleStates[rule.id] != state {
+            observedRuleStates[rule.id] = state
+            if case .blackedOut = state { ruleStateBeganAt[rule.id] = now() }
+            else { ruleStateBeganAt[rule.id] = nil }
+        }
+        return state
+    }
+
+    private var aggregateRuntimeState: ProtectionRuntimeState {
+        if let failure = protectionQuiescenceFailure { return .failed(failure) }
+        guard automationPreferences.isEnabled else { return .disabled }
+        if let until = snoozedUntil { return .snoozed(until) }
+        let states = automationPreferences.rules.filter(\.isEnabled).map { runtimeState(for: $0) }
+        guard !states.isEmpty else { return .waiting }
+        return states.min { Self.statePriority($0) < Self.statePriority($1) } ?? .waiting
+    }
+
+    private func ruleTimer(
+        for rule: ProtectionRule,
+        state: ProtectionRuntimeState
+    ) -> (action: String?, remaining: Int?)? {
+        let settings = rule.settings
+        let action: String?
+        switch state {
+        case .snoozed:
+            action = "resume"
+        case .waiting:
+            action = settings.mode == .working ? "dim" : "blackout"
+        case .blackedOut:
+            if hiddenOverlayRuleIDs.contains(rule.id) {
+                action = "restore overlay"
+            } else {
+                switch settings.followUpAction {
+                case .restore: action = "restore"
+                case .sleepDisplays: action = "sleep"
+                case .untilActivity: action = nil
+                }
+            }
+        default:
+            action = nil
+        }
+        guard let action else { return nil }
+
         let remaining: TimeInterval
-        switch runtimeState {
+        switch state {
         case .snoozed(let until):
             remaining = until.timeIntervalSince(now())
         case .waiting:
@@ -1680,155 +1909,120 @@ final class AppModel: ObservableObject {
             if let manualActivityDate {
                 idle = min(idle, max(0, now().timeIntervalSince(manualActivityDate)))
             }
-            remaining = preferences.idleSeconds - idle
+            remaining = settings.idleSeconds - idle
         case .blackedOut:
-            guard let stateBeganAt else { return nil }
-            let elapsed = now().timeIntervalSince(stateBeganAt)
+            guard let beganAt = ruleStateBeganAt[rule.id] ?? stateBeganAt else { return nil }
+            let elapsed = now().timeIntervalSince(beganAt)
             let inputElapsed = idleSecondsProvider() ?? elapsed
-            if hiddenMirrorOverlayPolicyEligible {
+            if hiddenOverlayRuleIDs.contains(rule.id) {
                 let timeout = min(
-                    preferences.followUpAction == .untilActivity
-                        ? 24 * 60 * 60
-                        : preferences.followUpSeconds,
+                    settings.followUpAction == .untilActivity ? 24 * 60 * 60 : settings.followUpSeconds,
                     24 * 60 * 60
                 )
-                remaining = timeout - (
-                    hiddenMirrorOverlayResetsLimitOnInput ? min(elapsed, inputElapsed) : elapsed
-                )
+                remaining = timeout - (hiddenMirrorOverlayResetsLimitOnInput(rule)
+                    ? min(elapsed, inputElapsed) : elapsed)
             } else {
-                guard preferences.followUpAction != .untilActivity else { return nil }
-                remaining = preferences.followUpSeconds - (
-                    resetsBlackoutLimitOnInput ? min(elapsed, inputElapsed) : elapsed
-                )
+                remaining = settings.followUpSeconds - (resetsBlackoutLimitOnInput(rule)
+                    ? min(elapsed, inputElapsed) : elapsed)
             }
         default:
             return nil
         }
-        return max(0, Int(ceil(remaining)))
+        return (action, max(0, Int(ceil(remaining))))
     }
 
-    private var stateBeganAt: Date?
-
-    /// Matches the helper: input extends the limit only while another
-    /// display, neither the source nor hidden, stays usable.
+    /// Input extends an overlay's timer only while another visible display stays usable.
     var hiddenMirrorOverlayResetsLimitOnInput: Bool {
-        guard preferences.mode == .working || preferences.keepBlackoutOnInput,
-              !selectedHiddenMirrorSources.isEmpty else { return false }
-        let sourceIDs = Set(selectedHiddenMirrorSources.map(\.id))
-        return activeDisplays.contains { !sourceIDs.contains($0.id) && !isRemovedDisplay($0.uuid) && !isBlackoutHidden($0.uuid) }
+        automationPreferences.rules.contains { hiddenMirrorOverlayResetsLimitOnInput($0) }
     }
 
-    /// Matches the helper, which counts hidden displays as covered.
-    private var resetsBlackoutLimitOnInput: Bool {
-        guard (preferences.mode == .working || preferences.keepBlackoutOnInput),
-              !preferences.allDisplays else {
+    private func hiddenMirrorOverlayResetsLimitOnInput(_ rule: ProtectionRule) -> Bool {
+        guard rule.settings.mode == .working || rule.settings.keepBlackoutOnInput else { return false }
+        let sourceIDs = Set(selectedHiddenMirrorSources.filter { source in
+            guard let uuid = source.uuid else { return false }
+            return ruleTargets(rule, uuid: uuid)
+        }.map(\.id))
+        let coveredIDs = sourceIDs.union(hiddenMirrorSiblingDisplays(for: rule).map(\.id))
+        return !sourceIDs.isEmpty && activeDisplays.contains {
+            !coveredIDs.contains($0.id) && !isRemovedDisplay($0.uuid) && !isBlackoutHidden($0.uuid)
+        }
+    }
+
+    /// Matches helper coverage, including sibling rules and real hidden displays.
+    private func resetsBlackoutLimitOnInput(_ rule: ProtectionRule) -> Bool {
+        let settings = rule.settings
+        guard (settings.mode == .working || settings.keepBlackoutOnInput), !settings.allDisplays else {
             return false
         }
-        let coveredDisplayIDs = Set(activeDisplays.compactMap { display -> UInt32? in
+        let siblings = Set(automationPreferences.rules.filter { $0.id != rule.id && $0.isEnabled }
+            .flatMap { $0.settings.allDisplays ? [] : Array($0.settings.selectedDisplayUUIDs) })
+        let coveredIDs = Set(activeDisplays.compactMap { display -> UInt32? in
             guard let uuid = display.uuid,
-                  isBlackoutHidden(uuid) || preferences.selectedDisplayUUIDs.contains(where: {
+                  isBlackoutHidden(uuid) || settings.selectedDisplayUUIDs.contains(where: {
                       $0.caseInsensitiveCompare(uuid) == .orderedSame
-                  }) else {
+                  }) || siblings.contains(where: { $0.caseInsensitiveCompare(uuid) == .orderedSame }) else {
                 return nil
             }
             return display.id
         })
-        return coveredDisplayIDs.count < activeDisplays.count
+        return coveredIDs.count < activeDisplays.count
     }
 
     private func reconcileProtection(restartWatcher: Bool = false) {
-        if disconnectLease != nil || disconnectStatus?.resolved == false {
-            service.disable()
-            return
-        }
-        if protectionPausedForDisplayRecovery {
-            guard !protectionQuiescencePending,
-                  protectionQuiescenceFailure == nil,
-                  !hideOperation.isBusy,
-                  !displayLifecycleTransitioning,
-                  preferences.isEnabled else {
-                service.disable()
-                return
-            }
-            if let until = snoozedUntil {
-                runtimeState = .snoozed(until)
-                service.disable()
-                return
-            }
-            let sources = selectedHiddenMirrorSources
-            guard !sources.isEmpty else {
-                service.disable()
-                return
-            }
-            do {
-                guard let arguments = try hiddenMirrorArguments(for: sources) else {
-                    service.disable()
-                    return
-                }
-                service.run(
-                    arguments: arguments,
-                    restartForDisplayChange: restartWatcher || protectionRearmRequired
-                )
-                if service.hasManagedProcess { protectionRearmRequired = false }
-            } catch {
-                service.fail(error.localizedDescription)
-            }
-            return
-        }
-        if let until = snoozedUntil {
-            runtimeState = .snoozed(until)
-            service.disable()
-            return
-        }
-        guard preferences.isEnabled else {
-            service.disable()
-            return
-        }
-        do {
-            let rearm = restartWatcher || protectionRearmRequired
-            service.run(
-                arguments: try protectionArguments(),
-                restartForDisplayChange: rearm
+        var validations: [UUID: ProtectionRuleValidation] = [:]
+        var arguments: [UUID: [String]] = [:]
+        let hiddenUUIDs = Set(blackoutHiddenDisplays.keys)
+        for rule in automationPreferences.rules {
+            validations[rule.id] = ProtectionRuleValidator.validate(
+                rule, in: automationPreferences, displays: displays, hiddenUUIDs: hiddenUUIDs
             )
-            if service.hasManagedProcess {
-                protectionRearmRequired = false
-            }
-        } catch let error as ProtectionConfigurationError where error.waitsForDisplays {
-            service.waitForDisplays(error.localizedDescription)
-        } catch {
-            service.fail(error.localizedDescription)
-        }
-    }
-
-    private func presentedRuntimeState(
-        for serviceState: ProtectionRuntimeState
-    ) -> ProtectionRuntimeState {
-        if protectionPausedForDisplayRecovery && !hiddenMirrorOverlayPolicyEligible { return .disabled }
-        if let until = snoozedUntil {
-            return .snoozed(until)
-        }
-        guard preferences.isEnabled else { return serviceState }
-        switch serviceState {
-        case .starting, .waiting, .waitingForInput, .waitingForPlayback, .blackedOut, .sleeping:
-            break
-        default:
-            return serviceState
         }
 
-        do {
-            if hiddenMirrorOverlayPolicyEligible {
-                guard !selectedHiddenMirrorSources.isEmpty,
-                      try hiddenMirrorArguments(for: selectedHiddenMirrorSources) != nil else {
-                    return .disabled
+        let canRun = automationPreferences.isEnabled && snoozedUntil == nil &&
+            protectionQuiescenceFailure == nil && !protectionQuiescencePending &&
+            hideOperation == .idle && !displayLifecycleTransitioning &&
+            disconnectLease == nil && disconnectStatus?.resolved != false
+        if canRun {
+            if protectionPausedForDisplayRecovery {
+                for rule in automationPreferences.rules where hiddenOverlayRuleIDs.contains(rule.id) {
+                    let sources = verifiedHiddenMirrorSources.filter { source in
+                        guard let uuid = source.uuid else { return false }
+                        return ruleTargets(rule, uuid: uuid) && !isBlackoutHidden(uuid)
+                    }
+                    let built: [String]?
+                    do {
+                        built = try hiddenMirrorArguments(
+                            for: sources,
+                            settings: rule.settings,
+                            otherRuleDisplays: hiddenMirrorSiblingDisplays(for: rule)
+                        )
+                    }
+                    catch { continue }
+                    guard var overlay = built else { continue }
+                    overlay += ["--panelctl-rule", rule.id.uuidString]
+                    arguments[rule.id] = overlay
+                    validations[rule.id] = ProtectionRuleValidation(
+                        blockingReason: nil, waitingReason: nil, arguments: overlay
+                    )
                 }
-                return serviceState
+            } else {
+                for rule in automationPreferences.rules where rule.isEnabled {
+                    if let validation = validations[rule.id], validation.isRunnable,
+                       let ruleArguments = validation.arguments {
+                        arguments[rule.id] = ruleArguments
+                    }
+                }
             }
-            _ = try protectionArguments()
-            return serviceState
-        } catch let error as ProtectionConfigurationError where error.waitsForDisplays {
-            return .waitingForDisplays(error.localizedDescription)
-        } catch {
-            return serviceState
+        }
+        protectionCoordinator.reconcile(
+            ruleSet: automationPreferences,
+            validations: validations,
+            arguments: arguments,
+            forceRestart: restartWatcher || protectionRearmRequired
+        )
+        runtimeState = aggregateRuntimeState
+        if !arguments.isEmpty && protectionCoordinator.hasManagedProcess {
+            protectionRearmRequired = false
         }
     }
 
@@ -1836,7 +2030,7 @@ final class AppModel: ObservableObject {
         if let quiesceProtection {
             quiesceProtection(completion)
         } else {
-            service.disableForDisplayHide(completion: completion)
+            protectionCoordinator.disableForDisplayHide(completion: completion)
         }
     }
 
@@ -1875,9 +2069,9 @@ final class AppModel: ObservableObject {
         reconcileProtection(restartWatcher: true)
     }
 
-    private func savePreferences() {
-        guard let data = try? JSONEncoder().encode(preferences) else { return }
-        defaults.set(data, forKey: Self.preferencesKey)
+    private func saveAutomationPreferences() {
+        guard let data = try? JSONEncoder().encode(automationPreferences) else { return }
+        defaults.set(data, forKey: Self.automationPreferencesKey)
     }
 
     private func saveHidePreferences() {
@@ -2171,7 +2365,7 @@ final class AppModel: ObservableObject {
             preferences.isEnabled = true
         }
         runtimeState = .snoozed(until)
-        service.disable()
+        reconcileProtection()
         onStatusChange?()
     }
 
@@ -2208,7 +2402,7 @@ final class AppModel: ObservableObject {
     var disconnectBlocker: String? {
         if !experimentalFeaturesEnabled { return "Turn on Experimental features in General first." }
         if disconnectLease != nil || disconnectStatus?.resolved == false { return "Finish the current disconnect first." }
-        if preferences.isEnabled || service.hasManagedProcess || protectionQuiescencePending {
+        if preferences.isEnabled || protectionCoordinator.hasManagedProcess || protectionQuiescencePending {
             return "Turn off Automation and wait for it to stop."
         }
         if !blackoutHiddenDisplays.isEmpty || hideConfigurationFrozen || protectionQuiescenceFailure != nil {

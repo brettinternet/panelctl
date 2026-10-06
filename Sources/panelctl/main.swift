@@ -7,7 +7,9 @@ struct PanelCtlMain {
     static func main() {
         do {
             if ProcessInfo.processInfo.environment["PANELCTL_CLEANUP_ONLY"] == "1" {
-                let succeeded = BlackoutController.retryBrightnessCleanup()
+                let ruleID = ProcessInfo.processInfo.environment["PANELCTL_CLEANUP_RULE_ID"]
+                    .flatMap(UUID.init(uuidString:))
+                let succeeded = BlackoutController.retryBrightnessCleanup(ruleID: ruleID)
                 let status = BlackoutRuntimeStatus(
                     state: .stopped, blackedOutDisplayIDs: [], cleanupSucceeded: succeeded
                 )

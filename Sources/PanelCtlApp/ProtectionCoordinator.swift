@@ -1,0 +1,401 @@
+import Foundation
+import Darwin
+import PanelCtlCore
+
+@MainActor
+final class ProtectionCoordinator {
+    typealias ServiceFactory = (UUID?) -> ProtectionService
+
+    private let makeService: ServiceFactory
+    private let initialService: ProtectionService?
+    private var initialServiceAvailable: Bool
+    private var services: [UUID: ProtectionService] = [:]
+    private var legacyCleanupService: ProtectionService?
+    private var rules: [UUID: ProtectionRule] = [:]
+    private var validations: [UUID: ProtectionRuleValidation] = [:]
+    private var desiredArguments: [UUID: [String]] = [:]
+    private var desiredSignature: String?
+    private var reconciliationGeneration: UInt64 = 0
+    private var reconciliationInProgress = false
+    private var pendingBlackoutNow = false
+    private var pendingDisplayRearmOnLaunch = false
+    private var retryInProgress = false
+    private var isShuttingDown = false
+    private var storedCleanupFailure: String?
+    private let verifyJournal: (UUID?) -> Bool
+    private let ruleJournalDirectory: URL
+    private let removeDeletedDirectories: Bool
+    private let discoverRuleIDs: () throws -> Set<UUID>
+
+    var onStateChange: (() -> Void)?
+    var onMembershipChange: ((Set<UInt32>) -> Void)?
+
+    init(
+        initialCleanupFailure: String? = nil,
+        initialService: ProtectionService? = nil,
+        verifyJournal: @escaping (UUID?) -> Bool = { BlackoutController.brightnessCleanupIsVerified(ruleID: $0) },
+        ruleJournalDirectory: URL = BlackoutController.ruleBrightnessJournalDirectoryURL,
+        removeDeletedDirectories: Bool = true,
+        discoverRuleIDs: (() throws -> Set<UUID>)? = nil,
+        serviceFactory: ServiceFactory? = nil
+    ) {
+        self.storedCleanupFailure = initialCleanupFailure
+        self.initialService = initialService
+        self.initialServiceAvailable = initialService != nil
+        self.verifyJournal = verifyJournal
+        self.ruleJournalDirectory = ruleJournalDirectory
+        self.removeDeletedDirectories = removeDeletedDirectories
+        self.discoverRuleIDs = discoverRuleIDs ?? {
+            try Self.discoverRuleIDs(in: ruleJournalDirectory)
+        }
+        self.makeService = serviceFactory ?? { ruleID in
+            ProtectionService(
+                cleanupRuleID: ruleID,
+                cleanupIsVerified: { BlackoutController.brightnessCleanupIsVerified(ruleID: ruleID) }
+            )
+        }
+    }
+
+    var unresolvedCleanupFailure: String? {
+        if let storedCleanupFailure { return storedCleanupFailure }
+        if let serviceFailure = (Array(services.values) + (legacyCleanupService.map { [$0] } ?? []))
+            .compactMap(\.unresolvedCleanupFailure).first {
+            return serviceFailure
+        }
+        return runtimeJournalsAreVerified ? nil : Self.unknownCleanup
+    }
+
+    var hasManagedProcess: Bool { services.values.contains(where: \.hasManagedProcess) }
+    var canReceiveControl: Bool { pendingBlackoutNow || services.values.contains(where: \.canReceiveControl) }
+
+    var blackedOutDisplayIDs: Set<UInt32> {
+        services.values.reduce(into: Set<UInt32>()) { $0.formUnion($1.blackedOutDisplayIDs) }
+    }
+
+    func blackedOutDisplayIDs(forRule id: UUID) -> Set<UInt32> {
+        services[id]?.blackedOutDisplayIDs ?? []
+    }
+
+    var ruleIDs: [UUID] { rules.keys.sorted { $0.uuidString < $1.uuidString } }
+
+    func runtimeState(for id: UUID, automationEnabled: Bool, snoozedUntil: Date?) -> ProtectionRuntimeState {
+        guard let rule = rules[id] else { return .disabled }
+        guard rule.isEnabled else { return .disabled }
+        if let storedCleanupFailure = unresolvedCleanupFailure {
+            return .failed(storedCleanupFailure)
+        }
+        if let snoozedUntil { return .snoozed(snoozedUntil) }
+        guard automationEnabled else { return .disabled }
+        if let validation = validations[id] {
+            if let reason = validation.blockingReason { return .failed(reason) }
+            if let reason = validation.waitingReason { return .waitingForDisplays(reason) }
+        }
+        return services[id]?.state ?? .waiting
+    }
+
+    func reconcile(
+        ruleSet: AutomationPreferences,
+        validations: [UUID: ProtectionRuleValidation],
+        arguments: [UUID: [String]],
+        forceRestart: Bool = false
+    ) {
+        guard !isShuttingDown else { return }
+        rules = Dictionary(ruleSet.rules.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        if initialServiceAvailable, let firstRuleID = ruleSet.rules.first?.id {
+            _ = service(for: firstRuleID)
+        }
+        self.validations = validations
+        let signature = Self.signature(for: arguments)
+        let changed = forceRestart || signature != desiredSignature
+        desiredArguments = arguments
+        desiredSignature = signature
+        if !ruleSet.isEnabled || arguments.isEmpty { pendingBlackoutNow = false }
+        guard changed else {
+            publishChanges()
+            return
+        }
+        reconciliationGeneration &+= 1
+        let generation = reconciliationGeneration
+        reconciliationInProgress = true
+        let current = Array(services.values)
+        if !current.isEmpty || forceRestart {
+            pendingDisplayRearmOnLaunch = true
+        }
+        guard !current.isEmpty else {
+            finishReconciliation(generation: generation, succeeded: true, message: nil)
+            return
+        }
+        var remaining = current.count
+        var failure: String?
+        for service in current {
+            service.disableForDisplayHide { [weak self] succeeded, message in
+                guard let self else { return }
+                if !succeeded, failure == nil {
+                    failure = message ?? Self.unknownCleanup
+                }
+                remaining -= 1
+                if remaining == 0 {
+                    self.finishReconciliation(generation: generation, succeeded: failure == nil, message: failure)
+                }
+            }
+        }
+    }
+
+    func disable() {
+        pendingBlackoutNow = false
+        desiredArguments = [:]
+        desiredSignature = Self.signature(for: [:])
+        for service in services.values { service.disable() }
+        publishChanges()
+    }
+
+    func disableForDisplayHide(completion: @escaping (Bool, String?) -> Void) {
+        pendingBlackoutNow = false
+        desiredSignature = nil
+        pendingDisplayRearmOnLaunch = true
+        let current = Array(services.values)
+        guard !current.isEmpty else {
+            let failure = unresolvedCleanupFailure
+            completion(failure == nil, failure)
+            return
+        }
+        var remaining = current.count
+        var succeeded = true
+        var failure: String?
+        for service in current {
+            service.disableForDisplayHide { [weak self] result, message in
+                guard let self else { return }
+                succeeded = succeeded && result
+                if !result, failure == nil { failure = message ?? self.unresolvedCleanupFailure ?? Self.unknownCleanup }
+                remaining -= 1
+                if remaining == 0 {
+                    let journalsClean = self.allJournalsAreVerified
+                    if !journalsClean, failure == nil { failure = Self.unknownCleanup }
+                    completion(succeeded && journalsClean && self.storedCleanupFailure == nil, failure)
+                    self.publishChanges()
+                }
+            }
+        }
+    }
+
+    func retryCleanup(completion: @escaping (Bool, String?) -> Void) {
+        guard !retryInProgress else { completion(false, "Automation cleanup is already running."); return }
+        retryInProgress = true
+        let ids = Set(rules.keys).union(services.keys).union(discoveredRuleIDs ?? [])
+        var cleanupServices: [ProtectionService] = ids.sorted { $0.uuidString < $1.uuidString }.map { id in
+            if let service = services[id] { return service }
+            return makeService(id)
+        }
+        if legacyCleanupService == nil {
+            legacyCleanupService = makeService(nil)
+        }
+        if let legacyCleanupService { cleanupServices.append(legacyCleanupService) }
+        guard !cleanupServices.isEmpty else {
+            finishCleanupRetry(services: [], remaining: 0, succeeded: true, failure: nil, completion: completion)
+            return
+        }
+        var remaining = cleanupServices.count
+        var succeeded = true
+        var failure: String?
+        for service in cleanupServices {
+            service.retryCleanup { [weak self] result, message in
+                guard let self else { return }
+                succeeded = succeeded && result
+                if !result, failure == nil { failure = message ?? Self.unknownCleanup }
+                remaining -= 1
+                if remaining == 0 {
+                    self.finishCleanupRetry(
+                        services: cleanupServices,
+                        remaining: 0,
+                        succeeded: succeeded,
+                        failure: failure,
+                        completion: completion
+                    )
+                }
+            }
+        }
+    }
+
+    private func finishCleanupRetry(
+        services: [ProtectionService],
+        remaining: Int,
+        succeeded: Bool,
+        failure: String?,
+        completion: @escaping (Bool, String?) -> Void
+    ) {
+        _ = services
+        _ = remaining
+        let verified = allJournalsAreVerified
+        let result = succeeded && verified
+        if result {
+            storedCleanupFailure = nil
+            removeVerifiedDeletedDirectories()
+        } else {
+            storedCleanupFailure = failure ?? Self.unknownCleanup
+        }
+        retryInProgress = false
+        publishChanges()
+        completion(result, result ? nil : (failure ?? Self.unknownCleanup))
+    }
+
+    func sendControl(_ command: BlackoutControlCommand) throws -> Bool {
+        if command == .blackoutNow {
+            guard !desiredArguments.isEmpty else { return false }
+            pendingBlackoutNow = true
+            if !reconciliationInProgress { try deliverBlackoutNow() }
+            return true
+        }
+        let cancelledPendingBlackout = command == .restore && pendingBlackoutNow
+        if cancelledPendingBlackout {
+            pendingBlackoutNow = false
+            if reconciliationInProgress { return true }
+        }
+        var sent = cancelledPendingBlackout
+        var firstError: Error?
+        for service in services.values where service.canReceiveControl {
+            do {
+                sent = try service.sendControl(command) || sent
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+        if let firstError { throw firstError }
+        return sent
+    }
+
+    func shutdown(completion: @escaping () -> Void) {
+        isShuttingDown = true
+        reconciliationGeneration &+= 1
+        pendingBlackoutNow = false
+        let all = Array(services.values) + (legacyCleanupService.map { [$0] } ?? [])
+        guard !all.isEmpty else { completion(); return }
+        var remaining = all.count
+        for service in all {
+            service.shutdown {
+                remaining -= 1
+                if remaining == 0 { completion() }
+            }
+        }
+    }
+
+    private func finishReconciliation(generation: UInt64, succeeded: Bool, message: String?) {
+        guard generation == reconciliationGeneration, !isShuttingDown else { return }
+        reconciliationInProgress = false
+        guard succeeded, unresolvedCleanupFailure == nil, allJournalsAreVerified else {
+            pendingBlackoutNow = false
+            if storedCleanupFailure == nil {
+                storedCleanupFailure = message ?? Self.unknownCleanup
+            }
+            for service in services.values { service.disable() }
+            publishChanges()
+            return
+        }
+        removeVerifiedDeletedDirectories()
+        let knownRuleIDs = Set(rules.keys)
+        for id in Array(services.keys) where !knownRuleIDs.contains(id) {
+            services.removeValue(forKey: id)?.disable()
+        }
+        for (id, arguments) in desiredArguments {
+            service(for: id).run(
+                arguments: arguments,
+                restartForDisplayChange: pendingDisplayRearmOnLaunch
+            )
+        }
+        pendingDisplayRearmOnLaunch = false
+        if pendingBlackoutNow { try? deliverBlackoutNow() }
+        publishChanges()
+    }
+
+    private func deliverBlackoutNow() throws {
+        guard pendingBlackoutNow else { return }
+        pendingBlackoutNow = false
+        var firstError: Error?
+        for (id, arguments) in desiredArguments {
+            let service = service(for: id)
+            service.run(
+                arguments: arguments,
+                restartForDisplayChange: pendingDisplayRearmOnLaunch
+            )
+            do { _ = try service.sendControl(.blackoutNow) }
+            catch { if firstError == nil { firstError = error } }
+        }
+        if let firstError { throw firstError }
+    }
+
+    private func service(for id: UUID) -> ProtectionService {
+        if let service = services[id] { return service }
+        let service: ProtectionService
+        if initialServiceAvailable, let initialService {
+            initialServiceAvailable = false
+            service = initialService
+        } else {
+            service = makeService(id)
+        }
+        service.onStateChange = { [weak self] _ in self?.publishChanges() }
+        service.onMembershipChange = { [weak self] _ in
+            guard let self else { return }
+            self.onMembershipChange?(self.blackedOutDisplayIDs)
+            self.publishChanges()
+        }
+        services[id] = service
+        return service
+    }
+
+    private var discoveredRuleIDs: Set<UUID>? {
+        try? discoverRuleIDs()
+    }
+
+    private var runtimeJournalsAreVerified: Bool {
+        guard let discovered = discoveredRuleIDs else { return false }
+        let liveRuleIDs = Set(services.compactMap { id, service in
+            service.hasManagedProcess ? id : nil
+        })
+        if legacyCleanupService?.hasManagedProcess != true, !verifyJournal(nil) { return false }
+        return discovered.filter { !liveRuleIDs.contains($0) }.allSatisfy(verifyJournal)
+    }
+
+    private var allJournalsAreVerified: Bool {
+        guard let discovered = discoveredRuleIDs, verifyJournal(nil) else { return false }
+        return discovered.allSatisfy(verifyJournal)
+    }
+
+    private static func discoverRuleIDs(in directory: URL) throws -> Set<UUID> {
+        var info = stat()
+        guard lstat(directory.path, &info) == 0 else {
+            let code = errno
+            if code == ENOENT { return [] }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+        }
+        guard info.st_mode & S_IFMT == S_IFDIR else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOTDIR))
+        }
+        let entries = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        return Set(entries.compactMap { UUID(uuidString: $0.lastPathComponent) })
+    }
+
+    private func removeVerifiedDeletedDirectories() {
+        guard removeDeletedDirectories, let discovered = discoveredRuleIDs else { return }
+        let existing = Set(rules.keys)
+        for id in discovered where !existing.contains(id) {
+            guard verifyJournal(id) else { continue }
+            try? FileManager.default.removeItem(at: ruleJournalDirectory.appendingPathComponent(id.uuidString, isDirectory: true))
+        }
+    }
+
+    private func publishChanges() {
+        onMembershipChange?(blackedOutDisplayIDs)
+        onStateChange?()
+    }
+
+    private static func signature(for arguments: [UUID: [String]]) -> String {
+        arguments.keys.sorted { $0.uuidString < $1.uuidString }.map { id in
+            "\(id.uuidString):\(arguments[id, default: []].joined(separator: "\u{1f}"))"
+        }.joined(separator: "\u{1e}")
+    }
+
+    private static let unknownCleanup = "Automation cleanup couldn’t confirm brightness was restored."
+}

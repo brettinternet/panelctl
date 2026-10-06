@@ -580,8 +580,12 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertTrue(second.enabled)
         XCTAssertEqual(second.source?.uuid, Self.mainUUID)
         XCTAssertEqual(model.preferences, protectionBefore)
-        let savedProtectionData = try XCTUnwrap(defaults.data(forKey: "blackoutPreferences"))
-        XCTAssertEqual(try JSONDecoder().decode(ProtectionPreferences.self, from: savedProtectionData), protectionBefore)
+        let savedProtectionData = try XCTUnwrap(defaults.data(forKey: "automationRules"))
+        XCTAssertEqual(
+            try JSONDecoder().decode(AutomationPreferences.self, from: savedProtectionData),
+            model.automationPreferences
+        )
+        XCTAssertNil(defaults.data(forKey: "blackoutPreferences"), "first run persists only the versioned rule set")
         XCTAssertNotNil(defaults.data(forKey: "displayHidePreferences"))
 
         let reloaded = makeModel(defaults: defaults, displays: displays)

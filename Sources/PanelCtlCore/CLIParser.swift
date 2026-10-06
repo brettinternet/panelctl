@@ -26,6 +26,11 @@ public struct BlackoutOptions: Equatable {
     /// Displays PanelCtl has hidden: blackout never covers them, but counts
     /// them as covered for the all-screens safety rules.
     public let hiddenDisplayUUIDs: [String]
+    /// Displays targeted by sibling protection rules. They count as covered
+    /// for safety, but are never covered by this helper.
+    public let otherRuleDisplayUUIDs: [String]
+    /// Selects this rule's private luminance journal under Application Support.
+    public let ruleID: UUID?
 
     var effectiveKeepBlackoutOnInput: Bool {
         mode == .working || keepBlackoutOnInput
@@ -38,6 +43,17 @@ public struct BlackoutOptions: Equatable {
         return watch &&
             keys.allSatisfy { UUID(uuidString: $0) != nil } &&
             Set(keys).count == keys.count &&
+            !selectors.contains { keys.contains($0.uppercased()) }
+    }
+
+    var otherRuleDisplaysAreValid: Bool {
+        guard !otherRuleDisplayUUIDs.isEmpty else { return true }
+        let keys = otherRuleDisplayUUIDs.map { $0.uppercased() }
+        let hidden = Set(hiddenDisplayUUIDs.map { $0.uppercased() })
+        return watch &&
+            keys.allSatisfy { UUID(uuidString: $0) != nil } &&
+            Set(keys).count == keys.count &&
+            hidden.isDisjoint(with: keys) &&
             !selectors.contains { keys.contains($0.uppercased()) }
     }
 
@@ -59,7 +75,9 @@ public struct BlackoutOptions: Equatable {
         deferCamera: Bool = false,
         hiddenMirrorSourceUUID: String? = nil,
         hiddenMirrorSourceUUIDs: [String] = [],
-        hiddenDisplayUUIDs: [String] = []
+        hiddenDisplayUUIDs: [String] = [],
+        otherRuleDisplayUUIDs: [String] = [],
+        ruleID: UUID? = nil
     ) {
         self.selectors = selectors
         self.all = all
@@ -79,6 +97,8 @@ public struct BlackoutOptions: Equatable {
         self.hiddenMirrorSourceUUIDs = hiddenMirrorSourceUUIDs.isEmpty
             ? hiddenMirrorSourceUUID.map { [$0] } ?? [] : hiddenMirrorSourceUUIDs
         self.hiddenDisplayUUIDs = hiddenDisplayUUIDs
+        self.otherRuleDisplayUUIDs = otherRuleDisplayUUIDs
+        self.ruleID = ruleID
     }
 }
 
@@ -146,6 +166,8 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case workingOverlayRequired
     case invalidHiddenMirrorSourceOverlay
     case invalidHiddenDisplay
+    case invalidOtherRuleDisplay
+    case invalidRuleID
     public var description: String {
         switch self {
         case .missingCommand: return "missing command (use 'panelctl help' for usage)"
@@ -180,6 +202,10 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
             return "--panelctl-hidden-mirror-source requires a single matching UUID target, --watch, --idle-after, and a finite --timeout; it cannot be combined with all-screen, sleep, dimming, or display-awake options"
         case .invalidHiddenDisplay:
             return "--panelctl-hidden-display requires --watch and a distinct UUID that isn't a --display target"
+        case .invalidOtherRuleDisplay:
+            return "--panelctl-other-rule-display requires --watch and a distinct UUID that isn't a --display target or hidden display"
+        case .invalidRuleID:
+            return "--panelctl-rule requires a rule UUID"
         case .invalidLuminance: return "luminance must be an integer from 0 through 65535"
         case .invalidInputValue(let value):
             return "invalid input value: \(value) (expected dp1, dp2, hdmi1, hdmi2, or 1 through 255; hex with 0x)"
@@ -506,6 +532,9 @@ public enum CLIParser {
         var deferCamera = false
         var hiddenMirrorSourceUUIDs: [String] = []
         var hiddenDisplayUUIDs: [String] = []
+        var otherRuleDisplayUUIDs: [String] = []
+        var ruleID: UUID?
+        var ruleIDSupplied = false
         var i = 0
         while i < args.count {
             switch args[i] {
@@ -603,6 +632,21 @@ public enum CLIParser {
                     throw CLIParseError.missingValue("--panelctl-hidden-display")
                 }
                 hiddenDisplayUUIDs.append(args[i])
+            case "--panelctl-other-rule-display":
+                i += 1
+                guard i < args.count, !args[i].hasPrefix("--") else {
+                    throw CLIParseError.missingValue("--panelctl-other-rule-display")
+                }
+                otherRuleDisplayUUIDs.append(args[i])
+            case "--panelctl-rule":
+                guard !ruleIDSupplied else { throw CLIParseError.duplicateOption("--panelctl-rule") }
+                ruleIDSupplied = true
+                i += 1
+                guard i < args.count, !args[i].hasPrefix("--"),
+                      let parsed = UUID(uuidString: args[i]) else {
+                    throw CLIParseError.invalidRuleID
+                }
+                ruleID = parsed
             default:
                 throw CLIParseError.unknownOption(args[i])
             }
@@ -654,9 +698,12 @@ public enum CLIParser {
             deferPlayback: deferPlayback,
             deferCamera: deferCamera,
             hiddenMirrorSourceUUIDs: hiddenMirrorSourceUUIDs,
-            hiddenDisplayUUIDs: hiddenDisplayUUIDs
+            hiddenDisplayUUIDs: hiddenDisplayUUIDs,
+            otherRuleDisplayUUIDs: otherRuleDisplayUUIDs,
+            ruleID: ruleID
         )
         guard options.hiddenDisplaysAreValid else { throw CLIParseError.invalidHiddenDisplay }
+        guard options.otherRuleDisplaysAreValid else { throw CLIParseError.invalidOtherRuleDisplay }
         return .blackout(options)
     }
 

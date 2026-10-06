@@ -28,6 +28,7 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
     case persistentDimming
     case invalidHiddenMirrorSourceOverlay
     case invalidHiddenDisplay
+    case invalidOtherRuleDisplay
     case mirrorSourceNotAuthorized(String, String)
     public var description: String {
         switch self {
@@ -55,6 +56,8 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
             return "invalid PanelCtl hidden-mirror overlay options; use matching source UUIDs, an opaque watched overlay, and a finite Restore timeout without hardware dimming, sleep, or display-awake options"
         case .invalidHiddenDisplay:
             return "invalid PanelCtl hidden display; use --watch and distinct UUIDs that aren't blackout targets"
+        case .invalidOtherRuleDisplay:
+            return "invalid PanelCtl sibling-rule display; use --watch and distinct UUIDs outside this rule and hidden displays"
         case .mirrorSourceNotAuthorized(let selector, let reason):
             return "refusing mirrored display target \(selector): \(reason)"
     }
@@ -439,6 +442,7 @@ public final class BlackoutController {
     private var manualActivityUptime: TimeInterval?
     private var restoreGeneration: UInt64 = 0
     private var dimming: BlackoutDimming?
+    private let automationSleepGate = AutomationSleepGate()
     private var cleanupSucceeded: Bool?
     private let occupancySource: DisplayOccupancySource
     private let idleSource: IdleTimeSource
@@ -490,13 +494,26 @@ public final class BlackoutController {
         self.mirrorHandoffStatus = mirrorHandoffStatus
     }
 
-    public static func brightnessCleanupIsVerified() -> Bool {
-        BlackoutDimming().cleanupIsVerified()
+    public static func brightnessCleanupIsVerified(ruleID: UUID? = nil) -> Bool {
+        BlackoutDimming(ruleID: ruleID).cleanupIsVerified()
     }
 
     /// Restores only journaled brightness. Never starts a watcher or overlay.
-    public static func retryBrightnessCleanup() -> Bool {
-        BlackoutDimming().retryCleanup()
+    public static func retryBrightnessCleanup(ruleID: UUID? = nil) -> Bool {
+        BlackoutDimming(ruleID: ruleID).retryCleanup()
+    }
+
+    public static func brightnessJournalURL(ruleID: UUID? = nil) -> URL {
+        BlackoutDimming.journalURL(for: ruleID)
+    }
+
+    public static var ruleBrightnessJournalDirectoryURL: URL {
+        brightnessJournalURL().deletingLastPathComponent()
+            .appendingPathComponent("Automation", isDirectory: true)
+    }
+
+    static var automationSleepMarkerURL: URL {
+        ruleBrightnessJournalDirectoryURL.appendingPathComponent(".display-sleeping")
     }
 
     public func run(options: BlackoutOptions) throws {
@@ -528,7 +545,7 @@ public final class BlackoutController {
         guard !drawableScreens.isEmpty else { throw BlackoutError.noScreens }
         targets = try resolveTargets(options: options, screens: screens, drawableScreens: drawableScreens)
         if options.hardwareBrightnessPercent != nil {
-            let dimming = BlackoutDimming()
+            let dimming = BlackoutDimming(ruleID: options.ruleID)
             dimming.start()
             self.dimming = dimming
         }
@@ -635,6 +652,7 @@ public final class BlackoutController {
             manualActivityUptime = uptime()
             fullCycleActive = false
             dimming?.restore()
+            emptyDisplayPolicy.restoredCoveredDisplays(Set(windows.keys))
             closeAllWindows()
             emptyDisplayPolicy.reset()
             if !sleeping {
@@ -769,7 +787,7 @@ public final class BlackoutController {
                     return
                 }
                 watchState.reset(.sleepAfter, after: finalSample.lastInputUptime)
-                try DisplaySleepController.sleep()
+                try DisplaySleepController.sleepForAutomation(gate: automationSleepGate)
                 try waitForWatchWakeAndInput()
                 return
             }
@@ -823,9 +841,13 @@ public final class BlackoutController {
         }
         guard !selected.isEmpty else { throw BlackoutError.noScreens }
         let hidden = Self.hiddenScreenIDs(options: options, drawable: drawableScreens)
+        let siblings = Self.otherRuleScreenIDs(options: options, drawable: drawableScreens)
         guard hidden.isDisjoint(with: selectedIDs) else { throw BlackoutError.invalidHiddenDisplay }
+        guard siblings.isDisjoint(with: selectedIDs), siblings.isDisjoint(with: hidden) else {
+            throw BlackoutError.invalidOtherRuleDisplay
+        }
         try Self.validateSelection(
-            selectedCount: selected.count + hidden.count,
+            selectedCount: selected.count + hidden.count + siblings.count,
             drawableCount: drawableScreens.count,
             hasSafetyLimit: Self.hasSafetyLimit(options)
         )
@@ -844,6 +866,8 @@ public final class BlackoutController {
         // Hidden displays already look blacked out: skip them, but count them
         // as covered so the safety rules still apply.
         let hidden = Self.hiddenScreenIDs(options: options, drawable: drawable)
+        let siblings = Self.otherRuleScreenIDs(options: options, drawable: drawable)
+        let coveredWithoutThisRule = hidden.union(siblings)
         if options.all {
             if watchMode {
                 try Self.validateSelection(
@@ -851,7 +875,7 @@ public final class BlackoutController {
                     drawableCount: drawable.count,
                     hasSafetyLimit: Self.hasSafetyLimit(options)
                 )
-                let visible = drawable.filter { Self.screenID($0).map { !hidden.contains($0) } ?? true }
+                let visible = drawable.filter { Self.screenID($0).map { !coveredWithoutThisRule.contains($0) } ?? true }
                 guard !visible.isEmpty else { throw BlackoutError.noScreens }
                 return (visible, true)
             }
@@ -865,9 +889,12 @@ public final class BlackoutController {
             guard Set(targets.map(\.id)) == Set(currentByID.keys) else {
                 throw BlackoutError.topologyChanged
             }
-            let selected = targets.compactMap { currentByID[$0.id] }
+            let selected = targets.compactMap { target in
+                coveredWithoutThisRule.contains(target.id) ? nil : currentByID[target.id]
+            }
+            guard !selected.isEmpty else { throw BlackoutError.noScreens }
             try Self.validateSelection(
-                selectedCount: selected.count,
+                selectedCount: selected.count + hidden.count + siblings.count,
                 drawableCount: drawable.count,
                 hasSafetyLimit: Self.hasSafetyLimit(options)
             )
@@ -894,7 +921,7 @@ public final class BlackoutController {
             return screen
         }
         guard !selected.isEmpty else { throw BlackoutError.noScreens }
-        let coveredCount = selected.count + hidden.count
+        let coveredCount = selected.count + hidden.count + siblings.count
         try Self.validateSelection(
             selectedCount: coveredCount,
             drawableCount: drawable.count,
@@ -1072,6 +1099,9 @@ public final class BlackoutController {
         reconcileEmpty: Bool
     ) {
         fullCycleActive = false
+        if reconcileEmpty {
+            emptyDisplayPolicy.restoredCoveredDisplays(Set(windows.keys))
+        }
         dimming?.restore()
         runtimeState = nextState
         if reconcileEmpty, blackoutEmptyDisplays {
@@ -1463,6 +1493,7 @@ public final class BlackoutController {
         })
         workspaceObservers.append(center.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
+            self.automationSleepGate.wakeObserved()
             self.invalidateScreenConfiguration()
             self.dimming?.recoverStale()
             self.displayWakeObserved = true
@@ -1701,6 +1732,7 @@ public final class BlackoutController {
             }
         }
         guard options.hiddenDisplaysAreValid else { throw BlackoutError.invalidHiddenDisplay }
+        guard options.otherRuleDisplaysAreValid else { throw BlackoutError.invalidOtherRuleDisplay }
     }
 
     /// Drawable screens of displays PanelCtl has hidden.
@@ -1717,6 +1749,23 @@ public final class BlackoutController {
             return record.id
         }
         return Set(drawable.compactMap(screenID)).intersection(hiddenIDs)
+    }
+
+    /// Sibling-rule displays count as covered for safety but never appear in
+    /// this helper's target or empty-display pointer checks.
+    private static func otherRuleScreenIDs(
+        options: BlackoutOptions,
+        drawable: [NSScreen]
+    ) -> Set<CGDirectDisplayID> {
+        guard !options.otherRuleDisplayUUIDs.isEmpty else { return [] }
+        let ids = DisplayInventory.records().compactMap { record -> CGDirectDisplayID? in
+            guard let uuid = record.uuid,
+                  options.otherRuleDisplayUUIDs.contains(where: {
+                      $0.caseInsensitiveCompare(uuid) == .orderedSame
+                  }) else { return nil }
+            return record.id
+        }
+        return Set(drawable.compactMap(screenID)).intersection(ids)
     }
 
     static func validateSelection(

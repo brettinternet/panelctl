@@ -57,6 +57,27 @@ final class AppControlTests: XCTestCase {
         )
     }
 
+    func testStatusRuleArrayIsAdditiveAndRoundTrips() throws {
+        let rule = AppControlRuleStatus(
+            id: UUID(uuidString: "80B92489-591F-45A5-8B5C-1B9D203020A4")!,
+            name: "Desk dimming", enabled: true, state: "waiting",
+            summary: "Watching for inactivity", detail: nil,
+            displays: ["display-uuid"], nextAction: "dim", secondsRemaining: 12
+        )
+        let response = AppControlResponse(
+            ok: true, running: true, enabled: true, state: "waiting",
+            summary: "Watching for inactivity", rules: [rule]
+        )
+        let decoded = try JSONDecoder().decode(AppControlResponse.self, from: JSONEncoder().encode(response))
+        XCTAssertEqual(decoded, response)
+        XCTAssertEqual(decoded.rules, [rule])
+        let oldResponse = try JSONDecoder().decode(
+            AppControlResponse.self,
+            from: Data(#"{"protocol":1,"ok":true,"running":true,"enabled":true,"state":"waiting","summary":"Watching"}"#.utf8)
+        )
+        XCTAssertNil(oldResponse.rules, "protocol 1 responses without the additive field remain compatible")
+    }
+
     func testResponseAutomationFieldsRoundTrip() throws {
         let response = AppControlResponse(
             ok: true,

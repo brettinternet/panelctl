@@ -126,6 +126,7 @@ final class ProtectionService {
     private var cleanupResultObserved: Bool?
     private(set) var unresolvedCleanupFailure: String?
     private let cleanupIsVerified: () -> Bool
+    private let cleanupRuleID: UUID?
     private var cleanupRetryCompletion: ((Bool, String?) -> Void)?
     private var cleanupOnly = false
     private static let unknownCleanup = "Automation cleanup couldn\u{2019}t confirm brightness was restored."
@@ -133,7 +134,8 @@ final class ProtectionService {
 
     init(
         initialCleanupFailure: String? = nil,
-        cleanupIsVerified: @escaping () -> Bool = BlackoutController.brightnessCleanupIsVerified,
+        cleanupRuleID: UUID? = nil,
+        cleanupIsVerified: (() -> Bool)? = nil,
         displaysAreAsleep: @escaping () -> Bool = {
             DisplayInventory.records().contains {
                 $0.online && $0.asleep
@@ -141,9 +143,11 @@ final class ProtectionService {
         }
     ) {
         self.displaysAreAsleep = displaysAreAsleep
-        self.cleanupIsVerified = cleanupIsVerified
+        self.cleanupRuleID = cleanupRuleID
+        let verify = cleanupIsVerified ?? { BlackoutController.brightnessCleanupIsVerified(ruleID: cleanupRuleID) }
+        self.cleanupIsVerified = verify
         self.unresolvedCleanupFailure = initialCleanupFailure ??
-            (cleanupIsVerified() ? nil : Self.unknownCleanup)
+            (verify() ? nil : Self.unknownCleanup)
     }
 
     var hasManagedProcess: Bool {
@@ -352,6 +356,7 @@ final class ProtectionService {
             environment["PANELCTL_EMIT_STATUS"] = "1"
             environment["PANELCTL_PARENT_PIPE"] = "1"
             environment["PANELCTL_CLEANUP_ONLY"] = cleanupOnly ? "1" : nil
+            environment["PANELCTL_CLEANUP_RULE_ID"] = cleanupOnly ? cleanupRuleID?.uuidString : nil
             if pendingDisplayRearm {
                 environment["PANELCTL_REARM_ON_START"] = "1"
             }

@@ -23,6 +23,14 @@ final class BlackoutDimming {
         isDirectory: true
     ).appendingPathComponent("Library/Application Support/PanelCtl/blackout-luminance.json")
 
+    static func journalURL(for ruleID: UUID?) -> URL {
+        guard let ruleID else { return defaultJournalURL }
+        return defaultJournalURL.deletingLastPathComponent()
+            .appendingPathComponent("Automation", isDirectory: true)
+            .appendingPathComponent(ruleID.uuidString, isDirectory: true)
+            .appendingPathComponent("blackout-luminance.json")
+    }
+
     private let journalURL: URL
     private let lockURL: URL
     private let records: Records
@@ -35,14 +43,16 @@ final class BlackoutDimming {
     private var entries: [String: BlackoutLuminanceEntry] = [:]
 
     init(
-        journalURL: URL = BlackoutDimming.defaultJournalURL,
+        journalURL: URL? = nil,
+        ruleID: UUID? = nil,
         records: @escaping Records = { DisplayInventory.records() },
         read: @escaping Read = { try DDCLuminance.read(selector: $0) },
         set: @escaping Write = { try DDCLuminance.set(selector: $0, value: $1) },
         journalWriter: JournalWriter? = nil
     ) {
-        self.journalURL = journalURL
-        self.lockURL = journalURL.appendingPathExtension("lock")
+        let resolvedJournalURL = journalURL ?? Self.journalURL(for: ruleID)
+        self.journalURL = resolvedJournalURL
+        self.lockURL = resolvedJournalURL.appendingPathExtension("lock")
         self.records = records
         self.read = read
         self.set = set
@@ -50,9 +60,9 @@ final class BlackoutDimming {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
             let data = try encoder.encode(entries.sorted { $0.uuid < $1.uuid })
-            let directory = journalURL.deletingLastPathComponent()
+            let directory = resolvedJournalURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try data.write(to: journalURL, options: .atomic)
+            try data.write(to: resolvedJournalURL, options: .atomic)
         }
     }
 

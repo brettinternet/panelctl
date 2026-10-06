@@ -2,6 +2,16 @@ import XCTest
 @testable import PanelCtlCore
 
 final class BlackoutDimmingTests: XCTestCase {
+    func testRuleJournalsAreUUIDScopedAndLegacyJournalRemainsSeparate() {
+        let legacy = BlackoutController.brightnessJournalURL()
+        let ruleID = UUID(uuidString: "80B92489-591F-45A5-8B5C-1B9D203020A4")!
+        let scoped = BlackoutController.brightnessJournalURL(ruleID: ruleID)
+        XCTAssertEqual(scoped.lastPathComponent, "blackout-luminance.json")
+        XCTAssertEqual(scoped.deletingLastPathComponent().lastPathComponent, ruleID.uuidString)
+        XCTAssertEqual(scoped.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent, "Automation")
+        XCTAssertNotEqual(scoped, legacy)
+    }
+
     func testCleanupVerificationAndRetryUseLockedDurableJournal() throws {
         let url = temporaryURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
