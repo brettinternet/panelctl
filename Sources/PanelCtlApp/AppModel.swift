@@ -85,8 +85,15 @@ final class AppModel: ObservableObject {
             onStatusChange?()
         }
     }
+    @Published private(set) var displayActionStorageFailure: String?
     @Published private(set) var displayActionResults: [UUID: AppControlResponse] = [:]
     @Published private(set) var runningDisplayActionIDs: Set<UUID> = []
+    @Published private(set) var runningDisplayAction: AppControlRunningAction?
+    private var runningActionInterrupted = false
+    private var preflightingDisplayAction = false
+    private var lastDisplayActionFinished: ContinuousClock.Instant?
+    private var deferredActionHiddenDisplayReconciliation = false
+    private var deferredActionRecoveryReconciliation = false
     @Published private(set) var handoffStatus: DisplayHandoffStatus?
     @Published private(set) var handoffInspectionFailure: String?
     /// Keyed by lowercased target UUID.
@@ -186,7 +193,9 @@ final class AppModel: ObservableObject {
     private static let preferencesKey = "blackoutPreferences"
     private static let automationPreferencesKey = "automationRules"
     private static let hidePreferencesKey = "displayHidePreferences"
-    private static let displayActionsKey = "displayActions"
+    /// Versioned separately so older binaries keep writing only the legacy key.
+    static let displayActionsKey = "displayActions.v2"
+    static let legacyDisplayActionsKey = "displayActions"
     private static let showMenuBarIconKey = "showMenuBarIcon"
     private static let experimentalFeaturesKey = "experimentalFeaturesEnabled"
     private static let snoozedUntilKey = "snoozedUntil"
@@ -259,9 +268,21 @@ final class AppModel: ObservableObject {
         let loadedHidePreferences = defaults.data(forKey: Self.hidePreferencesKey)
             .flatMap { try? JSONDecoder().decode(DisplayHidePreferences.self, from: $0) }
         self.hidePreferences = loadedHidePreferences ?? DisplayHidePreferences()
-        let loadedDisplayActions = defaults.data(forKey: Self.displayActionsKey)
-            .flatMap { try? JSONDecoder().decode(DisplayActionSet.self, from: $0) }
-        self.displayActions = loadedDisplayActions ?? DisplayActionSet()
+        let upgradedActions = defaults.data(forKey: Self.displayActionsKey)
+        let legacyActions = defaults.data(forKey: Self.legacyDisplayActionsKey)
+        let actionData = upgradedActions ?? legacyActions
+        if let actionData {
+            do {
+                self.displayActions = try JSONDecoder().decode(DisplayActionSet.self, from: actionData)
+                self.displayActionStorageFailure = nil
+            } catch {
+                self.displayActions = DisplayActionSet()
+                self.displayActionStorageFailure = "Saved Actions could not be read and were preserved. Do not edit them with this build. (\(error.localizedDescription))"
+            }
+        } else {
+            self.displayActions = DisplayActionSet()
+            self.displayActionStorageFailure = nil
+        }
         let displays = displayProvider()
         let loadedRuleSet: AutomationPreferences
         if let stored = defaults.data(forKey: Self.automationPreferencesKey) {
@@ -614,83 +635,113 @@ final class AppModel: ObservableObject {
         return DisplayAction(target: target)
     }
 
+    func makeNewDisplayActionStep(excluding action: DisplayAction? = nil) -> DisplayActionStep {
+        let used = Set((action?.steps.compactMap(\.target?.uuid) ?? []).map { $0.lowercased() })
+        let display = activeDisplays.first { record in
+            guard let uuid = record.uuid, UUID(uuidString: uuid) != nil else { return false }
+            return !used.contains(uuid.lowercased())
+        }
+        return DisplayActionStep(target: display.map(DisplayIdentitySnapshot.init))
+    }
+
     func displayActionValidation(for draft: DisplayAction, replacing existingID: UUID? = nil) -> String? {
+        displayActionValidationError(for: draft, replacing: existingID)?.localizedDescription
+    }
+
+    private func displayActionValidationError(
+        for draft: DisplayAction, replacing existingID: UUID?
+    ) -> DisplayActionValidationError? {
+        if let displayActionStorageFailure { return .storedActionsUnavailable(displayActionStorageFailure) }
         let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return DisplayActionValidationError.invalidName.localizedDescription }
+        guard !name.isEmpty else { return .invalidName }
         guard !displayActions.actions.contains(where: { $0.id != existingID && $0.id != draft.id &&
             $0.name.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(name) == .orderedSame
         }) else {
-            return DisplayActionValidationError.duplicateName(name).localizedDescription
+            return .duplicateName(name)
         }
         if let existingID {
             guard draft.id == existingID, displayActions.actions.contains(where: { $0.id == existingID }) else {
-                return DisplayActionValidationError.duplicateIdentity.localizedDescription
+                return .duplicateIdentity
+            }
+            if runningDisplayAction?.id == existingID {
+                return .actionInProgress(runningDisplayAction?.name ?? draft.name)
             }
         } else if displayActions.actions.contains(where: { $0.id == draft.id }) {
-            return DisplayActionValidationError.duplicateIdentity.localizedDescription
+            return .duplicateIdentity
         }
-        guard let target = draft.target else { return DisplayActionValidationError.missingTarget.localizedDescription }
-        guard UUID(uuidString: target.uuid) != nil else { return DisplayActionValidationError.invalidTarget.localizedDescription }
-
-        guard draft.effect == .removeFromDesktop else { return nil }
+        guard (1...8).contains(draft.steps.count) else { return .invalidStepCount }
         let previous = existingID.flatMap { id in displayActions.actions.first(where: { $0.id == id }) }
-        let unchangedRemovalReview = previous.map {
-            $0.effect == .removeFromDesktop &&
-                $0.target?.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame &&
-                draft.reviewedRemoval == $0.reviewedRemoval
-        } ?? false
-        if unchangedRemovalReview, !experimentalFeaturesEnabled { return nil }
-        if !experimentalFeaturesEnabled {
-            return DisplayActionValidationError.experimentalFeaturesRequired.localizedDescription
+        var seen = Set<String>()
+        for (offset, step) in draft.steps.enumerated() {
+            let number = offset + 1
+            guard let target = step.target else { return .missingTarget(number) }
+            guard UUID(uuidString: target.uuid) != nil else { return .invalidTarget(number) }
+            guard seen.insert(target.uuid.lowercased()).inserted else {
+                return .duplicateDisplay(DisplayActionPresentation.displayName(for: target, displays: displays))
+            }
+            if step.effect == .removeFromDesktop {
+                let previousStep = previous?.steps.first(where: {
+                    $0.effect == .removeFromDesktop &&
+                        $0.target?.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame
+                })
+                let unchangedReview = previousStep?.reviewedRemoval == step.reviewedRemoval
+                if !experimentalFeaturesEnabled, !unchangedReview {
+                    return .experimentalFeaturesRequired(number)
+                }
+                if experimentalFeaturesEnabled,
+                   let reason = displayActionRemovalSetupReason(for: target.uuid) {
+                    return .removalSetupUnavailable(number, reason)
+                }
+            }
         }
-        return displayActionRemovalSetupReason(for: target.uuid)
+        return staticDisplayActionConflict(in: draft)
+    }
+
+    private func staticDisplayActionConflict(in action: DisplayAction) -> DisplayActionValidationError? {
+        var hidden = Set<String>()
+        var removalSources: [String: String] = [:]
+        for (offset, step) in action.steps.enumerated() {
+            guard let target = step.target else { continue }
+            let targetKey = target.uuid.lowercased()
+            if step.effect == .removeFromDesktop {
+                let setup = experimentalFeaturesEnabled && displayActionRemovalSetupReason(for: target.uuid) == nil
+                    ? currentReviewedRemovalSetup(for: target.uuid)
+                    : step.reviewedRemoval
+                guard let source = setup?.sourceUUID else {
+                    return .removalSetupUnavailable(offset + 1, "Choose a mirror source in Displays first.")
+                }
+                let sourceKey = source.lowercased()
+                if hidden.contains(sourceKey) {
+                    let sourceName = displays.first(where: { $0.uuid?.lowercased() == sourceKey })?.settingsName ?? source
+                    return .staticConflict(offset + 1, "its mirror source \(sourceName) is hidden by an earlier step.")
+                }
+                if removalSources.values.contains(targetKey) {
+                    return .staticConflict(offset + 1, "this display is a mirror source for an earlier Remove step.")
+                }
+                removalSources[targetKey] = sourceKey
+            }
+            switch step.effect {
+            case .blackOut, .removeFromDesktop:
+                hidden.insert(targetKey)
+            case .show:
+                hidden.remove(targetKey)
+                removalSources.removeValue(forKey: targetKey)
+            }
+        }
+        return nil
     }
 
     func saveDisplayAction(_ draft: DisplayAction, replacing existingID: UUID? = nil) throws {
         var candidate = draft
         candidate.name = candidate.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let target = candidate.target else { throw DisplayActionValidationError.missingTarget }
-        guard UUID(uuidString: target.uuid) != nil else { throw DisplayActionValidationError.invalidTarget }
-        if let reason = displayActionValidation(for: candidate, replacing: existingID) {
-            if reason == DisplayActionValidationError.invalidName.localizedDescription {
-                throw DisplayActionValidationError.invalidName
+        if let error = displayActionValidationError(for: candidate, replacing: existingID) { throw error }
+        // Validation guarantees a usable current setup when Experimental is on;
+        // with it off, only an unchanged accepted setup reaches this point and is kept.
+        if experimentalFeaturesEnabled {
+            for index in candidate.steps.indices where candidate.steps[index].effect == .removeFromDesktop {
+                guard let target = candidate.steps[index].target else { continue }
+                candidate.steps[index].reviewedRemoval = currentReviewedRemovalSetup(for: target.uuid)
             }
-            if let duplicate = displayActions.actions.first(where: {
-                $0.id != existingID && $0.name.trimmingCharacters(in: .whitespacesAndNewlines)
-                    .caseInsensitiveCompare(candidate.name) == .orderedSame
-            }) {
-                throw DisplayActionValidationError.duplicateName(duplicate.name)
-            }
-            if reason == DisplayActionValidationError.missingTarget.localizedDescription {
-                throw DisplayActionValidationError.missingTarget
-            }
-            if reason == DisplayActionValidationError.invalidTarget.localizedDescription {
-                throw DisplayActionValidationError.invalidTarget
-            }
-            if reason == DisplayActionValidationError.experimentalFeaturesRequired.localizedDescription {
-                throw DisplayActionValidationError.experimentalFeaturesRequired
-            }
-            throw DisplayActionValidationError.removalSetupUnavailable(reason)
-        }
-        let current = existingID.flatMap { id in displayActions.actions.first(where: { $0.id == id }) }
-        if existingID != nil, current == nil { throw DisplayActionValidationError.duplicateIdentity }
-        if candidate.effect == .removeFromDesktop {
-            let sameReviewedRemoval = current.map {
-                $0.effect == .removeFromDesktop &&
-                    $0.target?.uuid.caseInsensitiveCompare(target.uuid) == .orderedSame &&
-                    candidate.reviewedRemoval == $0.reviewedRemoval
-            } ?? false
-            if experimentalFeaturesEnabled, displayActionRemovalSetupReason(for: target.uuid) == nil {
-                candidate.reviewedRemoval = currentReviewedRemovalSetup(for: target.uuid)
-            } else if sameReviewedRemoval {
-                candidate.reviewedRemoval = current?.reviewedRemoval
-            } else if !experimentalFeaturesEnabled {
-                throw DisplayActionValidationError.experimentalFeaturesRequired
-            } else if let reason = displayActionRemovalSetupReason(for: target.uuid) {
-                throw DisplayActionValidationError.removalSetupUnavailable(reason)
-            }
-        } else {
-            candidate.reviewedRemoval = nil
         }
         var updated = displayActions
         if let existingID {
@@ -705,6 +756,7 @@ final class AppModel: ObservableObject {
     }
 
     func deleteDisplayAction(id: UUID) {
+        guard runningDisplayAction?.id != id, displayActionStorageFailure == nil else { return }
         var updated = displayActions
         guard let index = updated.actions.firstIndex(where: { $0.id == id }) else { return }
         updated.actions.remove(at: index)
@@ -720,34 +772,40 @@ final class AppModel: ObservableObject {
         )
     }
 
-    private func manualActionValidationFailure(_ action: DisplayAction) -> String? {
+    private func manualActionValidationFailure(_ action: DisplayAction, stepIndex: Int? = nil) -> String? {
         guard let saved = displayActions.actions.first(where: { $0.id == action.id }),
-              saved.target == action.target, saved.effect == action.effect,
-              saved.reviewedRemoval == action.reviewedRemoval else {
+              saved.steps == action.steps else {
             return "This action changed before it could run. Review it in Settings → Automations, then try again."
         }
-        guard let target = action.target, matchingDisplay(target) != nil else {
-            return "This display is disconnected or changed. Reconnect that exact display."
-        }
-        if action.effect == .removeFromDesktop {
-            guard experimentalFeaturesEnabled else {
-                return "Turn on Experimental features in General to remove a display from the desktop."
+        let indices = stepIndex.map { [$0] } ?? Array(action.steps.indices)
+        for offset in indices {
+            guard action.steps.indices.contains(offset) else { return "This action changed before it could run." }
+            let step = action.steps[offset]
+            guard let target = step.target, matchingDisplay(target) != nil else {
+                return "Step \(offset + 1): This display is disconnected or changed. Reconnect that exact display."
             }
-            guard action.reviewedRemoval != nil,
-                  displayActionReviewChange(for: action) == nil else {
-                return "Displays setup changed since review. Save this action to accept the change."
+            if step.effect == .removeFromDesktop {
+                guard experimentalFeaturesEnabled else {
+                    return "Step \(offset + 1): Turn on Experimental features in General to remove a display from the desktop."
+                }
+                guard step.reviewedRemoval != nil,
+                      displayActionReviewChange(for: action, stepIndex: offset) == nil else {
+                    return "Step \(offset + 1): Displays setup changed since review. Save this action to accept the change."
+                }
             }
-        }
-        if action.effect == .blackOut, let problem = displayRecoveryProblem {
-            return "Display recovery needs attention. Review it in Displays before hiding another display. \(problem)"
+            if step.effect != .show, let problem = displayRecoveryProblem {
+                return "Step \(offset + 1): Display recovery needs attention. Review it in Displays before hiding another display. \(problem)"
+            }
         }
         return nil
     }
 
-    func displayActionReviewChange(for action: DisplayAction) -> DisplayActionReviewChange? {
-        guard action.effect == .removeFromDesktop,
-              let reviewed = action.reviewedRemoval,
-              let target = action.target else { return nil }
+    func displayActionReviewChange(for action: DisplayAction, stepIndex: Int = 0) -> DisplayActionReviewChange? {
+        guard action.steps.indices.contains(stepIndex) else { return nil }
+        let step = action.steps[stepIndex]
+        guard step.effect == .removeFromDesktop,
+              let reviewed = step.reviewedRemoval,
+              let target = step.target else { return nil }
         return DisplayActionPresentation.setupChange(
             from: reviewed,
             to: currentReviewedRemovalSetup(for: target.uuid),
@@ -769,91 +827,169 @@ final class AppModel: ObservableObject {
     }
 
     func displayActionRunBlocker(for action: DisplayAction) -> String? {
-        guard let target = action.target else { return "Unavailable: Choose a display." }
-        guard UUID(uuidString: target.uuid) != nil else { return "Unavailable: This action has no stable display UUID." }
-        guard matchingDisplay(target) != nil else {
-            return "Unavailable: Display not connected."
-        }
-        if action.effect == .removeFromDesktop {
-            if action.reviewedRemoval == nil {
-                return "Needs review: Save the current Displays setup before running this action."
+        if let displayActionStorageFailure { return displayActionStorageFailure }
+        guard (1...8).contains(action.steps.count) else { return DisplayActionValidationError.invalidStepCount.localizedDescription }
+        var hiddenBlackouts = Set(blackoutHiddenDisplays.keys)
+        let unresolvedRemovals = unresolvedHandoffRemovals
+        var hiddenRemovals = Set(unresolvedRemovals.map { $0.target.uuid.lowercased() })
+        var sources = Dictionary(uniqueKeysWithValues: unresolvedRemovals.map {
+            ($0.target.uuid.lowercased(), $0.source.uuid.lowercased())
+        })
+        for (index, step) in action.steps.enumerated() {
+            guard let blocker = displayActionStepRunBlocker(
+                action: action, step: step, index: index,
+                projectedBlackouts: hiddenBlackouts,
+                projectedRemovals: hiddenRemovals,
+                projectedSources: sources
+            ) else {
+                guard let key = step.target?.uuid.lowercased() else { return "Step \(index + 1): Choose a display." }
+                switch step.effect {
+                case .blackOut: hiddenBlackouts.insert(key)
+                case .removeFromDesktop:
+                    hiddenRemovals.insert(key)
+                    if let source = step.reviewedRemoval?.sourceUUID { sources[key] = source.lowercased() }
+                case .show:
+                    hiddenBlackouts.remove(key)
+                    hiddenRemovals.remove(key)
+                    sources.removeValue(forKey: key)
+                }
+                continue
             }
-            if displayActionReviewChange(for: action) != nil {
-                return "Needs review: Displays setup changed since review. Save this action to accept the change."
+            return blocker
+        }
+        return nil
+    }
+
+    private func displayActionStepRunBlocker(
+        action: DisplayAction,
+        step: DisplayActionStep,
+        index: Int,
+        projectedBlackouts: Set<String>? = nil,
+        projectedRemovals: Set<String>? = nil,
+        projectedSources: [String: String]? = nil,
+        actionLeaseID: UUID? = nil
+    ) -> String? {
+        let prefix = "Step \(index + 1): "
+        guard let target = step.target else { return prefix + "Choose a display." }
+        guard UUID(uuidString: target.uuid) != nil else { return prefix + "This action has no stable display UUID." }
+        guard let display = matchingDisplay(target) else { return prefix + "Unavailable: Display not connected or identity changed." }
+        if step.effect == .removeFromDesktop {
+            guard experimentalFeaturesEnabled else { return prefix + "Turn on Experimental features in General to remove a display from the desktop." }
+            guard step.reviewedRemoval != nil else { return prefix + "Save the current Displays setup before running this step." }
+            if displayActionReviewChange(for: action, stepIndex: index) != nil {
+                return prefix + "Displays setup changed since review. Save this Action to accept the change."
             }
         }
-        if hideOperation.isBusy || handoffStatus?.state == .busy {
-            return DisplayHideError.actionInProgress.localizedDescription
+        if hideOperation.isBusy { return prefix + DisplayHideError.actionInProgress.localizedDescription }
+        if runningDisplayAction != nil, runningDisplayAction?.id != actionLeaseID {
+            return displayActionBusyMessage
         }
-        if displayLifecycleTransitioning { return DisplayHideError.sleeping.localizedDescription }
-        if protectionQuiescencePending { return Self.automationStopping.localizedDescription }
+        if handoffStatus?.state == .busy { return prefix + DisplayHideError.actionInProgress.localizedDescription }
+        if displayLifecycleTransitioning { return prefix + DisplayHideError.sleeping.localizedDescription }
+        if protectionQuiescencePending { return prefix + Self.automationStopping.localizedDescription }
         if let failure = protectionQuiescenceFailure {
-            return "Automation cleanup needs attention. Choose Retry Automation Cleanup, then try again. (\(failure))"
+            return prefix + "Automation cleanup needs attention. Choose Retry Automation Cleanup, then try again. (\(failure))"
         }
         if disconnectAutomationPaused || disconnectInspectionFailure != nil ||
             disconnectLease != nil || disconnectStatus?.resolved == false {
-            return "Full disconnect is pausing automation or awaiting verified recovery. Finish it first."
+            return prefix + "Full disconnect is pausing automation or awaiting verified recovery. Finish it first."
         }
 
-        switch action.effect {
+        let uuid = target.uuid.lowercased()
+        let hiddenBlackout = projectedBlackouts ?? Set(blackoutHiddenDisplays.keys)
+        let hiddenRemoved = projectedRemovals ?? Set(unresolvedHandoffRemovals.map { $0.target.uuid.lowercased() })
+        switch step.effect {
         case .show:
-            if isBlackoutHidden(target.uuid) { return nil }
-            if isRemovedDisplay(target.uuid) {
-                do { _ = try makeShowRequest(targetUUID: target.uuid) }
-                catch { return error.localizedDescription }
+            if hiddenBlackout.contains(uuid) { return nil }
+            if hiddenRemoved.contains(uuid) {
+                if isRemovedDisplay(uuid) {
+                    do { _ = try makeShowRequest(targetUUID: target.uuid, actionLeaseID: actionLeaseID, refreshStatus: false) }
+                    catch { return prefix + error.localizedDescription }
+                } else if projectedRemovals?.contains(uuid) != true {
+                    return prefix + "The removed display is not verified for Show. Review it in Displays."
+                }
                 return nil
             }
             if let problem = displayRecoveryProblem {
-                return "Display recovery needs attention. Review it in Displays before showing this display. \(problem)"
+                return prefix + problem
             }
             return nil
         case .blackOut:
-            if isRemovedDisplay(target.uuid) {
-                return "Already hidden by Remove from desktop. Show it first."
-            }
-            if isBlackoutHidden(target.uuid) { return nil }
+            if hiddenRemoved.contains(uuid) { return prefix + "Already hidden by Remove from desktop. Show it first." }
             if let problem = displayRecoveryProblem {
-                return "Display recovery needs attention. Review it in Displays before hiding another display. \(problem)"
+                return prefix + "Display recovery needs attention: \(problem)"
             }
-            guard let display = displays.first(where: { $0.uuid?.caseInsensitiveCompare(target.uuid) == .orderedSame }) else {
-                return "Unavailable: Display not connected."
+            if let blocker = blackoutReadiness(
+                for: display, projectedBlackouts: hiddenBlackout, projectedRemovals: hiddenRemoved,
+                actionLeaseID: actionLeaseID
+            ) {
+                return prefix + blocker.localizedDescription
             }
-            return blackoutReadiness(for: display)?.localizedDescription
+            if hiddenBlackout.contains(uuid) { return nil }
+            return nil
         case .removeFromDesktop:
-            if !experimentalFeaturesEnabled {
-                return "Turn on Experimental features in General to remove a display from the desktop."
-            }
-            if isBlackoutHidden(target.uuid) {
-                return "Already hidden by Black out. Show it first."
-            }
+            if hiddenBlackout.contains(uuid) { return prefix + "Already hidden by Black out. Show it first." }
             if let problem = displayRecoveryProblem {
-                return "Display recovery needs attention. Review it in Displays before removing a display. \(problem)"
+                return prefix + "Display recovery needs attention: \(problem)"
             }
-            if isRemovedDisplay(target.uuid) {
-                return isVerifiedRemovedDisplay(target.uuid)
-                    ? nil
-                    : "Display recovery is not verified. Review it in Displays before repeating Remove from desktop."
+            if hiddenRemoved.contains(uuid) {
+                guard isVerifiedRemovedDisplay(target.uuid) else {
+                    return prefix + "Display recovery is not verified. Review it in Displays before repeating Remove from desktop."
+                }
+                guard let configuration = hideConfiguration(for: target.uuid) else {
+                    return prefix + "Turn on Remove from desktop for this display in Settings → Displays first."
+                }
+                if let blocker = hideReadiness(
+                    for: configuration, projectedBlackouts: hiddenBlackout,
+                    projectedRemovals: hiddenRemoved, projectedSources: projectedSources,
+                    actionLeaseID: actionLeaseID, allowVerifiedRemovalNoOp: true
+                ) {
+                    return prefix + blocker.localizedDescription
+                }
+                return nil
             }
             guard let configuration = hideConfiguration(for: target.uuid) else {
-                return "Turn on Remove from desktop for this display in Settings → Displays first."
+                return prefix + "Turn on Remove from desktop for this display in Settings → Displays first."
             }
-            return hideReadiness(for: configuration)?.localizedDescription
+            guard configuration.target == target,
+                  let reviewed = step.reviewedRemoval,
+                  reviewed == currentReviewedRemovalSetup(for: target.uuid) else {
+                return prefix + "Displays setup changed since review. Save this Action to accept the change."
+            }
+            if let blocker = hideReadiness(
+                for: configuration,
+                projectedBlackouts: hiddenBlackout,
+                projectedRemovals: hiddenRemoved,
+                projectedSources: projectedSources,
+                actionLeaseID: actionLeaseID
+            ) {
+                return prefix + blocker.localizedDescription
+            }
+            return nil
         }
     }
 
+    var displayActionBusyMessage: String {
+        guard let runningDisplayAction else { return DisplayHideError.actionInProgress.localizedDescription }
+        return "Action “\(runningDisplayAction.name)” is running step \(runningDisplayAction.currentStep) of \(runningDisplayAction.totalSteps). Try again when it finishes."
+    }
+
+    var controlRunningDisplayAction: AppControlRunningAction? {
+        guard let runningDisplayAction else { return nil }
+        return AppControlRunningAction(
+            id: runningDisplayAction.id, name: Self.bounded(runningDisplayAction.name),
+            currentStep: runningDisplayAction.currentStep, totalSteps: runningDisplayAction.totalSteps
+        )
+    }
+
     func displayActionStatus(for action: DisplayAction) -> String {
-        if runningDisplayActionIDs.contains(action.id) { return "Running…" }
-        if action.effect == .removeFromDesktop, action.target != nil,
-           action.reviewedRemoval == nil || displayActionReviewChange(for: action) != nil {
-            return "Display setup changed. Edit to review."
+        if let run = runningDisplayAction, run.id == action.id {
+            return "Running step \(run.currentStep) of \(run.totalSteps)…"
         }
-        if let blocker = displayActionRunBlocker(for: action) {
-            let prefix = "Unavailable: "
-            return blocker.hasPrefix(prefix) ? String(blocker.dropFirst(prefix.count)) : blocker
-        }
-        guard let target = action.target else { return "Choose a display." }
-        if isBlackoutHidden(target.uuid) || isRemovedDisplay(target.uuid) { return "Hidden" }
-        return "Shown"
+        if let displayActionStorageFailure { return displayActionStorageFailure }
+        if let blocker = displayActionRunBlocker(for: action) { return blocker }
+        guard !action.steps.isEmpty else { return "This Action has no steps." }
+        return "Ready"
     }
 
     private func protectionRuleAdmissionValidation(
@@ -1154,8 +1290,16 @@ final class AppModel: ObservableObject {
     /// Why Hide can't start for this configuration right now, or nil when it can.
     func hideReadiness(
         for configuration: DisplayHideConfiguration,
-        allowingCurrentOperation: Bool = false
+        allowingCurrentOperation: Bool = false,
+        projectedBlackouts: Set<String>? = nil,
+        projectedRemovals: Set<String>? = nil,
+        projectedSources: [String: String]? = nil,
+        actionLeaseID: UUID? = nil,
+        allowVerifiedRemovalNoOp: Bool = false
     ) -> DisplayHideError? {
+        if runningDisplayAction != nil, runningDisplayAction?.id != actionLeaseID {
+            return .recoveryBlocksAction(displayActionBusyMessage)
+        }
         if disconnectAutomationPaused || disconnectInspectionFailure != nil {
             return .recoveryBlocksAction("Full disconnect is pausing automation or awaiting verified recovery.")
         }
@@ -1184,20 +1328,35 @@ final class AppModel: ObservableObject {
         guard let target = matchingDisplay(configuration.target) else {
             return .identityChanged("This display is disconnected or changed. Reconnect it, then try again; PanelCtl won\u{2019}t apply its settings to a different display.")
         }
-        if isBlackoutHidden(target.uuid) {
+        guard let targetUUID = target.uuid else {
+            return .identityChanged("This display no longer has its stable ID. Review it in Displays.")
+        }
+        let hiddenBlackouts = projectedBlackouts ?? Set(blackoutHiddenDisplays.keys)
+        var hiddenRemovals = projectedRemovals ?? Set(unresolvedHandoffRemovals.map { $0.target.uuid.lowercased() })
+        let verifiedRemovalNoOp = allowVerifiedRemovalNoOp && isVerifiedRemovedDisplay(targetUUID)
+        if hiddenBlackouts.contains(targetUUID.lowercased()) {
             return .unavailable("This display is hidden. Show it first.")
         }
-        if isRemovedDisplay(target.uuid) {
-            return .unavailable("PanelCtl removed this display from the desktop. Show it first.")
+        if hiddenRemovals.contains(targetUUID.lowercased()) {
+            guard verifiedRemovalNoOp else {
+                return .unavailable("PanelCtl removed this display from the desktop. Show it first.")
+            }
+            hiddenRemovals.remove(targetUUID.lowercased())
         }
-        if isMirrorSource(target.uuid) {
+        let projectedMirrorSources = projectedSources?.values.contains(targetUUID.lowercased()) == true
+        let liveMirrorSourceStillProjected = projectedSources == nil && isMirrorSource(targetUUID)
+        if projectedMirrorSources || liveMirrorSourceStillProjected {
             return .unavailable("Another removed display mirrors onto this display. Show that display first.")
         }
-        if let reason = removalIneligibleReason(for: target) {
-            return .unavailable(reason)
-        }
-        guard !isDisplayMirrored(target.id) else {
-            return .unavailable("macOS is already mirroring this display. Turn off mirroring in System Settings \u{2192} Displays first.")
+        if !verifiedRemovalNoOp {
+            if let reason = removalIneligibleReason(for: target) {
+                return .unavailable(reason)
+            }
+            let targetMirrorReleasedByProjection = projectedSources != nil && isMirrorSource(targetUUID) &&
+                projectedSources?.values.contains(targetUUID.lowercased()) != true
+            guard !isDisplayMirrored(target.id) || targetMirrorReleasedByProjection else {
+                return .unavailable("macOS is already mirroring this display. Turn off mirroring in System Settings \u{2192} Displays first.")
+            }
         }
         guard let sourceIdentity = configuration.source else {
             return .unavailable("Choose a display to mirror onto.")
@@ -1205,20 +1364,27 @@ final class AppModel: ObservableObject {
         guard let source = matchingDisplay(sourceIdentity) else {
             return .identityChanged("The display it mirrors onto is disconnected or changed. Choose it again.")
         }
+        guard let sourceUUID = source.uuid else {
+            return .identityChanged("The display it mirrors onto no longer has its stable ID. Choose it again.")
+        }
         guard source.online, source.active, !source.asleep else {
             return .unavailable("The display it mirrors onto must be on and awake.")
         }
-        guard !isBlackoutHidden(source.uuid) else {
+        guard !hiddenBlackouts.contains(sourceUUID.lowercased()) else {
             return .unavailable("The display it mirrors onto is hidden. Show it first.")
         }
-        guard !isRemovedDisplay(source.uuid) else {
+        guard !hiddenRemovals.contains(sourceUUID.lowercased()) else {
             return .unavailable("The display it mirrors onto is removed. Show it first.")
         }
-        if isDisplayMirrored(source.id), !journalVerifiedHiddenMirrorSources.contains(where: { $0.id == source.id }) {
+        let sourceMirrorReleasedByProjection = projectedSources != nil && isMirrorSource(sourceUUID) &&
+            projectedSources?.values.contains(sourceUUID.lowercased()) != true
+        if isDisplayMirrored(source.id), !journalVerifiedHiddenMirrorSources.contains(where: { $0.id == source.id }),
+           !sourceMirrorReleasedByProjection {
             return .unavailable("macOS is already mirroring this display. Choose a separate display as the mirror source.")
         }
         let visibleAfterHide = activeDisplays.filter { other in
-            other.id != target.id && !isRemovedDisplay(other.uuid) && !isBlackoutHidden(other.uuid)
+            guard let uuid = other.uuid?.lowercased() else { return false }
+            return other.id != target.id && !hiddenRemovals.contains(uuid) && !hiddenBlackouts.contains(uuid)
         }
         guard !visibleAfterHide.isEmpty else {
             return .unavailable("PanelCtl keeps at least one visible display, so it won’t remove this one.")
@@ -1271,18 +1437,33 @@ final class AppModel: ObservableObject {
         return removal.isUnresolved && removal.state == "mirrored" && removal.canShow && removal.topologyVerified
     }
 
+    private var unresolvedHandoffRemovals: [DisplayHandoffRemoval] {
+        guard let status = handoffStatus else { return [] }
+        let removals = status.removals.filter(\.isUnresolved)
+        if !removals.isEmpty { return removals }
+        guard status.hasUnresolvedJournal, let target = status.target,
+              let removal = status.removal(for: target.uuid) else { return [] }
+        return [removal]
+    }
+
     private func isMirrorSource(_ uuid: String?) -> Bool {
         guard let uuid else { return false }
-        if let removals = handoffStatus?.removals, !removals.isEmpty {
-            return removals.contains { $0.isUnresolved && $0.source.uuid.caseInsensitiveCompare(uuid) == .orderedSame }
+        return unresolvedHandoffRemovals.contains {
+            $0.source.uuid.caseInsensitiveCompare(uuid) == .orderedSame
         }
-        return handoffStatus?.source?.uuid.caseInsensitiveCompare(uuid) == .orderedSame &&
-            handoffStatus?.hasUnresolvedJournal == true
     }
 
     /// Why Hide can't black out this display right now, or nil when it can.
-    func blackoutReadiness(for display: DisplayRecord) -> DisplayHideError? {
+    func blackoutReadiness(
+        for display: DisplayRecord,
+        projectedBlackouts: Set<String>? = nil,
+        projectedRemovals: Set<String>? = nil,
+        actionLeaseID: UUID? = nil
+    ) -> DisplayHideError? {
         if hideOperation.isBusy { return .actionInProgress }
+        if runningDisplayAction != nil, runningDisplayAction?.id != actionLeaseID {
+            return .recoveryBlocksAction(displayActionBusyMessage)
+        }
         // Disconnect preparation, consent and recovery exclude other display changes.
         if disconnectAutomationPaused || disconnectInspectionFailure != nil ||
             disconnectLease != nil || disconnectStatus?.resolved == false {
@@ -1297,7 +1478,9 @@ final class AppModel: ObservableObject {
               display.bounds.width > 0, display.bounds.height > 0 else {
             return .unavailable("Wake this display to hide it.")
         }
-        if isRemovedDisplay(uuid) {
+        let hiddenBlackouts = projectedBlackouts ?? Set(blackoutHiddenDisplays.keys)
+        let hiddenRemovals = projectedRemovals ?? Set(unresolvedHandoffRemovals.map { $0.target.uuid.lowercased() })
+        if hiddenRemovals.contains(uuid.lowercased()) {
             return .unavailable("PanelCtl removed this display from the desktop. Show it first.")
         }
         let verifiedSource = journalVerifiedHiddenMirrorSources.contains { $0.id == display.id }
@@ -1308,7 +1491,9 @@ final class AppModel: ObservableObject {
             return .unavailable("macOS is mirroring this display. Turn off mirroring in System Settings \u{2192} Displays first.")
         }
         let anotherStaysVisible = activeDisplays.contains { other in
-            other.id != display.id && !other.asleep && !isRemovedDisplay(other.uuid) && !isBlackoutHidden(other.uuid)
+            guard let otherUUID = other.uuid?.lowercased() else { return false }
+            return other.id != display.id && !other.asleep &&
+                !hiddenRemovals.contains(otherUUID) && !hiddenBlackouts.contains(otherUUID)
         }
         guard anotherStaysVisible else {
             return .unavailable("PanelCtl keeps at least one display visible, so it won\u{2019}t hide this one.")
@@ -1351,7 +1536,8 @@ final class AppModel: ObservableObject {
     /// Re-covers hidden displays after a display change. A hidden display
     /// macOS now mirrors is shown unless it is a verified PanelCtl removal source.
     /// Once no other non-removed display is connected, every hidden display is shown.
-    private func reconcileHiddenDisplays() {
+    @discardableResult
+    private func reconcileHiddenDisplays() -> Bool {
         var shown: [String: String] = [:]
         if !blackoutHiddenDisplays.isEmpty, !displayLifecycleTransitioning {
             for (id, key) in connectedHiddenDisplays
@@ -1379,26 +1565,72 @@ final class AppModel: ObservableObject {
             )
         }
         coverHiddenDisplays()
-        if !shown.isEmpty { hiddenDisplaysChanged() }
+        guard !shown.isEmpty else { return false }
+        hiddenDisplaysChanged()
+        return true
     }
 
     /// Automation restarts without the hidden displays and counts idle time anew.
     private func hiddenDisplaysChanged() {
         lastHideOrShowFinished = .now
         manualActivityDate = now()
-        reconcileProtection(restartWatcher: true)
+        if !protectionQuiescencePending { reconcileProtection(restartWatcher: true) }
         onStatusChange?()
+    }
+
+    private func reconcileDeferredActionHiddenDisplays() -> Bool {
+        guard deferredActionHiddenDisplayReconciliation,
+              runningDisplayAction == nil, !displayLifecycleTransitioning else { return false }
+        deferredActionHiddenDisplayReconciliation = false
+        return reconcileHiddenDisplays()
+    }
+
+    private func finishDisplayActionLease() {
+        let recoveryReconciliationDeferred = deferredActionRecoveryReconciliation
+        deferredActionRecoveryReconciliation = false
+        if recoveryReconciliationDeferred {
+            let recoveryUnresolved = handoffStatus?.hasUnresolvedJournal == true || handoffInspectionFailure != nil
+            if recoveryUnresolved {
+                if hideOperation.isBusy {
+                    deferredActionRecoveryReconciliation = true
+                } else {
+                    quiesceForExternalRecovery()
+                }
+                _ = reconcileDeferredActionHiddenDisplays()
+                lastDisplayActionFinished = .now
+                return
+            }
+            let hiddenDisplaysReconciled = reconcileDeferredActionHiddenDisplays()
+            if !hiddenDisplaysReconciled, hideOperation == .idle {
+                rearmProtectionAfterDisplayRecovery()
+            }
+            lastDisplayActionFinished = .now
+            return
+        }
+        // Helpers stayed stopped across steps; reconcile automation once for the final state.
+        if !reconcileDeferredActionHiddenDisplays(), !protectionQuiescencePending {
+            reconcileProtection()
+        }
+        lastDisplayActionFinished = .now
     }
 
     private func blackOut(
         targetUUID: String,
         manualAction: DisplayAction? = nil,
+        manualActionStepIndex: Int? = nil,
+        actionLeaseID: UUID? = nil,
         completion: ((DisplayOperationResult) -> Void)?
     ) {
+        guard runningDisplayAction == nil || runningDisplayAction?.id == actionLeaseID else {
+            refuse(.hide, targetUUID: targetUUID, error: DisplayHideError.recoveryBlocksAction(displayActionBusyMessage), completion: completion)
+            return
+        }
         // Menu and Settings actions may arrive before a topology notification.
-        displays = displayProvider()
-        refreshHandoffStatus()
-        if let manualAction, let reason = manualActionValidationFailure(manualAction) {
+        if actionLeaseID == nil {
+            displays = displayProvider()
+            refreshHandoffStatus()
+        }
+        if let manualAction, let reason = manualActionValidationFailure(manualAction, stepIndex: manualActionStepIndex) {
             refuse(.hide, targetUUID: targetUUID, error: DisplayHideError.identityChanged(reason), completion: completion)
             return
         }
@@ -1409,12 +1641,13 @@ final class AppModel: ObservableObject {
             ), completion: completion)
             return
         }
-        if let refusal = blackoutReadiness(for: display) {
+        if let refusal = blackoutReadiness(for: display, actionLeaseID: actionLeaseID) {
             refuse(.hide, targetUUID: targetUUID, error: refusal, completion: completion)
             return
         }
         let identity = DisplayIdentitySnapshot(display)
-        if journalVerifiedHiddenMirrorSources.contains(where: { $0.id == display.id }),
+        if actionLeaseID == nil,
+           journalVerifiedHiddenMirrorSources.contains(where: { $0.id == display.id }),
            protectionCoordinator.hasManagedProcess || protectionQuiescencePending || hiddenMirrorOverlayPolicyEligible {
             hideOperation = .hiding(targetUUID)
             onStatusChange?()
@@ -1435,7 +1668,7 @@ final class AppModel: ObservableObject {
                     self.displays = self.displayProvider()
                     self.refreshHandoffStatus()
                     self.hideOperation = .idle
-                    if let manualAction, let reason = self.manualActionValidationFailure(manualAction) {
+                    if let manualAction, let reason = self.manualActionValidationFailure(manualAction, stepIndex: manualActionStepIndex) {
                         self.reconcileProtection()
                         self.refuse(.hide, targetUUID: targetUUID, error: DisplayHideError.identityChanged(reason), completion: completion)
                         return
@@ -1589,8 +1822,11 @@ final class AppModel: ObservableObject {
     )
 
     /// Why Show must wait, apart from the hidden display's own state.
-    private var showWait: DisplayHideError? {
+    private func showWait(actionLeaseID: UUID? = nil) -> DisplayHideError? {
         if hideOperation.isBusy { return .actionInProgress }
+        if runningDisplayAction != nil, runningDisplayAction?.id != actionLeaseID {
+            return .recoveryBlocksAction(displayActionBusyMessage)
+        }
         if disconnectAutomationPaused || disconnectInspectionFailure != nil {
             return .recoveryBlocksAction("Full disconnect is pausing automation or awaiting verified recovery.")
         }
@@ -1611,7 +1847,7 @@ final class AppModel: ObservableObject {
             guard let uuid = tile.uuid, let removal = handoffStatus?.removal(for: uuid) else { return }
             guard removal.canShow || canAttemptGuardedRecoveryShow(removal) else { return }
             tile.action = .show
-            tile.actionBlocker = showWait?.localizedDescription
+            tile.actionBlocker = showWait()?.localizedDescription
         case .on, .blackedOut, .asleep, .mirrored, .unavailable:
             guard let display = tile.display else { return }
             tile.action = .hide
@@ -1909,6 +2145,9 @@ final class AppModel: ObservableObject {
               let uuid = request.targetUUID, UUID(uuidString: uuid) != nil else {
             return response(.refused, "Hide, Show and Toggle Hide need --display with a display UUID.")
         }
+        if runningDisplayAction != nil {
+            return response(.busy, displayActionBusyMessage)
+        }
         guard !hideOperation.isBusy else {
             return response(.busy, DisplayHideError.actionInProgress.localizedDescription)
         }
@@ -1916,6 +2155,9 @@ final class AppModel: ObservableObject {
         // didn't see; a second Toggle Hide would undo the first.
         if let finished = lastHideOrShowFinished, receivedAt < finished {
             return response(.busy, "Another Hide or Show finished while this request waited. Check the display, then try again.")
+        }
+        if let finished = lastDisplayActionFinished, receivedAt < finished {
+            return response(.busy, "A named Action finished while this request waited. Check the displays, then try again.")
         }
         refreshDisplays()
         guard handoffStatus?.state != .busy else {
@@ -1993,116 +2235,428 @@ final class AppModel: ObservableObject {
         receivedAt: ContinuousClock.Instant = .now,
         completion: ((AppControlResponse) -> Void)? = nil
     ) {
-        func respond(_ outcome: AppControlOutcome, _ summary: String,
-                     detail: String? = nil, targetUUID: String? = nil) {
-            let ok = outcome == .done || outcome == .noOp
-            let response = AppControlResponse(
-                ok: ok, running: true, enabled: automationPreferences.isEnabled,
-                state: runtimeState.controlIdentifier, summary: summary,
-                detail: detail, error: ok ? nil : summary, outcome: outcome,
-                displays: targetUUID.map { target in
-                    controlDisplayStatuses.filter { $0.targetUUID.caseInsensitiveCompare(target) == .orderedSame }
-                }
-            )
-            if !runningDisplayActionIDs.contains(id) {
-                displayActionResults[id] = response
+        var acquiredActionLease = false
+        func refuse(_ outcome: AppControlOutcome, _ message: String,
+                    for action: DisplayAction? = nil, atStep requestedStep: Int = 0) {
+            if acquiredActionLease, runningDisplayAction?.id == id {
+                runningDisplayAction = nil
+                runningDisplayActionIDs.remove(id)
+                runningActionInterrupted = false
+                acquiredActionLease = false
+                finishDisplayActionLease()
             }
+            let targetUUIDs = action?.steps.compactMap { $0.target?.uuid } ?? []
+            let isMultiStepAction = (action?.steps.count ?? 1) > 1
+            let stepResults = action?.steps.enumerated().compactMap { offset, step -> AppControlActionStepResult? in
+                guard let uuid = step.target?.uuid else { return nil }
+                return AppControlActionStepResult(
+                    index: offset + 1, targetUUID: uuid, effect: step.effect.rawValue,
+                    outcome: offset == requestedStep ? outcome : .notRun,
+                    desktopSummary: offset == requestedStep
+                        ? (isMultiStepAction ? Self.boundedActionStepText(message) : Self.bounded(message))
+                        : "Not run."
+                )
+            }
+            let response = AppControlResponse(
+                ok: false, running: true, enabled: automationPreferences.isEnabled,
+                state: runtimeState.controlIdentifier, summary: Self.bounded(message), error: Self.bounded(message),
+                outcome: outcome,
+                displays: Self.actionDisplayStatuses(
+                    controlDisplayStatuses, targetUUIDs: targetUUIDs,
+                    includeInputEvidence: action?.steps.count == 1
+                ),
+                steps: stepResults
+            )
+            if runningDisplayAction?.id != id { displayActionResults[id] = response }
             onStatusChange?()
             completion?(response)
         }
 
         guard let action = displayActions.actions.first(where: { $0.id == id }) else {
-            respond(.refused, "No saved display action has ID \(id.uuidString). Edit Actions in Settings → Automations.")
+            refuse(.refused, "No saved display action has ID \(id.uuidString). Edit Actions in Settings → Automations.")
             return
         }
-        if hideOperation.isBusy || handoffStatus?.state == .busy {
-            respond(.busy, DisplayHideError.actionInProgress.localizedDescription, targetUUID: action.target?.uuid)
+        if runningDisplayAction != nil || hideOperation.isBusy || handoffStatus?.state == .busy {
+            refuse(.busy, displayActionBusyMessage, for: action)
             return
         }
         if let finished = lastHideOrShowFinished, receivedAt < finished {
-            respond(.busy, "Another Hide or Show finished while this request waited. Check the display, then try again.", targetUUID: action.target?.uuid)
+            refuse(.busy, "Another display operation finished while this request waited. Check the displays, then try again.", for: action)
             return
         }
-        refreshDisplays()
-        guard let currentAction = displayActions.actions.first(where: { $0.id == id }),
-              currentAction.target == action.target, currentAction.effect == action.effect,
-              currentAction.reviewedRemoval == action.reviewedRemoval else {
-            respond(.refused, "This action changed before it could run. Review it in Settings → Automations, then try again.", targetUUID: action.target?.uuid)
-            return
-        }
-        if let blocker = displayActionRunBlocker(for: action) {
-            let outcome: AppControlOutcome = hideOperation.isBusy || handoffStatus?.state == .busy ? .busy
-                : blocker.contains("recovery") || blocker.contains("Recovery") ? .recoveryNeeded : .refused
-            respond(outcome, blocker, targetUUID: action.target?.uuid)
-            return
-        }
-        guard let target = action.target else {
-            respond(.refused, DisplayActionValidationError.missingTarget.localizedDescription)
-            return
-        }
-
-        let alreadyAtDesiredState: Bool
-        switch action.effect {
-        case .blackOut: alreadyAtDesiredState = isBlackoutHidden(target.uuid)
-        case .removeFromDesktop: alreadyAtDesiredState = isVerifiedRemovedDisplay(target.uuid)
-        case .show: alreadyAtDesiredState = !isBlackoutHidden(target.uuid) && !isRemovedDisplay(target.uuid)
-        }
-        if alreadyAtDesiredState {
-            let summary: String
-            switch action.effect {
-            case .blackOut: summary = "\(DisplayActionPresentation.displayName(for: target, displays: displays)) is already blacked out."
-            case .removeFromDesktop: summary = "\(DisplayActionPresentation.displayName(for: target, displays: displays)) is already removed from the desktop."
-            case .show: summary = "\(DisplayActionPresentation.displayName(for: target, displays: displays)) isn’t hidden."
-            }
-            respond(.noOp, summary, targetUUID: target.uuid)
+        if let actionFinished = lastDisplayActionFinished, receivedAt < actionFinished {
+            refuse(.busy, "A named Action finished while this request waited. Check the displays, then try again.", for: action)
             return
         }
 
         runningDisplayActionIDs.insert(id)
+        runningActionInterrupted = false
+        runningDisplayAction = AppControlRunningAction(id: id, name: action.name, currentStep: 1, totalSteps: action.steps.count)
+        acquiredActionLease = true
         onStatusChange?()
-        let finished: (DisplayOperationResult) -> Void = { [weak self] result in
-            guard let self else { return }
-            self.runningDisplayActionIDs.remove(id)
-            let outcome: AppControlOutcome
-            if result.succeeded {
-                outcome = result.inputOutcome?.isPartial == true ? .partial : .done
-            } else if self.displayRecoveryProblem != nil {
-                outcome = .recoveryNeeded
-            } else {
-                outcome = result.inputOutcome == nil ? .refused : .failed
+
+        // Read one fresh topology and journal snapshot without reconciling helpers.
+        preflightingDisplayAction = true
+        displays = displayProvider()
+        refreshHandoffStatus()
+        preflightingDisplayAction = false
+        guard let currentAction = displayActions.actions.first(where: { $0.id == id }),
+              currentAction == action else {
+            refuse(.refused, "This action changed before it could run. Review it in Settings → Automations, then try again.", for: action)
+            return
+        }
+        guard (1...8).contains(action.steps.count) else {
+            refuse(.refused, DisplayActionValidationError.invalidStepCount.localizedDescription, for: action)
+            return
+        }
+
+        var projectedBlackouts = Set(blackoutHiddenDisplays.keys)
+        var projectedRemovals = Set(handoffStatus?.removals.filter(\.isUnresolved).map { $0.target.uuid.lowercased() } ?? [])
+        var projectedSources = Dictionary(uniqueKeysWithValues: (handoffStatus?.removals.filter(\.isUnresolved) ?? []).map {
+            ($0.target.uuid.lowercased(), $0.source.uuid.lowercased())
+        })
+        var noOpSteps = Set<Int>()
+        for (offset, step) in action.steps.enumerated() {
+            guard let uuid = step.target?.uuid else {
+                refuse(.refused, "Step \(offset + 1): Choose a display.", for: action, atStep: offset)
+                return
             }
-            let response = AppControlResponse(
-                ok: outcome == .done, running: true, enabled: self.automationPreferences.isEnabled,
-                state: self.runtimeState.controlIdentifier, summary: result.message,
-                detail: result.inputMessage, error: outcome == .done ? nil : result.inputMessage ?? result.message,
-                outcome: outcome,
-                displays: self.controlDisplayStatuses.filter {
-                    $0.targetUUID.caseInsensitiveCompare(target.uuid) == .orderedSame
-                }
+            if let blocker = displayActionStepRunBlocker(
+                action: action, step: step, index: offset,
+                projectedBlackouts: projectedBlackouts,
+                projectedRemovals: projectedRemovals,
+                projectedSources: projectedSources,
+                actionLeaseID: id
+            ) {
+                let outcome: AppControlOutcome = hideOperation.isBusy || handoffStatus?.state == .busy ? .busy
+                    : blocker.localizedCaseInsensitiveContains("recovery") || blocker.localizedCaseInsensitiveContains("journal") ? .recoveryNeeded : .refused
+                refuse(outcome, blocker, for: action, atStep: offset)
+                return
+            }
+            let key = uuid.lowercased()
+            let isNoOp: Bool
+            switch step.effect {
+            case .blackOut: isNoOp = projectedBlackouts.contains(key)
+            case .removeFromDesktop: isNoOp = projectedRemovals.contains(key) && isVerifiedRemovedDisplay(uuid)
+            case .show: isNoOp = !projectedBlackouts.contains(key) && !projectedRemovals.contains(key)
+            }
+            if isNoOp { noOpSteps.insert(offset) }
+            switch step.effect {
+            case .blackOut:
+                projectedBlackouts.insert(key)
+            case .removeFromDesktop:
+                projectedRemovals.insert(key)
+                if let source = step.reviewedRemoval?.sourceUUID { projectedSources[key] = source.lowercased() }
+            case .show:
+                projectedBlackouts.remove(key)
+                projectedRemovals.remove(key)
+                projectedSources.removeValue(forKey: key)
+            }
+        }
+
+        let targetUUIDs = action.steps.compactMap { $0.target?.uuid }
+        let wouldWrite = noOpSteps.count != action.steps.count
+        guard !runningActionInterrupted, !displayLifecycleTransitioning else {
+            refuse(.refused, "Displays are sleeping or changing; the run was interrupted.", for: action)
+            return
+        }
+
+        var stepResults: [AppControlActionStepResult] = []
+        var changedAnyDisplay = false
+        var stoppingOutcome: AppControlOutcome?
+        var stoppingAtIndex: Int?
+
+        func finishRun() {
+            guard self.runningDisplayAction?.id == id else { return }
+            let aggregate: AppControlOutcome
+            if stepResults.contains(where: { $0.outcome == .recoveryNeeded }) {
+                aggregate = .recoveryNeeded
+            } else if changedAnyDisplay && stepResults.count < action.steps.count ||
+                        (changedAnyDisplay && stepResults.contains(where: { ![.done, .noOp].contains($0.outcome) })) {
+                aggregate = .partial
+            } else if stepResults.count == action.steps.count && stepResults.allSatisfy({ $0.outcome == .noOp }) {
+                aggregate = .noOp
+            } else if stepResults.count == action.steps.count && stepResults.allSatisfy({ [.done, .noOp].contains($0.outcome) }) {
+                aggregate = stepResults.contains(where: { $0.outcome == .done }) ? .done : .noOp
+            } else {
+                aggregate = stoppingOutcome ?? .failed
+            }
+            let summary: String
+            if action.steps.count == 1, let onlyStep = stepResults.first,
+               [.done, .partial, .noOp].contains(aggregate) {
+                summary = onlyStep.desktopSummary
+            } else if let stoppingAtIndex {
+                let stopped = stepResults.first(where: { $0.index == stoppingAtIndex })
+                summary = "Action stopped at Step \(stoppingAtIndex) of \(action.steps.count): \(stopped?.desktopSummary ?? "the step did not complete")"
+            } else {
+                summary = aggregate == .done ? "Action completed; steps ran in order." :
+                    aggregate == .noOp ? "Action is already at the requested state." : "Action ended with \(aggregate.rawValue)."
+            }
+            let detailText = stepResults.compactMap { step in
+                step.inputDetail.map { "Step \(step.index): \($0)" }
+            }.joined(separator: "\n")
+            let detail = detailText.isEmpty ? nil : detailText
+            let matchingStatuses = Self.actionDisplayStatuses(
+                self.controlDisplayStatuses, targetUUIDs: targetUUIDs,
+                includeInputEvidence: action.steps.count == 1
             )
+            let response = AppControlResponse(
+                ok: aggregate == .done || aggregate == .noOp,
+                running: true, enabled: self.automationPreferences.isEnabled,
+                state: self.runtimeState.controlIdentifier, summary: Self.bounded(summary),
+                detail: detail.map(Self.bounded),
+                error: aggregate == .done || aggregate == .noOp ? nil : Self.bounded(detail ?? summary),
+                outcome: aggregate, displays: matchingStatuses, steps: stepResults,
+                runningAction: nil
+            )
+            self.runningDisplayAction = nil
+            self.runningActionInterrupted = false
+            acquiredActionLease = false
+            self.runningDisplayActionIDs.remove(id)
+            self.finishDisplayActionLease()
             self.displayActionResults[id] = response
             self.onStatusChange?()
             completion?(response)
         }
-        switch action.effect {
-        case .blackOut:
-            hide(targetUUID: target.uuid, style: .blackOut, manualAction: action) { finished($0) }
-        case .removeFromDesktop:
-            hide(targetUUID: target.uuid, style: .removeFromDesktop, manualAction: action) { finished($0) }
-        case .show:
-            show(targetUUID: target.uuid) { finished($0) }
+
+        func appendNotRun(from index: Int) {
+            for offset in index..<action.steps.count {
+                guard let uuid = action.steps[offset].target?.uuid else { continue }
+                stepResults.append(AppControlActionStepResult(
+                    index: offset + 1, targetUUID: uuid, effect: action.steps[offset].effect.rawValue,
+                    outcome: .notRun, desktopSummary: "Not run."
+                ))
+            }
+        }
+
+        func runStep(_ offset: Int) {
+            guard offset < action.steps.count else { finishRun(); return }
+            guard self.runningDisplayAction?.id == id else { return }
+            self.runningDisplayAction = AppControlRunningAction(
+                id: id, name: action.name, currentStep: offset + 1, totalSteps: action.steps.count
+            )
+            self.onStatusChange?()
+            if self.runningActionInterrupted || self.displayLifecycleTransitioning {
+                let uuid = action.steps[offset].target?.uuid ?? ""
+                let message = "Step \(offset + 1): Displays are sleeping or changing; the run was interrupted."
+                stepResults.append(AppControlActionStepResult(index: offset + 1, targetUUID: uuid,
+                    effect: action.steps[offset].effect.rawValue, outcome: .refused,
+                    desktopSummary: message))
+                stoppingOutcome = .refused
+                stoppingAtIndex = offset + 1
+                appendNotRun(from: offset + 1)
+                finishRun()
+                return
+            }
+
+            // Each step begins with one fresh display and recovery observation.
+            self.displays = self.displayProvider()
+            self.refreshHandoffStatus()
+            let step = action.steps[offset]
+            guard let uuid = step.target?.uuid else {
+                stoppingOutcome = .refused
+                stoppingAtIndex = offset + 1
+                appendNotRun(from: offset)
+                finishRun()
+                return
+            }
+            if let blocker = self.displayActionStepRunBlocker(
+                action: action, step: step, index: offset, actionLeaseID: id
+            ) {
+                let outcome: AppControlOutcome = self.displayLifecycleTransitioning ? .refused
+                    : blocker.localizedCaseInsensitiveContains("recovery") ? .recoveryNeeded : .refused
+                stepResults.append(AppControlActionStepResult(index: offset + 1, targetUUID: uuid,
+                    effect: step.effect.rawValue, outcome: outcome,
+                    desktopSummary: action.steps.count > 1 ? Self.boundedActionStepText(blocker) : Self.bounded(blocker)))
+                stoppingOutcome = outcome
+                stoppingAtIndex = offset + 1
+                appendNotRun(from: offset + 1)
+                finishRun()
+                return
+            }
+            let alreadyAtDesiredState: Bool
+            switch step.effect {
+            case .blackOut: alreadyAtDesiredState = self.isBlackoutHidden(uuid)
+            case .removeFromDesktop: alreadyAtDesiredState = self.isVerifiedRemovedDisplay(uuid)
+            case .show: alreadyAtDesiredState = !self.isBlackoutHidden(uuid) && !self.isRemovedDisplay(uuid)
+            }
+            if alreadyAtDesiredState {
+                let name = step.target.map { DisplayActionPresentation.displayName(for: $0, displays: self.displays) } ?? uuid
+                let summary: String
+                switch step.effect {
+                case .blackOut: summary = "\(name) is already blacked out."
+                case .removeFromDesktop: summary = "\(name) is already removed from the desktop."
+                case .show: summary = "\(name) isn’t hidden."
+                }
+                stepResults.append(AppControlActionStepResult(index: offset + 1, targetUUID: uuid,
+                    effect: step.effect.rawValue, outcome: .noOp,
+                    desktopSummary: action.steps.count > 1 ? Self.boundedActionStepText(summary) : Self.bounded(summary)))
+                runStep(offset + 1)
+                return
+            }
+            guard wouldWrite else {
+                // Preflight found nothing to change, so helpers were never quiesced; don't write now.
+                let message = "Step \(offset + 1): Display state changed after the Action was checked. Review the displays, then run it again."
+                stepResults.append(AppControlActionStepResult(index: offset + 1, targetUUID: uuid,
+                    effect: step.effect.rawValue, outcome: .refused,
+                    desktopSummary: action.steps.count > 1 ? Self.boundedActionStepText(message) : Self.bounded(message)))
+                stoppingOutcome = .refused
+                stoppingAtIndex = offset + 1
+                appendNotRun(from: offset + 1)
+                finishRun()
+                return
+            }
+
+            let complete: (DisplayOperationResult) -> Void = { result in
+                let resultOutcome: AppControlOutcome
+                if result.succeeded {
+                    resultOutcome = result.inputOutcome?.isPartial == true ? .partial : .done
+                    changedAnyDisplay = true
+                } else if self.displayRecoveryProblem != nil {
+                    resultOutcome = .recoveryNeeded
+                } else {
+                    resultOutcome = result.inputOutcome == nil ? .refused : .failed
+                }
+                let desktop = action.steps.count > 1
+                    ? Self.boundedActionStepText(result.message)
+                    : Self.bounded(result.message)
+                let input = result.inputMessage.map {
+                    action.steps.count > 1 ? Self.boundedActionStepText($0) : Self.bounded($0)
+                }
+                stepResults.append(AppControlActionStepResult(
+                    index: offset + 1, targetUUID: uuid, effect: step.effect.rawValue,
+                    outcome: resultOutcome, desktopSummary: Self.bounded(desktop),
+                    inputOutcome: result.inputOutcome?.state, inputDetail: input
+                ))
+                if resultOutcome == .done || resultOutcome == .noOp {
+                    if self.runningActionInterrupted || self.displayLifecycleTransitioning {
+                        stoppingOutcome = .partial
+                        stoppingAtIndex = offset + 1
+                        appendNotRun(from: offset + 1)
+                        finishRun()
+                    } else {
+                        runStep(offset + 1)
+                    }
+                } else {
+                    stoppingOutcome = resultOutcome
+                    stoppingAtIndex = offset + 1
+                    appendNotRun(from: offset + 1)
+                    finishRun()
+                }
+            }
+            switch step.effect {
+            case .blackOut:
+                self.hide(targetUUID: uuid, style: .blackOut, manualAction: action,
+                          manualActionStepIndex: offset, actionLeaseID: id, completion: complete)
+            case .removeFromDesktop:
+                self.hide(targetUUID: uuid, style: .removeFromDesktop, manualAction: action,
+                          manualActionStepIndex: offset, actionLeaseID: id, completion: complete)
+            case .show:
+                self.show(targetUUID: uuid, actionLeaseID: id, completion: complete)
+            }
+        }
+
+        if wouldWrite {
+            self.protectionQuiescencePending = true
+            self.onStatusChange?()
+            self.stopManagedProtection { succeeded, message in
+                Task { @MainActor in
+                    self.protectionQuiescencePending = false
+                    guard self.runningDisplayAction?.id == id else { return }
+                    guard succeeded else {
+                        let failure = message ?? "Automation cleanup could not be verified."
+                        self.protectionQuiescenceFailure = failure
+                        let first = action.steps[0]
+                        let uuid = first.target?.uuid ?? ""
+                        stepResults.append(AppControlActionStepResult(
+                            index: 1, targetUUID: uuid, effect: first.effect.rawValue,
+                            outcome: .failed,
+                            desktopSummary: Self.bounded("Automation cleanup needs attention: \(failure)")
+                        ))
+                        stoppingOutcome = .failed
+                        stoppingAtIndex = 1
+                        appendNotRun(from: 1)
+                        finishRun()
+                        return
+                    }
+                    self.protectionQuiescenceFailure = nil
+                    runStep(0)
+                }
+            }
+        } else {
+            runStep(0)
         }
     }
 
-    func makeHideRequest(targetUUID: String) throws -> DisplayHideRequest {
+    private static func bounded(_ text: String) -> String { bounded(text, byteLimit: 120) }
+
+    private static func boundedActionStepText(_ text: String) -> String { bounded(text, byteLimit: 64) }
+
+    private static func bounded(_ text: String, byteLimit: Int) -> String {
+        let safeText = String(text.unicodeScalars.map { scalar -> String in
+            if CharacterSet.controlCharacters.contains(scalar) || scalar == "\\" || scalar == "\"" {
+                return " "
+            }
+            return String(scalar)
+        }.joined())
+        guard safeText.utf8.count > byteLimit else { return safeText }
+        var result = ""
+        for scalar in safeText.unicodeScalars {
+            guard result.utf8.count + scalar.utf8.count + 3 <= byteLimit else { break }
+            result.unicodeScalars.append(scalar)
+        }
+        return result + "…"
+    }
+
+    private static func actionDisplayStatuses(
+        _ statuses: [AppControlDisplayStatus],
+        targetUUIDs: [String],
+        includeInputEvidence: Bool
+    ) -> [AppControlDisplayStatus] {
+        targetUUIDs.map { targetUUID in
+            if let status = statuses.first(where: {
+                $0.targetUUID.caseInsensitiveCompare(targetUUID) == .orderedSame
+            }) {
+                return AppControlDisplayStatus(
+                    targetUUID: status.targetUUID,
+                    observedState: status.observedState,
+                    operation: status.operation,
+                    recoveryNeeded: status.recoveryNeeded,
+                    lastInputOutcome: includeInputEvidence ? status.lastInputOutcome.map(Self.boundedInputOutcome) : nil
+                )
+            }
+            return AppControlDisplayStatus(
+                targetUUID: targetUUID,
+                observedState: "unavailable",
+                operation: "idle",
+                recoveryNeeded: false,
+                lastInputOutcome: nil
+            )
+        }
+    }
+
+    private static func boundedInputOutcome(_ outcome: DisplayInputOutcome) -> DisplayInputOutcome {
+        DisplayInputOutcome(
+            state: outcome.state,
+            requestedInput: outcome.requestedInput,
+            observedInput: outcome.observedInput,
+            detail: outcome.detail.map(Self.bounded),
+            recoveryCommand: outcome.recoveryCommand.map(Self.bounded)
+        )
+    }
+
+    func makeHideRequest(targetUUID: String, actionLeaseID: UUID? = nil) throws -> DisplayHideRequest {
         guard !hideOperation.isBusy else { throw DisplayHideError.actionInProgress }
+        guard runningDisplayAction == nil || runningDisplayAction?.id == actionLeaseID else {
+            throw DisplayHideError.actionInProgress
+        }
         guard experimentalFeaturesEnabled else {
             throw DisplayHideError.unavailable("Turn on Experimental features in General to remove a display from the desktop.")
         }
         guard let configuration = hidePreferences[targetUUID] else {
             throw DisplayHideError.unavailable("Turn on Remove from desktop for this display first.")
         }
-        if let refusal = hideReadiness(for: configuration) { throw refusal }
+        if let refusal = hideReadiness(for: configuration, actionLeaseID: actionLeaseID) { throw refusal }
         guard let source = configuration.source else {
             throw DisplayHideError.unavailable("Choose a display to mirror onto.")
         }
@@ -2115,8 +2669,14 @@ final class AppModel: ObservableObject {
         targetUUID: String,
         style: DisplayHideStyle = .configured,
         manualAction: DisplayAction? = nil,
+        manualActionStepIndex: Int? = nil,
+        actionLeaseID: UUID? = nil,
         completion: ((DisplayOperationResult) -> Void)? = nil
     ) {
+        guard runningDisplayAction == nil || runningDisplayAction?.id == actionLeaseID else {
+            refuse(.hide, targetUUID: targetUUID, error: DisplayHideError.recoveryBlocksAction(displayActionBusyMessage), completion: completion)
+            return
+        }
         cancelPendingSleepHideResume()
         if isBlackoutHidden(targetUUID) {
             refuse(.hide, targetUUID: targetUUID, error: DisplayHideError.unavailable(
@@ -2130,7 +2690,9 @@ final class AppModel: ObservableObject {
                     "This display is disconnected or changed. Reconnect that exact display."
                 ), completion: completion)
             } else {
-                blackOut(targetUUID: targetUUID, manualAction: manualAction, completion: completion)
+                blackOut(targetUUID: targetUUID, manualAction: manualAction,
+                         manualActionStepIndex: manualActionStepIndex, actionLeaseID: actionLeaseID,
+                         completion: completion)
             }
             return
         }
@@ -2144,12 +2706,14 @@ final class AppModel: ObservableObject {
             removesFromDesktop = true
         }
         guard removesFromDesktop else {
-            blackOut(targetUUID: targetUUID, manualAction: manualAction, completion: completion)
+            blackOut(targetUUID: targetUUID, manualAction: manualAction,
+                     manualActionStepIndex: manualActionStepIndex, actionLeaseID: actionLeaseID,
+                     completion: completion)
             return
         }
         let request: DisplayHideRequest
         do {
-            request = try makeHideRequest(targetUUID: targetUUID)
+            request = try makeHideRequest(targetUUID: targetUUID, actionLeaseID: actionLeaseID)
         } catch {
             refuse(.hide, targetUUID: targetUUID, error: error, completion: completion)
             return
@@ -2158,22 +2722,30 @@ final class AppModel: ObservableObject {
         hideOperation = .hiding(request.target.uuid)
         manualActivityDate = now()
         onStatusChange?()
-        stopManagedProtection { [weak self] succeeded, message in
+        let finish: (Bool, String?) -> Void = { [weak self] succeeded, message in
             Task { @MainActor in
                 self?.finishHideAfterProtectionQuiescence(
                     request,
                     manualAction: manualAction,
+                    manualActionStepIndex: manualActionStepIndex,
+                    actionLeaseID: actionLeaseID,
                     cleanupSucceeded: succeeded,
                     cleanupFailure: message,
                     completion: completion
                 )
             }
         }
+        if actionLeaseID != nil { finish(true, nil) }
+        else { stopManagedProtection(completion: finish) }
     }
 
-    func makeShowRequest(targetUUID: String? = nil) throws -> DisplayShowRequest {
-        if let showWait { throw showWait }
-        refreshHandoffStatus()
+    func makeShowRequest(
+        targetUUID: String? = nil,
+        actionLeaseID: UUID? = nil,
+        refreshStatus: Bool = true
+    ) throws -> DisplayShowRequest {
+        if let showWait = showWait(actionLeaseID: actionLeaseID) { throw showWait }
+        if refreshStatus { refreshHandoffStatus() }
         guard handoffInspectionFailure == nil,
               let handoffStatus,
               handoffStatus.state == .hidden || handoffStatus.state == .recovery else {
@@ -2197,7 +2769,12 @@ final class AppModel: ObservableObject {
 
     /// Shows a hidden display right away. Refuses when the journal belongs to
     /// a different display, so a stale action never shows another one.
-    func show(targetUUID: String, completion: ((DisplayOperationResult) -> Void)? = nil) {
+    func show(targetUUID: String, actionLeaseID: UUID? = nil,
+              completion: ((DisplayOperationResult) -> Void)? = nil) {
+        guard runningDisplayAction == nil || runningDisplayAction?.id == actionLeaseID else {
+            refuse(.show, targetUUID: targetUUID, error: DisplayHideError.recoveryBlocksAction(displayActionBusyMessage), completion: completion)
+            return
+        }
         cancelPendingSleepHideResume()
         if isBlackoutHidden(targetUUID) {
             showBlackedOut(targetUUID: targetUUID, completion: completion)
@@ -2205,7 +2782,10 @@ final class AppModel: ObservableObject {
         }
         let request: DisplayShowRequest
         do {
-            request = try makeShowRequest(targetUUID: targetUUID)
+            request = try makeShowRequest(
+                targetUUID: targetUUID, actionLeaseID: actionLeaseID,
+                refreshStatus: actionLeaseID == nil
+            )
             guard request.targetUUID.caseInsensitiveCompare(targetUUID) == .orderedSame else {
                 throw DisplayHideError.recoveryBlocksAction("This display isn\u{2019}t hidden by PanelCtl.")
             }
@@ -2216,16 +2796,19 @@ final class AppModel: ObservableObject {
         displayResults[targetUUID.lowercased()] = nil
         hideOperation = .showing(targetUUID)
         onStatusChange?()
-        stopManagedProtection { [weak self] succeeded, message in
+        let finish: (Bool, String?) -> Void = { [weak self] succeeded, message in
             Task { @MainActor in
                 self?.finishShowAfterProtectionQuiescence(
                     request,
+                    actionLeaseID: actionLeaseID,
                     cleanupSucceeded: succeeded,
                     cleanupFailure: message,
                     completion: completion
                 )
             }
         }
+        if actionLeaseID != nil { finish(true, nil) }
+        else { stopManagedProtection(completion: finish) }
     }
 
     func beginDisplaySleepTransition() {
@@ -2234,7 +2817,7 @@ final class AppModel: ObservableObject {
         screensAwakeAfterSleep = false
         if !sleepLifecycleActive {
             sleepLifecycleActive = true
-            sleepHideResumeIntent = captureSleepHideResumeIntent()
+            sleepHideResumeIntent = runningDisplayAction == nil ? captureSleepHideResumeIntent() : nil
         }
         setDisplayLifecycleTransitioning(true)
     }
@@ -2276,16 +2859,22 @@ final class AppModel: ObservableObject {
     func setDisplayLifecycleTransitioning(_ transitioning: Bool) {
         guard displayLifecycleTransitioning != transitioning else { return }
         displayLifecycleTransitioning = transitioning
+        if transitioning, runningDisplayAction != nil { runningActionInterrupted = true }
         if handoffStatus?.hasUnresolvedJournal == true {
             if transitioning {
                 protectionRearmRequired = true
-                protectionCoordinator.disable()
+                if runningDisplayAction == nil { protectionCoordinator.disable() }
             } else {
                 reconcileProtection(restartWatcher: true)
             }
         }
         if !transitioning {
-            reconcileHiddenDisplays()
+            if runningDisplayAction == nil {
+                deferredActionHiddenDisplayReconciliation = false
+                reconcileHiddenDisplays()
+            } else {
+                deferredActionHiddenDisplayReconciliation = true
+            }
             if protectionRearmRequired, handoffStatus?.hasUnresolvedJournal != true,
                handoffInspectionFailure == nil, !protectionQuiescencePending,
                protectionQuiescenceFailure == nil {
@@ -2299,18 +2888,22 @@ final class AppModel: ObservableObject {
         let previous = handoffStatus
         let previousFailure = handoffInspectionFailure
         let wasUnresolved = previous?.hasUnresolvedJournal == true || previousFailure != nil
+        let actionRunActive = runningDisplayAction != nil || preflightingDisplayAction
         handoffInspectionFailure = nil
         handoffStatus = inspectHandoff()
         handoffInspectionFailure = handoffStatus?.inspectionFailure
         let isUnresolved = handoffStatus?.hasUnresolvedJournal == true || handoffInspectionFailure != nil
+        if preflightingDisplayAction, isUnresolved != wasUnresolved {
+            deferredActionRecoveryReconciliation = true
+        }
         let enteredHidden = handoffStatus?.state == .hidden && !wasUnresolved
         if enteredHidden {
             manualActivityDate = now()
             protectionRearmRequired = true
         }
-        if isUnresolved && !wasUnresolved && !hideOperation.isBusy {
+        if !actionRunActive && isUnresolved && !wasUnresolved && !hideOperation.isBusy {
             quiesceForExternalRecovery()
-        } else if !isUnresolved && wasUnresolved,
+        } else if !actionRunActive && !isUnresolved && wasUnresolved,
                   !protectionQuiescencePending,
                   protectionQuiescenceFailure == nil {
             if displayLifecycleTransitioning {
@@ -2321,7 +2914,7 @@ final class AppModel: ObservableObject {
         }
         if previous != handoffStatus || previousFailure != handoffInspectionFailure {
             onStatusChange?()
-            if !protectionQuiescencePending && isUnresolved {
+            if !actionRunActive && !protectionQuiescencePending && isUnresolved {
                 reconcileProtection()
             }
         }
@@ -2663,6 +3256,7 @@ final class AppModel: ObservableObject {
     }
 
     func setProtectionEnabled(_ enabled: Bool) {
+        guard runningDisplayAction == nil else { return }
         cancelSnooze()
         if preferences.isEnabled == enabled {
             reconcileProtection()
@@ -2672,6 +3266,7 @@ final class AppModel: ObservableObject {
     }
 
     func retryProtection() {
+        guard runningDisplayAction == nil else { return }
         if protectionQuiescenceFailure != nil {
             retryAutomationCleanup()
             return
@@ -2682,7 +3277,7 @@ final class AppModel: ObservableObject {
     }
 
     func retryAutomationCleanup() {
-        guard !protectionQuiescencePending, !hideOperation.isBusy else { return }
+        guard runningDisplayAction == nil, !protectionQuiescencePending, !hideOperation.isBusy else { return }
         protectionQuiescencePending = true
         onStatusChange?()
         protectionCoordinator.retryCleanup { [weak self] succeeded, message in
@@ -2702,6 +3297,7 @@ final class AppModel: ObservableObject {
     }
 
     func blackoutNow() throws {
+        guard runningDisplayAction == nil else { throw RecoveryError.unsafe(displayActionBusyMessage) }
         guard !disconnectAutomationPaused, disconnectInspectionFailure == nil else {
             throw RecoveryError.unsafe("Automation is paused during Full disconnect and verified recovery.")
         }
@@ -2722,6 +3318,7 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func restoreBlackout() throws -> Bool {
+        if runningDisplayAction != nil { return false }
         if disconnectAutomationPaused || disconnectInspectionFailure != nil { return false }
         if protectionPausedForDisplayRecovery && !hiddenMirrorOverlayPolicyEligible { return false }
         guard snoozedUntil == nil, automationPreferences.isEnabled,
@@ -2733,6 +3330,7 @@ final class AppModel: ObservableObject {
     }
 
     func sleepAllNow() throws {
+        guard runningDisplayAction == nil else { throw RecoveryError.unsafe(displayActionBusyMessage) }
         guard !disconnectAutomationPaused, disconnectInspectionFailure == nil else {
             throw RecoveryError.unsafe("Display actions are paused during Full disconnect and verified recovery.")
         }
@@ -2744,6 +3342,7 @@ final class AppModel: ObservableObject {
     }
 
     func snooze(for duration: TimeInterval) {
+        guard runningDisplayAction == nil else { return }
         guard duration.isFinite,
               duration > 0,
               duration <= Self.maximumSnoozeDuration else { return }
@@ -2767,6 +3366,7 @@ final class AppModel: ObservableObject {
     }
 
     func resumeProtection() {
+        guard runningDisplayAction == nil else { return }
         let wasSnoozed = defaults.object(forKey: Self.snoozedUntilKey) != nil
         cancelSnooze()
         guard preferences.isEnabled else { return }
@@ -2777,8 +3377,14 @@ final class AppModel: ObservableObject {
     }
 
     func refreshDisplays(restartWatcher: Bool = false) {
+        if restartWatcher, runningDisplayAction != nil { runningActionInterrupted = true }
         displays = displayProvider()
         refreshHandoffStatus()
+        if runningDisplayAction != nil {
+            runtimeState = aggregateRuntimeState
+            onStatusChange?()
+            return
+        }
         reconcileHiddenDisplays()
         reconcileProtection(restartWatcher: restartWatcher)
         runtimeState = aggregateRuntimeState
@@ -2994,6 +3600,7 @@ final class AppModel: ObservableObject {
     }
 
     private func reconcileProtection(restartWatcher: Bool = false) {
+        guard runningDisplayAction == nil else { return }
         var validations: [UUID: ProtectionRuleValidation] = [:]
         var arguments: [UUID: [String]] = [:]
         let hiddenUUIDs = Set(blackoutHiddenDisplays.keys)
@@ -3071,13 +3678,16 @@ final class AppModel: ObservableObject {
                 self.protectionQuiescenceFailure = succeeded
                     ? nil
                     : (message ?? "Automation cleanup could not be verified.")
-                if self.handoffStatus?.hasUnresolvedJournal != true,
-                   self.handoffInspectionFailure == nil,
-                   self.hideOperation == .idle,
-                   self.protectionQuiescenceFailure == nil {
-                    self.rearmProtectionAfterDisplayRecovery()
-                } else {
-                    self.reconcileProtection()
+                let hiddenDisplaysReconciled = self.reconcileDeferredActionHiddenDisplays()
+                if !hiddenDisplaysReconciled {
+                    if self.handoffStatus?.hasUnresolvedJournal != true,
+                       self.handoffInspectionFailure == nil,
+                       self.hideOperation == .idle,
+                       self.protectionQuiescenceFailure == nil {
+                        self.rearmProtectionAfterDisplayRecovery()
+                    } else {
+                        self.reconcileProtection()
+                    }
                 }
                 self.releaseDisconnectAutomationPauseIfSafe()
                 self.onStatusChange?()
@@ -3201,6 +3811,8 @@ final class AppModel: ObservableObject {
     private func finishHideAfterProtectionQuiescence(
         _ request: DisplayHideRequest,
         manualAction: DisplayAction? = nil,
+        manualActionStepIndex: Int? = nil,
+        actionLeaseID: UUID? = nil,
         cleanupSucceeded: Bool,
         cleanupFailure: String?,
         completion: ((DisplayOperationResult) -> Void)?
@@ -3226,11 +3838,11 @@ final class AppModel: ObservableObject {
         do {
             displays = displayProvider()
             refreshHandoffStatus()
-            if let manualAction, let reason = manualActionValidationFailure(manualAction) {
+            if let manualAction, let reason = manualActionValidationFailure(manualAction, stepIndex: manualActionStepIndex) {
                 throw DisplayHideError.identityChanged(reason)
             }
             guard let configuration = hidePreferences[request.target.uuid],
-                  hideReadiness(for: configuration, allowingCurrentOperation: true) == nil,
+                  hideReadiness(for: configuration, allowingCurrentOperation: true, actionLeaseID: actionLeaseID) == nil,
                   let source = configuration.source,
                   request == hideRequest(target: configuration.target, source: source, configuration: configuration) else {
                 throw DisplayHideError.identityChanged("The displays or Hide settings changed before Hide began. Try again.")
@@ -3263,6 +3875,7 @@ final class AppModel: ObservableObject {
 
     private func finishShowAfterProtectionQuiescence(
         _ request: DisplayShowRequest,
+        actionLeaseID: UUID? = nil,
         cleanupSucceeded: Bool,
         cleanupFailure: String?,
         completion: ((DisplayOperationResult) -> Void)?
@@ -3461,6 +4074,7 @@ final class AppModel: ObservableObject {
     // Private disconnect is a separate, manual operation, never a Hide style or
     // app-control command. Inspection and startup never run private recovery.
     private var disconnectEligibilityBlocker: String? {
+        if runningDisplayAction != nil { return displayActionBusyMessage }
         if !experimentalFeaturesEnabled { return "Turn on Experimental features in General first." }
         if let disconnectInspectionFailure {
             return "Disconnect recovery cannot be inspected; automation remains paused. Check `panelctl recovery status` and preserve \(disconnectJournalPath). (\(disconnectInspectionFailure))"
@@ -3493,6 +4107,7 @@ final class AppModel: ObservableObject {
     }
 
     func prepareDisconnect(_ uuid: String) {
+        guard runningDisplayAction == nil else { disconnectFailure = displayActionBusyMessage; return }
         disconnectRequest = nil
         disconnectConsentPending = false
         disconnectFailure = nil
@@ -3585,6 +4200,7 @@ final class AppModel: ObservableObject {
     }
 
     func confirmDisconnect() {
+        guard runningDisplayAction == nil else { disconnectFailure = displayActionBusyMessage; return }
         disconnectConsentPending = false
         guard let request = disconnectRequest else { return }
         disconnectRequest = nil // Never persist or reuse consent, even on refusal.
@@ -3606,6 +4222,7 @@ final class AppModel: ObservableObject {
     }
 
     func reconnectDisconnect(expectedJournalID: String? = nil) {
+        guard runningDisplayAction == nil else { disconnectFailure = displayActionBusyMessage; return }
         disconnectFailure = nil
         do {
             if let disconnectInspectionFailure {

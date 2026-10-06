@@ -23,6 +23,7 @@ struct AutomationSettingsView: View {
                     Text("Automation")
                     Text(model.statusSummary)
                 }
+                .disabled(model.runningDisplayAction != nil)
                 if let problem = model.protectionQuiescenceFailure {
                     Label {
                         Text(problem).textSelection(.enabled)
@@ -34,7 +35,7 @@ struct AutomationSettingsView: View {
                 }
                 if model.protectionQuiescenceFailure != nil {
                     Button("Retry Automation Cleanup", action: model.retryAutomationCleanup)
-                        .disabled(model.protectionQuiescencePending || model.hideOperation.isBusy)
+                        .disabled(model.runningDisplayAction != nil || model.protectionQuiescencePending || model.hideOperation.isBusy)
                 }
                 if let until = model.snoozedUntil {
                     HStack {
@@ -42,6 +43,7 @@ struct AutomationSettingsView: View {
                             .foregroundStyle(.secondary)
                         Spacer()
                         Button("Resume", action: model.resumeProtection)
+                            .disabled(model.runningDisplayAction != nil)
                     }
                 }
                 if model.automationPreferences.rules.isEmpty {
@@ -61,7 +63,13 @@ struct AutomationSettingsView: View {
             }
 
             Section {
-                if model.displayActions.actions.isEmpty {
+                if let failure = model.displayActionStorageFailure {
+                    Label(failure, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                if model.displayActions.actions.isEmpty && model.displayActionStorageFailure == nil {
                     Text("No actions.")
                         .foregroundStyle(.secondary)
                 }
@@ -74,10 +82,11 @@ struct AutomationSettingsView: View {
                         isNew: true
                     )
                 }
+                .disabled(model.displayActionStorageFailure != nil)
             } header: {
                 Text("Actions")
             } footer: {
-                SectionFooter("Run an action here, or from scripts or other apps. Actions never run on their own.")
+                SectionFooter("Run an Action here, or from scripts or other apps. Steps run in order and stop at the first problem; earlier changes stay in place. Actions never run on their own.")
             }
 
             if model.automationPreferences.rules.contains(where: { $0.settings.followUpAction == .sleepDisplays }) {
@@ -135,8 +144,7 @@ struct AutomationSettingsView: View {
             Text(DisplayActionPresentation.summary(for: action, displays: model.displays))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .truncationMode(.tail)
+                .lineLimit(action.steps.count == 1 ? 2 : nil)
                 .fixedSize(horizontal: false, vertical: true)
             rowStatus(status, warning: blocker != nil && !running)
             if let result = model.displayActionResults[action.id] {
@@ -144,20 +152,51 @@ struct AutomationSettingsView: View {
                 if result.outcome != .done, result.summary != status {
                     rowStatus(result.summary, warning: result.outcome == .recoveryNeeded)
                 }
-                if let detail = result.detail {
+                ForEach(result.steps ?? [], id: \.index) { step in
+                    actionStepResult(step)
+                }
+                if let detail = result.detail, result.steps == nil {
                     Text(detail)
                         .foregroundStyle(result.outcome == .partial ? Color.orange : Color.secondary)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if result.outcome == .recoveryNeeded {
-                    Text("Recovery needed. Review the affected display in Displays.")
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
         }
         .padding(.vertical, 3)
+    }
+
+    @ViewBuilder
+    private func actionStepResult(_ step: AppControlActionStepResult) -> some View {
+        let attention = [.refused, .busy, .failed, .partial, .recoveryNeeded].contains(step.outcome) || step.inputDetail != nil
+        let desktopState = desktopStateText(for: step)
+        let reasonPrefix = "Step \(step.index): "
+        let desktopDetail = step.desktopSummary.hasPrefix(reasonPrefix)
+            ? String(step.desktopSummary.dropFirst(reasonPrefix.count)) : step.desktopSummary
+        VStack(alignment: .leading, spacing: 3) {
+            rowStatus("Step \(step.index): \(desktopState) · \(desktopDetail)", warning: attention)
+            if let input = step.inputOutcome {
+                rowStatus("Input: \(input.rawValue)\(step.inputDetail.map { " · \($0)" } ?? "")",
+                          warning: step.outcome == .partial || step.outcome == .failed || step.outcome == .recoveryNeeded)
+            } else if let inputDetail = step.inputDetail {
+                rowStatus("Input: \(inputDetail)", warning: true)
+            }
+            if step.outcome == .recoveryNeeded {
+                Button("Review in Displays…") { navigation.showDisplays(selecting: step.targetUUID) }
+                    .accessibilityLabel("Review Step \(step.index) recovery in Displays")
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func desktopStateText(for step: AppControlActionStepResult) -> String {
+        switch step.outcome {
+        case .done: return "done"
+        case .noOp: return "already in state"
+        case .notRun: return "not run"
+        case .partial where step.inputOutcome != nil: return "done"
+        default: return "stopped"
+        }
     }
 
     private func ruleRow(_ rule: ProtectionRule) -> some View {
@@ -263,23 +302,7 @@ struct DisplayActionEditor: View {
     }
 
     private var canSave: Bool { validation == nil }
-
-    /// Shown inline under Remove from desktop, once a display is chosen.
-    private var removalSetupReason: String? {
-        guard draft.effect == .removeFromDesktop, let target = draft.target else { return nil }
-        return model.displayActionRemovalSetupReason(for: target.uuid)
-    }
-
-    /// The validation below the form, without repeating the inline setup reason.
-    private var validationMessage: String? {
-        guard let validation else { return nil }
-        if removalSetupReason != nil, saveFailure == nil,
-           validation == removalSetupReason ||
-            validation == DisplayActionValidationError.experimentalFeaturesRequired.localizedDescription {
-            return nil
-        }
-        return validation
-    }
+    private var editingActionIsRunning: Bool { existingID == model.runningDisplayAction?.id }
 
     private var commandLine: String? {
         guard let executable = try? ProtectionService.helperExecutableURL() else { return nil }
@@ -292,70 +315,28 @@ struct DisplayActionEditor: View {
                 Section {
                     TextField("Name", text: $draft.name)
                         .onSubmit { save() }
+                } header: {
+                    Text("Name")
                 }
 
                 Section {
-                    Picker("Display", selection: Binding(
-                        get: { draft.target?.uuid ?? "" },
-                        set: { selectDisplay($0) }
-                    )) {
-                        Text("Choose a display").tag("")
-                        ForEach(stableDisplays, id: \.id) { display in
-                            if let uuid = display.uuid {
-                                Text(display.settingsName).tag(uuid)
-                            }
-                        }
-                        if let target = draft.target,
-                           !stableDisplays.contains(where: { $0.uuid?.caseInsensitiveCompare(target.uuid) == .orderedSame }) {
-                            Text("\(DisplayActionPresentation.displayName(for: target, displays: model.displays)) (unavailable)")
-                                .tag(target.uuid)
+                    ForEach(Array(draft.steps.indices), id: \.self) { index in
+                        stepEditor(index)
+                    }
+                    HStack {
+                        Button("Add Step") { addStep() }
+                            .accessibilityLabel("Add step \(draft.steps.count + 1)")
+                            .disabled(draft.steps.count >= 8)
+                        if draft.steps.count >= 8 {
+                            Text("An Action can have at most 8 steps.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
-
-                    Picker("Effect", selection: Binding(
-                        get: { draft.effect },
-                        set: { effect in
-                            draft.effect = effect
-                            if effect != .removeFromDesktop { draft.reviewedRemoval = nil }
-                            saveFailure = nil
-                        }
-                    )) {
-                        ForEach(DisplayActionEffect.allCases) { effect in
-                            Text(effect.title).tag(effect)
-                        }
-                    }
-
-                    if draft.effect == .removeFromDesktop {
-                        let configuration = draft.target.flatMap { model.hidePreferences[$0.uuid] }
-                        LabeledContent("Mirror onto", value: sourceName(configuration?.source?.uuid))
-                        LabeledContent("Switch monitor to", value: configuration?.awayInput.map(MonitorInput.name) ?? "Don’t switch")
-
-                        if draft.target != nil,
-                           let change = model.displayActionReviewChange(for: draft) {
-                            Label(change.message, systemImage: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .textSelection(.enabled)
-                        }
-                        if let removalSetupReason {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(removalSetupReason)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                if model.experimentalFeaturesEnabled {
-                                    Button("Set Up in Displays…") {
-                                        let uuid = draft.target?.uuid
-                                        dismiss()
-                                        DispatchQueue.main.async { navigation.showDisplays(selecting: uuid) }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                } header: {
+                    Text("Steps")
                 } footer: {
-                    if draft.effect == .removeFromDesktop {
-                        SectionFooter("Mirror onto and Switch monitor to are set in Displays.")
-                    }
+                    SectionFooter("Each display can appear only once. Steps run in order and stop at the first problem; earlier changes stay in place.")
                 }
 
                 Section {
@@ -380,24 +361,26 @@ struct DisplayActionEditor: View {
                 } header: {
                     Text("Command")
                 } footer: {
-                    SectionFooter("Use in scripts or other apps. PanelCtl must be running.")
+                    SectionFooter("Run only in the running app. Check app status after an uncertain result.")
                 }
             }
             .formStyle(.grouped)
 
-            if let validationMessage {
-                Label(validationMessage, systemImage: "exclamationmark.triangle.fill")
+            if let validation {
+                Label(validation, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 18)
                     .padding(.top, 8)
+                    .textSelection(.enabled)
             }
 
             HStack {
                 if existingID != nil {
                     Button("Delete Action…") { confirmingDelete = true }
                         .accessibilityLabel("Delete Action")
+                        .disabled(editingActionIsRunning)
                     Spacer()
                 } else {
                     Spacer()
@@ -406,12 +389,12 @@ struct DisplayActionEditor: View {
                     .keyboardShortcut(.cancelAction)
                 Button("Save", action: save)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(!canSave)
+                    .disabled(!canSave || editingActionIsRunning)
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 12)
         }
-        .frame(width: 520, height: 520)
+        .frame(minWidth: 420, idealWidth: 520, maxWidth: 680, minHeight: 480, idealHeight: 560, maxHeight: 700)
         .alert("Delete “\(draft.name)”?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) {
                 if let existingID { model.deleteDisplayAction(id: existingID) }
@@ -419,7 +402,92 @@ struct DisplayActionEditor: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Scripts that run its command will stop working. The display’s current state doesn’t change.")
+            Text("Scripts that run its command will stop working. The displays’ current state and recovery evidence don’t change.")
+        }
+    }
+
+    @ViewBuilder
+    private func stepEditor(_ index: Int) -> some View {
+        let number = index + 1
+        let step = draft.steps[index]
+        Text("Step \(number)")
+            .font(.headline)
+            .accessibilityAddTraits(.isHeader)
+        Picker("Display", selection: Binding(
+            get: { step.target?.uuid ?? "" },
+            set: { selectDisplay($0, at: index) }
+        )) {
+            Text("Choose a display").tag("")
+            ForEach(availableDisplays(for: index), id: \.id) { display in
+                if let uuid = display.uuid { Text(display.settingsName).tag(uuid) }
+            }
+            if let target = step.target,
+               !stableDisplays.contains(where: { $0.uuid?.caseInsensitiveCompare(target.uuid) == .orderedSame }) {
+                Text("\(DisplayActionPresentation.displayName(for: target, displays: model.displays)) (unavailable)")
+                    .tag(target.uuid)
+            }
+        }
+        .accessibilityLabel("Step \(number) display")
+
+        Picker("Effect", selection: Binding(
+            get: { step.effect },
+            set: { effect in
+                updateStep(at: index) { current in
+                    current.effect = effect
+                    if effect != .removeFromDesktop { current.reviewedRemoval = nil }
+                    else if step.effect != .removeFromDesktop { current.reviewedRemoval = nil }
+                }
+            }
+        )) {
+            ForEach(DisplayActionEffect.allCases) { effect in Text(effect.title).tag(effect) }
+        }
+        .accessibilityLabel("Step \(number) effect")
+
+        if step.effect == .removeFromDesktop {
+            removalDetails(step, index: index)
+        }
+        HStack(spacing: 10) {
+            Button("Move Up") { moveStep(from: index, to: index - 1) }
+                .accessibilityLabel("Move step \(number) up")
+                .disabled(index == 0)
+            Button("Move Down") { moveStep(from: index, to: index + 1) }
+                .accessibilityLabel("Move step \(number) down")
+                .disabled(index == draft.steps.count - 1)
+            Button("Remove Step", role: .destructive) { removeStep(at: index) }
+                .accessibilityLabel("Remove step \(number)")
+                .disabled(draft.steps.count == 1)
+        }
+        .buttonStyle(.borderless)
+        .padding(.vertical, 3)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Step \(number) ordering controls")
+    }
+
+    @ViewBuilder
+    private func removalDetails(_ step: DisplayActionStep, index: Int) -> some View {
+        let configuration = step.target.flatMap { model.hidePreferences[$0.uuid] }
+        LabeledContent("Mirror onto", value: sourceName(configuration?.source?.uuid))
+        LabeledContent("Switch monitor to", value: configuration?.awayInput.map(MonitorInput.name) ?? "Don’t switch")
+        if let change = model.displayActionReviewChange(for: draft, stepIndex: index) {
+            Label("Step \(index + 1): \(change.message)", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        if let uuid = step.target?.uuid,
+           let reason = model.displayActionRemovalSetupReason(for: uuid) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Step \(index + 1): \(reason)")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if model.experimentalFeaturesEnabled {
+                    Button("Set Up in Displays…") {
+                        dismiss()
+                        DispatchQueue.main.async { navigation.showDisplays(selecting: uuid) }
+                    }
+                    .accessibilityLabel("Set Up step \(index + 1) in Displays")
+                }
+            }
         }
     }
 
@@ -430,12 +498,48 @@ struct DisplayActionEditor: View {
         }
     }
 
-    private func selectDisplay(_ uuid: String) {
-        guard let display = stableDisplays.first(where: { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame }) else {
-            return
+    private func availableDisplays(for index: Int) -> [DisplayRecord] {
+        let current = draft.steps[index].target?.uuid.lowercased()
+        let used = Set(draft.steps.enumerated().compactMap { offset, step in
+            offset == index ? nil : step.target?.uuid.lowercased()
+        })
+        return stableDisplays.filter { display in
+            guard let uuid = display.uuid?.lowercased() else { return false }
+            return !used.contains(uuid) || uuid == current
         }
-        draft.target = DisplayIdentitySnapshot(display)
-        if draft.effect == .removeFromDesktop { draft.reviewedRemoval = nil }
+    }
+
+    private func selectDisplay(_ uuid: String, at index: Int) {
+        guard draft.steps.indices.contains(index) else { return }
+        let display = stableDisplays.first(where: { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame })
+        updateStep(at: index) { step in
+            step.target = display.map(DisplayIdentitySnapshot.init)
+            step.reviewedRemoval = nil
+        }
+    }
+
+    private func updateStep(at index: Int, _ update: (inout DisplayActionStep) -> Void) {
+        guard draft.steps.indices.contains(index) else { return }
+        update(&draft.steps[index])
+        saveFailure = nil
+    }
+
+    private func addStep() {
+        guard draft.steps.count < 8 else { return }
+        draft.steps.append(model.makeNewDisplayActionStep(excluding: draft))
+        saveFailure = nil
+    }
+
+    private func moveStep(from index: Int, to destination: Int) {
+        guard draft.steps.indices.contains(index), draft.steps.indices.contains(destination) else { return }
+        let step = draft.steps.remove(at: index)
+        draft.steps.insert(step, at: destination)
+        saveFailure = nil
+    }
+
+    private func removeStep(at index: Int) {
+        guard draft.steps.count > 1, draft.steps.indices.contains(index) else { return }
+        draft.steps.remove(at: index)
         saveFailure = nil
     }
 

@@ -229,13 +229,19 @@ public enum CLIHelp {
             the running app, using its Hide style, and wait for the result. Copy
             the command from Settings > Displays. A display already in the
             requested state is a no-op.
-            run-action --action <UUID> invokes one saved, named action only in
-            the running app. Copy its stable-ID command from Settings > Automations;
-            this command never launches the app, queues or retries a request.
+            run-action --action <UUID> invokes one saved Action with 1–8 ordered
+            Hide (black out), Hide (remove from desktop) or Show steps, only in
+            the running app. It never launches the app, queues or retries a request.
+            The workflow is preflighted as a whole, then runs sequentially and
+            non-atomically; it stops at the first problem and keeps earlier changes.
+            While it runs, competing display commands, other Actions, recovery
+            cleanup, disconnect and quit are busy until completion.
+            JSON returns one result per step; text prints one line per step.
+            Status reports the current Action and step. A response-lost result
+            does not cancel the run; inspect `panelctl app status --json` before
+            deciding what to do. Do not assume atomic success or retry blindly.
             Actions run only when you choose Run or run their command; startup,
-            login, wake, reconnection and Automation never run actions. After a
-            response-lost result, inspect `panelctl app status --json` before
-            deciding what to do.
+            login, wake, reconnection and Automation never run them.
             Exit codes: 0 done or no-op, 1 refused, busy, failed or control
             failure, 2 usage, 3 app unavailable, 5 partial input outcome,
             6 recovery needed. Status includes each display and its input outcome.

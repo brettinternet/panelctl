@@ -41,7 +41,7 @@ final class DisplayActionAppTests: XCTestCase {
             "/bundle/panelctl app run-action --action \(saved.id.uuidString)"
         )
 
-        let persisted = try XCTUnwrap(defaults.data(forKey: "displayActions"))
+        let persisted = try XCTUnwrap(defaults.data(forKey: AppModel.displayActionsKey))
         let decoded = try JSONDecoder().decode(DisplayActionSet.self, from: persisted)
         XCTAssertEqual(decoded.version, DisplayActionSet.currentVersion)
         XCTAssertEqual(decoded.actions.first?.id, saved.id)
@@ -63,11 +63,11 @@ final class DisplayActionAppTests: XCTestCase {
         XCTAssertTrue(change.message.contains("Remove from desktop On → Off"))
         XCTAssertTrue(change.message.contains("Mirror onto Main display → Alternate source"))
         XCTAssertTrue(change.message.contains("Switch monitor to HDMI 1 → HDMI 2"))
-        XCTAssertTrue(model.displayActionRunBlocker(for: action)?.contains("Needs review") == true)
-        XCTAssertEqual(model.displayActionStatus(for: action), "Display setup changed. Edit to review.")
+        XCTAssertTrue(model.displayActionRunBlocker(for: action)?.contains("Step 1:") == true)
+        XCTAssertEqual(model.displayActionStatus(for: action), model.displayActionRunBlocker(for: action))
         var unreviewed = action
         unreviewed.reviewedRemoval = nil
-        XCTAssertEqual(model.displayActionStatus(for: unreviewed), "Display setup changed. Edit to review.")
+        XCTAssertTrue(model.displayActionStatus(for: unreviewed).hasPrefix("Step 1:"))
 
         model.setHideEnabled(true, for: try XCTUnwrap(displays.first { $0.uuid == targetUUID }))
         var reviewedAgain = action
@@ -239,7 +239,7 @@ final class DisplayActionAppTests: XCTestCase {
 
         let response = await run(model, id: action.id)
         XCTAssertEqual(response.outcome, .recoveryNeeded)
-        XCTAssertTrue(response.error?.localizedCaseInsensitiveContains("unreadable journal") == true)
+        XCTAssertTrue(response.error?.localizedCaseInsensitiveContains("unreadable journal") == true, response.error ?? "missing error")
         XCTAssertEqual(showWrites, 0)
         XCTAssertEqual(model.handoffStatus?.state, .recovery)
         XCTAssertEqual(model.handoffStatus?.inspectionFailure, "unreadable journal")
@@ -340,7 +340,8 @@ final class DisplayActionAppTests: XCTestCase {
         )
         let busyAction = try saveRemovalAction(on: busyModel)
         busyModel.runDisplayAction(id: busyAction.id)
-        XCTAssertEqual(busyModel.hideOperation, .hiding(targetUUID))
+        XCTAssertEqual(busyModel.hideOperation, .idle, "the run-level lease starts before its single quiescence, not by faking a display operation")
+        XCTAssertEqual(busyModel.runningDisplayAction?.id, busyAction.id)
         let contended = await run(busyModel, id: busyAction.id)
         XCTAssertEqual(contended.outcome, .busy)
         XCTAssertNil(busyModel.displayActionResults[busyAction.id], "contention must not replace an in-flight action result")
@@ -411,6 +412,48 @@ final class DisplayActionAppTests: XCTestCase {
         XCTAssertEqual(writes, 0, "Black out is fake-backed by a cover, not the topology writer")
     }
 
+    func testEightStepNoOpAndLongBlockerRepliesRetainEvidenceThroughServerEncoding() async throws {
+        for blocked in [false, true] {
+            let defaults = try makeDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+            if blocked { defaults.set(String(repeating: "cleanup failure ", count: 200), forKey: "automationCleanupFailure") }
+            let records = (0..<8).map { index in
+                display(
+                    index: index + 1, id: UInt32(index + 1000), uuid: UUID().uuidString,
+                    name: String(repeating: "N", count: 512), main: false
+                )
+            }
+            let model = makeModel(defaults: defaults, displayProvider: { records })
+            let action = DisplayAction(name: blocked ? "Blocked eight-step Action" : "Eight long-name no-ops", steps: records.map {
+                DisplayActionStep(target: DisplayIdentitySnapshot($0), effect: blocked ? .blackOut : .show)
+            })
+            try model.saveDisplayAction(action)
+
+            let socketPath = "\(try AppControlSocket.userTemporaryDirectory())/panelctl-task46-\(UUID().uuidString.prefix(8)).sock"
+            let server = AppControlServer(socketPath: socketPath) { request, receivedAt in
+                await model.handleDisplayControlRequest(request, receivedAt: receivedAt)
+            }
+            try server.start()
+            defer { server.stop() }
+            let response = try await Task.detached {
+                try AppControlClient(socketPath: socketPath, launch: { XCTFail("run-action must not launch the app") })
+                    .execute(.runAction, actionID: action.id)
+            }.value
+
+            XCTAssertEqual(response.steps?.count, 8, "the production server must preserve every step result")
+            XCTAssertEqual(response.displays?.count, 8, "the production server must preserve each target status")
+            if blocked {
+                XCTAssertEqual(response.outcome, .refused)
+                XCTAssertEqual(response.steps?.map(\.outcome), [.refused] + Array(repeating: .notRun, count: 7))
+                XCTAssertLessThanOrEqual(response.steps?.first?.desktopSummary.utf8.count ?? .max, 64)
+            } else {
+                XCTAssertEqual(response.outcome, .noOp)
+                XCTAssertEqual(response.steps?.map(\.outcome), Array(repeating: .noOp, count: 8))
+                XCTAssertTrue(response.steps?.allSatisfy { $0.desktopSummary.utf8.count <= 64 } == true)
+            }
+        }
+    }
+
     func testStartupWakeReconnectPauseRestoreAndActivityDoNotRunSavedActions() async throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
@@ -443,6 +486,806 @@ final class DisplayActionAppTests: XCTestCase {
         XCTAssertEqual(showWrites, 0)
         XCTAssertEqual(model.displayTiles.first { $0.uuid == targetUUID }?.action, .show, "Pause and Restore do not undo the manual Hide")
         XCTAssertEqual(model.displayActions.actions.map(\.id), [action.id])
+    }
+
+    func testLegacyActionsUpgradeWithoutDowngradeOverwriteAndUnreadableDataIsPreserved() throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let identity = DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == targetUUID }))
+        let legacyID = UUID()
+        let identityJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(identity)) as? [String: Any])
+        let legacyJSON = try JSONSerialization.data(withJSONObject: [
+            "version": 1,
+            "actions": [[
+                "id": legacyID.uuidString, "name": "Legacy action",
+                "target": identityJSON, "effect": DisplayActionEffect.removeFromDesktop.rawValue,
+                "reviewedRemoval": ["removeEnabled": true, "sourceUUID": mainUUID, "awayInput": 17]
+            ]]
+        ])
+        defaults.set(legacyJSON, forKey: AppModel.legacyDisplayActionsKey)
+        let model = makeModel(defaults: defaults)
+        let migrated = try XCTUnwrap(model.displayActions.actions.first)
+        XCTAssertEqual(migrated.id, legacyID)
+        XCTAssertEqual(migrated.name, "Legacy action")
+        XCTAssertEqual(migrated.steps.count, 1)
+        XCTAssertEqual(migrated.effect, .removeFromDesktop)
+        XCTAssertEqual(migrated.reviewedRemoval, ReviewedRemovalSetup(removeEnabled: true, sourceUUID: mainUUID, awayInput: 17))
+
+        var renamed = migrated
+        renamed.name = "Legacy action renamed"
+        try model.saveDisplayAction(renamed, replacing: legacyID)
+        let upgradedBytes = try XCTUnwrap(defaults.data(forKey: AppModel.displayActionsKey))
+        let upgraded = try JSONDecoder().decode(DisplayActionSet.self, from: upgradedBytes)
+        XCTAssertEqual(upgraded.actions.first?.id, legacyID)
+        XCTAssertEqual(upgraded.actions.first?.name, "Legacy action renamed")
+
+        defaults.set(legacyJSON, forKey: AppModel.legacyDisplayActionsKey) // simulate an older build writing its key
+        XCTAssertEqual(makeModel(defaults: defaults).displayActions, upgraded)
+
+        let newerDefaults = try makeDefaults()
+        defer { newerDefaults.removePersistentDomain(forName: suiteName(newerDefaults)) }
+        let newerBytes = try JSONSerialization.data(withJSONObject: ["version": 99, "actions": []])
+        newerDefaults.set(newerBytes, forKey: AppModel.displayActionsKey)
+        newerDefaults.set(legacyJSON, forKey: AppModel.legacyDisplayActionsKey)
+        let newerModel = makeModel(defaults: newerDefaults)
+        XCTAssertTrue(newerModel.displayActionStorageFailure?.contains("preserved") == true)
+        XCTAssertThrowsError(try newerModel.saveDisplayAction(DisplayAction(name: "Must not overwrite")))
+        XCTAssertEqual(newerDefaults.data(forKey: AppModel.displayActionsKey), newerBytes)
+        XCTAssertEqual(newerDefaults.data(forKey: AppModel.legacyDisplayActionsKey), legacyJSON)
+
+        let corruptDefaults = try makeDefaults()
+        defer { corruptDefaults.removePersistentDomain(forName: suiteName(corruptDefaults)) }
+        let corruptBytes = Data("{not-json".utf8)
+        corruptDefaults.set(corruptBytes, forKey: AppModel.legacyDisplayActionsKey)
+        let corruptModel = makeModel(defaults: corruptDefaults)
+        XCTAssertNotNil(corruptModel.displayActionStorageFailure)
+        XCTAssertThrowsError(try corruptModel.saveDisplayAction(DisplayAction(name: "Must not overwrite")))
+        XCTAssertNil(corruptDefaults.data(forKey: AppModel.displayActionsKey))
+        XCTAssertEqual(corruptDefaults.data(forKey: AppModel.legacyDisplayActionsKey), corruptBytes)
+
+        for nullEffect in [false, true] {
+            let malformedDefaults = try makeDefaults()
+            defer { malformedDefaults.removePersistentDomain(forName: suiteName(malformedDefaults)) }
+            let malformedID = UUID()
+            var malformedAction: [String: Any] = [
+                "id": malformedID.uuidString,
+                "name": "Malformed legacy action",
+                "target": identityJSON
+            ]
+            if nullEffect { malformedAction["effect"] = NSNull() }
+            let malformedBytes = try JSONSerialization.data(withJSONObject: [
+                "version": 1,
+                "actions": [malformedAction]
+            ])
+            malformedDefaults.set(malformedBytes, forKey: AppModel.legacyDisplayActionsKey)
+            var writerCalls = 0
+            let malformedModel = makeModel(
+                defaults: malformedDefaults,
+                hide: { _, _, _ in writerCalls += 1; return .notRequested },
+                cover: { _ in writerCalls += 1; return [] }
+            )
+            XCTAssertTrue(malformedModel.displayActions.actions.isEmpty)
+            XCTAssertTrue(malformedModel.displayActionStorageFailure?.contains("preserved") == true)
+            XCTAssertThrowsError(try malformedModel.saveDisplayAction(DisplayAction(name: "Do not overwrite")))
+            XCTAssertEqual(malformedDefaults.data(forKey: AppModel.legacyDisplayActionsKey), malformedBytes)
+            var runResponse: AppControlResponse?
+            malformedModel.runDisplayAction(id: malformedID) { runResponse = $0 }
+            XCTAssertEqual(runResponse?.outcome, .refused)
+            XCTAssertEqual(writerCalls, 0)
+        }
+    }
+
+    func testStepCountStableUUIDAndDuplicateValidation() throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let model = makeModel(defaults: defaults)
+        let steps = (0..<8).map { index in
+            DisplayActionStep(target: DisplayIdentitySnapshot(
+                uuid: UUID().uuidString, id: UInt32(index + 1000), name: "Offline \(index)",
+                vendor: 1, model: 2, serial: UInt32(index)
+            ))
+        }
+        let eightSteps = DisplayAction(name: "Eight steps", steps: steps)
+        XCTAssertNil(model.displayActionValidation(for: eightSteps))
+        try model.saveDisplayAction(eightSteps)
+        XCTAssertEqual(model.displayActions.actions.first?.steps.count, 8)
+
+        var nineSteps = eightSteps
+        nineSteps.steps.append(DisplayActionStep(target: DisplayIdentitySnapshot(
+            uuid: UUID().uuidString, id: 2000, name: "Ninth", vendor: 1, model: 2, serial: 3
+        )))
+        XCTAssertTrue(model.displayActionValidation(for: nineSteps, replacing: eightSteps.id)?.contains("1–8") == true)
+        XCTAssertThrowsError(try model.saveDisplayAction(nineSteps, replacing: eightSteps.id))
+
+        let repeated = DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == targetUUID }))
+        let duplicate = DisplayAction(name: "Duplicate displays", steps: [
+            DisplayActionStep(target: repeated), DisplayActionStep(target: repeated, effect: .show)
+        ])
+        XCTAssertTrue(model.displayActionValidation(for: duplicate)?.localizedCaseInsensitiveContains("only once") == true)
+        XCTAssertThrowsError(try model.saveDisplayAction(duplicate))
+        let empty = DisplayAction(name: "Empty", steps: [])
+        XCTAssertTrue(model.displayActionValidation(for: empty)?.contains("1–8") == true)
+        let missing = DisplayAction(name: "Missing", steps: [DisplayActionStep()])
+        XCTAssertEqual(model.displayActionValidation(for: missing), "Step 1: Choose a display.")
+    }
+
+    func testSaveRejectsOnlyDefinitionTimeConflicts() throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let model = makeModel(defaults: defaults)
+        let main = DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == mainUUID }))
+        let target = DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == targetUUID }))
+        let alternate = DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == alternateUUID }))
+        let reviewedTarget = model.currentReviewedRemovalSetup(for: targetUUID)
+
+        let hiddenSource = DisplayAction(name: "Remove after blacking out its source", steps: [
+            DisplayActionStep(target: main, effect: .blackOut),
+            DisplayActionStep(target: target, effect: .removeFromDesktop, reviewedRemoval: reviewedTarget)
+        ])
+        XCTAssertTrue(model.displayActionValidation(for: hiddenSource)?.contains("Step 2:") == true)
+        XCTAssertThrowsError(try model.saveDisplayAction(hiddenSource))
+
+        model.setHideEnabled(true, for: try XCTUnwrap(displays.first { $0.uuid == mainUUID }))
+        model.setHideSource(alternateUUID, for: mainUUID)
+        let removeMainSetup = model.currentReviewedRemovalSetup(for: mainUUID)
+        let hiddenEarlierSource = DisplayAction(name: "Remove earlier mirror source", steps: [
+            DisplayActionStep(target: target, effect: .removeFromDesktop, reviewedRemoval: reviewedTarget),
+            DisplayActionStep(target: main, effect: .removeFromDesktop, reviewedRemoval: removeMainSetup)
+        ])
+        XCTAssertTrue(model.displayActionValidation(for: hiddenEarlierSource)?.contains("Step 2:") == true)
+        XCTAssertThrowsError(try model.saveDisplayAction(hiddenEarlierSource))
+
+        let stateDependent = DisplayAction(name: "State dependent visibility", steps: [
+            DisplayActionStep(target: main, effect: .blackOut),
+            DisplayActionStep(target: target, effect: .blackOut),
+            DisplayActionStep(target: alternate, effect: .blackOut),
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == sourceUUID })), effect: .blackOut)
+        ])
+        XCTAssertNil(model.displayActionValidation(for: stateDependent), "visible-display checks depend on the current layout and belong at Run time")
+        try model.saveDisplayAction(stateDependent)
+    }
+
+    func testWholeRunPreflightsProjectedLastVisibleStateBeforeAnyWrite() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var coverRequests: [Set<UInt32>] = []
+        var quiesceCount = 0
+        let model = AppModel(
+            defaults: defaults, displayProvider: { self.displays }, idleSecondsProvider: { nil },
+            isDisplayMirrored: { _ in false }, inspectHandoff: { self.noneStatus() },
+            coverDisplays: { coverRequests.append($0); return [] },
+            quiesceProtection: { completion in quiesceCount += 1; completion(true, nil) }
+        )
+        let action = DisplayAction(name: "Hide every display", steps: displays.map {
+            DisplayActionStep(target: DisplayIdentitySnapshot($0), effect: .blackOut)
+        })
+        try model.saveDisplayAction(action)
+        XCTAssertTrue(model.displayActionRunBlocker(for: action)?.contains("Step 4:") == true)
+
+        let result = await run(model, id: action.id)
+        XCTAssertEqual(result.outcome, .refused)
+        XCTAssertEqual(result.steps?.map(\.outcome), [.notRun, .notRun, .notRun, .refused])
+        XCTAssertTrue(result.error?.contains("Step 4:") == true)
+        XCTAssertTrue(coverRequests.isEmpty)
+        XCTAssertEqual(quiesceCount, 0, "the run does not stop helpers or write before complete preflight")
+    }
+
+    func testNoOpPreflightNeverWritesWhenStateChangesBeforeTheStep() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let box = StatusBox(noneStatus())
+        var armed = false
+        var quiesceCount = 0
+        let model = AppModel(
+            defaults: defaults, displayProvider: { self.displays }, idleSecondsProvider: { nil },
+            isDisplayMirrored: { _ in false },
+            inspectHandoff: {
+                let status = box.value
+                // The preflight read sees nothing hidden; the step's fresh read sees a removal.
+                if armed { armed = false; box.value = self.hiddenStatus() }
+                return status
+            },
+            showDisplay: { _, _ in
+                XCTFail("a step must not write when preflight skipped helper quiescence")
+                return .notRequested
+            },
+            quiesceProtection: { completion in quiesceCount += 1; completion(true, nil) }
+        )
+        await settleQuiescence(model)
+        let before = quiesceCount
+        let action = DisplayAction(name: "Show target", steps: [
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == targetUUID })), effect: .show)
+        ])
+        try model.saveDisplayAction(action)
+        armed = true
+
+        let result = await run(model, id: action.id)
+        XCTAssertEqual(result.outcome, .refused)
+        XCTAssertEqual(result.steps?.map(\.outcome), [.refused])
+        XCTAssertEqual(quiesceCount, before)
+    }
+
+    func testMultiStepShowThenBlackOutRunsInOrderAndQuiescesOnce() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let box = StatusBox(hiddenStatus())
+        var inspections = 0
+        var showWrites = 0
+        var coverRequests: [Set<UInt32>] = []
+        var quiesceCalls = 0
+        let model = AppModel(
+            defaults: defaults, displayProvider: { self.displays }, idleSecondsProvider: { nil },
+            isDisplayMirrored: { _ in false }, inspectHandoff: { inspections += 1; return box.value },
+            showDisplay: { _, input in
+                showWrites += 1
+                box.value = self.noneStatus()
+                return DisplayInputOutcome(state: .verified, requestedInput: input, observedInput: input)
+            },
+            coverDisplays: { coverRequests.append($0); return [] },
+            quiesceProtection: { completion in quiesceCalls += 1; completion(true, nil) }
+        )
+        await settleQuiescence(model)
+        XCTAssertFalse(model.protectionQuiescencePending, "initial fake cleanup must settle before this run")
+        let action = DisplayAction(name: "Show then black out", steps: [
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == targetUUID })), effect: .show),
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == sourceUUID })), effect: .blackOut)
+        ])
+        try model.saveDisplayAction(action)
+        let beforeRunInspections = inspections
+        let beforeRunQuiescence = quiesceCalls
+
+        let result = await run(model, id: action.id)
+        XCTAssertEqual(result.outcome, .done, result.error ?? "missing Action error")
+        XCTAssertEqual(result.steps?.map(\.index), [1, 2])
+        XCTAssertEqual(result.steps?.map(\.outcome), [.done, .done])
+        XCTAssertEqual(result.steps?.map(\.effect), [DisplayActionEffect.show.rawValue, DisplayActionEffect.blackOut.rawValue])
+        XCTAssertEqual(showWrites, 1)
+        XCTAssertEqual(coverRequests, [[303]])
+        XCTAssertEqual(quiesceCalls - beforeRunQuiescence, 1)
+        XCTAssertEqual(inspections - beforeRunInspections, 5, "one preflight, one fresh read per step, and Show's existing pre- and post-write verification")
+        XCTAssertEqual(result.displays?.map(\.targetUUID).sorted(), [targetUUID, sourceUUID].sorted())
+        XCTAssertFalse(model.isRemovedDisplay(targetUUID))
+        XCTAssertTrue(model.isBlackoutHidden(sourceUUID))
+    }
+
+    func testActionLeaseBlocksCompetingEntryPointsAndKeepsRequestsStaleAfterFinish() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var delayedQuiescence: ((Bool, String?) -> Void)?
+        var coverRequests: [Set<UInt32>] = []
+        var quiesceCalls = 0
+        let model = makeModel(
+            defaults: defaults,
+            cover: { coverRequests.append($0); return [] },
+            quiesce: { completion in quiesceCalls += 1; delayedQuiescence = completion }
+        )
+        let active = DisplayAction(name: "Leased workflow", steps: [
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == targetUUID }))),
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == sourceUUID })))
+        ])
+        try model.saveDisplayAction(active)
+        let other = DisplayAction(name: "Editable other Action", target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == alternateUUID })))
+        try model.saveDisplayAction(other)
+        XCTAssertNil(model.displayActionRunBlocker(for: active), model.displayActionStatus(for: active))
+        let staleRequestTime = ContinuousClock.now
+        let runFinished = expectation(description: "the leased Action finishes after quiescence")
+        var finishedResponse: AppControlResponse?
+        model.runDisplayAction(id: active.id) { response in
+            finishedResponse = response
+            runFinished.fulfill()
+        }
+        XCTAssertEqual(model.runningDisplayAction?.id, active.id)
+        XCTAssertEqual(model.runningDisplayAction?.currentStep, 1)
+        XCTAssertEqual(model.runningDisplayAction?.totalSteps, 2)
+        XCTAssertEqual(quiesceCalls, 1)
+
+        let statusDelegate = AppDelegate()
+        statusDelegate.model = model
+        let status = await statusDelegate.handleControlRequest(AppControlRequest(command: .status), receivedAt: .now)
+        XCTAssertEqual(status.runningAction?.id, active.id)
+        XCTAssertEqual(status.runningAction?.currentStep, 1)
+        XCTAssertEqual(status.runningAction?.totalSteps, 2)
+
+        let competingHide = await model.handleDisplayControlRequest(
+            AppControlRequest(command: .hide, targetUUID: targetUUID)
+        )
+        XCTAssertEqual(competingHide.outcome, .busy)
+        XCTAssertTrue(competingHide.error?.contains("Leased workflow") == true)
+        let menuShow = await withCheckedContinuation { continuation in
+            model.show(targetUUID: targetUUID) { continuation.resume(returning: $0) }
+        }
+        XCTAssertFalse(menuShow.succeeded)
+        XCTAssertTrue(menuShow.message.contains("Leased workflow"))
+        let rejectedOtherRun = await run(model, id: other.id)
+        XCTAssertEqual(rejectedOtherRun.outcome, .busy)
+        XCTAssertTrue(rejectedOtherRun.error?.contains("Leased workflow") == true)
+        XCTAssertNil(model.displayActionResults[active.id], "contending requests cannot overwrite the active result")
+
+        model.prepareDisconnect(targetUUID)
+        XCTAssertTrue(model.disconnectFailure?.contains("Leased workflow") == true)
+        model.retryAutomationCleanup()
+        XCTAssertThrowsError(try model.makeShowRequest(targetUUID: targetUUID)) {
+            XCTAssertTrue($0.localizedDescription.contains("Leased workflow"))
+        }
+        model.deleteDisplayAction(id: active.id)
+        XCTAssertNotNil(model.displayActions.actions.first { $0.id == active.id })
+        var renamedOther = other
+        renamedOther.name = "Other Action remains editable"
+        try model.saveDisplayAction(renamedOther, replacing: other.id)
+        XCTAssertEqual(model.displayActions.actions.first { $0.id == other.id }?.name, renamedOther.name)
+        XCTAssertThrowsError(try model.saveDisplayAction(active, replacing: active.id))
+        let menu = statusDelegate.makeMenu()
+        XCTAssertFalse(try XCTUnwrap(menu.items.first { $0.title == "Quit PanelCtl" }).isEnabled)
+        XCTAssertTrue(coverRequests.isEmpty)
+
+        delayedQuiescence?(true, nil)
+        await fulfillment(of: [runFinished], timeout: 2)
+        let finished = try XCTUnwrap(finishedResponse)
+        XCTAssertEqual(finished.outcome, .done)
+        XCTAssertEqual(coverRequests, [[202], [202, 303]])
+        let staleAfterFinish = await model.handleDisplayControlRequest(
+            AppControlRequest(command: .hide, targetUUID: targetUUID), receivedAt: staleRequestTime
+        )
+        XCTAssertEqual(staleAfterFinish.outcome, .busy)
+        XCTAssertEqual(coverRequests, [[202], [202, 303]], "a request received during the run is never replayed later")
+        XCTAssertNil(model.runningDisplayAction)
+    }
+
+    func testActionLeaseReplaysDeferredHiddenDisplaySafetyReconciliation() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let inventory = DisplayRecordsBox(displays)
+        var quiesceCalls = 0
+        var delayedQuiescence: ((Bool, String?) -> Void)?
+        var coverRequests: [Set<UInt32>] = []
+        let model = makeModel(
+            defaults: defaults,
+            displayProvider: { inventory.value },
+            cover: { ids in coverRequests.append(ids); return [] },
+            quiesce: { completion in
+                quiesceCalls += 1
+                if quiesceCalls == 1 { completion(true, nil) }
+                else { delayedQuiescence = completion }
+            }
+        )
+        let hiddenTarget = DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == targetUUID }))
+        let keepHidden = DisplayAction(name: "Hide target", target: hiddenTarget)
+        try model.saveDisplayAction(keepHidden)
+        let initialHide = await run(model, id: keepHidden.id)
+        XCTAssertEqual(initialHide.outcome, .done)
+        XCTAssertTrue(model.isBlackoutHidden(targetUUID))
+
+        let waiting = DisplayAction(name: "Wait for display change", target: DisplayIdentitySnapshot(
+            try XCTUnwrap(displays.first { $0.uuid == sourceUUID })
+        ))
+        try model.saveDisplayAction(waiting)
+        let finished = expectation(description: "interrupted Action releases its lease")
+        var response: AppControlResponse?
+        model.runDisplayAction(id: waiting.id) { result in response = result; finished.fulfill() }
+        XCTAssertEqual(model.runningDisplayAction?.id, waiting.id)
+        XCTAssertNotNil(delayedQuiescence)
+
+        inventory.value = [try XCTUnwrap(displays.first { $0.uuid == targetUUID })]
+        model.displayConfigurationChanged(restartWatcher: false)
+        XCTAssertTrue(model.isBlackoutHidden(targetUUID), "the Action lease defers showing the only remaining display")
+        delayedQuiescence?(true, nil)
+        await fulfillment(of: [finished], timeout: 2)
+
+        XCTAssertEqual(response?.outcome, .refused)
+        XCTAssertFalse(model.isBlackoutHidden(targetUUID), "the deferred last-visible safety check is replayed at lease release")
+        XCTAssertTrue(model.displayResults[targetUUID.lowercased()]?.message.contains("no other display was connected") == true)
+        XCTAssertEqual(coverRequests.first, [202])
+        XCTAssertEqual(coverRequests.last, [])
+    }
+
+    func testPreflightRecoveryDiscoveryQuiescesAutomationAfterRefusal() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let recovery = StatusBox(noneStatus())
+        var helperRunning = true
+        var quiesceCalls = 0
+        var displayWrites = 0
+        var inputWrites = 0
+        let model = makeModel(
+            defaults: defaults,
+            box: recovery,
+            hide: { _, _, _ in inputWrites += 1; return .notRequested },
+            show: { _, _ in inputWrites += 1; return .notRequested },
+            cover: { _ in displayWrites += 1; return [] },
+            quiesce: { completion in quiesceCalls += 1; helperRunning = false; completion(true, nil) }
+        )
+        let action = try saveBlackOutAction(on: model)
+        recovery.value = unreadableStatus()
+
+        let response = await run(model, id: action.id)
+        await settleQuiescence(model)
+        XCTAssertEqual(response.outcome, .recoveryNeeded)
+        XCTAssertEqual(quiesceCalls, 1, "the preflight-discovered recovery transition must stop the existing helper")
+        XCTAssertFalse(helperRunning)
+        XCTAssertEqual(displayWrites, 0)
+        XCTAssertEqual(inputWrites, 0)
+        XCTAssertFalse(model.protectionQuiescencePending)
+    }
+
+    func testDisplayControlRequestsStayBusyAfterNoOpAndRefusedActions() async throws {
+        for refusesWithRecovery in [false, true] {
+            let defaults = try makeDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+            let recovery = StatusBox(noneStatus())
+            var hideWrites = 0
+            var showWrites = 0
+            var coverRequests: [Set<UInt32>] = []
+            let model = makeModel(
+                defaults: defaults,
+                box: recovery,
+                hide: { _, _, _ in hideWrites += 1; return .notRequested },
+                show: { _, _ in showWrites += 1; return .notRequested },
+                cover: { coverRequests.append($0); return [] }
+            )
+            if refusesWithRecovery { recovery.value = unreadableStatus() }
+            let target = DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == targetUUID }))
+            let action = DisplayAction(
+                name: refusesWithRecovery ? "Refused Action" : "All no-op Action",
+                target: target,
+                effect: refusesWithRecovery ? .blackOut : .show
+            )
+            try model.saveDisplayAction(action)
+            let receivedDuringAction = ContinuousClock.now
+            let result = await run(model, id: action.id)
+            XCTAssertEqual(result.outcome, refusesWithRecovery ? .recoveryNeeded : .noOp)
+
+            for command in [AppControlCommand.hide, .show, .toggleHide] {
+                let response = await model.handleDisplayControlRequest(
+                    AppControlRequest(command: command, targetUUID: targetUUID),
+                    receivedAt: receivedDuringAction
+                )
+                XCTAssertEqual(response.outcome, .busy, "\(command) received during an Action must not execute afterward")
+            }
+            XCTAssertEqual(hideWrites, 0)
+            XCTAssertEqual(showWrites, 0)
+            XCTAssertTrue(coverRequests.isEmpty)
+        }
+    }
+
+    func testOneStepActionReadinessMatchesTileReadiness() throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let records = [try XCTUnwrap(displays.first { $0.uuid == targetUUID })]
+        let model = AppModel(
+            defaults: defaults, displayProvider: { records }, idleSecondsProvider: { nil },
+            isDisplayMirrored: { _ in false }, inspectHandoff: { self.noneStatus() },
+            coverDisplays: { _ in [] }, quiesceProtection: { $0(true, nil) }
+        )
+        let target = DisplayIdentitySnapshot(records[0])
+        let action = DisplayAction(name: "Single target", target: target)
+        try model.saveDisplayAction(action)
+        let tileBlocker = try XCTUnwrap(model.blackoutReadiness(for: records[0])).localizedDescription
+        XCTAssertEqual(model.displayActionRunBlocker(for: action), "Step 1: \(tileBlocker)")
+    }
+
+    func testLaterStepIdentityFailureReturnsHonestPartialWithEveryTargetStatus() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let inventory = DisplayRecordsBox(displays)
+        var coverRequests: [Set<UInt32>] = []
+        let model = makeModel(
+            defaults: defaults,
+            displayProvider: { inventory.value },
+            cover: { ids in
+                coverRequests.append(ids)
+                if ids.contains(202) { inventory.value.removeAll { $0.uuid == self.sourceUUID } }
+                return []
+            }
+        )
+        let action = DisplayAction(name: "Stops after a missing target", steps: [
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == targetUUID }))),
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == sourceUUID })), effect: .show),
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == alternateUUID })), effect: .show)
+        ])
+        try model.saveDisplayAction(action)
+
+        let result = await run(model, id: action.id)
+        XCTAssertEqual(result.outcome, .partial)
+        XCTAssertEqual(result.steps?.map(\.outcome), [.done, .refused, .notRun])
+        XCTAssertTrue(result.steps?[1].desktopSummary.contains("identity changed") == true)
+        XCTAssertEqual(result.displays?.map(\.targetUUID), [targetUUID, sourceUUID, alternateUUID])
+        XCTAssertEqual(result.displays?.map(\.observedState), ["hidden-by-panelctl", "unavailable", "separate"])
+        XCTAssertEqual(coverRequests, [[202]])
+        XCTAssertTrue(model.isBlackoutHidden(targetUUID))
+    }
+
+    func testProjectedShowReleasesPanelCtlMirrorSourceForLaterRemoval() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let target = try XCTUnwrap(displays.first { $0.uuid == targetUUID })
+        let main = try XCTUnwrap(displays.first { $0.uuid == mainUUID })
+        let alternate = try XCTUnwrap(displays.first { $0.uuid == alternateUUID })
+        var hidePreferences = DisplayHidePreferences()
+        hidePreferences[targetUUID] = DisplayHideConfiguration(
+            target: DisplayIdentitySnapshot(target), enabled: true,
+            source: DisplayIdentitySnapshot(main), awayInput: 0x11, returnInput: 0x10
+        )
+        hidePreferences[mainUUID] = DisplayHideConfiguration(
+            target: DisplayIdentitySnapshot(main), enabled: true,
+            source: DisplayIdentitySnapshot(alternate), awayInput: 0x11, returnInput: 0x10
+        )
+        defaults.set(try JSONEncoder().encode(hidePreferences), forKey: "displayHidePreferences")
+
+        let initialJournal = verifiedRemovalStatus(target: target, source: main, journalID: "first-removal")
+        let status = StatusBox(initialJournal)
+        var showWrites = 0
+        var hideWrites = 0
+        let model = AppModel(
+            defaults: defaults,
+            displayProvider: { self.displays },
+            idleSecondsProvider: { nil },
+            isDisplayMirrored: { id in
+                status.value.state == .hidden && (id == target.id || id == main.id)
+            },
+            inspectHandoff: { status.value },
+            hideDisplay: { _, _, _ in
+                hideWrites += 1
+                status.value = self.verifiedRemovalStatus(target: main, source: alternate, journalID: "second-removal")
+                return .notRequested
+            },
+            showDisplay: { _, _ in showWrites += 1; status.value = self.noneStatus(); return .notRequested },
+            checkDDCInput: { _ in DDCInputReading(displayID: target.id, uuid: self.targetUUID, current: 0x0F) },
+            coverDisplays: { _ in [] },
+            quiesceProtection: { $0(true, nil) }
+        )
+        await settleQuiescence(model)
+        let removeB = DisplayActionStep(
+            target: DisplayIdentitySnapshot(main), effect: .removeFromDesktop,
+            reviewedRemoval: ReviewedRemovalSetup(removeEnabled: true, sourceUUID: alternateUUID, awayInput: 0x11)
+        )
+        let action = DisplayAction(name: "Restore then remove source", steps: [
+            DisplayActionStep(target: DisplayIdentitySnapshot(target), effect: .show),
+            removeB
+        ])
+        try model.saveDisplayAction(action)
+
+        XCTAssertNil(model.displayActionRunBlocker(for: action), "projected Show must release the verified source and its live mirror-set membership")
+        let response = await run(model, id: action.id)
+        XCTAssertEqual(response.outcome, .done, response.error ?? "missing Action result")
+        XCTAssertEqual(response.steps?.map(\.outcome), [.done, .done])
+        XCTAssertEqual(showWrites, 1)
+        XCTAssertEqual(hideWrites, 1)
+        XCTAssertFalse(model.isRemovedDisplay(targetUUID))
+        XCTAssertTrue(model.isRemovedDisplay(mainUUID))
+    }
+
+    func testPartialInputStopsLaterStepsAndKeepsPerStepEvidence() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let box = StatusBox(hiddenStatus())
+        var showWrites = 0
+        var coverRequests: [Set<UInt32>] = []
+        let model = makeModel(
+            defaults: defaults,
+            box: box,
+            show: { _, input in
+                showWrites += 1
+                box.value = self.noneStatus()
+                return DisplayInputOutcome(state: .failed, requestedInput: input, detail: "fixture return-input failure")
+            },
+            cover: { coverRequests.append($0); return [] }
+        )
+        await settleQuiescence(model)
+        let action = DisplayAction(name: "Show then stop", steps: [
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == targetUUID })), effect: .show),
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == sourceUUID })))
+        ])
+        try model.saveDisplayAction(action)
+
+        let result = await run(model, id: action.id)
+        XCTAssertEqual(result.outcome, .partial)
+        XCTAssertEqual(result.steps?.map(\.outcome), [.partial, .notRun])
+        XCTAssertEqual(result.steps?.first?.inputOutcome, .failed)
+        XCTAssertNotNil(result.steps?.first?.inputDetail, "the partial input result remains visible per step")
+        XCTAssertEqual(showWrites, 1)
+        XCTAssertTrue(coverRequests.isEmpty)
+        XCTAssertFalse(model.isRemovedDisplay(targetUUID), "completed Show state remains available after the later step is skipped")
+    }
+
+    func testDisplayReconfigurationInterruptsAfterCompletedStepWithoutUndoingIt() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var model: AppModel!
+        var coverRequests: [Set<UInt32>] = []
+        var interrupted = false
+        model = makeModel(
+            defaults: defaults,
+            cover: { ids in
+                coverRequests.append(ids)
+                if !interrupted {
+                    interrupted = true
+                    model.displayConfigurationChanged(restartWatcher: true)
+                }
+                return []
+            }
+        )
+        let action = DisplayAction(name: "Interrupt after first step", steps: [
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == targetUUID }))),
+            DisplayActionStep(target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == sourceUUID })))
+        ])
+        try model.saveDisplayAction(action)
+
+        let result = await run(model, id: action.id)
+        XCTAssertEqual(result.outcome, .partial)
+        XCTAssertEqual(result.steps?.map(\.outcome), [.done, .notRun])
+        XCTAssertEqual(coverRequests, [[202], [202]], "completion replays deferred hidden-display safety reconciliation after the lifecycle transition")
+        XCTAssertTrue(model.isBlackoutHidden(targetUUID), "a completed Hide is not rolled back on lifecycle interruption")
+        XCTAssertFalse(model.isBlackoutHidden(sourceUUID))
+    }
+
+    func testNoOpRemovalStillRequiresReviewedSetup() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let box = StatusBox(noneStatus())
+        var hideWrites = 0
+        let model = makeModel(
+            defaults: defaults, box: box,
+            hide: { _, _, _ in hideWrites += 1; box.value = self.hiddenStatus(); return .notRequested }
+        )
+        let action = try saveRemovalAction(on: model)
+        let first = await run(model, id: action.id)
+        XCTAssertEqual(first.outcome, .done)
+        XCTAssertTrue(model.isRemovedDisplay(targetUUID))
+
+        var changedPreferences = model.hidePreferences
+        let configuration = try XCTUnwrap(changedPreferences[targetUUID])
+        changedPreferences[targetUUID] = DisplayHideConfiguration(
+            target: configuration.target,
+            enabled: configuration.enabled,
+            source: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == alternateUUID })),
+            awayInput: configuration.awayInput == 0x12 ? 0x13 : 0x12,
+            returnInput: configuration.returnInput
+        )
+        defaults.set(try JSONEncoder().encode(changedPreferences), forKey: "displayHidePreferences")
+        let reloaded = makeModel(defaults: defaults, box: box, hide: { _, _, _ in hideWrites += 1; return .notRequested })
+        await settleQuiescence(reloaded)
+        let repeated = await run(reloaded, id: action.id)
+        XCTAssertEqual(repeated.outcome, .refused)
+        XCTAssertTrue(repeated.error?.contains("Step 1:") == true)
+        XCTAssertTrue(repeated.error?.localizedCaseInsensitiveContains("setup changed") == true)
+        XCTAssertEqual(hideWrites, 1, "a verified Remove no-op still refuses on reviewed-setup drift")
+    }
+
+    func testNoOpBlackOutStillChecksCurrentIdentityAndLifecycle() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let inventory = DisplayRecordsBox(displays)
+        var coverRequests: [Set<UInt32>] = []
+        let model = makeModel(
+            defaults: defaults,
+            displayProvider: { inventory.value },
+            cover: { coverRequests.append($0); return [] }
+        )
+        let action = try saveBlackOutAction(on: model)
+        let first = await run(model, id: action.id)
+        XCTAssertEqual(first.outcome, .done)
+        let original = try XCTUnwrap(inventory.value.first { $0.uuid == targetUUID })
+        inventory.value.removeAll { $0.uuid == targetUUID }
+        inventory.value.append(display(index: 2, id: 222, uuid: targetUUID, name: "Replacement target", main: false))
+        model.refreshDisplays()
+        let coverCountAfterIdentityRefresh = coverRequests.count
+        let identityBlocked = await run(model, id: action.id)
+        XCTAssertEqual(identityBlocked.outcome, .refused)
+        XCTAssertTrue(identityBlocked.error?.localizedCaseInsensitiveContains("identity changed") == true)
+        XCTAssertEqual(coverRequests.count, coverCountAfterIdentityRefresh)
+
+        inventory.value.removeAll { $0.uuid == targetUUID }
+        inventory.value.append(original)
+        model.refreshDisplays()
+        let coverCountAfterRestoringIdentity = coverRequests.count
+        model.beginDisplaySleepTransition()
+        let lifecycleBlocked = await run(model, id: action.id)
+        XCTAssertEqual(lifecycleBlocked.outcome, .refused)
+        XCTAssertTrue(lifecycleBlocked.error?.localizedCaseInsensitiveContains("sleep") == true)
+        XCTAssertEqual(coverRequests.count, coverCountAfterRestoringIdentity)
+        model.setDisplayLifecycleTransitioning(false)
+    }
+
+    func testNoOpBlackOutStillRefusesAfterCleanupFailure() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var cleanupSucceeds = true
+        var coverRequests: [Set<UInt32>] = []
+        let model = makeModel(
+            defaults: defaults,
+            cover: { coverRequests.append($0); return [] },
+            quiesce: { completion in completion(cleanupSucceeds, cleanupSucceeds ? nil : "fake cleanup failure") }
+        )
+        let alreadyHidden = try saveBlackOutAction(on: model)
+        let initialRun = await run(model, id: alreadyHidden.id)
+        XCTAssertEqual(initialRun.outcome, .done)
+        let writesBeforeFailure = coverRequests.count
+
+        let other = DisplayAction(name: "Cleanup failure trigger", target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == sourceUUID })))
+        try model.saveDisplayAction(other)
+        cleanupSucceeds = false
+        let cleanupFailure = await run(model, id: other.id)
+        XCTAssertEqual(cleanupFailure.outcome, .failed)
+        XCTAssertEqual(coverRequests.count, writesBeforeFailure)
+
+        let repeated = await run(model, id: alreadyHidden.id)
+        XCTAssertEqual(repeated.outcome, .refused)
+        XCTAssertTrue(repeated.error?.localizedCaseInsensitiveContains("cleanup needs attention") == true)
+        XCTAssertEqual(coverRequests.count, writesBeforeFailure)
+    }
+
+    func testNoOpActionIsBusyWhileAnotherActionOwnsTheLease() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var quiesceCount = 0
+        var delayedQuiescence: ((Bool, String?) -> Void)?
+        var coverRequests: [Set<UInt32>] = []
+        let model = makeModel(
+            defaults: defaults,
+            cover: { coverRequests.append($0); return [] },
+            quiesce: { completion in
+                quiesceCount += 1
+                if quiesceCount == 1 { completion(true, nil) }
+                else { delayedQuiescence = completion }
+            }
+        )
+        let hiddenAction = try saveBlackOutAction(on: model)
+        let hiddenResult = await run(model, id: hiddenAction.id)
+        XCTAssertEqual(hiddenResult.outcome, .done)
+        let active = DisplayAction(name: "Lease owner", target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == sourceUUID })))
+        try model.saveDisplayAction(active)
+        let finished = expectation(description: "the lease owner completes")
+        model.runDisplayAction(id: active.id) { _ in finished.fulfill() }
+        XCTAssertEqual(model.runningDisplayAction?.id, active.id)
+
+        let busy = await run(model, id: hiddenAction.id)
+        XCTAssertEqual(busy.outcome, .busy)
+        XCTAssertTrue(busy.error?.contains("Lease owner") == true)
+        XCTAssertEqual(coverRequests, [[202]])
+
+        delayedQuiescence?(true, nil)
+        await fulfillment(of: [finished], timeout: 2)
+        XCTAssertEqual(coverRequests, [[202], [202, 303]])
+    }
+
+    func testNoOpBlackOutStillRefusesWhenRecoveryNeedsAttention() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let box = StatusBox(noneStatus())
+        var coverRequests: [Set<UInt32>] = []
+        let model = makeModel(defaults: defaults, box: box, cover: { coverRequests.append($0); return [] })
+        let action = try saveBlackOutAction(on: model)
+        let first = await run(model, id: action.id)
+        XCTAssertEqual(first.outcome, .done)
+        let coverCount = coverRequests.count
+        box.value = unreadableStatus()
+        model.refreshHandoffStatus()
+        await settleQuiescence(model)
+        XCTAssertFalse(model.protectionQuiescencePending, "fake recovery cleanup must settle before testing the recovery blocker")
+
+        let repeated = await run(model, id: action.id)
+        XCTAssertEqual(repeated.outcome, .recoveryNeeded, repeated.error ?? "missing Action error")
+        XCTAssertTrue(repeated.error?.localizedCaseInsensitiveContains("unreadable journal") == true, repeated.error ?? "missing Action error")
+        XCTAssertEqual(coverRequests.count, coverCount, "a hidden-display no-op cannot bypass recovery checks")
+    }
+
+    func testRemoveNoOpStillRequiresExperimentalConsent() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let box = StatusBox(noneStatus())
+        var hideWrites = 0
+        let model = makeModel(
+            defaults: defaults, box: box,
+            hide: { _, _, _ in hideWrites += 1; box.value = self.hiddenStatus(); return .notRequested }
+        )
+        let action = try saveRemovalAction(on: model)
+        let first = await run(model, id: action.id)
+        XCTAssertEqual(first.outcome, .done)
+        model.setExperimentalFeaturesEnabled(false)
+        let repeated = await run(model, id: action.id)
+        XCTAssertEqual(repeated.outcome, .refused)
+        XCTAssertTrue(repeated.error?.contains("Experimental features") == true)
+        XCTAssertEqual(hideWrites, 1)
     }
 
     private func saveRemovalAction(on model: AppModel) throws -> DisplayAction {
@@ -481,6 +1324,7 @@ final class DisplayActionAppTests: XCTestCase {
         defaults: UserDefaults,
         box: StatusBox? = nil,
         displayProvider: (() -> [DisplayRecord])? = nil,
+        isMirrored: ((UInt32) -> Bool)? = nil,
         hide: @escaping (DisplayHideIdentity, DisplayHideIdentity, UInt8?) throws -> DisplayInputOutcome = { _, _, _ in .notRequested },
         show: @escaping (String, UInt8?) throws -> DisplayInputOutcome = { _, _ in .notRequested },
         cover: @escaping @MainActor (Set<UInt32>) -> Set<UInt32> = { _ in [] },
@@ -491,7 +1335,7 @@ final class DisplayActionAppTests: XCTestCase {
             defaults: defaults,
             displayProvider: displayProvider ?? { self.displays },
             idleSecondsProvider: { nil },
-            isDisplayMirrored: { _ in false },
+            isDisplayMirrored: isMirrored ?? { _ in false },
             inspectHandoff: { state.value },
             hideDisplay: hide,
             showDisplay: show,
@@ -579,6 +1423,37 @@ final class DisplayActionAppTests: XCTestCase {
                 detail: "Unverified topology.", isJournalTarget: true
             )],
             mirrorTopologyVerified: false, removals: [removal]
+        )
+    }
+
+    private func verifiedRemovalStatus(
+        target: DisplayRecord,
+        source: DisplayRecord,
+        journalID: String
+    ) -> DisplayHandoffStatus {
+        func hideIdentity(_ display: DisplayRecord) -> DisplayHideIdentity {
+            DisplayHideIdentity(
+                uuid: display.uuid!, displayID: display.id, name: display.name,
+                vendor: display.vendor, model: display.model, serial: display.serial
+            )
+        }
+        let targetIdentity = identity(target)
+        let sourceIdentity = identity(source)
+        let removal = DisplayHandoffRemoval(
+            id: journalID, target: targetIdentity, source: sourceIdentity,
+            state: "mirrored", isUnresolved: true, canShow: true,
+            reason: nil, topologyVerified: true
+        )
+        return DisplayHandoffStatus(
+            state: .hidden, target: targetIdentity, source: sourceIdentity,
+            journalPath: "/tmp/panelctl-actions-fixture/\(journalID).json", journalID: journalID,
+            canShow: true,
+            observations: [DisplayHideObservation(
+                identity: hideIdentity(target), state: .hiddenByPanelCtl,
+                source: hideIdentity(source), detail: nil, isJournalTarget: true
+            )],
+            mirrorTopologyVerified: true, baselineIdentity: "baseline-\(journalID)",
+            removals: [removal]
         )
     }
 

@@ -130,6 +130,8 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
     public let outcome: AppControlOutcome?
     public let displays: [AppControlDisplayStatus]?
     public let rules: [AppControlRuleStatus]?
+    public let steps: [AppControlActionStepResult]?
+    public let runningAction: AppControlRunningAction?
 
     public var exitCode: Int32 {
         if !running { return 3 }
@@ -151,7 +153,9 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         snoozedUntil: String? = nil,
         outcome: AppControlOutcome? = nil,
         displays: [AppControlDisplayStatus]? = nil,
-        rules: [AppControlRuleStatus]? = nil
+        rules: [AppControlRuleStatus]? = nil,
+        steps: [AppControlActionStepResult]? = nil,
+        runningAction: AppControlRunningAction? = nil
     ) {
         self.protocolVersion = protocolVersion
         self.ok = ok
@@ -167,6 +171,8 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         self.outcome = outcome
         self.displays = displays
         self.rules = rules
+        self.steps = steps
+        self.runningAction = runningAction
     }
 
     public static func unavailable(_ message: String = "PanelCtl.app is not running") -> Self {
@@ -183,7 +189,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol"
         case ok, running, enabled, state, summary, detail, error
-        case nextAction, secondsRemaining, snoozedUntil, outcome, displays, rules
+        case nextAction, secondsRemaining, snoozedUntil, outcome, displays, rules, steps, runningAction
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -202,6 +208,8 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         try container.encodeIfPresent(outcome, forKey: .outcome)
         try container.encodeIfPresent(displays, forKey: .displays)
         try container.encodeIfPresent(rules, forKey: .rules)
+        try container.encodeIfPresent(steps, forKey: .steps)
+        try container.encodeIfPresent(runningAction, forKey: .runningAction)
     }
 }
 
@@ -272,8 +280,9 @@ public enum AppControlError: Error, Equatable, CustomStringConvertible, Localize
 public struct AppControlClient {
     static let defaultDeadline: TimeInterval = 3
     static let pollInterval: TimeInterval = 0.05
-    /// How long a display command waits for its Hide or Show to finish.
+    /// How long one display step may take; an eight-step Action gets this budget per step.
     static let displayResponseTimeout = 30
+    static let actionResponseTimeout = displayResponseTimeout * 8
 
     private let socketPath: String
     private let launch: () throws -> Void
@@ -399,8 +408,9 @@ public struct AppControlClient {
         let fd = try Self.connect(to: socketPath)
         defer { close(fd) }
         if command.isManualDisplayCommand {
-            // The app answers when the Hide, Show or named action has finished.
-            var timeout = timeval(tv_sec: Self.displayResponseTimeout, tv_usec: 0)
+            // A saved Action is sequential and gets the established per-display budget for each of its eight steps.
+            let seconds = command == .runAction ? Self.actionResponseTimeout : Self.displayResponseTimeout
+            var timeout = timeval(tv_sec: seconds, tv_usec: 0)
             _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         }
         var written = 0

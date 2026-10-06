@@ -130,6 +130,16 @@ struct PanelCtlMain {
                 }
                 if json {
                     try printJSON(response)
+                } else if let steps = response.steps {
+                    for step in steps {
+                        var line = "Step \(step.index) (\(step.targetUUID), \(step.effect)): \(step.outcome.rawValue) — \(step.desktopSummary)"
+                        if let input = step.inputOutcome { line += " · input \(input.rawValue)" }
+                        if let detail = step.inputDetail { line += " · \(detail)" }
+                        print(line)
+                    }
+                    if !response.ok, appCommand != .status {
+                        fputs("panelctl: \(response.error ?? response.summary)\n", stderr)
+                    }
                 } else if !response.ok, appCommand != .status {
                     fputs(
                         "panelctl: \(response.error ?? response.summary)\n",
@@ -148,6 +158,9 @@ struct PanelCtlMain {
                     }
                     if let snoozedUntil = response.snoozedUntil {
                         line += " snoozedUntil=\(quoted(snoozedUntil))"
+                    }
+                    if let action = response.runningAction {
+                        line += " runningAction=\(quoted(action.name)) step=\(action.currentStep)/\(action.totalSteps)"
                     }
                     print(line)
                 }

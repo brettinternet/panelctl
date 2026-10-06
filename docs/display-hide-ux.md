@@ -49,9 +49,10 @@ PanelCtl display-sleep timer setting appears separately from rule settings.
 
 Pause/Resume, the master switch and Restore stay global. The menu keeps no rule
 list; **Black Out Now** reflects the effects of enabled rules. These shipped
-rules perform automatic display protection only. Scheduled triggers and
-arbitrary action chains are deferred. Named manual Actions are separate,
-explicitly invoked operations; they are never rule actions or rule triggers.
+rules perform automatic display protection only. Scheduled triggers, general
+scripting, conditions, delays and automatic Action triggers are deferred. Named
+manual Actions support a bounded ordered list of display steps; they are separate,
+explicitly invoked operations, never rule actions or rule triggers.
 Unattended Hide/Show, topology changes, monitor-input writes, power writes and
 private disconnect remain unavailable as rule actions.
 
@@ -78,28 +79,53 @@ all rules until verified cleanup succeeds.
 
 ### Named manual actions
 
-**Settings → Automations → Actions** stores named, one-display commands with a
-stable ID. Choose exactly **Hide (black out)**, **Hide (remove from desktop)** or **Show**,
-then deliberately select **Run** or invoke the action's copied
-`panelctl app run-action --action UUID` command. Rename keeps the ID. Deleting an
-Action does not change the target's state or discard its recovery evidence.
+**Settings → Automations → Actions** stores named workflows with a stable ID and
+1–8 ordered steps. Each step targets a different exact display UUID and chooses
+**Hide (black out)**, **Hide (remove from desktop)** or **Show**. Deliberately
+select **Run** or invoke the copied `panelctl app run-action --action UUID`
+command; neither operation launches the app. Rename and step edits keep the ID.
+Deleting an Action does not change display state or discard recovery evidence.
 
-The selected effect is fixed for each run. A blocked Remove Action is refused,
-never converted to Black out. Remove requires Experimental features and records
-the target's current Remove switch, mirror source and away input when saved. A
-change to any reviewed field shows **Display setup changed** and disables Run; save the Action
-after inspecting the current Displays setup. Dynamic return-input detection is
-not a reviewed field. Each run rechecks the target's full stable identity,
-current setup, safety readiness, recovery state and automation cleanup before
-using the existing Hide/Show implementation.
+Before any display, input or helper change, the whole workflow is preflighted
+against a fresh display/recovery snapshot. It checks stable identities, each
+Remove step's reviewed setup, Experimental consent, recovery and cleanup,
+readiness, mirror dependencies and the visible-display rule projected through
+earlier steps. Save-time conflicts derivable from the definition are refused.
+Already-satisfied steps are no-ops only after their applicable identity,
+consent, recovery, cleanup, lifecycle and busy checks; a verified Remove is
+required. Refusal names the step and writes nothing. No fallback effect or
+identity guess is used.
 
-Show uses the existing recorded recovery for exactly its selected target and
-remains available after setup changes or Experimental features are turned off.
-Deleting an Action does not remove the ordinary tile/menu Show or recovery path.
-Actions run only on an explicit Run or exact command. Startup, login, wake,
-reconnection and Automation never run them. Automation Pause, Restore, timeout,
-Escape and activity affect only automation covers; they do not trigger an
-Action or show an Action-hidden display.
+A Remove step records that display's Remove switch, mirror source and away input
+when saved. Drift identifies the affected step and requires review in Displays
+before saving again; detected return input is dynamic and is not a reviewed
+field. Show uses existing recovery for exactly its selected display and remains
+available after setup changes or Experimental features are turned off.
+
+Execution is sequential and non-atomic. The first refusal, failure, partial
+input result, recovery need or lifecycle interruption stops the later steps;
+earlier changes remain and ordinary tile/menu Show and recovery stay available.
+Automation helpers are stopped at most once for the run, remain stopped between
+steps, and are reconciled once at the end. A run-level lease makes competing
+Hide/Show/toggle requests, other Action runs, cleanup retry, Full disconnect,
+recovery repair and Quit busy until completion; requests are never queued. The
+Action being run cannot be saved or deleted until it finishes, while other
+Actions remain editable.
+
+JSON returns ordered per-step desktop/input outcomes and text prints one line
+per step. `done` means all steps reached their states and at least one changed;
+`no-op` means all were already there; `partial` means a display changed but the
+workflow did not finish; recovery-needed takes precedence. The run-action reply
+waits up to 30 seconds per step (240 seconds maximum). A lost reply does not
+cancel or resend a run: inspect `panelctl app status --json` for its current
+step before acting again. Actions run only on explicit Run or exact command.
+Startup, login, wake, reconnection and Automation never run them. Pause, Restore,
+timeout, Escape and activity affect only automation covers, not Action steps.
+
+Action workflows are verified offline with fake display inventories and
+writers; this does not qualify a new hardware combination. The existing TASK-32
+CLI round trip is the only hardware-qualified multi-removal combination. Live
+writes still require separate scoped approval.
 
 ## Experimental features
 

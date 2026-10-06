@@ -103,6 +103,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     ) -> NSApplication.TerminateReply {
         guard let model else { return .terminateNow }
         guard !terminationPending else { return .terminateLater }
+        if let runningAction = model.runningDisplayAction {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Action in progress"
+            alert.informativeText = "Action “\(runningAction.name)” is running step \(runningAction.currentStep) of \(runningAction.totalSteps). Wait for it to finish before quitting."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return .terminateCancel
+        }
         if model.hideOperation.isBusy {
             let alert = NSAlert()
             alert.alertStyle = .warning
@@ -430,7 +439,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 Self.blackoutActionTitle(for: effectiveModes),
                 action: #selector(blackoutNow)
             )
-            if !model.automationPreferences.rules.contains(where: \.isEnabled) {
+            if let busy = model.runningDisplayAction.map({ _ in model.displayActionBusyMessage }) {
+                blackout.isEnabled = false
+                blackout.toolTip = busy
+            } else if !model.automationPreferences.rules.contains(where: \.isEnabled) {
                 blackout.isEnabled = false
                 blackout.toolTip = "Turn on a rule in Settings → Automations."
             }
@@ -439,7 +451,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.addItem(restoreMenuItem())
             }
         }
-        menu.addItem(item("Sleep Displays", action: #selector(sleepAllNow)))
+        let sleep = item("Sleep Displays", action: #selector(sleepAllNow))
+        if model.runningDisplayAction != nil {
+            sleep.isEnabled = false
+            sleep.toolTip = model.displayActionBusyMessage
+        }
+        menu.addItem(sleep)
         if !model.preferences.isEnabled {
             menu.addItem(item("Turn On Automation", action: #selector(toggleProtection)))
         } else if model.snoozedUntil != nil {
@@ -463,7 +480,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         if model.protectionQuiescenceFailure != nil {
             let retry = item("Retry Automation Cleanup", action: #selector(retryProtection))
-            retry.isEnabled = !model.protectionQuiescencePending && !model.hideOperation.isBusy
+            retry.isEnabled = model.runningDisplayAction == nil && !model.protectionQuiescencePending && !model.hideOperation.isBusy
+            if model.runningDisplayAction != nil { retry.toolTip = model.displayActionBusyMessage }
             menu.addItem(retry)
         } else if model.runtimeState.errorMessage != nil, model.preferences.isEnabled {
             menu.addItem(item("Retry Automation", action: #selector(retryProtection)))
@@ -471,7 +489,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(item("Settings…", action: #selector(openSettings), key: ","))
         menu.addItem(.separator())
-        menu.addItem(item("Quit PanelCtl", action: #selector(quit), key: "q"))
+        let quit = item("Quit PanelCtl", action: #selector(quit), key: "q")
+        if model.runningDisplayAction != nil {
+            quit.isEnabled = false
+            quit.toolTip = model.displayActionBusyMessage
+        }
+        menu.addItem(quit)
+        if model.runningDisplayAction != nil {
+            let busy = model.displayActionBusyMessage
+            for menuItem in menu.items where menuItem.isEnabled &&
+                menuItem.action != #selector(openSettings) && menuItem.action != #selector(reviewDisplayRecovery) {
+                menuItem.isEnabled = false
+                menuItem.toolTip = busy
+                for child in menuItem.submenu?.items ?? [] where child.isEnabled {
+                    child.isEnabled = false
+                    child.toolTip = busy
+                }
+            }
+        }
         return menu
     }
 
@@ -538,7 +573,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func restoreMenuItem() -> NSMenuItem {
         let restore = item("Restore", action: #selector(restoreNow))
-        restore.toolTip = "Ends blackout or dimming from every rule. Hidden displays stay hidden."
+        restore.toolTip = model.runningDisplayAction?.id != nil
+            ? model.displayActionBusyMessage
+            : "Ends blackout or dimming from every rule. Hidden displays stay hidden."
+        restore.isEnabled = model.runningDisplayAction == nil
         return restore
     }
 
@@ -740,6 +778,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 error: "unsupported app-control protocol \(request.protocolVersion)"
             )
         }
+        if model.runningDisplayAction != nil,
+           ![AppControlCommand.status, .openSettings, .hide, .show, .toggleHide, .runAction].contains(request.command) {
+            return controlResponse(ok: false, summary: model.displayActionBusyMessage,
+                                   error: model.displayActionBusyMessage, outcome: .busy)
+        }
 
         switch request.command {
         case .hide, .show, .toggleHide, .runAction:
@@ -754,7 +797,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             model.refreshDisplays()
             return controlResponse(ok: true, outcome: model.controlDisplayOutcome,
                                    displays: model.controlDisplayStatuses,
-                                   rules: model.controlRuleStatuses)
+                                   rules: model.controlRuleStatuses,
+                                   runningAction: model.controlRunningDisplayAction)
         case .blackoutNow:
             do {
                 try model.blackoutNow()
@@ -832,7 +876,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         outcome: AppControlOutcome? = nil,
         displays: [AppControlDisplayStatus]? = nil,
         rules: [AppControlRuleStatus]? = nil,
-        detail: String? = nil
+        detail: String? = nil,
+        runningAction: AppControlRunningAction? = nil
     ) -> AppControlResponse {
         AppControlResponse(
             ok: ok,
@@ -847,7 +892,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             snoozedUntil: model.snoozedUntil.map(Self.iso8601.string),
             outcome: outcome,
             displays: displays,
-            rules: rules
+            rules: rules,
+            runningAction: runningAction
         )
     }
 

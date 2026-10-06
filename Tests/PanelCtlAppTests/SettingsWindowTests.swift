@@ -323,7 +323,7 @@ final class SettingsWindowTests: XCTestCase {
         spin { cancelParent.attachedSheet == nil }
         XCTAssertNil(cancelParent.attachedSheet, "Cancel dismisses the production editor")
         XCTAssertTrue(model.displayActions.actions.isEmpty, "Cancel discards the editor draft")
-        XCTAssertNil(defaults.data(forKey: "displayActions"))
+        XCTAssertNil(defaults.data(forKey: AppModel.displayActionsKey))
         cancelParent.close()
 
         draft = model.makeNewDisplayAction(selectedDisplayID: Self.sideUUID)
@@ -345,7 +345,7 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(saved.target?.uuid.lowercased(), Self.sideUUID.lowercased())
         XCTAssertEqual(saved.effect, .blackOut)
         XCTAssertEqual(
-            try JSONDecoder().decode(DisplayActionSet.self, from: XCTUnwrap(defaults.data(forKey: "displayActions"))),
+            try JSONDecoder().decode(DisplayActionSet.self, from: XCTUnwrap(defaults.data(forKey: AppModel.displayActionsKey))),
             model.displayActions,
             "The production editor Save shortcut persists the action"
         )
@@ -398,7 +398,7 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(model.displayActionRemovalSetupReason(for: Self.sideUUID), guidance)
         content.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
-        let setupY = content.isFlipped ? content.bounds.minY + 260 : content.bounds.maxY - 260
+        let setupY = content.isFlipped ? content.bounds.minY + 390 : content.bounds.maxY - 390
         let setupPoint = content.convert(NSPoint(x: 100, y: setupY), to: nil)
         let down = try XCTUnwrap(NSEvent.mouseEvent(
             with: .leftMouseDown, location: setupPoint, modifierFlags: [],
@@ -420,7 +420,7 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(navigation.selectedDisplayID, Self.sideUUID.lowercased())
     }
 
-    func testDisplayActionFixtureSnapshots() throws {
+    func testDisplayActionFixtureSnapshots() async throws {
         guard let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] else {
             throw XCTSkip("Set PANELCTL_SETTINGS_FIXTURE_OUTPUT to a directory to write Settings PNGs.")
         }
@@ -444,10 +444,25 @@ final class SettingsWindowTests: XCTestCase {
             index: 4, id: 14, uuid: "00000000-0000-0000-0000-0000000000FF",
             name: "Conference display", main: false
         ))
+        let main = DisplayIdentitySnapshot(displays[0])
+        let laptop = DisplayIdentitySnapshot(displays[2])
         let blackOut = DisplayAction(name: "Black out conference display", target: target)
+        let focus = DisplayAction(name: "Focus mode", steps: [
+            DisplayActionStep(target: target),
+            DisplayActionStep(target: main, effect: .show)
+        ])
+        let reviewedWorkflow = DisplayAction(name: "Conference handoff", steps: [
+            DisplayActionStep(
+                target: target,
+                effect: .removeFromDesktop,
+                reviewedRemoval: ReviewedRemovalSetup(removeEnabled: true, sourceUUID: Self.mainUUID, awayInput: 0x11)
+            ),
+            DisplayActionStep(target: laptop, effect: .show)
+        ])
         let actions = DisplayActionSet(actions: [
             blackOut,
-            DisplayAction(name: "Show main display", target: DisplayIdentitySnapshot(displays[0]), effect: .show),
+            focus,
+            DisplayAction(name: "Show main display", target: main, effect: .show),
             DisplayAction(name: "Show conference display", target: target, effect: .show),
             DisplayAction(
                 name: "Remove conference display — review required",
@@ -455,13 +470,14 @@ final class SettingsWindowTests: XCTestCase {
                 effect: .removeFromDesktop,
                 reviewedRemoval: ReviewedRemovalSetup(removeEnabled: true, sourceUUID: Self.mainUUID, awayInput: 0x11)
             ),
+            reviewedWorkflow,
             DisplayAction(name: "Show unavailable conference display", target: unavailable, effect: .show)
         ])
 
         for width in [680, 440] {
             let suite = "panelctl-display-action-fixture-\(UUID().uuidString)"
             let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-            defaults.set(try JSONEncoder().encode(actions), forKey: "displayActions")
+            defaults.set(try JSONEncoder().encode(actions), forKey: AppModel.displayActionsKey)
             let model = AppModel(
                 defaults: defaults,
                 displayProvider: { self.displays },
@@ -471,13 +487,84 @@ final class SettingsWindowTests: XCTestCase {
                 coverDisplays: { _ in [] },
                 quiesceProtection: { $0(true, nil) }
             )
-            model.runDisplayAction(id: blackOut.id)
+            let initialRunFinished = expectation(description: "the one-step fixture Action completes before list capture")
+            model.runDisplayAction(id: blackOut.id) { response in
+                XCTAssertEqual(response.outcome, .done)
+                initialRunFinished.fulfill()
+            }
+            await fulfillment(of: [initialRunFinished], timeout: 2)
             let controller = SettingsWindowController(model: model)
             controller.present()
             controller.select(.automation)
             let window = try XCTUnwrap(controller.window)
             window.setContentSize(NSSize(width: width, height: 1080))
             try writeSnapshot(of: window, to: output, name: "actions-list-\(width)")
+
+            let progressSuite = "panelctl-display-action-progress-\(UUID().uuidString)"
+            let progressDefaults = try XCTUnwrap(UserDefaults(suiteName: progressSuite))
+            defer { progressDefaults.removePersistentDomain(forName: progressSuite) }
+            progressDefaults.set(try JSONEncoder().encode(actions), forKey: AppModel.displayActionsKey)
+            var delayedActionQuiescence: ((Bool, String?) -> Void)?
+            let progressModel = AppModel(
+                defaults: progressDefaults,
+                displayProvider: { self.displays },
+                idleSecondsProvider: { nil },
+                isDisplayMirrored: { _ in false },
+                inspectHandoff: { DisplayHandoffStatus(state: .none, journalPath: Self.journalPath) },
+                coverDisplays: { _ in [] },
+                quiesceProtection: { completion in delayedActionQuiescence = completion }
+            )
+            let progressFinished = expectation(description: "the fixture Action completes after progress is captured")
+            progressModel.runDisplayAction(id: focus.id) { _ in progressFinished.fulfill() }
+            XCTAssertEqual(progressModel.runningDisplayAction?.id, focus.id)
+            XCTAssertEqual(progressModel.runningDisplayAction?.currentStep, 1)
+            let progressController = SettingsWindowController(model: progressModel)
+            progressController.present()
+            progressController.select(.automation)
+            let progressWindow = try XCTUnwrap(progressController.window)
+            progressWindow.setContentSize(NSSize(width: width, height: 1080))
+            try writeSnapshot(of: progressWindow, to: output, name: "actions-progress-\(width)")
+            delayedActionQuiescence?(true, nil)
+            await fulfillment(of: [progressFinished], timeout: 2)
+            progressWindow.close()
+
+            let partialSuite = "panelctl-display-action-partial-\(UUID().uuidString)"
+            let partialDefaults = try XCTUnwrap(UserDefaults(suiteName: partialSuite))
+            defer { partialDefaults.removePersistentDomain(forName: partialSuite) }
+            let partialAction = DisplayAction(name: "Focus mode — partial", steps: [
+                DisplayActionStep(target: target),
+                DisplayActionStep(target: main, effect: .show),
+                DisplayActionStep(target: laptop, effect: .show)
+            ])
+            let partialActions = DisplayActionSet(actions: [blackOut, partialAction])
+            partialDefaults.set(try JSONEncoder().encode(partialActions), forKey: AppModel.displayActionsKey)
+            var partialInventory = displays
+            let partialModel = AppModel(
+                defaults: partialDefaults,
+                displayProvider: { partialInventory },
+                idleSecondsProvider: { nil },
+                isDisplayMirrored: { _ in false },
+                inspectHandoff: { DisplayHandoffStatus(state: .none, journalPath: Self.journalPath) },
+                coverDisplays: { ids in
+                    if ids.contains(12) { partialInventory.removeAll { $0.uuid == Self.mainUUID } }
+                    return []
+                },
+                quiesceProtection: { $0(true, nil) }
+            )
+            let partialFinished = expectation(description: "the fake partial Action completes")
+            partialModel.runDisplayAction(id: partialAction.id) { response in
+                XCTAssertEqual(response.outcome, .partial)
+                XCTAssertEqual(response.steps?.map(\.outcome), [.done, .refused, .notRun])
+                partialFinished.fulfill()
+            }
+            await fulfillment(of: [partialFinished], timeout: 2)
+            let partialController = SettingsWindowController(model: partialModel)
+            partialController.present()
+            partialController.select(.automation)
+            let partialWindow = try XCTUnwrap(partialController.window)
+            partialWindow.setContentSize(NSSize(width: width, height: 1080))
+            try writeSnapshot(of: partialWindow, to: output, name: "actions-partial-\(width)")
+            partialWindow.close()
 
             let firstUseSuite = "panelctl-display-action-first-use-\(UUID().uuidString)"
             let firstUseDefaults = try XCTUnwrap(UserDefaults(suiteName: firstUseSuite))
@@ -545,6 +632,23 @@ final class SettingsWindowTests: XCTestCase {
             )
             try writeSnapshot(of: detailsEditor, to: output, name: "action-editor-remove-\(width)")
             window.endSheet(detailsEditor)
+            spin { window.attachedSheet == nil }
+
+            let mixedConflict = DisplayAction(name: "Mixed steps with a setup conflict", steps: [
+                DisplayActionStep(target: main),
+                DisplayActionStep(
+                    target: target,
+                    effect: .removeFromDesktop,
+                    reviewedRemoval: ReviewedRemovalSetup(removeEnabled: true, sourceUUID: Self.mainUUID, awayInput: 0x12)
+                )
+            ])
+            let mixedEditor = try presentStandaloneDisplayActionEditor(
+                in: window, model: configuredModel, navigation: SettingsNavigation(),
+                action: mixedConflict, existingID: nil, isNew: true
+            )
+            try writeSnapshot(of: mixedEditor, to: output, name: "action-editor-mixed-conflict-\(width)")
+            window.endSheet(mixedEditor)
+            spin { window.attachedSheet == nil }
 
             configuredModel.setExperimentalFeaturesEnabled(false)
             let disabledEditor = try presentStandaloneDisplayActionEditor(
@@ -1347,8 +1451,9 @@ final class SettingsWindowTests: XCTestCase {
         existingID: UUID?,
         isNew: Bool
     ) throws -> NSWindow {
+        let sheetWidth = parent.contentView?.bounds.width ?? 520
         let sheet = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: sheetWidth, height: 760),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
