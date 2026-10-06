@@ -163,6 +163,84 @@ final class AutomationSafetyTests: XCTestCase {
         }
     }
 
+    func testOneRuleCleanupFailureStopsSiblingHelpers() async throws {
+        let directory = try makeDirectory("panelctl-sibling-cleanup-failure")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("events.log")
+        let helper = try writeHelper(in: directory, script: """
+        #!/bin/bash
+        case " $* " in
+            *"--display \(sourceAUUID) "*)
+                printf 'failing-launch\\n' >> "$PANELCTL_TEST_LOG"
+                printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
+                /bin/sleep 0.3
+                printf '{"state":"stopped","blackedOutDisplayIDs":[],"cleanupSucceeded":false}\\n'
+                exit 1 ;;
+        esac
+        printf 'sibling-launch\\n' >> "$PANELCTL_TEST_LOG"
+        trap 'printf "sibling-stopped\\n" >> "$PANELCTL_TEST_LOG"; printf "{\\\"state\\\":\\\"stopped\\\",\\\"blackedOutDisplayIDs\\\":[],\\\"cleanupSucceeded\\\":true}\\n"; exit 0' TERM
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
+        while :; do /bin/sleep 0.05; done
+        """)
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        defer { unsetenv("PANELCTL_HELPER"); unsetenv("PANELCTL_TEST_LOG") }
+        let defaults = try makeDefaults("sibling-cleanup")
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let rules = [rule("Failing", uuid: sourceAUUID, mode: .working), rule("Sibling", uuid: sourceBUUID, mode: .blocking)]
+        defaults.set(
+            try JSONEncoder().encode(AutomationPreferences(isEnabled: true, rules: rules)),
+            forKey: "automationRules"
+        )
+        let model = AppModel(
+            defaults: defaults,
+            displayProvider: { self.displays },
+            inspectHandoff: { DisplayHandoffStatus(state: .none, journalPath: "/tmp/no-display-recovery.json") },
+            protectionCoordinator: makeCoordinator(directory: directory)
+        )
+        try await waitUntil { model.protectionQuiescenceFailure != nil }
+        try await waitUntil {
+            ((try? String(contentsOf: log, encoding: .utf8)) ?? "").contains("sibling-stopped")
+        }
+        XCTAssertNotNil(model.protectionQuiescenceFailure, "cleanup failure stays blocking")
+        await withCheckedContinuation { continuation in model.shutdown { continuation.resume() } }
+    }
+
+    func testRetryAutomationRelaunchesHelperThatExitedWithUnchangedArguments() async throws {
+        let directory = try makeDirectory("panelctl-retry-failed-helper")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("events.log")
+        let helper = try writeHelper(in: directory, script: """
+        #!/bin/bash
+        printf 'launch\\n' >> "$PANELCTL_TEST_LOG"
+        if [[ $(/usr/bin/grep -c launch "$PANELCTL_TEST_LOG") -eq 1 ]]; then echo boom >&2; exit 2; fi
+        trap 'printf "{\\\"state\\\":\\\"stopped\\\",\\\"blackedOutDisplayIDs\\\":[],\\\"cleanupSucceeded\\\":true}\\n"; exit 0' TERM
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
+        while :; do /bin/sleep 0.05; done
+        """)
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        defer { unsetenv("PANELCTL_HELPER"); unsetenv("PANELCTL_TEST_LOG") }
+        let defaults = try makeDefaults("retry-failed")
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        defaults.set(
+            try JSONEncoder().encode(AutomationPreferences(isEnabled: true, rules: [rule("One", uuid: sourceAUUID, mode: .blocking)])),
+            forKey: "automationRules"
+        )
+        let model = AppModel(
+            defaults: defaults,
+            displayProvider: { [self.displays[0]] },
+            inspectHandoff: { DisplayHandoffStatus(state: .none, journalPath: "/tmp/no-display-recovery.json") },
+            protectionCoordinator: makeCoordinator(directory: directory)
+        )
+        try await waitUntil { if case .failed = model.runtimeState { return true }; return false }
+        XCTAssertNil(model.protectionQuiescenceFailure)
+        model.retryProtection()
+        try await waitForLogLines(2, at: log)
+        try await waitUntil { model.runtimeState == .waiting }
+        await withCheckedContinuation { continuation in model.shutdown { continuation.resume() } }
+    }
+
     func testBlockingFocusMembershipAndRestoreFanOutFollowEachRule() async throws {
         let helperDirectory = try makeDirectory("panelctl-rule-focus-helper")
         defer { try? FileManager.default.removeItem(at: helperDirectory) }

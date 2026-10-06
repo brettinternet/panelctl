@@ -294,7 +294,12 @@ final class AppModel: ObservableObject {
         protectionCoordinator.onStateChange = { [weak self] in
             guard let self else { return }
             if let cleanupFailure = self.protectionCoordinator.unresolvedCleanupFailure {
+                let newlyFailed = self.protectionQuiescenceFailure == nil
                 self.protectionQuiescenceFailure = cleanupFailure
+                // One rule's unresolved cleanup blocks every rule: stop siblings.
+                if newlyFailed, self.protectionCoordinator.hasManagedProcess {
+                    DispatchQueue.main.async { [weak self] in self?.reconcileProtection() }
+                }
             }
             self.blackedOutDisplayIDs = self.protectionCoordinator.blackedOutDisplayIDs
             self.runtimeState = self.aggregateRuntimeState
@@ -2636,7 +2641,8 @@ final class AppModel: ObservableObject {
             return
         }
         guard preferences.isEnabled else { return }
-        reconcileProtection()
+        // Explicit retry relaunches helpers that exited with unchanged arguments.
+        reconcileProtection(restartWatcher: true)
     }
 
     func retryAutomationCleanup() {
