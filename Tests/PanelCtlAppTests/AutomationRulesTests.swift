@@ -204,6 +204,14 @@ final class AutomationRulesTests: XCTestCase {
             ProtectionRulePresentation.summary(for: rule, displays: inventory),
             "Dim after 10 minutes or when empty · Display 1, Display 2 · restore after 30 minutes"
         )
+        XCTAssertEqual(
+            ProtectionRulePresentation.summaryParts(for: rule, displays: inventory),
+            ProtectionRuleSummary(
+                trigger: "Dim after 10 minutes or when empty",
+                targets: "Display 1, Display 2",
+                afterward: "Restore after 30 minutes"
+            )
+        )
 
         var missingSettings = settings
         missingSettings.mode = .blocking
@@ -294,12 +302,24 @@ final class AutomationRulesTests: XCTestCase {
         XCTAssertEqual(ProtectionRulePresentation.status(
             for: rule, state: .blackedOut, validation: waiting, enableRefusal: "overlap", displays: inventory
         ).text, "Can’t turn on: overlap")
+        XCTAssertEqual(ProtectionRulePresentation.status(
+            for: rule, state: .waitingForPlayback, validation: waiting, displays: inventory
+        ).tone, .waiting)
+        XCTAssertEqual(ProtectionRulePresentation.status(
+            for: rule, state: .waiting, validation: waiting, displays: inventory
+        ).tone, .active)
+        XCTAssertEqual(ProtectionRulePresentation.status(
+            for: rule, state: .failed("broken"), validation: waiting, displays: inventory
+        ).tone, .attention)
 
         var off = rule
         off.isEnabled = false
         XCTAssertEqual(ProtectionRulePresentation.status(
             for: off, state: .disabled, validation: waiting, displays: inventory
         ).text, "Off")
+        XCTAssertEqual(ProtectionRulePresentation.status(
+            for: off, state: .disabled, validation: waiting, displays: inventory
+        ).tone, .off)
     }
 
     @MainActor

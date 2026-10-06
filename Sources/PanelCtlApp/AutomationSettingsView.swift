@@ -125,7 +125,10 @@ struct AutomationSettingsView: View {
         let blocker = model.displayActionRunBlocker(for: action)
         let status = model.displayActionStatus(for: action)
         let running = model.runningDisplayActionIDs.contains(action.id)
-        return VStack(alignment: .leading, spacing: 5) {
+        let result = model.displayActionResults[action.id]
+        let stepResults = DisplayActionPresentation.alignedStepResults(for: action, steps: result?.steps)
+        let currentStep = model.runningDisplayAction.flatMap { $0.id == action.id ? $0.currentStep : nil }
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text(action.name)
                     .font(.body.weight(.semibold))
@@ -141,19 +144,30 @@ struct AutomationSettingsView: View {
                 .disabled(blocker != nil || running)
                 .accessibilityLabel("Run \(action.name)")
             }
-            Text(DisplayActionPresentation.summary(for: action, displays: model.displays))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(action.steps.count == 1 ? 2 : nil)
-                .fixedSize(horizontal: false, vertical: true)
-            rowStatus(status, warning: blocker != nil && !running)
-            if let result = model.displayActionResults[action.id] {
-                // A plain success is already reflected by the status line.
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(action.steps.enumerated()), id: \.offset) { offset, step in
+                    actionStepRow(
+                        step, number: offset + 1, numbered: action.steps.count > 1,
+                        result: stepResults?[offset], isRunning: currentStep == offset + 1
+                    )
+                }
+            }
+            if let status {
+                rowStatus(status, warning: blocker != nil && !running)
+            }
+            if let result {
+                // A plain success is already reflected by each step's result.
                 if result.outcome != .done, result.summary != status {
                     rowStatus(result.summary, warning: result.outcome == .recoveryNeeded)
                 }
-                ForEach(result.steps ?? [], id: \.index) { step in
-                    actionStepResult(step)
+                if stepResults == nil, let steps = result.steps, !steps.isEmpty {
+                    // The Action changed since this run, so its results can't sit beside the current steps.
+                    Text("Last run")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(steps, id: \.index) { step in
+                        actionStepResult(step)
+                    }
                 }
                 if let detail = result.detail, result.steps == nil {
                     Text(detail)
@@ -163,18 +177,105 @@ struct AutomationSettingsView: View {
                 }
             }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 4)
+    }
+
+    private func actionStepRow(
+        _ step: DisplayActionStep,
+        number: Int,
+        numbered: Bool,
+        result: AppControlActionStepResult?,
+        isRunning: Bool
+    ) -> some View {
+        let parts = DisplayActionPresentation.stepParts(for: step, displays: model.displays)
+        let attention = result.map(DisplayActionPresentation.stepNeedsAttention) ?? false
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: numbered ? "\(number).circle.fill" : stepSymbol(step.effect))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+                .accessibilityLabel("Step \(number)")
+                .accessibilityHidden(!numbered)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(parts.title)
+                if let detail = parts.detail {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let result, attention {
+                    stepResultLines(result, attention: true)
+                        .font(.caption)
+                        .padding(.top, 2)
+                }
+            }
+            Spacer(minLength: 4)
+            if isRunning {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Running")
+            } else if let result {
+                stepResultIcon(result, attention: attention)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func stepSymbol(_ effect: DisplayActionEffect) -> String {
+        switch effect {
+        case .show: return "eye"
+        case .blackOut, .removeFromDesktop: return "eye.slash"
+        }
+    }
+
+    private func stepResultIcon(_ step: AppControlActionStepResult, attention: Bool) -> some View {
+        let symbol: String
+        let color: Color
+        if attention {
+            (symbol, color) = ("exclamationmark.triangle.fill", .orange)
+        } else {
+            switch step.outcome {
+            case .noOp: (symbol, color) = ("checkmark.circle", .secondary)
+            case .notRun: (symbol, color) = ("minus.circle", .secondary)
+            default: (symbol, color) = ("checkmark.circle.fill", .green)
+            }
+        }
+        let description = stepResultDescription(step)
+        return Image(systemName: symbol)
+            .foregroundStyle(color)
+            .help(description)
+            .accessibilityLabel("Last run: \(description)")
+    }
+
+    private func stepResultDescription(_ step: AppControlActionStepResult) -> String {
+        var parts = ["\(desktopStateText(for: step)): \(desktopDetail(for: step))"]
+        if let input = step.inputOutcome {
+            parts.append("Input \(input.rawValue)\(step.inputDetail.map { ": \($0)" } ?? "")")
+        } else if let inputDetail = step.inputDetail {
+            parts.append("Input: \(inputDetail)")
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    /// Fallback for results that no longer line up with the Action's steps.
+    private func actionStepResult(_ step: AppControlActionStepResult) -> some View {
+        let attention = DisplayActionPresentation.stepNeedsAttention(step)
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "\(step.index).circle.fill")
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+                .accessibilityHidden(true)
+            stepResultLines(step, attention: attention)
+            Spacer(minLength: 4)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Step \(step.index) last run")
     }
 
     @ViewBuilder
-    private func actionStepResult(_ step: AppControlActionStepResult) -> some View {
-        let attention = DisplayActionPresentation.stepNeedsAttention(step)
-        let desktopState = desktopStateText(for: step)
-        let reasonPrefix = "Step \(step.index): "
-        let desktopDetail = step.desktopSummary.hasPrefix(reasonPrefix)
-            ? String(step.desktopSummary.dropFirst(reasonPrefix.count)) : step.desktopSummary
+    private func stepResultLines(_ step: AppControlActionStepResult, attention: Bool) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            rowStatus("Step \(step.index): \(desktopState) · \(desktopDetail)", warning: attention)
+            rowStatus("\(desktopStateText(for: step)) · \(desktopDetail(for: step))", warning: attention)
             if let input = step.inputOutcome {
                 rowStatus("Input: \(input.rawValue)\(step.inputDetail.map { " · \($0)" } ?? "")",
                           warning: attention)
@@ -189,23 +290,34 @@ struct AutomationSettingsView: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
+    private func desktopDetail(for step: AppControlActionStepResult) -> String {
+        let reasonPrefix = "Step \(step.index): "
+        return step.desktopSummary.hasPrefix(reasonPrefix)
+            ? String(step.desktopSummary.dropFirst(reasonPrefix.count)) : step.desktopSummary
+    }
+
     private func desktopStateText(for step: AppControlActionStepResult) -> String {
         switch step.outcome {
-        case .done: return "done"
-        case .noOp: return "already in state"
-        case .notRun: return "not run"
-        case .partial where step.inputOutcome != nil: return "done"
-        default: return "stopped"
+        case .done: return "Done"
+        case .noOp: return "Already in state"
+        case .notRun: return "Not run"
+        case .partial where step.inputOutcome != nil: return "Done"
+        default: return "Stopped"
         }
     }
 
     private func ruleRow(_ rule: ProtectionRule) -> some View {
         let status = model.protectionRuleRowStatus(for: rule)
-        return VStack(alignment: .leading, spacing: 5) {
+        let summary = ProtectionRulePresentation.summaryParts(for: rule, displays: model.displays)
+        let settings = rule.settings
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text(rule.name)
-                    .font(.body.weight(.semibold))
-                    .accessibilityAddTraits(.isHeader)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(rule.name)
+                        .font(.body.weight(.semibold))
+                        .accessibilityAddTraits(.isHeader)
+                    ruleStatusLine(status)
+                }
                 Spacer(minLength: 4)
                 Button("Edit…") {
                     editor = RuleEditorPresentation(rule: rule, isNew: false)
@@ -220,24 +332,72 @@ struct AutomationSettingsView: View {
                 .labelsHidden()
                 .accessibilityLabel(ProtectionRulePresentation.ruleSwitchAccessibilityLabel(for: rule.name))
             }
-            Text(ProtectionRulePresentation.summary(for: rule, displays: model.displays))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .truncationMode(.tail)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(alignment: .top, spacing: 8) {
-                rowStatus(status.text, warning: status.isBlocked)
-                Spacer(minLength: 4)
-                if model.protectionRuleNeedsDisplayReview(rule) {
-                    Button("Review in Displays…") {
-                        navigation.showDisplays(selecting: model.protectionRuleReviewDisplayUUID(rule))
-                    }
-                    .accessibilityLabel("Review in Displays")
+            VStack(alignment: .leading, spacing: 4) {
+                factLine(settings.mode == .working ? "sun.min" : "moon", summary.trigger)
+                factLine(settings.allDisplays || settings.selectedDisplayUUIDs.count > 1 ? "display.2" : "display",
+                         summary.targets)
+                factLine(afterwardSymbol(settings.followUpAction), summary.afterward)
+                ForEach(status.details, id: \.self) { detail in
+                    factLine("info.circle", detail)
                 }
             }
+            if model.protectionRuleNeedsDisplayReview(rule) {
+                Button("Review in Displays…") {
+                    navigation.showDisplays(selecting: model.protectionRuleReviewDisplayUUID(rule))
+                }
+                .accessibilityLabel("Review in Displays")
+            }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func ruleStatusLine(_ status: ProtectionRuleRowStatus) -> some View {
+        if status.isBlocked {
+            rowStatus(status.headline, warning: true)
+                .font(.subheadline)
+        } else {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(statusColor(status.tone))
+                    .frame(width: 7, height: 7)
+                    .accessibilityHidden(true)
+                Text(status.headline)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func statusColor(_ tone: ProtectionRuleRowStatus.Tone) -> Color {
+        switch tone {
+        case .off: return .secondary.opacity(0.5)
+        case .waiting: return .yellow
+        case .active: return .green
+        case .attention: return .orange
+        }
+    }
+
+    private func afterwardSymbol(_ action: FollowUpAction) -> String {
+        switch action {
+        case .untilActivity: return "cursorarrow.motionlines"
+        case .restore: return "arrow.uturn.backward"
+        case .sleepDisplays: return "moon.zzz"
+        }
+    }
+
+    private func factLine(_ symbol: String, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: symbol)
+                .frame(width: 16)
+                .accessibilityHidden(true)
+            Text(text)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
     }
 
     @ViewBuilder

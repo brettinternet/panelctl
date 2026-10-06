@@ -108,7 +108,7 @@ final class DisplayActionAppTests: XCTestCase {
         XCTAssertEqual(model.displayActionStatus(for: action), model.displayActionRunBlocker(for: action))
         var unreviewed = action
         unreviewed.reviewedRemoval = nil
-        XCTAssertTrue(model.displayActionStatus(for: unreviewed).hasPrefix("Step 1:"))
+        XCTAssertEqual(model.displayActionStatus(for: unreviewed)?.hasPrefix("Step 1:"), true)
 
         model.setHideEnabled(true, for: try XCTUnwrap(displays.first { $0.uuid == targetUUID }))
         var reviewedAgain = action
@@ -812,7 +812,7 @@ final class DisplayActionAppTests: XCTestCase {
         try model.saveDisplayAction(active)
         let other = DisplayAction(name: "Editable other Action", target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == alternateUUID })))
         try model.saveDisplayAction(other)
-        XCTAssertNil(model.displayActionRunBlocker(for: active), model.displayActionStatus(for: active))
+        XCTAssertNil(model.displayActionRunBlocker(for: active), model.displayActionStatus(for: active) ?? "")
         let staleRequestTime = ContinuousClock.now
         let runFinished = expectation(description: "the leased Action finishes after quiescence")
         var finishedResponse: AppControlResponse?
@@ -1307,6 +1307,34 @@ final class DisplayActionAppTests: XCTestCase {
                 outcome: .partial, desktopSummary: "Shown.", inputOutcome: input)
             XCTAssertTrue(DisplayActionPresentation.stepNeedsAttention(step))
         }
+    }
+
+    func testRowStepPartsAndLastRunResultsFollowCurrentSteps() throws {
+        let target = DisplayIdentityReference(try XCTUnwrap(displays.first { $0.uuid == targetUUID }))
+        let source = DisplayIdentityReference(try XCTUnwrap(displays.first { $0.uuid == sourceUUID }))
+        let targetName = DisplayActionPresentation.displayName(for: target, displays: displays)
+        let sourceName = DisplayActionPresentation.displayName(for: source, displays: displays)
+        let remove = DisplayActionStep(target: target, effect: .removeFromDesktop, reviewedRemoval: ReviewedRemovalSetup(
+            removeEnabled: true, sourceUUID: sourceUUID, awayInput: 0x11))
+        let show = DisplayActionStep(target: source, effect: .show)
+        let parts = DisplayActionPresentation.stepParts(for: remove, displays: displays)
+        XCTAssertEqual(parts.title, "Hide \(targetName)")
+        XCTAssertEqual(parts.detail, "Remove from desktop \u{00B7} Mirror onto \(sourceName) \u{00B7} Switch to HDMI 1")
+        XCTAssertNil(DisplayActionPresentation.stepParts(for: show, displays: displays).detail)
+
+        let action = DisplayAction(name: "Hand off", steps: [remove, show])
+        let results = [
+            AppControlActionStepResult(index: 1, targetUUID: targetUUID.uppercased(), effect: "removeFromDesktop",
+                                       outcome: .done, desktopSummary: "Hidden."),
+            AppControlActionStepResult(index: 2, targetUUID: sourceUUID, effect: "show",
+                                       outcome: .noOp, desktopSummary: "Already shown.")
+        ]
+        XCTAssertEqual(DisplayActionPresentation.alignedStepResults(for: action, steps: results), results)
+        XCTAssertNil(DisplayActionPresentation.alignedStepResults(for: action, steps: nil))
+        XCTAssertNil(DisplayActionPresentation.alignedStepResults(for: action, steps: Array(results.reversed())),
+                     "results from before a reorder must not sit beside the new steps")
+        XCTAssertNil(DisplayActionPresentation.alignedStepResults(
+            for: DisplayAction(name: "Hand off", steps: [remove]), steps: results))
     }
 
     func testDisplayReconfigurationInterruptsAfterCompletedStepWithoutUndoingIt() async throws {

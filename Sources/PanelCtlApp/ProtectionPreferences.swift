@@ -581,10 +581,29 @@ struct ProtectionRuleValidation {
 }
 
 struct ProtectionRuleRowStatus: Equatable {
-    let text: String
-    let blockedReason: String?
+    enum Tone: Equatable { case off, waiting, active, attention }
 
+    let headline: String
+    let blockedReason: String?
+    let tone: Tone
+    let details: [String]
+
+    init(text: String, blockedReason: String?, tone: Tone, details: [String] = []) {
+        headline = text
+        self.blockedReason = blockedReason
+        self.tone = blockedReason == nil ? tone : .attention
+        self.details = details
+    }
+
+    var text: String { ([headline] + details).joined(separator: " · ") }
     var isBlocked: Bool { blockedReason != nil }
+}
+
+/// A rule's settings split into the facts the Automations row shows on separate lines.
+struct ProtectionRuleSummary: Equatable {
+    let trigger: String
+    let targets: String
+    let afterward: String
 }
 
 enum ProtectionRulePresentation {
@@ -597,20 +616,28 @@ enum ProtectionRulePresentation {
     }
 
     static func summary(for rule: ProtectionRule, displays: [DisplayRecord]) -> String {
+        let parts = summaryParts(for: rule, displays: displays)
+        return "\(parts.trigger) · \(parts.targets) · \(parts.afterward.prefix(1).lowercased())\(parts.afterward.dropFirst())"
+    }
+
+    static func summaryParts(for rule: ProtectionRule, displays: [DisplayRecord]) -> ProtectionRuleSummary {
         let settings = rule.settings
         let effect = settings.mode == .working ? "Dim" : "Black out"
         let emptySuffix = settings.blackoutEmptyDisplays ? " or when empty" : ""
-        let targets = targetSummary(for: settings, displays: displays)
         let afterward: String
         switch settings.followUpAction {
         case .untilActivity:
-            afterward = "until activity"
+            afterward = "Until activity"
         case .restore:
-            afterward = "restore after \(AppModel.durationLabel(settings.followUpSeconds))"
+            afterward = "Restore after \(AppModel.durationLabel(settings.followUpSeconds))"
         case .sleepDisplays:
-            afterward = "sleep all displays after \(AppModel.durationLabel(settings.followUpSeconds))"
+            afterward = "Sleep all displays after \(AppModel.durationLabel(settings.followUpSeconds))"
         }
-        return "\(effect) after \(AppModel.durationLabel(settings.idleSeconds))\(emptySuffix) · \(targets) · \(afterward)"
+        return ProtectionRuleSummary(
+            trigger: "\(effect) after \(AppModel.durationLabel(settings.idleSeconds))\(emptySuffix)",
+            targets: targetSummary(for: settings, displays: displays),
+            afterward: afterward
+        )
     }
 
     static func status(
@@ -622,32 +649,38 @@ enum ProtectionRulePresentation {
         effectiveMode: BlackoutMode? = nil
     ) -> ProtectionRuleRowStatus {
         if let enableRefusal {
-            return .init(text: "Can’t turn on: \(enableRefusal)", blockedReason: enableRefusal)
+            return .init(text: "Can’t turn on: \(enableRefusal)", blockedReason: enableRefusal, tone: .attention)
         }
-        guard rule.isEnabled else { return .init(text: "Off", blockedReason: nil) }
+        guard rule.isEnabled else { return .init(text: "Off", blockedReason: nil, tone: .off) }
         if case .disabled = state {
-            return .init(text: ProtectionRuntimeState.disabled.label, blockedReason: nil)
+            return .init(text: ProtectionRuntimeState.disabled.label, blockedReason: nil, tone: .off)
         }
         if case .disconnectPaused = state {
-            return .init(text: ProtectionRuntimeState.disconnectPaused.label, blockedReason: nil)
+            return .init(text: ProtectionRuntimeState.disconnectPaused.label, blockedReason: nil, tone: .waiting)
         }
         if case .failed(let reason) = state {
             let blocked = validation.blockingReason ?? reason
-            return .init(text: "Blocked: \(blocked)", blockedReason: blocked)
+            return .init(text: "Blocked: \(blocked)", blockedReason: blocked, tone: .attention)
         }
         if case .waitingForDisplays(let reason) = state {
             if let unavailable = unavailableTargetName(for: rule, displays: displays) {
-                return .init(text: "Waiting: \(unavailable) unavailable", blockedReason: nil)
+                return .init(text: "Waiting: \(unavailable) unavailable", blockedReason: nil, tone: .waiting)
             }
-            return .init(text: "Waiting: \(validation.waitingReason ?? reason)", blockedReason: nil)
+            return .init(text: "Waiting: \(validation.waitingReason ?? reason)", blockedReason: nil, tone: .waiting)
         }
         if case .waitingForPlayback = state {
-            return .init(text: "Paused for media or camera", blockedReason: nil)
+            return .init(text: "Paused for media or camera", blockedReason: nil, tone: .waiting)
         }
         if case .blackedOut = state, (effectiveMode ?? rule.settings.mode) == .working {
-            return .init(text: "Dimming active", blockedReason: nil)
+            return .init(text: "Dimming active", blockedReason: nil, tone: .active)
         }
-        return .init(text: state.label, blockedReason: nil)
+        let tone: ProtectionRuleRowStatus.Tone
+        switch state {
+        case .starting, .waiting, .waitingForInput, .blackedOut, .sleeping: tone = .active
+        case .snoozed: tone = .waiting
+        default: tone = .off
+        }
+        return .init(text: state.label, blockedReason: nil, tone: tone)
     }
 
     private static func targetSummary(

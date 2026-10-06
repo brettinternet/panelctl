@@ -83,7 +83,7 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertTrue(model.protectionPausedForDisplayRecovery)
         XCTAssertTrue(model.hiddenMirrorOverlayPolicyEligible)
         XCTAssertEqual(model.effectiveBlackoutMode, .blocking)
-        XCTAssertEqual(model.protectionRuleRowStatus(for: rule).text, "Watching for inactivity · sleep paused while a display is removed; restores overlay instead")
+        XCTAssertEqual(model.protectionRuleRowStatus(for: rule).text, "Watching for inactivity · Sleep paused while a display is removed; restores overlay instead")
         let waitingMenuTitles = delegate.makeMenu().items.map(\.title)
         XCTAssertTrue(waitingMenuTitles.contains("Black Out Now"), "a hidden mirror source turns Dim Now into Black Out Now while waiting")
         XCTAssertFalse(waitingMenuTitles.contains("Dim Now"))
@@ -96,7 +96,7 @@ final class DisplayHideAppTests: XCTestCase {
 
         try model.blackoutNow()
         try await waitUntil { model.runtimeState == .blackedOut }
-        XCTAssertEqual(model.protectionRuleRowStatus(for: rule).text, "Blackout active · sleep paused while a display is removed; restores overlay instead")
+        XCTAssertEqual(model.protectionRuleRowStatus(for: rule).text, "Blackout active · Sleep paused while a display is removed; restores overlay instead")
         XCTAssertTrue(model.statusSummary.contains("Mirror source blacked out by automation"))
 
         let menuTitles = delegate.makeMenu().items.map(\.title)
@@ -173,8 +173,8 @@ final class DisplayHideAppTests: XCTestCase {
             let rule = try XCTUnwrap(model.automationPreferences.rules.first)
             let status = model.protectionRuleRowStatus(for: rule)
             XCTAssertNil(status.blockedReason)
-            XCTAssertTrue(status.text.contains("skipping 1 unavailable or hidden display"))
-            XCTAssertTrue(status.text.contains("sleep paused"))
+            XCTAssertTrue(status.details.contains { $0.hasPrefix("Skipping 1 unavailable or hidden display") })
+            XCTAssertTrue(status.details.contains { $0.hasPrefix("Sleep paused") })
             XCTAssertTrue(model.statusSummary.contains(selected.contains(Self.mainUUID) ? "Main OLED" : "Mirror source"))
             try model.blackoutNow()
             try await waitUntil { model.runtimeState == .blackedOut }

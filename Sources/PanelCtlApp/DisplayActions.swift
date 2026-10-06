@@ -226,33 +226,41 @@ enum DisplayActionPresentation {
             ((step.inputOutcome == nil || step.inputOutcome == .notRequested) && step.inputDetail != nil)
     }
 
-    static func summary(for action: DisplayAction, displays: [DisplayRecord]) -> String {
-        let summaries = action.steps.enumerated().map { index, step in
-            let text = summary(for: step, displays: displays)
-            return action.steps.count == 1 ? text : "\(index + 1). \(text)"
-        }
-        return summaries.joined(separator: "  ·  ")
-    }
-
-    static func summary(for step: DisplayActionStep, displays: [DisplayRecord]) -> String {
+    /// One step as the Automations row shows it: what happens to which display, then how.
+    static func stepParts(for step: DisplayActionStep, displays: [DisplayRecord]) -> (title: String, detail: String?) {
         let targetName = step.target.map { displayName(for: $0, displays: displays) } ?? "Choose a display"
         switch step.effect {
         case .blackOut:
-            return "Hide \(targetName) (black out)"
+            return ("Hide \(targetName)", "Black out")
         case .show:
-            return "Show \(targetName)"
+            return ("Show \(targetName)", nil)
         case .removeFromDesktop:
             let source: String
             if let uuid = step.reviewedRemoval?.sourceUUID, !uuid.isEmpty {
                 let name = displays.first(where: { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame })?.settingsName
                     ?? "\(uuid.prefix(8))… (unavailable)"
-                source = "mirror onto \(name)"
+                source = "Mirror onto \(name)"
             } else {
-                source = "no mirror source"
+                source = "No mirror source"
             }
-            let input = step.reviewedRemoval?.awayInput.map { "switch to \(MonitorInput.name($0))" } ?? "don’t switch input"
-            return "Hide \(targetName) (remove from desktop) · \(source) · \(input)"
+            let input = step.reviewedRemoval?.awayInput.map { "Switch to \(MonitorInput.name($0))" } ?? "Don’t switch input"
+            return ("Hide \(targetName)", "Remove from desktop · \(source) · \(input)")
         }
+    }
+
+    /// The last run's step results in the Action's current step order, or nil when the Action changed since.
+    static func alignedStepResults(
+        for action: DisplayAction,
+        steps results: [AppControlActionStepResult]?
+    ) -> [AppControlActionStepResult]? {
+        guard let results, results.count == action.steps.count else { return nil }
+        for (offset, pair) in zip(action.steps, results).enumerated() {
+            let (step, result) = pair
+            guard result.index == offset + 1, result.effect == step.effect.rawValue,
+                  let uuid = step.target?.uuid,
+                  uuid.caseInsensitiveCompare(result.targetUUID) == .orderedSame else { return nil }
+        }
+        return results
     }
 
     static func displayName(for identity: DisplayIdentityReference, displays: [DisplayRecord]) -> String {

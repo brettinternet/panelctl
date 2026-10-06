@@ -1024,14 +1024,15 @@ final class AppModel: ObservableObject {
         )
     }
 
-    func displayActionStatus(for action: DisplayAction) -> String {
+    /// Why the Action can't run right now, or its progress; nil when it's ready.
+    func displayActionStatus(for action: DisplayAction) -> String? {
         if let run = runningDisplayAction, run.id == action.id {
             return "Running step \(run.currentStep) of \(run.totalSteps)…"
         }
         if let displayActionStorageFailure { return displayActionStorageFailure }
         if let blocker = displayActionRunBlocker(for: action) { return blocker }
         guard !action.steps.isEmpty else { return "This Action has no steps." }
-        return "Ready"
+        return nil
     }
 
     private func protectionRuleAdmissionValidation(
@@ -1205,13 +1206,13 @@ final class AppModel: ObservableObject {
             let skipped = candidates.subtracting(targetUUIDs).count
             var details: [String] = []
             if skipped > 0 {
-                details.append("on " + targets.map(\.settingsName).joined(separator: ", "))
-                details.append("skipping \(skipped) unavailable or hidden display\(skipped == 1 ? "" : "s")")
+                let running = targets.isEmpty ? "" : "; running on " + targets.map(\.settingsName).joined(separator: ", ")
+                details.append("Skipping \(skipped) unavailable or hidden display\(skipped == 1 ? "" : "s")\(running)")
             }
             if overlay, rule.settings.followUpAction == .sleepDisplays {
-                details.append("sleep paused while a display is removed; restores overlay instead")
+                details.append("Sleep paused while a display is removed; restores overlay instead")
             }
-            return .init(text: ([status.text] + details).joined(separator: " · "), blockedReason: nil)
+            return .init(text: status.headline, blockedReason: nil, tone: status.tone, details: details)
         default: return status
         }
     }
