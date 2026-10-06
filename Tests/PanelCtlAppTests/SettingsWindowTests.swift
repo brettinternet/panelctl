@@ -857,10 +857,15 @@ final class SettingsWindowTests: XCTestCase {
         let dim = ProtectionRule(name: "Desk dimming", isEnabled: true, settings: settings(Self.sideUUID, mode: .working))
         let missing = ProtectionRule(name: "Missing display", isEnabled: true, settings: settings(missingUUID))
         let conflict = ProtectionRule(name: "Desk dimming", isEnabled: true, settings: settings(Self.mainUUID, mode: .working))
+        var partialSettings = settings(Self.sideUUID)
+        partialSettings.selectedDisplayUUIDs.insert(missingUUID)
+        partialSettings.followUpAction = .sleepDisplays
+        let partial = ProtectionRule(name: "OLED protection", isEnabled: true, settings: partialSettings)
         let scenarios: [(name: String, ruleSet: AutomationPreferences?, legacy: ProtectionPreferences?, cleanupFailure: Bool, editor: String?, activeRuleID: UUID?)] = [
             ("migrated-single", nil, migratedSettings, false, nil, nil),
             ("multiple-watching-active", AutomationPreferences(isEnabled: true, rules: [first, dim]), nil, false, nil, dim.id),
             ("missing-target", AutomationPreferences(isEnabled: true, rules: [missing]), nil, false, nil, nil),
+            ("remaining-displays", AutomationPreferences(isEnabled: true, rules: [partial]), nil, false, nil, partial.id),
             ("conflicting-rule", AutomationPreferences(isEnabled: true, rules: [first, conflict]), nil, false, nil, nil),
             ("cleanup-failure", AutomationPreferences(isEnabled: true, rules: []), nil, true, nil, nil),
             ("editor-new", nil, migratedSettings, false, "new", nil),
@@ -901,7 +906,24 @@ final class SettingsWindowTests: XCTestCase {
                 defaults: defaults,
                 displayProvider: { self.displays },
                 idleSecondsProvider: { 0 },
-                inspectHandoff: { DisplayHandoffStatus(state: .none, journalPath: Self.journalPath) },
+                inspectHandoff: {
+                    guard scenario.name == "remaining-displays" else {
+                        return DisplayHandoffStatus(state: .none, journalPath: Self.journalPath)
+                    }
+                    let source = self.displays[1]
+                    return DisplayHandoffStatus(
+                        state: .hidden,
+                        target: DisplayHandoffIdentity(DisplayHideIdentity(
+                            uuid: missingUUID, displayID: 99, name: "Removed display", vendor: 1, model: 1, serial: 99
+                        )),
+                        source: DisplayHandoffIdentity(DisplayHideIdentity(
+                            uuid: Self.sideUUID, displayID: source.id, name: source.name,
+                            vendor: source.vendor, model: source.model, serial: source.serial
+                        )),
+                        journalPath: Self.journalPath, journalID: "remaining-fixture", canShow: true,
+                        mirrorTopologyVerified: true
+                    )
+                },
                 coverDisplays: { _ in [] },
                 quiesceProtection: { $0(true, nil) },
                 protectionCoordinator: coordinator

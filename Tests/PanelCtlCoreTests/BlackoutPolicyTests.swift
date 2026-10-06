@@ -338,6 +338,37 @@ final class BlackoutPolicyTests: XCTestCase {
         }
     }
 
+    func testOrdinaryRemovalOverlayRevokesCoverageAndCannotRestartWithoutVerifiedJournal() {
+        var status = hiddenMirrorStatus()
+        var covered = true
+        XCTAssertNil(HiddenMirrorSourceOverlayAuthorization.sessionRefusal(
+            status: status, isMirrored: { $0 == 303 }
+        ))
+        XCTAssertNil(HiddenMirrorSourceOverlayAuthorization.revalidateSessionWhileCovered(
+            status: status, isMirrored: { $0 == 303 }, removeCoverage: { covered = false }
+        ))
+        XCTAssertTrue(covered)
+        let unreadable = DisplayHandoffStatus(
+            state: .recovery, journalPath: "/tmp/unreadable-fixture.json",
+            inspectionFailure: "Unreadable journal"
+        )
+        for changed in [hiddenMirrorStatus(state: .recovery, canShow: false), unreadable,
+                        hiddenMirrorStatus(state: .none, canShow: false)] {
+            status = changed
+            covered = true
+            XCTAssertNotNil(HiddenMirrorSourceOverlayAuthorization.revalidateSessionWhileCovered(
+                status: status, isMirrored: { $0 == 303 }, removeCoverage: { covered = false }
+            ))
+            XCTAssertFalse(covered, "ordinary-only coverage closes without an AppModel refresh or screen event")
+            XCTAssertNotNil(HiddenMirrorSourceOverlayAuthorization.sessionRefusal(
+                status: status, isMirrored: { $0 == 303 }
+            ), "a new cycle cannot install an overlay")
+        }
+        XCTAssertNotNil(HiddenMirrorSourceOverlayAuthorization.sessionRefusal(
+            status: hiddenMirrorStatus(), isMirrored: { _ in false }
+        ), "changed mirror topology revokes authorization even with an unchanged journal")
+    }
+
     func testHiddenMirrorOverlayOptionsKeepFiniteAllScreenSafetyAndHardwareOff() throws {
         let options = BlackoutOptions(
             selectors: ["00000000-0000-0000-0000-000000000003"],

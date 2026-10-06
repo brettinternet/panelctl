@@ -366,12 +366,20 @@ helper omitted its final status report.
 
 ## Automation while hidden
 
-While any display is removed, normal automation pauses. A bounded source-only
-overlay is allowed only when every currently visible journaled mirror source is
-selected in Automation or already covered by a manual Hide; an incomplete source
-selection does not partially cover the session. Shared sources receive one
-overlay, and distinct sources each receive one. Removed targets are never
-overlay targets. Manual Hide can independently black out a verified PanelCtl
+While a display is intentionally removed and the whole removal session remains
+verified, automation continues on eligible selected displays. Removed, unavailable
+and manually blacked-out targets are skipped; rules report partial coverage rather
+than requiring separate rules. Each verified mirror source is independently
+eligible, as are ordinary non-mirrored displays. Shared sources receive one
+overlay. Removed targets are never overlay targets. Returning displays are
+revalidated before inclusion; ambiguous identities and failed or unreadable recovery
+still pause automation. Full disconnect and unverified cleanup remain global blocks.
+
+During a removal, automation uses bounded, window-only blackout: no hardware
+dimming or display-awake assertion. A configured Sleep follow-up restores the
+overlay instead, without sleeping displays or showing removed displays; the row
+explains this and the timer says Restore overlay. Saved rule settings are unchanged
+and normal behavior resumes after verified recovery. Manual Hide can independently black out a verified PanelCtl
 source when another display remains visible. That session-only Hide owns its
 cover instead of Automation; its overlay is stopped while that source is hidden
 and cannot show or double-cover it. Showing a source removes only its manual
@@ -381,7 +389,7 @@ remain.
 | Event | Behavior |
 | --- | --- |
 | Remove while automation is active | Stop treatment and restore brightness first; refuse on cleanup failure |
-| Idle / Black Out Now while removed | Source-only overlay with verified journal/topology; no DDC dimming, empty-display blackout or follow-up sleep |
+| Idle / Black Out Now while removed | Bounded overlay on eligible remaining targets with verified journal/topology; no DDC dimming, empty-display blackout or follow-up sleep |
 | Restore interval while removed | Overlay-only timeout, capped at 24 hours (also for until activity); no sleep or Show |
 | Activity / Escape / Restore | Remove only automation's overlay; display stays removed |
 | Show removed display | Remove the overlay first, restore layout, then restart normal automation with a fresh countdown |

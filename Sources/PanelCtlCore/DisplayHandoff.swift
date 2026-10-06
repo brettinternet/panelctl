@@ -174,6 +174,34 @@ public struct DisplayHandoffStatus: Equatable {
 }
 
 enum HiddenMirrorSourceOverlayAuthorization {
+    /// Ordinary targets need the same whole-session verification as source overlays.
+    static func sessionRefusal(
+        status: DisplayHandoffStatus,
+        isMirrored: (UInt32) -> Bool
+    ) -> String? {
+        let sources = status.removals.isEmpty
+            ? status.source.map { [$0] } ?? []
+            : status.removals.filter(\.isUnresolved).map(\.source)
+        guard !sources.isEmpty else { return "the removal session has no verified mirror sources" }
+        for source in sources {
+            if let reason = refusal(sourceUUID: source.uuid, sourceDisplayID: source.id,
+                                    isMirrored: isMirrored(source.id), status: status) {
+                return reason
+            }
+        }
+        return nil
+    }
+
+    static func revalidateSessionWhileCovered(
+        status: DisplayHandoffStatus,
+        isMirrored: (UInt32) -> Bool,
+        removeCoverage: () -> Void
+    ) -> String? {
+        guard let reason = sessionRefusal(status: status, isMirrored: isMirrored) else { return nil }
+        removeCoverage()
+        return reason
+    }
+
     static func refusal(
         sourceUUID: String,
         sourceDisplayID: UInt32,

@@ -420,16 +420,11 @@ final class AppModel: ObservableObject {
 
     var selectedHiddenMirrorSources: [DisplayRecord] {
         let sources = verifiedHiddenMirrorSources
-        guard !sources.isEmpty, sources.count == journalVerifiedHiddenMirrorSources.count,
-              sources.allSatisfy({ source in
-                  guard let uuid = source.uuid else { return false }
-                  return isBlackoutHidden(uuid) || automationPreferences.rules.contains { rule in
-                      rule.isEnabled && (rule.settings.allDisplays || rule.settings.selectedDisplayUUIDs.contains {
-                          $0.caseInsensitiveCompare(uuid) == .orderedSame
-                      })
-                  }
-              }) else { return [] }
-        return sources.filter { !isBlackoutHidden($0.uuid) }
+        guard !sources.isEmpty, sources.count == journalVerifiedHiddenMirrorSources.count else { return [] }
+        return sources.filter { source in
+            guard let uuid = source.uuid, !isBlackoutHidden(uuid) else { return false }
+            return automationPreferences.rules.contains { $0.isEnabled && ruleTargets($0, uuid: uuid) }
+        }
     }
 
     var selectedHiddenMirrorSource: DisplayRecord? { selectedHiddenMirrorSources.first }
@@ -444,18 +439,15 @@ final class AppModel: ObservableObject {
               protectionQuiescenceFailure == nil, !protectionQuiescencePending,
               !hideOperation.isBusy, !displayLifecycleTransitioning else { return [] }
         let sources = verifiedHiddenMirrorSources
-        let selectableSources = sources.filter { !isBlackoutHidden($0.uuid) }
         guard !sources.isEmpty,
-              sources.count == journalVerifiedHiddenMirrorSources.count,
-              selectedHiddenMirrorSources.count == selectableSources.count else { return [] }
+              sources.count == journalVerifiedHiddenMirrorSources.count else { return [] }
         var result = Set<UUID>()
         for rule in automationPreferences.rules where rule.isEnabled && !hasEnabledConflict(rule) {
             let sources = verifiedHiddenMirrorSources.filter { source in
                 guard let uuid = source.uuid else { return false }
                 return ruleTargets(rule, uuid: uuid) && !isBlackoutHidden(uuid)
             }
-            guard !sources.isEmpty,
-                  (try? hiddenMirrorArguments(
+            guard (try? hiddenMirrorArguments(
                       for: sources,
                       settings: rule.settings,
                       otherRuleDisplays: hiddenMirrorSiblingDisplays(for: rule)
@@ -491,13 +483,7 @@ final class AppModel: ObservableObject {
     }
 
     var effectiveBlackoutMode: BlackoutMode {
-        guard hiddenMirrorOverlayPolicyEligible,
-              let source = selectedHiddenMirrorSource,
-              let uuid = source.uuid,
-              let rule = automationPreferences.rules.first(where: { ruleTargets($0, uuid: uuid) }) else {
-            return preferences.mode
-        }
-        return effectiveBlackoutMode(for: rule)
+        hiddenMirrorOverlayPolicyEligible ? .blocking : preferences.mode
     }
 
     var hiddenMirrorProtectionSummary: String {
@@ -511,8 +497,11 @@ final class AppModel: ObservableObject {
         if displayLifecycleTransitioning {
             return "Automation suspended while desktop is hidden · display transition in progress"
         }
-        if hiddenMirrorOverlayPolicyEligible, !selectedHiddenMirrorSources.isEmpty {
-            let names = selectedHiddenMirrorSources.map { $0.name ?? "Display \($0.id)" }.joined(separator: ", ")
+        if hiddenMirrorOverlayPolicyEligible {
+            let targets = automationPreferences.rules.filter { hiddenOverlayRuleIDs.contains($0.id) }
+                .flatMap { remainingOverlayDisplays(for: $0.settings) }
+            let names = Dictionary(grouping: targets, by: \.id).values.compactMap(\.first)
+                .sorted { $0.id < $1.id }.map { $0.name ?? "Display \($0.id)" }.joined(separator: ", ")
             switch runtimeState {
             case .blackedOut:
                 return "Desktop hidden · \(names) blacked out by automation"
@@ -1010,10 +999,11 @@ final class AppModel: ObservableObject {
            let reason = displayRecoveryProblem {
             state = .failed(reason)
         } else if rule.isEnabled, protectionPausedForDisplayRecovery,
+                  !hiddenOverlayRuleIDs.contains(rule.id),
                   protectionRuleNeedsDisplayReview(rule), handoffStatus?.hasUnresolvedJournal == true {
             state = .failed("Automation is paused while a display is removed.")
         }
-        return ProtectionRulePresentation.status(
+        let status = ProtectionRulePresentation.status(
             for: rule,
             state: state,
             validation: validation,
@@ -1021,6 +1011,27 @@ final class AppModel: ObservableObject {
             displays: displays,
             effectiveMode: effectiveBlackoutMode(for: rule)
         )
+        guard status.blockedReason == nil else { return status }
+        switch state {
+        case .starting, .waiting, .blackedOut, .waitingForInput, .waitingForPlayback:
+            let overlay = hiddenOverlayRuleIDs.contains(rule.id)
+            let targets = overlay ? remainingOverlayDisplays(for: rule.settings) : displays.filter {
+                guard let uuid = $0.uuid else { return false }
+                return $0.active && $0.online && !$0.asleep && ruleTargets(rule, uuid: uuid) && !isBlackoutHidden(uuid)
+            }
+            let targetUUIDs = Set(targets.compactMap(\.uuid).map { $0.lowercased() })
+            let skipped = rule.settings.selectedDisplayUUIDs.filter { !targetUUIDs.contains($0.lowercased()) }.count
+            var details: [String] = []
+            if skipped > 0 {
+                details.append("on " + targets.map(\.settingsName).joined(separator: ", "))
+                details.append("skipping \(skipped) unavailable or hidden display\(skipped == 1 ? "" : "s")")
+            }
+            if overlay, rule.settings.followUpAction == .sleepDisplays {
+                details.append("sleep paused while a display is removed; restores overlay instead")
+            }
+            return .init(text: ([status.text] + details).joined(separator: " · "), blockedReason: nil)
+        default: return status
+        }
     }
 
     func protectionRuleNeedsDisplayReview(_ rule: ProtectionRule) -> Bool {
@@ -1071,7 +1082,25 @@ final class AppModel: ObservableObject {
         )
     }
 
-    /// The source-only overlay counts displays Hide blacked out as covered.
+    /// During a verified removal, only bounded window overlays may run.
+    /// Removed targets, ambiguous identities and unrelated mirror sets never qualify.
+    private func remainingOverlayDisplays(for settings: ProtectionPreferences) -> [DisplayRecord] {
+        let sources = Set(verifiedHiddenMirrorSources.map(\.id))
+        return activeDisplays.filter { display in
+            guard let uuid = display.uuid, UUID(uuidString: uuid) != nil,
+                  display.online, !display.asleep,
+                  display.bounds.width > 0, display.bounds.height > 0,
+                  !isRemovedDisplay(uuid), !isBlackoutHidden(uuid),
+                  displays.filter({ $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame }).count == 1,
+                  displays.filter({ $0.id == display.id }).count == 1,
+                  settings.allDisplays || settings.selectedDisplayUUIDs.contains(where: {
+                      $0.caseInsensitiveCompare(uuid) == .orderedSame
+                  }) else { return false }
+            return sources.contains(display.id) || !isDisplayMirrored(display.id)
+        }
+    }
+
+    /// Overlays count displays Hide blacked out as covered.
     private func hiddenMirrorArguments(
         for sources: [DisplayRecord],
         settings: ProtectionPreferences,
@@ -1079,6 +1108,9 @@ final class AppModel: ObservableObject {
     ) throws -> [String]? {
         try settings.hiddenMirrorOverlayArguments(
             for: sources,
+            additionalDisplays: remainingOverlayDisplays(for: settings).filter { display in
+                !sources.contains(where: { $0.id == display.id })
+            },
             hiddenDisplays: activeDisplays.filter { isBlackoutHidden($0.uuid) },
             otherRuleDisplays: otherRuleDisplays
         )
@@ -2930,10 +2962,7 @@ final class AppModel: ObservableObject {
 
     private func hiddenMirrorOverlayResetsLimitOnInput(_ rule: ProtectionRule) -> Bool {
         guard rule.settings.mode == .working || rule.settings.keepBlackoutOnInput else { return false }
-        let sourceIDs = Set(selectedHiddenMirrorSources.filter { source in
-            guard let uuid = source.uuid else { return false }
-            return ruleTargets(rule, uuid: uuid)
-        }.map(\.id))
+        let sourceIDs = Set(remainingOverlayDisplays(for: rule.settings).map(\.id))
         let coveredIDs = sourceIDs.union(hiddenMirrorSiblingDisplays(for: rule).map(\.id))
         return !sourceIDs.isEmpty && activeDisplays.contains {
             !coveredIDs.contains($0.id) && !isRemovedDisplay($0.uuid) && !isBlackoutHidden($0.uuid)

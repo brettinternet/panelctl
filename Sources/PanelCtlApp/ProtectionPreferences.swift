@@ -208,13 +208,15 @@ struct ProtectionPreferences: Codable, Equatable {
 
     func hiddenMirrorOverlayArguments(
         for sources: [DisplayRecord],
+        additionalDisplays: [DisplayRecord] = [],
         hiddenDisplays: [DisplayRecord] = [],
         otherRuleDisplays: [DisplayRecord] = []
     ) throws -> [String]? {
-        guard !sources.isEmpty else { return nil }
+        guard !sources.isEmpty || !additionalDisplays.isEmpty else { return nil }
+        let mirrorUUIDs = Set(sources.compactMap(\.uuid).map { $0.lowercased() })
         var sourceUUIDs: [String] = []
         var sourcesByUUID: [String: DisplayRecord] = [:]
-        for source in sources {
+        for source in sources + additionalDisplays {
             guard let uuid = source.uuid,
                   UUID(uuidString: uuid) != nil,
                   source.online, source.active, !source.asleep,
@@ -247,8 +249,12 @@ struct ProtectionPreferences: Codable, Equatable {
             Self.hiddenMirrorOverlayMaximumDuration
         )
         var arguments = ["blackout"]
+        if mirrorUUIDs.isEmpty { arguments.append("--panelctl-removal-session-overlay") }
         for uuid in sourceUUIDs.sorted() {
-            arguments += ["--display", uuid, "--panelctl-hidden-mirror-source", uuid]
+            arguments += ["--display", uuid]
+            if mirrorUUIDs.contains(uuid.lowercased()) {
+                arguments += ["--panelctl-hidden-mirror-source", uuid]
+            }
         }
         let sourceKeys = Set(sourceUUIDs.map { $0.lowercased() })
         var emittedHidden = Set<String>()
@@ -352,6 +358,13 @@ struct ProtectionPreferences: Codable, Equatable {
             }
         }
         guard !selected.isEmpty else { throw ProtectionConfigurationError.selectedDisplaysHidden }
+        for display in selected {
+            guard let uuid = display.uuid,
+                  displays.filter({ $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame }).count == 1,
+                  displays.filter({ $0.id == display.id }).count == 1 else {
+                throw ProtectionConfigurationError.selectedDisplayUnavailable("ambiguous display identity")
+            }
+        }
         if followUpAction == .untilActivity {
             let totalCovered = Set(selected.map(\.id)).union(covered)
             if totalCovered.count == drawable.count {

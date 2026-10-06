@@ -22,6 +22,8 @@ public struct BlackoutOptions: Equatable {
     public let deferPlayback: Bool
     public let deferCamera: Bool
     public let hiddenMirrorSourceUUIDs: [String]
+    /// Requires ongoing verified removal-session authorization, even without a selected mirror source.
+    public let removalSessionOverlay: Bool
     public var hiddenMirrorSourceUUID: String? { hiddenMirrorSourceUUIDs.first }
     /// Displays PanelCtl has hidden: blackout never covers them, but counts
     /// them as covered for the all-screens safety rules.
@@ -75,6 +77,7 @@ public struct BlackoutOptions: Equatable {
         deferCamera: Bool = false,
         hiddenMirrorSourceUUID: String? = nil,
         hiddenMirrorSourceUUIDs: [String] = [],
+        removalSessionOverlay: Bool = false,
         hiddenDisplayUUIDs: [String] = [],
         otherRuleDisplayUUIDs: [String] = [],
         ruleID: UUID? = nil
@@ -96,6 +99,7 @@ public struct BlackoutOptions: Equatable {
         self.deferCamera = deferCamera
         self.hiddenMirrorSourceUUIDs = hiddenMirrorSourceUUIDs.isEmpty
             ? hiddenMirrorSourceUUID.map { [$0] } ?? [] : hiddenMirrorSourceUUIDs
+        self.removalSessionOverlay = removalSessionOverlay || !self.hiddenMirrorSourceUUIDs.isEmpty
         self.hiddenDisplayUUIDs = hiddenDisplayUUIDs
         self.otherRuleDisplayUUIDs = otherRuleDisplayUUIDs
         self.ruleID = ruleID
@@ -200,7 +204,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
         case .workingOverlayRequired:
             return "--no-overlay or overlay opacity below 100 requires --mode working"
         case .invalidHiddenMirrorSourceOverlay:
-            return "--panelctl-hidden-mirror-source requires a single matching UUID target, --watch, --idle-after, and a finite --timeout; it cannot be combined with all-screen, sleep, dimming, or display-awake options"
+            return "removal-session overlays require matching UUID targets, --watch, --idle-after, and a finite --timeout; it cannot be combined with all-screen, sleep, dimming, or display-awake options"
         case .invalidHiddenDisplay:
             return "--panelctl-hidden-display requires --watch and a distinct UUID that isn't a --display target"
         case .invalidOtherRuleDisplay:
@@ -547,6 +551,7 @@ public enum CLIParser {
         var deferPlayback = true
         var deferCamera = false
         var hiddenMirrorSourceUUIDs: [String] = []
+        var removalSessionOverlay = false
         var hiddenDisplayUUIDs: [String] = []
         var otherRuleDisplayUUIDs: [String] = []
         var ruleID: UUID?
@@ -636,6 +641,8 @@ public enum CLIParser {
             case "--defer-camera":
                 guard !deferCamera else { throw CLIParseError.duplicateOption("--defer-camera") }
                 deferCamera = true
+            case "--panelctl-removal-session-overlay":
+                removalSessionOverlay = true
             case "--panelctl-hidden-mirror-source":
                 i += 1
                 guard i < args.count, !args[i].hasPrefix("--") else {
@@ -684,12 +691,13 @@ public enum CLIParser {
         if timeout != nil && sleepAfter != nil { throw CLIParseError.conflictingBlackoutLimits }
         if keepDisplaysAwake && sleepAfter == nil { throw CLIParseError.keepDisplaysAwakeRequiresSleepAfter }
         if all && timeout == nil && sleepAfter == nil { throw CLIParseError.allRequiresLimit }
-        if !hiddenMirrorSourceUUIDs.isEmpty {
+        if removalSessionOverlay || !hiddenMirrorSourceUUIDs.isEmpty {
             let sourceKeys = hiddenMirrorSourceUUIDs.map { $0.lowercased() }
             guard sourceKeys.allSatisfy({ UUID(uuidString: $0) != nil }),
                   Set(sourceKeys).count == sourceKeys.count,
-                  !all, selectors.count == sourceKeys.count,
-                  Set(selectors.map { $0.lowercased() }) == Set(sourceKeys),
+                  !all, selectors.allSatisfy({ UUID(uuidString: $0) != nil }),
+                  Set(selectors.map { $0.lowercased() }).count == selectors.count,
+                  Set(sourceKeys).isSubset(of: Set(selectors.map { $0.lowercased() })),
                   watch, idleAfter != nil, timeout != nil, sleepAfter == nil,
                   !caffeinate, !keepDisplaysAwake, !blackoutEmptyDisplays,
                   mode == .blocking, overlayOpacityPercent == 100,
@@ -714,6 +722,7 @@ public enum CLIParser {
             deferPlayback: deferPlayback,
             deferCamera: deferCamera,
             hiddenMirrorSourceUUIDs: hiddenMirrorSourceUUIDs,
+            removalSessionOverlay: removalSessionOverlay,
             hiddenDisplayUUIDs: hiddenDisplayUUIDs,
             otherRuleDisplayUUIDs: otherRuleDisplayUUIDs,
             ruleID: ruleID

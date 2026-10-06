@@ -83,7 +83,7 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertTrue(model.protectionPausedForDisplayRecovery)
         XCTAssertTrue(model.hiddenMirrorOverlayPolicyEligible)
         XCTAssertEqual(model.effectiveBlackoutMode, .blocking)
-        XCTAssertEqual(model.protectionRuleRowStatus(for: rule).text, "Watching for inactivity")
+        XCTAssertEqual(model.protectionRuleRowStatus(for: rule).text, "Watching for inactivity · sleep paused while a display is removed; restores overlay instead")
         let waitingMenuTitles = delegate.makeMenu().items.map(\.title)
         XCTAssertTrue(waitingMenuTitles.contains("Black Out Now"), "a hidden mirror source turns Dim Now into Black Out Now while waiting")
         XCTAssertFalse(waitingMenuTitles.contains("Dim Now"))
@@ -96,7 +96,7 @@ final class DisplayHideAppTests: XCTestCase {
 
         try model.blackoutNow()
         try await waitUntil { model.runtimeState == .blackedOut }
-        XCTAssertEqual(model.protectionRuleRowStatus(for: rule).text, "Blackout active")
+        XCTAssertEqual(model.protectionRuleRowStatus(for: rule).text, "Blackout active · sleep paused while a display is removed; restores overlay instead")
         XCTAssertTrue(model.statusSummary.contains("Mirror source blacked out by automation"))
 
         let menuTitles = delegate.makeMenu().items.map(\.title)
@@ -121,6 +121,73 @@ final class DisplayHideAppTests: XCTestCase {
         let stopped = expectation(description: "normal watcher stopped")
         model.shutdown { stopped.fulfill() }
         await fulfillment(of: [stopped], timeout: 3)
+    }
+
+    func testRemainingDisplaysRunBoundedOverlaysAndPauseOnRecovery() async throws {
+        for selected in [[Self.targetUUID, Self.sourceUUID],
+                         [Self.targetUUID, Self.mainUUID],
+                         [Self.targetUUID, Self.sourceUUID, Self.mainUUID]] {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("panelctl-remaining-overlay-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let log = directory.appendingPathComponent("helper.log")
+            let helper = try writeHiddenOverlayHelper(in: directory, log: log, initiallyWaiting: true)
+            let defaults = try makeDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+            var preferences = ProtectionPreferences()
+            preferences.isEnabled = true
+            preferences.didChooseDisplays = true
+            preferences.selectedDisplayUUIDs = Set(selected)
+            preferences.followUpAction = .sleepDisplays
+            defaults.set(try JSONEncoder().encode(preferences), forKey: "blackoutPreferences")
+            setenv("PANELCTL_HELPER", helper.path, 1)
+            setenv("PANELCTL_TEST_LOG", log.path, 1)
+            unsetenv("PANELCTL_REARM_ON_START")
+            defer {
+                unsetenv("PANELCTL_HELPER")
+                unsetenv("PANELCTL_TEST_LOG")
+                unsetenv("PANELCTL_REARM_ON_START")
+            }
+            let box = StatusBox(handoffStatus(.hidden, target: displays[1], source: displays[2],
+                                             journalID: "remaining", canShow: true))
+            let model = makeModel(defaults: defaults, displays: displays, status: { box.value },
+                                  useManagedProtectionService: true,
+                                  isDisplayMirrored: { $0 == 202 || $0 == 303 })
+            try await waitUntil { model.runtimeState == .waiting }
+            let line = try await waitForLogLines(1, at: log)[0]
+            XCTAssertFalse(line.contains(Self.targetUUID), "removed target is never sent to the helper")
+            for uuid in selected where uuid != Self.targetUUID {
+                XCTAssertTrue(line.contains("--display \(uuid)"))
+            }
+            XCTAssertEqual(line.contains("--panelctl-hidden-mirror-source \(Self.sourceUUID)"),
+                           selected.contains(Self.sourceUUID))
+            XCTAssertFalse(line.contains("--panelctl-hidden-mirror-source \(Self.mainUUID)"))
+            XCTAssertTrue(line.contains("--timeout 1800"))
+            XCTAssertFalse(line.contains("--sleep-after"))
+            XCTAssertFalse(line.contains("--keep-displays-awake"))
+            XCTAssertFalse(line.contains("--dim-to"))
+            let rule = try XCTUnwrap(model.automationPreferences.rules.first)
+            let status = model.protectionRuleRowStatus(for: rule)
+            XCTAssertNil(status.blockedReason)
+            XCTAssertTrue(status.text.contains("skipping 1 unavailable or hidden display"))
+            XCTAssertTrue(status.text.contains("sleep paused"))
+            XCTAssertTrue(model.statusSummary.contains(selected.contains(Self.mainUUID) ? "Main OLED" : "Mirror source"))
+            try model.blackoutNow()
+            try await waitUntil { model.runtimeState == .blackedOut }
+            XCTAssertEqual(model.nextAction, "restore overlay")
+            XCTAssertTrue(try model.restoreBlackout())
+
+            box.value = handoffStatus(.recovery, target: displays[1], source: displays[2],
+                                      journalID: "remaining", reason: "Unverified restoration")
+            model.refreshDisplays()
+            try await waitUntil { !model.protectionQuiescencePending }
+            XCTAssertFalse(model.hiddenMirrorOverlayPolicyEligible)
+            XCTAssertNotNil(model.protectionRuleRowStatus(for: rule).blockedReason)
+            let stopped = expectation(description: "remaining overlay stopped")
+            model.shutdown { stopped.fulfill() }
+            await fulfillment(of: [stopped], timeout: 3)
+        }
     }
 
     func testSourceOverlayCountsBlackedOutDisplaysAsCovered() async throws {
@@ -2153,7 +2220,7 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(model.controlDisplayStatuses.first { $0.targetUUID == Self.sourceUUID }?.recoveryNeeded, true)
     }
 
-    func testHiddenMirrorOverlayRequiresEveryCurrentSourceToBeSelected() async throws {
+    func testHiddenMirrorOverlayAllowsIndependentlySelectedVerifiedSources() async throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
         let main = displays[0]
@@ -2184,8 +2251,8 @@ final class DisplayHideAppTests: XCTestCase {
             isDisplayMirrored: { [main.id, firstTarget.id, secondTarget.id, secondSource.id].contains($0) }
         )
         try await waitUntil { !model.protectionQuiescencePending }
-        XCTAssertTrue(model.selectedHiddenMirrorSources.isEmpty,
-                      "an incomplete selection cannot authorize a partial source overlay")
+        XCTAssertEqual(model.selectedHiddenMirrorSources.compactMap(\.uuid), [Self.mainUUID],
+                       "each verified source is independently eligible without selecting the other source")
         model.preferences.selectedDisplayUUIDs = [Self.mainUUID, Self.replacementUUID]
         XCTAssertEqual(Set(model.selectedHiddenMirrorSources.compactMap(\.uuid)),
                        Set([Self.mainUUID, Self.replacementUUID]))

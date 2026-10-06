@@ -695,12 +695,12 @@ final class ProtectionService {
               case .blackout(let options) = command else { return false }
         let sources = options.hiddenMirrorSourceUUIDs.map { $0.lowercased() }
         let targets = options.selectors.map { $0.lowercased() }
-        guard !sources.isEmpty,
+        guard options.removalSessionOverlay,
               sources.allSatisfy({ UUID(uuidString: $0) != nil }),
               Set(sources).count == sources.count,
-              targets.count == sources.count,
+              targets.allSatisfy({ UUID(uuidString: $0) != nil }),
               Set(targets).count == targets.count,
-              Set(targets) == Set(sources),
+              Set(sources).isSubset(of: Set(targets)),
               options.watch,
               options.idleAfter?.isFinite == true,
               options.timeout?.isFinite == true,

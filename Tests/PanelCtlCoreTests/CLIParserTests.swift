@@ -119,6 +119,45 @@ final class CLIParserTests: XCTestCase {
         XCTAssertNil(normal.hiddenMirrorSourceUUID, "ordinary CLI blackout has no mirror permission")
     }
 
+    func testBoundedOverlayCanCombineMirrorSourcesWithOrdinaryUUIDTargets() throws {
+        let source = "00000000-0000-0000-0000-000000000003"
+        let ordinary = "00000000-0000-0000-0000-000000000001"
+        let arguments = ["blackout", "--display", source, "--display", ordinary,
+                         "--panelctl-hidden-mirror-source", source,
+                         "--watch", "--idle-after", "300", "--timeout", "1800"]
+        guard case .blackout(let options) = try CLIParser.parse(arguments) else {
+            return XCTFail("expected blackout")
+        }
+        XCTAssertEqual(options.selectors, [source, ordinary])
+        XCTAssertEqual(options.hiddenMirrorSourceUUIDs, [source])
+        XCTAssertNoThrow(try BlackoutController.validateOptions(options))
+        XCTAssertThrowsError(try CLIParser.parse(arguments + ["--display", ordinary]))
+        XCTAssertThrowsError(try CLIParser.parse(arguments + ["--display", "1"]))
+        XCTAssertThrowsError(try CLIParser.parse(arguments + ["--dim-to", "0"]))
+        XCTAssertThrowsError(try CLIParser.parse(arguments + ["--sleep-after", "30"]))
+        XCTAssertThrowsError(try CLIParser.parse(arguments + ["--blackout-empty-displays"]))
+        XCTAssertThrowsError(try BlackoutController.validateTarget(isMirrored: true, selector: ordinary))
+        XCTAssertNoThrow(try BlackoutController.validateTarget(isMirrored: false, selector: ordinary))
+    }
+
+    func testOrdinaryRemovalSessionOverlayRequiresBoundedHardwareFreeWatch() throws {
+        let arguments = ["blackout", "--display", "00000000-0000-0000-0000-000000000001",
+                         "--panelctl-removal-session-overlay", "--watch", "--idle-after", "300",
+                         "--timeout", "1800"]
+        guard case .blackout(let options) = try CLIParser.parse(arguments) else {
+            return XCTFail("expected blackout")
+        }
+        XCTAssertTrue(options.removalSessionOverlay)
+        XCTAssertTrue(options.hiddenMirrorSourceUUIDs.isEmpty)
+        XCTAssertNoThrow(try BlackoutController.validateOptions(options))
+        for extra in [["--dim-to", "0"], ["--sleep-after", "30"], ["--all"],
+                      ["--mode", "working"], ["--blackout-empty-displays"], ["--caffeinate"]] {
+            XCTAssertThrowsError(try CLIParser.parse(arguments + extra))
+        }
+        XCTAssertThrowsError(try CLIParser.parse(Array(arguments.dropLast(2))))
+        XCTAssertThrowsError(try CLIParser.parse(arguments.filter { $0 != "--watch" }))
+    }
+
     func testHiddenDisplaysAreWatchedUUIDsOutsideTheSelection() throws {
         let selected = "00000000-0000-0000-0000-000000000001"
         let hidden = "00000000-0000-0000-0000-000000000002"

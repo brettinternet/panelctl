@@ -284,7 +284,7 @@ final class AutomationSafetyTests: XCTestCase {
         unsetenv("PANELCTL_TEST_LOG")
     }
 
-    func testIncompleteAggregateMirrorSourceSelectionLaunchesNoOverlay() async throws {
+    func testPartialVerifiedMirrorSourceSelectionLaunchesOnlySelectedOverlay() async throws {
         let directory = try makeDirectory("panelctl-partial-source-selection")
         defer { try? FileManager.default.removeItem(at: directory) }
         let log = directory.appendingPathComponent("events.log")
@@ -308,10 +308,14 @@ final class AutomationSafetyTests: XCTestCase {
         )
         try await waitUntil { !model.protectionQuiescencePending }
         XCTAssertEqual(model.verifiedHiddenMirrorSources.count, 2)
-        XCTAssertTrue(model.selectedHiddenMirrorSources.isEmpty)
-        XCTAssertFalse(model.hiddenMirrorOverlayPolicyEligible)
-        try await Task.sleep(nanoseconds: 100_000_000)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: log.path), "no partial source-only helper may launch")
+        XCTAssertEqual(model.selectedHiddenMirrorSources.compactMap(\.uuid), [sourceAUUID])
+        XCTAssertTrue(model.hiddenMirrorOverlayPolicyEligible)
+        try await waitUntil { model.blackedOutDisplayIDs == [1] }
+        let launches = try String(contentsOf: log, encoding: .utf8)
+            .split(separator: "\n").filter { $0.hasPrefix("launch:") }
+        XCTAssertEqual(launches.count, 1)
+        XCTAssertTrue(launches[0].contains("--display \(sourceAUUID)"))
+        XCTAssertFalse(launches[0].contains(sourceBUUID), "unselected verified source remains untouched")
         await withCheckedContinuation { continuation in model.shutdown { continuation.resume() } }
     }
 

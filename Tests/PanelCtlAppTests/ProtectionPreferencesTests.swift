@@ -285,6 +285,56 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertFalse(duplicateTargetRecognized)
     }
 
+    func testOverlayArgumentsMixSourcesAndOrdinaryTargetsWithoutGrantingMirrorPermission() async throws {
+        let sourceUUID = "00000000-0000-0000-0000-000000000001"
+        let ordinaryUUID = "00000000-0000-0000-0000-000000000002"
+        var preferences = ProtectionPreferences()
+        preferences.selectedDisplayUUIDs = [sourceUUID, ordinaryUUID]
+        let source = display(index: 1, id: 101, uuid: sourceUUID, width: 1920, height: 1080)
+        let ordinary = display(index: 2, id: 202, uuid: ordinaryUUID, width: 1920, height: 1080)
+        let arguments = try XCTUnwrap(preferences.hiddenMirrorOverlayArguments(
+            for: [source], additionalDisplays: [ordinary]
+        ))
+        guard case .blackout(let options) = try CLIParser.parse(arguments) else {
+            return XCTFail("expected blackout")
+        }
+        XCTAssertEqual(Set(options.selectors), [sourceUUID, ordinaryUUID])
+        XCTAssertEqual(options.hiddenMirrorSourceUUIDs, [sourceUUID])
+        XCTAssertNil(options.sleepAfter)
+        let recognized = await MainActor.run {
+            ProtectionService.isHardwareFreeHiddenMirrorOverlay(arguments: arguments)
+        }
+        XCTAssertTrue(recognized)
+
+        let normalOnly = try XCTUnwrap(preferences.hiddenMirrorOverlayArguments(
+            for: [], additionalDisplays: [ordinary]
+        ))
+        guard case .blackout(let normalOptions) = try CLIParser.parse(normalOnly) else {
+            return XCTFail("expected blackout")
+        }
+        XCTAssertEqual(normalOptions.selectors, [ordinaryUUID])
+        XCTAssertTrue(normalOptions.hiddenMirrorSourceUUIDs.isEmpty)
+        XCTAssertTrue(normalOptions.removalSessionOverlay)
+        let ordinaryRecognized = await MainActor.run {
+            ProtectionService.isHardwareFreeHiddenMirrorOverlay(arguments: normalOnly)
+        }
+        XCTAssertTrue(ordinaryRecognized)
+        XCTAssertEqual(normalOptions.timeout, 1800)
+        XCTAssertNil(normalOptions.sleepAfter)
+    }
+
+    func testMissingTargetDoesNotBlockRemainingTargetAndReturningIdentityIsRevalidated() throws {
+        var preferences = ProtectionPreferences()
+        preferences.selectedDisplayUUIDs = ["AAAA-UUID", "BBBB-UUID"]
+        let partial = try preferences.commandArguments(for: [displays[0], displays[2]])
+        XCTAssertTrue(partial.contains("AAAA-UUID"))
+        XCTAssertFalse(partial.contains("BBBB-UUID"))
+        let returned = try preferences.commandArguments(for: displays)
+        XCTAssertTrue(returned.contains("BBBB-UUID"))
+        XCTAssertThrowsError(try preferences.commandArguments(for: displays + [displays[1]]))
+        XCTAssertThrowsError(try preferences.commandArguments(for: [displays[2]]))
+    }
+
     func testPlaybackDeferralOptOutEmitsIgnoreFlag() throws {
         var preferences = ProtectionPreferences()
         preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
