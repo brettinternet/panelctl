@@ -214,6 +214,12 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testExperimentalToggleAsksForConsentBeforeTurningOn() throws {
+        // macOS 15 does not reliably present SwiftUI alerts for a prohibited
+        // test host. Accessory permits sheets without putting XCTest in the Dock.
+        let app = NSApplication.shared
+        let originalPolicy = app.activationPolicy()
+        app.setActivationPolicy(.accessory)
+        defer { app.setActivationPolicy(originalPolicy) }
         let (model, defaults) = try makeModel()
         defer { defaults.removePersistentDomain(forName: Self.suiteName) }
         let controller = SettingsWindowController(model: model)
@@ -232,7 +238,8 @@ final class SettingsWindowTests: XCTestCase {
 
         func consentButton(_ title: String) throws -> NSButton {
             spin { window.attachedSheet != nil }
-            let sheet = try XCTUnwrap(window.attachedSheet, "consent is presented on the Settings window")
+            let sheet = try XCTUnwrap(window.attachedSheet,
+                "consent is presented on Settings; policy=\(app.activationPolicy().rawValue), key=\(window.isKeyWindow), pending=\(model.experimentalConsentPending)")
             let texts = nativeViews(in: try XCTUnwrap(sheet.contentView)).compactMap { ($0 as? NSTextField)?.stringValue }
             XCTAssertTrue(texts.contains(GeneralSettingsView.experimentalConsentTitle))
             XCTAssertTrue(texts.contains(GeneralSettingsView.experimentalConsentMessage))
