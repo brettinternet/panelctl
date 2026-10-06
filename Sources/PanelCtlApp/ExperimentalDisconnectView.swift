@@ -20,7 +20,7 @@ struct ExperimentalDisconnectPresentation: Equatable {
         let failure: String?
     }
 
-    static let summary = "Turns off this display\u{2019}s signal for 15 seconds, then reconnects it. Tested with one monitor only."
+    static let summary = "Uses a private macOS API. Available only for the tested Dell on this Mac."
     static let docsURL = URL(string: "https://github.com/brettinternet/panelctl/blob/main/docs/display-disable.md#app-controls")!
 
     let syntheticSession: SyntheticSession?
@@ -30,7 +30,7 @@ struct ExperimentalDisconnectPresentation: Equatable {
     var canReconnect: Bool { false }
 
     var title: String {
-        guard let session = syntheticSession else { return "Private disconnect" }
+        guard let session = syntheticSession else { return "Full disconnect" }
         switch session.phase {
         case .consent: return "Review consent"
         case .leased: return remainingSeconds == 0 ? "Reconnecting" : "Disconnected"

@@ -38,16 +38,10 @@ struct ExperimentalDisconnectControls: View {
                 Text(failure).foregroundStyle(.orange).textSelection(.enabled)
             }
             if model.disconnectStatus?.resolved != false, model.experimentalFeaturesEnabled {
-                Button("Disconnect for 15 Seconds…") {
-                    if let targetUUID { model.prepareDisconnect(targetUUID) }
-                }
-                .disabled(targetUUID == nil || model.disconnectBlocker != nil)
-                if let blocker = model.disconnectBlocker {
-                    Text(blocker).font(.caption).foregroundStyle(.secondary)
-                }
+                disconnectRow
             }
         } header: {
-            Text("Private disconnect · Experimental")
+            Text("Full disconnect · Experimental")
         } footer: {
             SectionFooter(ExperimentalDisconnectPresentation.summary, learnMore: ExperimentalDisconnectPresentation.docsURL)
         }
@@ -66,6 +60,36 @@ struct ExperimentalDisconnectControls: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("PanelCtl restores the display recorded in its recovery journal. If the screen stays dark, switch the monitor to DisplayPort.")
+        }
+    }
+
+    /// One row: what the action does (or what blocks it) beside the action itself.
+    /// When Automation is the blocker, offer to turn it off in place.
+    private var disconnectRow: some View {
+        let blocker = model.disconnectBlocker
+        return HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Unplug for 15 seconds")
+                Group {
+                    if let blocker {
+                        Label(blocker, systemImage: "lock")
+                    } else {
+                        Text("macOS treats this display as unplugged, then PanelCtl reconnects it.")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            if blocker != nil, model.preferences.isEnabled {
+                Button("Turn Off Automation") { model.setProtectionEnabled(false) }
+            } else {
+                Button("Disconnect…") {
+                    if let targetUUID { model.prepareDisconnect(targetUUID) }
+                }
+                .disabled(targetUUID == nil || blocker != nil)
+            }
         }
     }
 

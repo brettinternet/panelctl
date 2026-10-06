@@ -69,12 +69,13 @@ panelctl recovery panic
 
 ## App controls
 
-**Settings → Displays → Private disconnect · Experimental** is a separate manual
+**Settings → Displays → Full disconnect · Experimental** is a separate manual
 operation, not a Hide style or a fallback from Hide. With Experimental features
 on, the section appears only for the recorded display (and whenever a
 disconnect journal exists). Turn off automation, show blacked-out/hidden
-displays, and finish any unresolved recovery first, then choose **Disconnect for
-15 Seconds…**. Its qualification check is read-only: it never starts a display
+displays, and finish any unresolved recovery first (the row names the current
+blocker and offers **Turn Off Automation** when that is it), then choose
+**Disconnect…**. Its qualification check is read-only: it never starts a display
 transaction.
 
 The app permits only the recorded physical DELL S2721DGF unit (UUID

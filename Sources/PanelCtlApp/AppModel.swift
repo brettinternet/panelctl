@@ -2692,8 +2692,9 @@ final class AppModel: ObservableObject {
     var disconnectBlocker: String? {
         if !experimentalFeaturesEnabled { return "Turn on Experimental features in General first." }
         if disconnectLease != nil || disconnectStatus?.resolved == false { return "Finish the current disconnect first." }
-        if preferences.isEnabled || protectionCoordinator.hasManagedProcess || protectionQuiescencePending {
-            return "Turn off Automation and wait for it to stop."
+        if preferences.isEnabled { return "Requires Automation to be off." }
+        if protectionCoordinator.hasManagedProcess || protectionQuiescencePending {
+            return "Waiting for Automation to stop\u{2026}"
         }
         if !blackoutHiddenDisplays.isEmpty || hideConfigurationFrozen || protectionQuiescenceFailure != nil {
             return "Show hidden displays and finish recovery first."
