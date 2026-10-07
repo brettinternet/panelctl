@@ -20,6 +20,9 @@ public enum AppControlCommand: String, Codable, Equatable, Sendable {
     case resume
     case openSettings = "open-settings"
 
+    public static let blackoutNowMigrationGuidance =
+        "app blackout-now is retired. Use `panelctl app hide --display <UUID>` to hide one display, `panelctl app run-action --action <UUID>` to run a saved Action, or `panelctl app run-rule --rule <UUID>` to run one saved Automation rule."
+
     /// Hide, Show and Toggle Hide act on the one display named by `--display`.
     public var isDisplayCommand: Bool {
         self == .hide || self == .show || self == .toggleHide
@@ -52,9 +55,20 @@ public enum AppControlCommand: String, Codable, Equatable, Sendable {
     }
 }
 
+public enum AppControlHideStyle: String, Codable, Equatable, Sendable {
+    case blackOut = "black-out"
+}
+
 /// Versioned, newline-delimited request sent to PanelCtl.app.
 public struct AppControlRequest: Codable, Equatable, Sendable {
     public static let currentProtocol = 1
+    // Older apps must reject style overrides rather than silently perform removal.
+    public static let hideStyleProtocol = 2
+
+    public var hasSupportedProtocol: Bool {
+        protocolVersion == Self.currentProtocol && hideStyle == nil ||
+            protocolVersion == Self.hideStyleProtocol
+    }
 
     public let protocolVersion: Int
     public let command: AppControlCommand
@@ -62,6 +76,7 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
     public let targetUUID: String?
     public let actionID: UUID?
     public let ruleID: UUID?
+    public let hideStyle: AppControlHideStyle?
 
     public init(
         command: AppControlCommand,
@@ -69,20 +84,22 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
         targetUUID: String? = nil,
         actionID: UUID? = nil,
         ruleID: UUID? = nil,
-        protocolVersion: Int = AppControlRequest.currentProtocol
+        hideStyle: AppControlHideStyle? = nil,
+        protocolVersion: Int? = nil
     ) {
-        self.protocolVersion = protocolVersion
+        self.protocolVersion = protocolVersion ?? (hideStyle == nil ? Self.currentProtocol : Self.hideStyleProtocol)
         self.command = command
         self.durationSeconds = durationSeconds
         self.targetUUID = targetUUID
         self.actionID = actionID
         self.ruleID = ruleID
+        self.hideStyle = hideStyle
     }
 
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol"
         case command
-        case durationSeconds, targetUUID, actionID, ruleID
+        case durationSeconds, targetUUID, actionID, ruleID, hideStyle
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -93,6 +110,7 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
         try container.encodeIfPresent(targetUUID, forKey: .targetUUID)
         try container.encodeIfPresent(actionID, forKey: .actionID)
         try container.encodeIfPresent(ruleID, forKey: .ruleID)
+        try container.encodeIfPresent(hideStyle, forKey: .hideStyle)
     }
 }
 
@@ -333,7 +351,8 @@ public struct AppControlClient {
         durationSeconds: TimeInterval? = nil,
         targetUUID: String? = nil,
         actionID: UUID? = nil,
-        ruleID: UUID? = nil
+        ruleID: UUID? = nil,
+        hideStyle: AppControlHideStyle? = nil
     ) throws -> AppControlResponse {
         try execute(
             command,
@@ -341,6 +360,7 @@ public struct AppControlClient {
             targetUUID: targetUUID,
             actionID: actionID,
             ruleID: ruleID,
+            hideStyle: hideStyle,
             deadline: Self.defaultDeadline
         )
     }
@@ -351,10 +371,11 @@ public struct AppControlClient {
         targetUUID: String? = nil,
         actionID: UUID? = nil,
         ruleID: UUID? = nil,
+        hideStyle: AppControlHideStyle? = nil,
         deadline: TimeInterval
     ) throws -> AppControlResponse {
         do {
-            return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID, actionID: actionID, ruleID: ruleID)
+            return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID, actionID: actionID, ruleID: ruleID, hideStyle: hideStyle)
         } catch let error as AppControlTransportError {
             if command == .status || command.isManualDisplayCommand {
                 if !error.requestBytesWritten, !isAppRunning() {
@@ -372,7 +393,7 @@ public struct AppControlClient {
                     )
                 }
                 do {
-                    return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID, actionID: actionID, ruleID: ruleID)
+                    return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID, actionID: actionID, ruleID: ruleID, hideStyle: hideStyle)
                 } catch {
                     throw AppControlError.transport(error.localizedDescription)
                 }
@@ -386,7 +407,7 @@ public struct AppControlClient {
             }
             _ = waitForSocket(deadline: deadline)
             do {
-                return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID, actionID: actionID, ruleID: ruleID)
+                return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID, actionID: actionID, ruleID: ruleID, hideStyle: hideStyle)
             } catch {
                 throw AppControlError.transport(error.localizedDescription)
             }
@@ -407,14 +428,16 @@ public struct AppControlClient {
         durationSeconds: TimeInterval?,
         targetUUID: String?,
         actionID: UUID?,
-        ruleID: UUID?
+        ruleID: UUID?,
+        hideStyle: AppControlHideStyle?
     ) throws -> AppControlResponse {
         let request = AppControlRequest(
             command: command,
             durationSeconds: durationSeconds,
             targetUUID: targetUUID,
             actionID: actionID,
-            ruleID: ruleID
+            ruleID: ruleID,
+            hideStyle: hideStyle
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]

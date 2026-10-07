@@ -519,7 +519,8 @@ final class CLIParserTests: XCTestCase {
         XCTAssertEqual(try CLIParser.parse(["--version"]), .version)
         XCTAssertEqual(CLIHelp.version, "panelctl 0.6.1")
         XCTAssertTrue(CLIHelp.text(for: "app").contains("snooze --for <duration>"))
-        XCTAssertTrue(CLIHelp.text(for: "app").contains("toggle-hide --display <UUID>"))
+        XCTAssertTrue(CLIHelp.text(for: "app").contains("toggle-hide --display <UUID> [--style black-out]"))
+        XCTAssertTrue(CLIHelp.text(for: "app").contains(AppControlCommand.blackoutNowMigrationGuidance))
         XCTAssertTrue(CLIHelp.text(for: "app").contains("run-rule --rule <UUID>"))
         XCTAssertTrue(CLIHelp.text(for: "app").contains("rules[].id"))
         XCTAssertTrue(CLIHelp.text(for: "app").contains("runningRule"))
@@ -533,7 +534,7 @@ final class CLIParserTests: XCTestCase {
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--keep-blackout-on-input"))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--blackout-empty-displays"))
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains(
-            "Hardware dimming applies to inactivity and Blackout Now cycles, not empty-display-only blackouts."
+            "Hardware dimming applies to inactivity treatment, not empty-display-only blackouts."
         ))
         XCTAssertEqual(CLIParseError.unknownOption("--bad").description, "unknown option: --bad")
     }

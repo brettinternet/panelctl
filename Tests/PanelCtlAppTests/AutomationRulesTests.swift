@@ -504,7 +504,7 @@ final class AutomationRulesTests: XCTestCase {
     }
 
     @MainActor
-    func testCoordinatorRestartsEveryHelperForEffectiveRuleSetChangeAndFansOutControl() async throws {
+    func testCoordinatorRestartsEveryHelperForEffectiveRuleSetChangeAndRestoresAllHelpers() async throws {
         let helper = try makeHelper(cleanup: false)
         defer { try? FileManager.default.removeItem(at: helper.deletingLastPathComponent()) }
         setenv("PANELCTL_HELPER", helper.path, 1)
@@ -513,7 +513,14 @@ final class AutomationRulesTests: XCTestCase {
         defer { unsetenv("PANELCTL_HELPER"); unsetenv("PANELCTL_TEST_LOG") }
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let coordinator = makeCoordinator(directory: directory)
+        let coordinator = ProtectionCoordinator(
+            verifyJournal: { _ in true },
+            ruleJournalDirectory: directory,
+            removeDeletedDirectories: false,
+            serviceFactory: { id in
+                ProtectionService(cleanupRuleID: id, cleanupIsVerified: { true }, displaysAreAsleep: { true })
+            }
+        )
         var firstSettings = ProtectionPreferences()
         firstSettings.selectedDisplayUUIDs = [inventory[0].uuid!]
         firstSettings.idleSeconds = 120
@@ -538,16 +545,17 @@ final class AutomationRulesTests: XCTestCase {
         coordinator.reconcile(ruleSet: set, validations: validations, arguments: arguments)
         try await waitForLogLines(2, at: log)
         XCTAssertTrue(coordinator.hasManagedProcess)
-        XCTAssertTrue(try coordinator.sendControl(.blackoutNow))
+        XCTAssertTrue(try coordinator.restore())
         try await waitForLogLines(4, at: log)
-        try await waitUntil { coordinator.blackedOutDisplayIDs == [1] }
-        XCTAssertTrue(try coordinator.sendControl(.restore))
-        try await waitForLogLines(6, at: log)
+        let controlLines = try String(contentsOf: log, encoding: .utf8)
+            .components(separatedBy: .newlines).filter { !$0.isEmpty }
+        XCTAssertEqual(controlLines.filter { $0 == "command:restore" }.count, 2,
+                       "Restore still fans out to every rule helper")
 
         set.rules[0].settings.idleSeconds = 150
         let (changedValidations, changedArguments) = effectiveArguments(set)
         coordinator.reconcile(ruleSet: set, validations: changedValidations, arguments: changedArguments)
-        try await waitForLogLines(10, at: log)
+        try await waitForLogLines(8, at: log)
         let afterRestart = try String(contentsOf: log, encoding: .utf8).components(separatedBy: .newlines).filter { !$0.isEmpty }
         let launches = afterRestart.filter { $0.hasPrefix("launch:") }
         XCTAssertEqual(launches.count, 4)
@@ -742,9 +750,7 @@ final class AutomationRulesTests: XCTestCase {
             trap 'printf "term\\n" >> "$PANELCTL_TEST_LOG"; exit 0' TERM
             while IFS= read -r command; do
                 printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
-                if [[ "$command" == "blackout-now" ]]; then
-                    printf '{"state":"blacked_out","blackedOutDisplayIDs":[1]}\\n'
-                elif [[ "$command" == "restore" ]]; then
+                if [[ "$command" == "restore" ]]; then
                     printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
                 fi
             done

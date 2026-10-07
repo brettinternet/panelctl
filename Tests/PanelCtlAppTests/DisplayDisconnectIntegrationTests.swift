@@ -386,7 +386,6 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
         XCTAssertEqual(f.arms, 0, "cleanup and consent do not arm a disconnect")
         XCTAssertEqual(launchLines(at: log).filter { $0.hasPrefix("watch") }.count, 2)
         XCTAssertTrue(app.statusSummary.contains("Automation paused"))
-        XCTAssertThrowsError(try app.blackoutNow(), "manual blackout cannot bypass the disconnect pause")
 
         app.refreshDisplays(restartWatcher: true)
         var edited = app.automationPreferences

@@ -367,10 +367,13 @@ final class BlackoutHideTests: XCTestCase {
         let script = """
         #!/bin/bash
         printf 'launch:%s\\n' "$*" >> "$PANELCTL_TEST_LOG"
-        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
+        printf '{"state":"blacked_out","blackedOutDisplayIDs":[101]}\\n'
         trap 'printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":true}\\n"; exit 0' TERM
         while IFS= read -r command; do
             printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
+            if [[ "$command" == "restore" ]]; then
+                printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
+            fi
         done
         """
         try Data(script.utf8).write(to: helper)
@@ -404,14 +407,12 @@ final class BlackoutHideTests: XCTestCase {
         lines = try await waitForLines(2, at: log)
         XCTAssertEqual(lines.last, skippingSide, "automation restarts without the hidden display")
 
-        // Black Out Now and Restore drive automation; neither shows the hidden display.
-        try model.blackoutNow()
-        lines = try await waitForLines(3, at: log)
-        XCTAssertEqual(lines.last, "command:blackout-now")
-        try await waitUntil("waiting after Black Out Now") { model.runtimeState == .waiting }
+        // Restore ends the automation cover; it never shows the manually hidden display.
+        try await waitUntil("active automation cover on the remaining display") { model.runtimeState == .blackedOut }
         XCTAssertTrue(try model.restoreBlackout())
-        lines = try await waitForLines(4, at: log)
+        lines = try await waitForLines(3, at: log)
         XCTAssertEqual(lines.last, "command:restore")
+        try await waitUntil("waiting after Restore") { model.runtimeState == .waiting }
         XCTAssertTrue(model.isBlackoutHidden(Self.sideUUID))
         XCTAssertEqual(coverRequests.last, [202])
 

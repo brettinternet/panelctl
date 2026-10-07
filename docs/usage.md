@@ -75,11 +75,12 @@ If the menu icon is hidden, reopen the app to show Settings.
 ```sh
 panelctl app enable | disable | toggle        # master Automation switch
 panelctl app status --json
-panelctl app blackout-now | restore | sleep-now
+panelctl app restore | sleep-now
 panelctl app snooze --for 30m
 panelctl app resume
 panelctl app open-settings
-panelctl app hide | show | toggle-hide --display UUID [--json]
+panelctl app hide | toggle-hide --display UUID [--style black-out] [--json]
+panelctl app show --display UUID [--json]
 panelctl app run-action --action UUID [--json]
 panelctl app run-rule --rule UUID [--json]
 ```
@@ -88,15 +89,22 @@ Without a standalone install, use
 `/Applications/PanelCtl.app/Contents/Helpers/panelctl`.
 
 `status`, `hide`, `show`, `toggle-hide`, `run-action` and `run-rule` need the app
-running; the rest launch it in the background. `restore` ends automation blackouts
+running; the rest launch it in the background. `restore` ends Automation blackouts
 only; it never shows a hidden display.
+
+`panelctl app blackout-now` is retired. The CLI exits 2 with migration guidance
+before contacting or launching the app, and the app refuses the same request from
+older clients without changing Automation or snooze state. Use `app hide --display`
+for one display until Show, `app run-action` for ordered Hide/Show steps, or
+`app run-rule` to run one saved Automation rule. The Run rule submenu replaced the
+former broadcast Blackout Now menu item; it never runs every rule at once.
 
 `panelctl app run-rule --rule UUID` runs exactly one saved Automation rule once,
 immediately bypassing its idle wait. Find stable IDs with `panelctl app status --json`
 in `rules[].id`, or use **Settings → Automations → Copy CLI command** on the
 saved rule. **Run now** in Settings and the menu bar’s **Run rule** submenu use
-this same one-shot operation. The submenu replaces the broadcast Blackout Now
-item, lists off rules too, and marks the selected rule while it runs. Run failures
+this same one-shot operation. The submenu lists off rules too and marks the
+selected rule while it runs. Run failures
 from the menu open Automations, where the rule shows the refusal and next action.
 Running once does not turn on its automatic trigger.
 
@@ -110,7 +118,12 @@ Automation or snooze may be disabled; normal automatic scheduling afterward
 still follows those unchanged settings.
 
 This is different from `run-action` (ordered Hide/Show steps) and app `hide`
-(which keeps one display hidden until Show). An active selected rule or competing
+(which keeps one display hidden until Show). `hide` and `toggle-hide` use the
+configured Hide style unless `--style black-out` forces a black cover for that
+Hide without changing saved preferences. Styled requests require app-control request
+protocol 2, so older running apps refuse rather than silently use the configured
+removal style; update/restart the app before using this option. Unstyled requests
+and responses retain protocol 1 compatibility. An active selected rule or competing
 display operation returns `busy`; overlapping rules are refused, and Full disconnect
 or unresolved recovery returns `recovery-needed`. Run-rule never launches the app, queues,
 retries, broadcasts to another rule or automatically replays a lost response. After

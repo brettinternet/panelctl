@@ -76,27 +76,6 @@ final class BlackoutFocusControllerTests: XCTestCase {
         )
     }
 
-    func testModeAwareActionAndRequestSummaries() {
-        XCTAssertEqual(AppDelegate.blackoutActionTitle(for: .blocking), "Black Out Now")
-        XCTAssertEqual(AppDelegate.blackoutActionTitle(for: .working), "Dim Now")
-        XCTAssertEqual(
-            AppDelegate.blackoutRequestSummary(for: .blocking, succeeded: true),
-            "Blackout requested"
-        )
-        XCTAssertEqual(
-            AppDelegate.blackoutRequestSummary(for: .blocking, succeeded: false),
-            "Blackout request failed"
-        )
-        XCTAssertEqual(
-            AppDelegate.blackoutRequestSummary(for: .working, succeeded: true),
-            "Dimming requested"
-        )
-        XCTAssertEqual(
-            AppDelegate.blackoutRequestSummary(for: .working, succeeded: false),
-            "Dimming request failed"
-        )
-    }
-
     func testOutsideTargetDoesNotCaptureOrActivate() {
         var captures = 0
         var activations = 0

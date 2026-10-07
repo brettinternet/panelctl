@@ -866,7 +866,7 @@ struct ProtectionRuleEditor: View {
                 Section("Advanced") {
                     Toggle(isOn: setting(\.hardwareDimmingEnabled)) {
                         Text("Lower hardware brightness")
-                        Text("Experimental. Uses DDC, which not every monitor supports, and restores the captured brightness. Applies to idle and Black Out Now, not empty displays.")
+                        Text("Experimental. Uses DDC, which not every monitor supports, and restores the captured brightness. Applies to idle and one-shot Rule runs, not empty displays.")
                     }
                     if draft.settings.hardwareDimmingEnabled {
                         percentStepper("Brightness", selection: setting(\.hardwareBrightnessPercent), range: 0...100)

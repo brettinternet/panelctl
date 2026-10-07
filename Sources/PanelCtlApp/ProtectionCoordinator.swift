@@ -20,7 +20,6 @@ final class ProtectionCoordinator {
     private var desiredSignature: String?
     private var reconciliationGeneration: UInt64 = 0
     private var reconciliationInProgress = false
-    private var pendingBlackoutNow = false
     private var pendingDisplayRearmOnLaunch = false
     private var retryInProgress = false
     private var isShuttingDown = false
@@ -70,7 +69,7 @@ final class ProtectionCoordinator {
     }
 
     var hasManagedProcess: Bool { services.values.contains(where: \.hasManagedProcess) }
-    var canReceiveControl: Bool { pendingBlackoutNow || services.values.contains(where: \.canReceiveControl) }
+    var canReceiveControl: Bool { services.values.contains(where: \.canReceiveControl) }
 
     var blackedOutDisplayIDs: Set<UInt32> {
         services.values.reduce(into: Set<UInt32>()) { $0.formUnion($1.blackedOutDisplayIDs) }
@@ -89,7 +88,7 @@ final class ProtectionCoordinator {
         if isShuttingDown {
             return "PanelCtl is shutting down; the rule cannot be started."
         }
-        if retryInProgress || reconciliationInProgress || pendingBlackoutNow {
+        if retryInProgress || reconciliationInProgress {
             return "Automation is starting, stopping or awaiting a display operation. Try again when it settles."
         }
         if oneShotRuleIDs.contains(id) {
@@ -217,11 +216,9 @@ final class ProtectionCoordinator {
         }
         self.validations = validations
         desiredArguments = arguments
-        let scheduledArguments = arguments.filter { canScheduleRule($0.key) }
         let signature = Self.signature(for: arguments)
         let changed = forceRestart || signature != desiredSignature
         desiredSignature = signature
-        if !ruleSet.isEnabled || scheduledArguments.isEmpty { pendingBlackoutNow = false }
         guard changed else {
             publishChanges()
             return
@@ -254,7 +251,6 @@ final class ProtectionCoordinator {
     }
 
     func disable() {
-        pendingBlackoutNow = false
         desiredArguments = [:]
         desiredSignature = Self.signature(for: [:])
         for service in services.values { service.disable() }
@@ -262,7 +258,6 @@ final class ProtectionCoordinator {
     }
 
     func disableForDisplayHide(completion: @escaping (Bool, String?) -> Void) {
-        pendingBlackoutNow = false
         desiredArguments = [:]
         desiredSignature = Self.signature(for: [:])
         reconciliationGeneration &+= 1
@@ -353,23 +348,12 @@ final class ProtectionCoordinator {
         completion(result, result ? nil : (failure ?? Self.unknownCleanup))
     }
 
-    func sendControl(_ command: BlackoutControlCommand) throws -> Bool {
-        if command == .blackoutNow {
-            guard !desiredArguments.isEmpty else { return false }
-            pendingBlackoutNow = true
-            if !reconciliationInProgress { try deliverBlackoutNow() }
-            return true
-        }
-        let cancelledPendingBlackout = command == .restore && pendingBlackoutNow
-        if cancelledPendingBlackout {
-            pendingBlackoutNow = false
-            if reconciliationInProgress { return true }
-        }
-        var sent = cancelledPendingBlackout
+    func restore() throws -> Bool {
+        var sent = false
         var firstError: Error?
         for service in services.values where service.canReceiveControl {
             do {
-                sent = try service.sendControl(command) || sent
+                sent = try service.sendControl(.restore) || sent
             } catch {
                 if firstError == nil { firstError = error }
             }
@@ -381,7 +365,6 @@ final class ProtectionCoordinator {
     func shutdown(completion: @escaping () -> Void) {
         isShuttingDown = true
         reconciliationGeneration &+= 1
-        pendingBlackoutNow = false
         let all = Array(services.values) + (legacyCleanupService.map { [$0] } ?? [])
         guard !all.isEmpty else { completion(); return }
         var remaining = all.count
@@ -397,7 +380,6 @@ final class ProtectionCoordinator {
         guard generation == reconciliationGeneration, !isShuttingDown else { return }
         reconciliationInProgress = false
         guard succeeded, unresolvedCleanupFailure == nil, runtimeJournalsAreVerified else {
-            pendingBlackoutNow = false
             if storedCleanupFailure == nil {
                 storedCleanupFailure = message ?? Self.unknownCleanup
             }
@@ -417,24 +399,7 @@ final class ProtectionCoordinator {
             )
         }
         pendingDisplayRearmOnLaunch = false
-        if pendingBlackoutNow { try? deliverBlackoutNow() }
         publishChanges()
-    }
-
-    private func deliverBlackoutNow() throws {
-        guard pendingBlackoutNow else { return }
-        pendingBlackoutNow = false
-        var firstError: Error?
-        for (id, arguments) in desiredArguments where canScheduleRule(id) {
-            let service = service(for: id)
-            service.run(
-                arguments: arguments,
-                restartForDisplayChange: pendingDisplayRearmOnLaunch
-            )
-            do { _ = try service.sendControl(.blackoutNow) }
-            catch { if firstError == nil { firstError = error } }
-        }
-        if let firstError { throw firstError }
     }
 
     private func service(for id: UUID) -> ProtectionService {

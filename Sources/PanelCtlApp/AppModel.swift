@@ -2429,6 +2429,14 @@ final class AppModel: ObservableObject {
         _ request: AppControlRequest,
         receivedAt: ContinuousClock.Instant = .now
     ) async -> AppControlResponse {
+        guard request.hideStyle == nil || request.command == .hide || request.command == .toggleHide else {
+            let message = "--style black-out is only supported for Hide and Toggle Hide."
+            return AppControlResponse(
+                ok: false, running: true, enabled: preferences.isEnabled,
+                state: runtimeState.controlIdentifier, summary: message,
+                error: message, outcome: .refused
+            )
+        }
         if request.command == .runAction {
             return await handleDisplayActionControlRequest(request, receivedAt: receivedAt)
         }
@@ -2444,7 +2452,7 @@ final class AppModel: ObservableObject {
                 }
             )
         }
-        guard request.protocolVersion == AppControlRequest.currentProtocol,
+        guard request.hasSupportedProtocol,
               request.command.isDisplayCommand, request.durationSeconds == nil,
               request.actionID == nil,
               let uuid = request.targetUUID, UUID(uuidString: uuid) != nil else {
@@ -2498,13 +2506,17 @@ final class AppModel: ObservableObject {
         if action == .show, !hidden {
             return response(.noOp, "\(tile.name) isn\u{2019}t hidden.")
         }
-        guard tile.action == action, tile.actionBlocker == nil else {
+        // A forced black-out uses blackOut's own readiness checks, not the
+        // saved removal configuration's source/Experimental requirements.
+        let forcedBlackOut = action == .hide && request.hideStyle == .blackOut
+        guard forcedBlackOut || (tile.action == action && tile.actionBlocker == nil) else {
             return response(.refused, tile.actionBlocker ?? "PanelCtl can\u{2019}t do that for \(tile.name) now.")
         }
         let result = await withCheckedContinuation { continuation in
             let finished: (DisplayOperationResult) -> Void = { continuation.resume(returning: $0) }
             if action == .hide {
-                hide(targetUUID: uuid, completion: finished)
+                let style: DisplayHideStyle = request.hideStyle == .blackOut ? .blackOut : .configured
+                hide(targetUUID: uuid, style: style, completion: finished)
             } else {
                 show(targetUUID: uuid, completion: finished)
             }
@@ -3686,27 +3698,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func blackoutNow() throws {
-        guard runningDisplayAction == nil else { throw RecoveryError.unsafe(displayActionBusyMessage) }
-        guard controlRunningRule == nil else { throw RecoveryError.unsafe(protectionRuleBusyMessage) }
-        guard !disconnectAutomationPaused, disconnectInspectionFailure == nil else {
-            throw RecoveryError.unsafe("Automation is paused during Full disconnect and verified recovery.")
-        }
-        guard automationPreferences.rules.contains(where: \.isEnabled) else {
-            throw ProtectionConfigurationError.noEnabledRules
-        }
-        let wasSnoozed = cancelSnooze()
-        displays = displayProvider()
-        if wasSnoozed { manualActivityDate = now() }
-        if !automationPreferences.isEnabled {
-            var ruleSet = automationPreferences
-            ruleSet.isEnabled = true
-            automationPreferences = ruleSet
-        }
-        reconcileProtection()
-        _ = try protectionCoordinator.sendControl(.blackoutNow)
-    }
-
     @discardableResult
     func restoreBlackout() throws -> Bool {
         if runningDisplayAction != nil { return false }
@@ -3717,7 +3708,7 @@ final class AppModel: ObservableObject {
                snoozedUntil == nil, automationPreferences.isEnabled,
                automationPreferences.rules.contains(where: \.isEnabled),
                protectionCoordinator.canReceiveControl {
-                restored = try protectionCoordinator.sendControl(.restore) || restored
+                restored = try protectionCoordinator.restore() || restored
             }
             if restored { manualActivityDate = now() }
             return restored
@@ -3727,7 +3718,7 @@ final class AppModel: ObservableObject {
         guard snoozedUntil == nil, automationPreferences.isEnabled,
               automationPreferences.rules.contains(where: \.isEnabled),
               protectionCoordinator.canReceiveControl else { return false }
-        let restored = try protectionCoordinator.sendControl(.restore)
+        let restored = try protectionCoordinator.restore()
         if restored { manualActivityDate = now() }
         return restored
     }

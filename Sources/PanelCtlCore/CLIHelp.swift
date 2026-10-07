@@ -155,12 +155,11 @@ public enum CLIHelp {
             menu or `panelctl app restore`. --caffeinate prevents idle system sleep
             (advanced). --keep-displays-awake keeps displays awake until --sleep-after
             while the screen is unlocked; macOS may sleep the Mac sooner, and the assertion applies globally.
-            Hardware dimming applies to inactivity and Blackout Now cycles, not empty-display-only blackouts.
+            Hardware dimming applies to inactivity treatment, not empty-display-only blackouts.
             By default, automatic treatment defers while
             another app keeps the display awake; --ignore-playback disables that
             system-wide detection. --defer-camera additionally defers while any camera
-            is in use without accessing its video. Manual blackout-now commands are
-            never deferred.
+            is in use without accessing its video.
 
             Selectors accept a display UUID or decimal/hex CG display ID. Use
             --index <n> or index:<n> for the one-based index from `panelctl list`.
@@ -205,14 +204,14 @@ public enum CLIHelp {
 
             Commands:
               enable, disable, toggle, status
-              blackout-now, restore
+              restore
               sleep-now
               snooze --for <duration>
               resume
               open-settings
-              hide --display <UUID>
+              hide --display <UUID> [--style black-out]
               show --display <UUID>
-              toggle-hide --display <UUID>
+              toggle-hide --display <UUID> [--style black-out]
               run-action --action <UUID>
               run-rule --rule <UUID>
 
@@ -220,9 +219,13 @@ public enum CLIHelp {
             the machine-readable response. snooze temporarily pauses automation
             for up to 30 days; resume ends a snooze early.
             hide, show and toggle-hide act like the display's Hide or Show in
-            the running app, using its Hide style, and wait for the result. Copy
-            the command from Settings > Displays. A display already in the
-            requested state is a no-op.
+            the running app and wait for the result. Hide uses the configured
+            style by default; --style black-out forces a black cover for that
+            Hide without changing preferences. --style is accepted only by
+            hide and toggle-hide. Copy the default command from Settings > Displays.
+            A display already in the requested state is a no-op.
+            \(AppControlCommand.blackoutNowMigrationGuidance)
+            `restore` ends Automation blackouts only; Show ends a manual Hide.
             run-action --action <UUID> invokes one saved Action with 1–8 ordered
             Hide (black out), Hide (remove from desktop) or Show steps, only in
             the running app. It never launches the app, queues or retries a request.

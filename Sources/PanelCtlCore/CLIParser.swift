@@ -133,6 +133,7 @@ public enum PanelCommand: Equatable {
         targetUUID: String? = nil,
         actionID: UUID? = nil,
         ruleID: UUID? = nil,
+        hideStyle: AppControlHideStyle? = nil,
         json: Bool
     )
     case help(command: String?)
@@ -178,6 +179,8 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case invalidOtherRuleDisplay
     case invalidRuleID
     case invalidRunOnce
+    case retiredBlackoutNow
+    case invalidHideStyle(String)
     public var description: String {
         switch self {
         case .missingCommand: return "missing command (use 'panelctl help' for usage)"
@@ -232,6 +235,9 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
         case .handoffRequirements(let command):
             return "\(command) requires --display and --consent-\(command)" + (command == "away" ? " and --source" : "")
         case .snoozeDurationTooLong: return "snooze duration must not exceed 30 days"
+        case .retiredBlackoutNow: return AppControlCommand.blackoutNowMigrationGuidance
+        case .invalidHideStyle(let value):
+            return "invalid Hide style: \(value) (expected black-out)"
         }
     }
 }
@@ -467,7 +473,11 @@ public enum CLIParser {
         guard let command = AppControlCommand(rawValue: rawCommand) else {
             throw CLIParseError.unknownCommand(rawCommand)
         }
+        if command == .blackoutNow {
+            throw CLIParseError.retiredBlackoutNow
+        }
         var json = false
+        var hideStyle: AppControlHideStyle?
         var durationSeconds: TimeInterval?
         var targetUUID: String?
         var actionID: UUID?
@@ -510,6 +520,19 @@ public enum CLIParser {
                     throw CLIParseError.missingValue("--rule (UUID)")
                 }
                 ruleID = parsed
+            case "--style":
+                guard command == .hide || command == .toggleHide else {
+                    throw CLIParseError.unknownOption("--style")
+                }
+                guard hideStyle == nil else { throw CLIParseError.duplicateOption("--style") }
+                i += 1
+                guard i < args.count, !args[i].hasPrefix("--") else {
+                    throw CLIParseError.missingValue("--style")
+                }
+                guard let parsed = AppControlHideStyle(rawValue: args[i]) else {
+                    throw CLIParseError.invalidHideStyle(args[i])
+                }
+                hideStyle = parsed
             case "--for":
                 guard command == .snooze else {
                     throw CLIParseError.unknownOption("--for")
@@ -549,6 +572,7 @@ public enum CLIParser {
             targetUUID: targetUUID,
             actionID: actionID,
             ruleID: ruleID,
+            hideStyle: hideStyle,
             json: json
         )
     }

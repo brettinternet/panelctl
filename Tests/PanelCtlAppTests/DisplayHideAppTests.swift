@@ -37,7 +37,10 @@ final class DisplayHideAppTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: directory) }
         let log = directory.appendingPathComponent("helper.log")
-        let helper = try writeHiddenOverlayHelper(in: directory, log: log, initiallyWaiting: true)
+        let blackoutTrigger = directory.appendingPathComponent("blackout-trigger")
+        let helper = try writeHiddenOverlayHelper(
+            in: directory, log: log, initiallyWaiting: true, blackoutTrigger: blackoutTrigger
+        )
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
         var preferences = ProtectionPreferences()
@@ -86,6 +89,7 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(model.protectionRuleRowStatus(for: rule).text, "Watching for inactivity · Sleep paused while a display is removed; restores overlay instead")
         let waitingMenuTitles = delegate.makeMenu().items.map(\.title)
         XCTAssertTrue(waitingMenuTitles.contains("Run rule"), "manual automation is selected per rule")
+        XCTAssertFalse(waitingMenuTitles.contains("Black Out Now"), "manual automation is no longer a broadcast menu action")
         XCTAssertFalse(waitingMenuTitles.contains("Dim Now"))
         XCTAssertTrue(lines[0].contains("--display \(Self.sourceUUID)"))
         XCTAssertTrue(lines[0].contains("--panelctl-hidden-mirror-source \(Self.sourceUUID)"))
@@ -94,7 +98,7 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertFalse(lines[0].contains("--sleep-after"))
         XCTAssertFalse(lines[0].contains("--keep-displays-awake"))
 
-        try model.blackoutNow()
+        try Data().write(to: blackoutTrigger)
         try await waitUntil { model.runtimeState == .blackedOut }
         XCTAssertEqual(model.protectionRuleRowStatus(for: rule).text, "Blackout active · Sleep paused while a display is removed; restores overlay instead")
         XCTAssertTrue(model.statusSummary.contains("Mirror source blacked out by automation"))
@@ -103,13 +107,11 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertTrue(menuTitles.contains("Show Target"), "Show stays reachable over a source overlay")
         XCTAssertTrue(menuTitles.contains("Restore"), "protection Restore stays available over a source overlay")
         XCTAssertTrue(try model.restoreBlackout(), "Restore controls the overlay while the journal remains hidden")
-        lines = try await waitForLogLines(3, at: log)
-        XCTAssertEqual(lines[2], "command:restore")
+        lines = try await waitForLogLines(2, at: log)
+        XCTAssertEqual(lines[1], "command:restore")
         XCTAssertEqual(showCalls, 0, "Restore never invokes Show")
         XCTAssertEqual(model.handoffStatus?.state, .hidden)
 
-        try model.blackoutNow()
-        try await waitUntil { model.runtimeState == .blackedOut }
         let shown = try await showAndWait(model)
         XCTAssertTrue(shown.succeeded)
         lines = try String(contentsOf: log, encoding: .utf8).split(separator: "\n").map(String.init)
@@ -134,7 +136,7 @@ final class DisplayHideAppTests: XCTestCase {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
             defer { try? FileManager.default.removeItem(at: directory) }
             let log = directory.appendingPathComponent("helper.log")
-            let helper = try writeHiddenOverlayHelper(in: directory, log: log, initiallyWaiting: true)
+            let helper = try writeHiddenOverlayHelper(in: directory, log: log)
             let defaults = try makeDefaults()
             defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
             var preferences = ProtectionPreferences()
@@ -157,7 +159,7 @@ final class DisplayHideAppTests: XCTestCase {
             let model = makeModel(defaults: defaults, displays: displays, status: { box.value },
                                   useManagedProtectionService: true,
                                   isDisplayMirrored: { $0 == 202 || $0 == 303 })
-            try await waitUntil { model.runtimeState == .waiting }
+            try await waitUntil { model.runtimeState == .blackedOut }
             let line = try await waitForLogLines(1, at: log)[0]
             XCTAssertFalse(line.contains(Self.targetUUID), "removed target is never sent to the helper")
             for uuid in selected where uuid != Self.targetUUID {
@@ -176,8 +178,6 @@ final class DisplayHideAppTests: XCTestCase {
             XCTAssertTrue(status.details.contains { $0.hasPrefix("Skipping 1 unavailable or hidden display") })
             XCTAssertTrue(status.details.contains { $0.hasPrefix("Sleep paused") })
             XCTAssertTrue(model.statusSummary.contains(selected.contains(Self.mainUUID) ? "Main OLED" : "Mirror source"))
-            try model.blackoutNow()
-            try await waitUntil { model.runtimeState == .blackedOut }
             XCTAssertEqual(model.nextAction, "restore overlay")
             XCTAssertTrue(try model.restoreBlackout())
 
@@ -3067,23 +3067,29 @@ final class DisplayHideAppTests: XCTestCase {
     private func writeHiddenOverlayHelper(
         in directory: URL,
         log: URL,
-        initiallyWaiting: Bool = false
+        initiallyWaiting: Bool = false,
+        blackoutTrigger: URL? = nil
     ) throws -> URL {
         let helper = directory.appendingPathComponent("fake-panelctl")
         let initialStatus = initiallyWaiting
             ? "printf '{\"state\":\"waiting\",\"blackedOutDisplayIDs\":[]}\\n'"
             : "printf '{\"state\":\"blacked_out\",\"blackedOutDisplayIDs\":[303]}\\n'"
+        let triggeredStatus = blackoutTrigger.map { trigger in
+            """
+            while [[ ! -e '\(trigger.path)' ]]; do /bin/sleep 0.01; done
+            printf '{"state":"blacked_out","blackedOutDisplayIDs":[303]}\\n'
+            """
+        } ?? ""
         let script = """
         #!/bin/bash
         printf 'launch:%s\\n' "$*" >> "$PANELCTL_TEST_LOG"
         \(initialStatus)
         trap 'printf "stop\\n" >> "$PANELCTL_TEST_LOG"; printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":true}\\n"; exit 0' TERM
+        \(triggeredStatus)
         while IFS= read -r command; do
             printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
             if [[ "$command" == "restore" ]]; then
                 printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
-            elif [[ "$command" == "blackout-now" ]]; then
-                printf '{"state":"blacked_out","blackedOutDisplayIDs":[303]}\\n'
             fi
         done
         """
@@ -3206,7 +3212,9 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(unknown.outcome, .refused)
         let blackout = try await send(.blackoutNow, uuid: nil)
         XCTAssertFalse(blackout.ok)
-        XCTAssertEqual(hideCalls, 1, "an already hidden display isn\u{2019}t hidden again")
+        XCTAssertEqual(blackout.error, AppControlCommand.blackoutNowMigrationGuidance)
+        XCTAssertEqual(blackout.outcome, .refused)
+        XCTAssertEqual(hideCalls, 1, "a retired request never changes the selected display")
 
         // Show works while automation is off.
         _ = try await send(.disable, uuid: nil)
@@ -3251,6 +3259,132 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(recovery.outcome, .recoveryNeeded)
         XCTAssertEqual(hideCalls, 1, "recovery never writes")
         XCTAssertEqual(showCalls, 1, "recovery never writes")
+    }
+
+    func testForcedBlackOutStyleOverridesRemovalAndShowOrEscapeRestoresIt() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let box = StatusBox(handoffStatus(.none, target: nil, source: nil))
+        var hideCalls = 0
+        var showCalls = 0
+        var coveredDisplays = Set<UInt32>()
+        let model = makeModel(
+            defaults: defaults,
+            displays: displays,
+            status: { box.value },
+            coverDisplays: { desired in coveredDisplays = desired; return [] },
+            hideDisplay: { _, _, _ in hideCalls += 1; return .notRequested },
+            showDisplay: { _, _ in showCalls += 1; return .notRequested }
+        )
+        model.setHideEnabled(true, for: displays[1])
+        model.setHideSource(nil, for: Self.targetUUID)
+        XCTAssertTrue(model.hideRemovesFromDesktop(displays[1]))
+        XCTAssertNotNil(model.displayTiles.first { $0.uuid == Self.targetUUID }?.actionBlocker,
+                        "incomplete removal setup must not block forced black-out")
+        let savedHidePreferences = model.hidePreferences
+        let savedHideData = defaults.data(forKey: "displayHidePreferences")
+        let path = "\(try AppControlSocket.userTemporaryDirectory())/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
+        let delegate = AppDelegate()
+        delegate.model = model
+        let server = AppControlServer(socketPath: path) { await delegate.handleControlRequest($0, receivedAt: $1) }
+        try server.start()
+        defer { server.stop() }
+
+        @Sendable func send(_ command: AppControlCommand, style: AppControlHideStyle? = nil) async throws -> AppControlResponse {
+            try await Task.detached {
+                try AppControlClient(socketPath: path, launch: { XCTFail("Hide and Show must not launch the app") })
+                    .execute(command, targetUUID: Self.targetUUID, hideStyle: style)
+            }.value
+        }
+
+        let forcedHide = try await send(.hide, style: .blackOut)
+        XCTAssertEqual(forcedHide.outcome, .done)
+        XCTAssertTrue(model.isBlackoutHidden(Self.targetUUID))
+        XCTAssertEqual(coveredDisplays, [202])
+        XCTAssertEqual(hideCalls, 0, "forced black-out bypasses the saved Remove from desktop operation")
+        XCTAssertEqual(model.hidePreferences, savedHidePreferences)
+        XCTAssertEqual(defaults.data(forKey: "displayHidePreferences"), savedHideData)
+
+        let shown = try await send(.show)
+        XCTAssertEqual(shown.outcome, .done)
+        XCTAssertFalse(model.isBlackoutHidden(Self.targetUUID))
+        XCTAssertTrue(coveredDisplays.isEmpty)
+        XCTAssertEqual(showCalls, 0, "Show reverses the black-out Hide without restoring a removal journal")
+
+        let toggled = try await send(.toggleHide, style: .blackOut)
+        XCTAssertEqual(toggled.outcome, .done)
+        XCTAssertTrue(model.isBlackoutHidden(Self.targetUUID))
+        XCTAssertTrue(model.showHiddenDisplay(at: 202), "Escape on the covered display follows the normal Show path")
+        XCTAssertFalse(model.isBlackoutHidden(Self.targetUUID))
+        XCTAssertTrue(coveredDisplays.isEmpty)
+        XCTAssertEqual(model.hidePreferences, savedHidePreferences)
+        XCTAssertEqual(defaults.data(forKey: "displayHidePreferences"), savedHideData)
+        XCTAssertEqual(hideCalls, 0)
+        XCTAssertEqual(showCalls, 0)
+        await withCheckedContinuation { continuation in model.shutdown { continuation.resume() } }
+    }
+
+    func testRetiredBlackoutNowSocketRequestRefusesWithoutChangingAutomationOrSnooze() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panelctl-retired-blackout-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let log = directory.appendingPathComponent("helper.log")
+        let script = """
+        #!/bin/bash
+        printf 'launch:%s\\n' "$*" >> "$PANELCTL_TEST_LOG"
+        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
+        trap 'exit 0' TERM
+        while IFS= read -r command; do printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"; done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        defer { unsetenv("PANELCTL_HELPER"); unsetenv("PANELCTL_TEST_LOG") }
+
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var settings = ProtectionPreferences()
+        settings.didChooseDisplays = true
+        settings.selectedDisplayUUIDs = [Self.targetUUID]
+        let rule = ProtectionRule(name: "Timed rule", isEnabled: true, settings: settings)
+        defaults.set(
+            try JSONEncoder().encode(AutomationPreferences(isEnabled: false, rules: [rule])),
+            forKey: "automationRules"
+        )
+        let snoozeExpiry = Date().addingTimeInterval(3_600)
+        let model = makeModel(defaults: defaults, displays: displays)
+        defaults.set(snoozeExpiry, forKey: "snoozedUntil")
+        XCTAssertFalse(model.automationPreferences.isEnabled)
+        XCTAssertEqual(model.snoozedUntil, snoozeExpiry)
+        let savedAutomation = model.automationPreferences
+        let savedAutomationData = defaults.data(forKey: "automationRules")
+        let delegate = AppDelegate()
+        delegate.model = model
+        let path = "\(try AppControlSocket.userTemporaryDirectory())/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
+        let server = AppControlServer(socketPath: path) { await delegate.handleControlRequest($0, receivedAt: $1) }
+        try server.start()
+        defer { server.stop() }
+
+        let response = try await Task.detached {
+            try AppControlClient(socketPath: path, launch: { XCTFail("the live socket must handle this request") })
+                .execute(.blackoutNow)
+        }.value
+        XCTAssertFalse(response.ok)
+        XCTAssertEqual(response.outcome, .refused)
+        XCTAssertEqual(response.exitCode, 1)
+        XCTAssertEqual(response.summary, AppControlCommand.blackoutNowMigrationGuidance)
+        XCTAssertEqual(response.error, AppControlCommand.blackoutNowMigrationGuidance)
+        XCTAssertEqual(model.automationPreferences, savedAutomation)
+        XCTAssertEqual(defaults.data(forKey: "automationRules"), savedAutomationData)
+        XCTAssertEqual(model.snoozedUntil, snoozeExpiry)
+        XCTAssertEqual(defaults.object(forKey: "snoozedUntil") as? Date, snoozeExpiry)
+        XCTAssertEqual(model.runtimeState, .disabled)
+        XCTAssertTrue(model.blackedOutDisplayIDs.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: log.path), "the refused socket command never launches a rule helper")
+        await withCheckedContinuation { continuation in model.shutdown { continuation.resume() } }
     }
 
     func testScriptToggleThatWaitedBehindAHideIsBusy() async throws {

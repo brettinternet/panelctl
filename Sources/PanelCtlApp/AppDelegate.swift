@@ -257,51 +257,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mode == .blocking &&
             (runtimeState == .blackedOut || hasBlackedOutDisplays)
     }
-    static func blackoutActionTitle(for mode: BlackoutMode) -> String {
-        mode == .working ? "Dim Now" : "Black Out Now"
-    }
-
-    static func blackoutActionTitle(for rules: [ProtectionRule]) -> String {
-        blackoutActionTitle(for: rules.filter(\.isEnabled).map { $0.settings.mode })
-    }
-
-    static func blackoutActionTitle(for modes: [BlackoutMode]) -> String {
-        switch Set(modes) {
-        case [.working]: return "Dim Now"
-        case [.blocking]: return "Black Out Now"
-        case [.working, .blocking]: return "Black Out and Dim Now"
-        default: return "Black Out Now"
-        }
-    }
-
-    static func blackoutRequestSummary(
-        for mode: BlackoutMode,
-        succeeded: Bool
-    ) -> String {
-        switch (mode, succeeded) {
-        case (.working, true): return "Dimming requested"
-        case (.working, false): return "Dimming request failed"
-        case (.blocking, true): return "Blackout requested"
-        case (.blocking, false): return "Blackout request failed"
-        }
-    }
-
-    static func blackoutRequestSummary(
-        for rules: [ProtectionRule],
-        succeeded: Bool
-    ) -> String {
-        let modes = Set(rules.filter(\.isEnabled).map { $0.settings.mode })
-        switch (modes, succeeded) {
-        case ([.working], true): return "Dimming requested"
-        case ([.working], false): return "Dimming request failed"
-        case ([.blocking], true): return "Blackout requested"
-        case ([.blocking], false): return "Blackout request failed"
-        case ([.working, .blocking], true): return "Blackout and dimming requested"
-        case ([.working, .blocking], false): return "Blackout and dimming request failed"
-        default: return succeeded ? "Protection requested" : "Protection request failed"
-        }
-    }
-
 
     @objc private func pollBlackoutFocus() {
         updateBlackoutFocus()
@@ -774,11 +729,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         _ request: AppControlRequest,
         receivedAt: ContinuousClock.Instant
     ) async -> AppControlResponse {
-        guard request.protocolVersion == AppControlRequest.currentProtocol else {
+        guard request.hasSupportedProtocol else {
             return controlResponse(
                 ok: false,
                 error: "unsupported app-control protocol \(request.protocolVersion)"
             )
+        }
+        if request.command == .blackoutNow {
+            let message = AppControlCommand.blackoutNowMigrationGuidance
+            return controlResponse(ok: false, summary: message, error: message, outcome: .refused)
         }
         if model.runningDisplayAction != nil,
            ![AppControlCommand.status, .openSettings, .hide, .show, .toggleHide, .runAction, .runRule].contains(request.command) {
@@ -786,7 +745,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                    error: model.displayActionBusyMessage, outcome: .busy)
         }
 
-        if model.controlRunningRule != nil && [.blackoutNow, .sleepNow].contains(request.command) {
+        if model.controlRunningRule != nil && request.command == .sleepNow {
             return controlResponse(ok: false, summary: model.protectionRuleBusyMessage,
                                    error: model.protectionRuleBusyMessage, outcome: .busy)
         }
@@ -810,27 +769,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                    runningAction: model.controlRunningDisplayAction,
                                    runningRule: model.controlRunningRule)
         case .blackoutNow:
-            do {
-                try model.blackoutNow()
-                return controlResponse(
-                    ok: true,
-                    summary: Self.blackoutRequestSummary(
-                        for: model.automationPreferences.rules,
-                        succeeded: true
-                    ),
-                    detail: model.statusDetail
-                )
-            } catch {
-                return controlResponse(
-                    ok: false,
-                    summary: Self.blackoutRequestSummary(
-                        for: model.automationPreferences.rules,
-                        succeeded: false
-                    ),
-                    error: error.localizedDescription,
-                    detail: model.statusDetail
-                )
-            }
+            return controlResponse(
+                ok: false,
+                summary: AppControlCommand.blackoutNowMigrationGuidance,
+                error: AppControlCommand.blackoutNowMigrationGuidance,
+                outcome: .refused
+            )
         case .sleepNow:
             do {
                 try model.sleepAllNow()

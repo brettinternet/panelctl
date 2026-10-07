@@ -109,7 +109,7 @@ struct PanelCtlMain {
                 }
             case .wakeDisplays:
                 try DisplaySleepController.wake()
-            case .app(let appCommand, let durationSeconds, let targetUUID, let actionID, let ruleID, let json):
+            case .app(let appCommand, let durationSeconds, let targetUUID, let actionID, let ruleID, let hideStyle, let json):
                 let client = try AppControlClient()
                 let response: AppControlResponse
                 do {
@@ -118,7 +118,8 @@ struct PanelCtlMain {
                         durationSeconds: durationSeconds,
                         targetUUID: targetUUID,
                         actionID: actionID,
-                        ruleID: ruleID
+                        ruleID: ruleID,
+                        hideStyle: hideStyle
                     )
                 } catch {
                     guard appCommand.isManualDisplayCommand else { throw error }

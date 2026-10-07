@@ -519,83 +519,6 @@ final class ProtectionPreferencesTests: XCTestCase {
     }
 
     @MainActor
-    func testBlackoutNowEnablesAndControlsTheExistingWatcher() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent(
-                "panelctl-immediate-\(UUID().uuidString)",
-                isDirectory: true
-            )
-        try FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true
-        )
-        let helper = directory.appendingPathComponent("fake-panelctl")
-        let log = directory.appendingPathComponent("control.log")
-        let script = """
-        #!/bin/bash
-        printf 'launch:%s\\n' "$*" >> "$PANELCTL_TEST_LOG"
-        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
-        trap 'exit 0' TERM
-        while IFS= read -r command; do
-            printf 'command:%s\\n' "$command" >> "$PANELCTL_TEST_LOG"
-        done
-        """
-        try Data(script.utf8).write(to: helper)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755],
-            ofItemAtPath: helper.path
-        )
-
-        let suiteName = "panelctl-immediate-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        var preferences = ProtectionPreferences()
-        preferences.didChooseDisplays = true
-        preferences.selectedDisplayUUIDs = ["AAAA-UUID"]
-        preferences.idleSeconds = 120
-        preferences.followUpAction = .restore
-        preferences.followUpSeconds = 15
-        defaults.set(
-            try JSONEncoder().encode(preferences),
-            forKey: "blackoutPreferences"
-        )
-
-        setenv("PANELCTL_HELPER", helper.path, 1)
-        setenv("PANELCTL_TEST_LOG", log.path, 1)
-        defer {
-            unsetenv("PANELCTL_HELPER")
-            unsetenv("PANELCTL_TEST_LOG")
-        }
-
-        let model = isolatedModel(
-            defaults: defaults,
-            displayProvider: { [self.displays[0], self.displays[1]] }
-        )
-        XCTAssertFalse(try model.restoreBlackout())
-        let ruleID = try XCTUnwrap(model.automationPreferences.rules.first?.id.uuidString)
-
-        try model.blackoutNow()
-        XCTAssertTrue(model.preferences.isEnabled)
-        var lines = try await waitForLogLines(2, at: log)
-        XCTAssertEqual(
-            lines,
-            [
-                "launch:blackout --display AAAA-UUID --panelctl-rule \(ruleID) --mode blocking --overlay-opacity 100 --idle-after 120 --watch --timeout 15",
-                "command:blackout-now"
-            ]
-        )
-
-        XCTAssertTrue(try model.restoreBlackout())
-        lines = try await waitForLogLines(3, at: log)
-        XCTAssertEqual(lines.last, "command:restore")
-        XCTAssertEqual(lines.filter { $0.hasPrefix("launch:") }.count, 1)
-
-        let stopped = expectation(description: "watcher stopped")
-        model.shutdown { stopped.fulfill() }
-        await fulfillment(of: [stopped], timeout: 3)
-    }
-
-    @MainActor
     func testDeferredActivityStatusPropagatesFromHelper() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("panelctl-playback-status-\(UUID().uuidString)", isDirectory: true)
@@ -623,24 +546,6 @@ final class ProtectionPreferencesTests: XCTestCase {
         let stopped = expectation(description: "watcher stopped")
         service.shutdown { stopped.fulfill() }
         await fulfillment(of: [stopped], timeout: 3)
-    }
-
-    @MainActor
-    func testBlackoutNowRejectsInvalidSettingsWithoutEnabling() throws {
-        let suiteName = "panelctl-immediate-invalid-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        var preferences = ProtectionPreferences()
-        preferences.didChooseDisplays = true
-        defaults.set(
-            try JSONEncoder().encode(preferences),
-            forKey: "blackoutPreferences"
-        )
-        let model = isolatedModel(defaults: defaults, displayProvider: { self.displays })
-
-        XCTAssertNoThrow(try model.blackoutNow())
-        XCTAssertTrue(model.preferences.isEnabled)
-        XCTAssertEqual(model.statusDetail, ProtectionConfigurationError.noSelection.localizedDescription)
     }
 
     @MainActor
@@ -1347,14 +1252,15 @@ final class ProtectionPreferencesTests: XCTestCase {
             .appendingPathComponent("panelctl-countdown-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let helper = directory.appendingPathComponent("fake-panelctl")
+        let blackoutTrigger = directory.appendingPathComponent("blackout-trigger")
         let script = """
         #!/bin/bash
         printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         trap 'exit 0' TERM
+        while [[ ! -e "$PANELCTL_TEST_TRIGGER" ]] && kill -0 "$PPID" 2>/dev/null; do /bin/sleep 0.01; done
+        printf '{"state":"blacked_out","blackedOutDisplayIDs":[7]}\\n'
         while IFS= read -r command; do
-            if [[ "$command" == "blackout-now" ]]; then
-                printf '{"state":"blacked_out","blackedOutDisplayIDs":[7]}\\n'
-            elif [[ "$command" == "restore" ]]; then
+            if [[ "$command" == "restore" ]]; then
                 printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
             fi
         done
@@ -1378,7 +1284,8 @@ final class ProtectionPreferencesTests: XCTestCase {
         var current = Date(timeIntervalSince1970: 1_800_000_000)
         var idle: TimeInterval = 100
         setenv("PANELCTL_HELPER", helper.path, 1)
-        defer { unsetenv("PANELCTL_HELPER") }
+        setenv("PANELCTL_TEST_TRIGGER", blackoutTrigger.path, 1)
+        defer { unsetenv("PANELCTL_HELPER"); unsetenv("PANELCTL_TEST_TRIGGER") }
 
         let model = isolatedModel(
             defaults: defaults,
@@ -1390,7 +1297,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         XCTAssertEqual(model.nextAction, "dim")
         XCTAssertEqual(model.secondsRemaining, 200)
 
-        try model.blackoutNow()
+        try Data().write(to: blackoutTrigger)
         try await waitUntil { model.runtimeState == .blackedOut }
         XCTAssertEqual(model.nextAction, "restore")
         XCTAssertTrue(model.statusSummary.hasPrefix("Dimming active"))
@@ -1422,6 +1329,8 @@ final class ProtectionPreferencesTests: XCTestCase {
         )
         var fullCurrent = Date(timeIntervalSince1970: 1_800_000_000)
         var fullIdle: TimeInterval = 100
+        let fullBlackoutTrigger = directory.appendingPathComponent("full-blackout-trigger")
+        setenv("PANELCTL_TEST_TRIGGER", fullBlackoutTrigger.path, 1)
         let fullModel = isolatedModel(
             defaults: fullDefaults,
             displayProvider: { [self.displays[0], self.displays[1]] },
@@ -1430,7 +1339,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         )
         try await waitUntil { fullModel.runtimeState == .waiting }
         XCTAssertEqual(fullModel.nextAction, "dim")
-        try fullModel.blackoutNow()
+        try Data().write(to: fullBlackoutTrigger)
         try await waitUntil { fullModel.runtimeState == .blackedOut }
         fullCurrent.addTimeInterval(31)
         fullIdle = 0
@@ -1463,8 +1372,6 @@ final class ProtectionPreferencesTests: XCTestCase {
                 while [[ ! -e "$PANELCTL_TEST_ALLOW_REBLACKOUT" ]] && kill -0 "$PPID" 2>/dev/null; do
                     /bin/sleep 0.01
                 done
-                printf '{"state":"waiting","blackedOutDisplayIDs":[202]}\\n'
-            elif [[ "$command" == "blackout-now" ]]; then
                 printf '{"state":"waiting","blackedOutDisplayIDs":[202]}\\n'
             fi
         done
@@ -1519,11 +1426,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         try Data().write(to: allowReblackout)
         try await waitUntil { model.blackedOutDisplayIDs == [202] }
         XCTAssertEqual(model.runtimeState, .waiting)
-
-        try model.blackoutNow()
-        _ = try await waitForLogLines(2, at: log)
-        XCTAssertEqual(model.runtimeState, .waiting)
-        XCTAssertEqual(model.blackedOutDisplayIDs, [202])
+        XCTAssertEqual(model.blackedOutDisplayIDs, [202], "the automatic re-cover remains active without a manual blackout command")
 
         let stopped = expectation(description: "watcher stopped")
         model.shutdown { stopped.fulfill() }

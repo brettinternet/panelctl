@@ -8,7 +8,7 @@ same thing.
 
 | Style | What happens | How to choose it |
 | --- | --- | --- |
-| **Black out** (default) | A black window covers the display; its desktop stays put | Default |
+| **Black out** (default) | A black window covers the display; its desktop stays put | Default, or `panelctl app hide --display UUID --style black-out` |
 | **Remove from desktop** | The display [mirrors](display-mirroring.md) another, so windows move off it; optionally switches the monitor's input | Experimental features, then the display's **Remove from desktop** switch |
 
 Neither style turns the monitor off or cuts its signal.
@@ -16,9 +16,12 @@ Neither style turns the monitor off or cuts its signal.
 ### Black out
 
 The cover stays until Show, or Escape with the pointer on that display. Input
-doesn't remove it. You can black out several displays, but never the last
-visible one. Covers survive sleep, wake and reconnects, and end on quit.
-Automation skips blacked-out displays, and **Restore** doesn't show them.
+doesn't remove it. `app hide` and `app toggle-hide` accept `--style black-out`
+to force this cover for one request even when that display is configured for
+**Remove from desktop**. It does not edit the saved Hide settings. You can black
+out several displays, but never the last visible one. Covers survive sleep, wake
+and reconnects, and end on quit. Automation skips blacked-out displays, and
+**Restore** doesn't show them.
 
 ## Experimental features
 
@@ -74,7 +77,7 @@ desktop)** or **Show**.
 panelctl app run-action --action ACTION_UUID --json
 ```
 
-- Runs only from **Run** or this command, never from rules, login or wake.
+- Runs only from **Run** or this command, never from rules, login or wake. Action steps keep their saved effects; `--style` applies only to direct Hide and Toggle Hide CLI requests.
 - Before any change, PanelCtl checks every step. A refusal names the step and
   changes nothing.
 - Steps run in order. The first failure stops the run; earlier steps stay done.
@@ -146,8 +149,11 @@ Desktop and input results are reported separately on the selected display:
 /Applications/PanelCtl.app/Contents/Helpers/panelctl app toggle-hide --display DISPLAY_UUID --json
 ```
 
-Use `hide` or `show` for a specific state. The app must be running. See
-[exit codes and status](usage.md#scripted-hide-and-show).
+Use `hide` or `show` for a specific state. Add `--style black-out` to `hide` or
+`toggle-hide` when a script needs a black cover instead of a display's configured
+Remove from desktop style; this is per-request and does not edit saved preferences.
+The Scripts copy command remains style-neutral, and Action steps keep their saved
+effects. The app must be running. See [exit codes and status](usage.md#scripted-hide-and-show).
 
 ## Keyboard
 

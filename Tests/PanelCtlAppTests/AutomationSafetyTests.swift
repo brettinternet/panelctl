@@ -116,53 +116,6 @@ final class AutomationSafetyTests: XCTestCase {
         await withCheckedContinuation { continuation in model.shutdown { continuation.resume() } }
     }
 
-    func testRestoreAndDisableCancelBlackoutNowQueuedDuringRestartAll() async throws {
-        for cancelByRestore in [true, false] {
-            let directory = try makeDirectory("panelctl-pending-control")
-            defer { try? FileManager.default.removeItem(at: directory) }
-            let log = directory.appendingPathComponent("events.log")
-            let helper = try writeHelper(in: directory, script: delayedWaitingHelperScript)
-            setenv("PANELCTL_HELPER", helper.path, 1)
-            setenv("PANELCTL_TEST_LOG", log.path, 1)
-            defer { unsetenv("PANELCTL_HELPER"); unsetenv("PANELCTL_TEST_LOG") }
-            let defaults = try makeDefaults("pending")
-            defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
-            let displaySet = [displays[0]]
-            var settings = ProtectionPreferences()
-            settings.selectedDisplayUUIDs = [sourceAUUID]
-            let rule = ProtectionRule(name: "One rule", isEnabled: true, settings: settings)
-            defaults.set(
-                try JSONEncoder().encode(AutomationPreferences(isEnabled: true, rules: [rule])),
-                forKey: "automationRules"
-            )
-            let model = AppModel(
-                defaults: defaults,
-                displayProvider: { displaySet },
-                inspectHandoff: { DisplayHandoffStatus(state: .none, journalPath: "/tmp/no-display-recovery.json") },
-                protectionCoordinator: makeCoordinator(directory: directory)
-            )
-            try await waitForLogLines(1, at: log)
-            model.refreshDisplays(restartWatcher: true)
-            try await waitUntil { model.runtimeState == .stopping }
-            try model.blackoutNow()
-            if cancelByRestore {
-                XCTAssertTrue(try model.restoreBlackout(), "a queued request is controllable during restart")
-            } else {
-                model.setProtectionEnabled(false)
-                XCTAssertFalse(model.automationPreferences.isEnabled)
-            }
-
-            if cancelByRestore {
-                try await waitForLogLines(3, at: log)
-            } else {
-                try await waitUntil { !model.protectionQuiescencePending }
-            }
-            let events = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
-            XCTAssertFalse(events.contains("command:blackout-now"), "replacement helper must not replay a canceled request")
-            await withCheckedContinuation { continuation in model.shutdown { continuation.resume() } }
-        }
-    }
-
     func testOneRuleCleanupFailureStopsSiblingHelpers() async throws {
         let directory = try makeDirectory("panelctl-sibling-cleanup-failure")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -608,16 +561,6 @@ final class AutomationSafetyTests: XCTestCase {
         #!/bin/bash
         printf 'launch:%s\\n' "$*" >> "$PANELCTL_TEST_LOG"
         trap 'printf "stopped\\n" >> "$PANELCTL_TEST_LOG"; printf "{\\\"state\\\":\\\"stopped\\\",\\\"blackedOutDisplayIDs\\\":[],\\\"cleanupSucceeded\\\":true}\\n"; exit 0' TERM
-        printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
-        while :; do /bin/sleep 0.05; done
-        """
-    }
-
-    private var delayedWaitingHelperScript: String {
-        """
-        #!/bin/bash
-        printf 'launch:%s\\n' "$*" >> "$PANELCTL_TEST_LOG"
-        trap 'printf "stopped\\n" >> "$PANELCTL_TEST_LOG"; /bin/sleep 0.15; printf "{\\\"state\\\":\\\"stopped\\\",\\\"blackedOutDisplayIDs\\\":[],\\\"cleanupSucceeded\\\":true}\\n"; exit 0' TERM
         printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         while :; do /bin/sleep 0.05; done
         """

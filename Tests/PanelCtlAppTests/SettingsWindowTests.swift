@@ -759,20 +759,17 @@ final class SettingsWindowTests: XCTestCase {
         let delegate = AppDelegate()
         delegate.model = model
         var rules = model.automationPreferences.rules
-        let first = try XCTUnwrap(rules.first)
-        XCTAssertEqual(AppDelegate.blackoutActionTitle(for: [first]), "Black Out Now")
         var dimSettings = ProtectionPreferences()
         dimSettings.mode = .working
         dimSettings.selectedDisplayUUIDs = [Self.sideUUID]
         let dimRule = ProtectionRule(name: "Desk dimming", settings: dimSettings)
         rules.append(dimRule)
-        XCTAssertEqual(AppDelegate.blackoutActionTitle(for: rules), "Black Out and Dim Now")
         model.automationPreferences.rules = rules
         var menu = delegate.makeMenu()
         let submenu = try XCTUnwrap(menu.items.first { $0.title == "Run rule" }?.submenu)
         XCTAssertEqual(submenu.items.map(\.title), rules.map(\.name))
         XCTAssertEqual(submenu.items.map { $0.representedObject as? UUID }, rules.map(\.id))
-        XCTAssertFalse(menu.items.contains { $0.title == "Black Out and Dim Now" })
+        XCTAssertFalse(menu.items.contains { ["Black Out Now", "Black Out and Dim Now"].contains($0.title) })
         XCTAssertFalse(menu.items.contains { ["Display protection", "Desk dimming"].contains($0.title) })
 
         model.automationPreferences.rules = model.automationPreferences.rules.map { rule in

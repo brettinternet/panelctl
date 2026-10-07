@@ -23,6 +23,13 @@ final class AppControlTests: XCTestCase {
             #"{"command":"blackout-now","protocol":1}"#
         )
         XCTAssertEqual(
+            String(data: try encoder.encode(AppControlRequest(
+                command: .hide, targetUUID: "00000000-0000-0000-0000-000000000002",
+                hideStyle: .blackOut
+            )), encoding: .utf8),
+            #"{"command":"hide","hideStyle":"black-out","protocol":2,"targetUUID":"00000000-0000-0000-0000-000000000002"}"#
+        )
+        XCTAssertEqual(
             String(data: try encoder.encode(AppControlRequest(command: .restore)), encoding: .utf8),
             #"{"command":"restore","protocol":1}"#
         )
@@ -40,14 +47,34 @@ final class AppControlTests: XCTestCase {
         )
     }
 
+    func testStyleOverrideRequiresProtocolOlderAppsRefuse() throws {
+        // This is the protocol-1 decoder shape: unknown fields are ignored.
+        struct LegacyRequest: Decodable {
+            let command: AppControlCommand
+            let protocolVersion: Int
+            enum CodingKeys: String, CodingKey {
+                case command
+                case protocolVersion = "protocol"
+            }
+        }
+        for command in [AppControlCommand.hide, .toggleHide] {
+            let request = AppControlRequest(command: command, hideStyle: .blackOut)
+            let data = try JSONEncoder().encode(request)
+            let legacy = try JSONDecoder().decode(LegacyRequest.self, from: data)
+            XCTAssertNotEqual(legacy.protocolVersion, 1, "old apps must refuse before dispatch")
+            XCTAssertTrue(request.hasSupportedProtocol)
+            XCTAssertEqual(try JSONDecoder().decode(AppControlRequest.self, from: data), request)
+            XCTAssertEqual(AppControlRequest(command: command).protocolVersion, 1)
+        }
+    }
+
     func testRequestDecodesWithoutOptionalDuration() throws {
-        XCTAssertEqual(
-            try JSONDecoder().decode(
-                AppControlRequest.self,
-                from: Data(#"{"command":"status","protocol":1}"#.utf8)
-            ),
-            AppControlRequest(command: .status)
+        let oldRequest = try JSONDecoder().decode(
+            AppControlRequest.self,
+            from: Data(#"{"command":"status","protocol":1}"#.utf8)
         )
+        XCTAssertEqual(oldRequest, AppControlRequest(command: .status))
+        XCTAssertNil(oldRequest.hideStyle, "protocol 1 requests without the optional style remain compatible")
     }
 
     func testResponseOmitsOptionalFieldsWhenAbsent() throws {
@@ -324,14 +351,40 @@ final class AppControlTests: XCTestCase {
     }
 
     func testAppCommandParsing() throws {
+        let uuid = "00000000-0000-0000-0000-000000000002"
         XCTAssertEqual(try CLIParser.parse(["app", "enable"]), .app(command: .enable, durationSeconds: nil, json: false))
         XCTAssertEqual(try CLIParser.parse(["app", "open-settings", "--json"]), .app(command: .openSettings, durationSeconds: nil, json: true))
-        XCTAssertEqual(try CLIParser.parse(["app", "blackout-now"]), .app(command: .blackoutNow, durationSeconds: nil, json: false))
+        XCTAssertEqual(AppControlCommand(rawValue: "blackout-now"), .blackoutNow,
+                       "old protocol requests must remain decodable for explicit socket refusal")
+        for arguments in [["app", "blackout-now"], ["app", "blackout-now", "--json"],
+                          ["app", "blackout-now", "ignored"]] {
+            XCTAssertThrowsError(try CLIParser.parse(arguments)) {
+                XCTAssertEqual($0 as? CLIParseError, .retiredBlackoutNow)
+                XCTAssertEqual(($0 as? CLIParseError)?.description, AppControlCommand.blackoutNowMigrationGuidance)
+            }
+        }
         XCTAssertEqual(try CLIParser.parse(["app", "restore", "--json"]), .app(command: .restore, durationSeconds: nil, json: true))
         XCTAssertEqual(try CLIParser.parse(["app", "sleep-now"]), .app(command: .sleepNow, durationSeconds: nil, json: false))
         XCTAssertEqual(try CLIParser.parse(["app", "snooze", "--for", "5m", "--json"]), .app(command: .snooze, durationSeconds: 300, json: true))
         XCTAssertEqual(try CLIParser.parse(["app", "snooze", "--for", "720h"]), .app(command: .snooze, durationSeconds: 2_592_000, json: false))
         XCTAssertEqual(try CLIParser.parse(["app", "resume"]), .app(command: .resume, durationSeconds: nil, json: false))
+        XCTAssertEqual(
+            try CLIParser.parse(["app", "hide", "--display", uuid, "--style", "black-out"]),
+            .app(command: .hide, durationSeconds: nil, targetUUID: uuid, hideStyle: .blackOut, json: false)
+        )
+        XCTAssertEqual(
+            try CLIParser.parse(["app", "toggle-hide", "--display", uuid, "--style", "black-out", "--json"]),
+            .app(command: .toggleHide, durationSeconds: nil, targetUUID: uuid, hideStyle: .blackOut, json: true)
+        )
+        for invalid in [
+            ["app", "hide", "--display", uuid, "--style", "remove-from-desktop"],
+            ["app", "hide", "--display", uuid, "--style", ""],
+            ["app", "hide", "--display", uuid, "--style"],
+            ["app", "hide", "--display", uuid, "--style", "black-out", "--style", "black-out"],
+            ["app", "show", "--display", uuid, "--style", "black-out"]
+        ] {
+            XCTAssertThrowsError(try CLIParser.parse(invalid), "\(invalid)")
+        }
         XCTAssertThrowsError(try CLIParser.parse(["app"])) { XCTAssertEqual($0 as? CLIParseError, .missingAppCommand) }
         XCTAssertThrowsError(try CLIParser.parse(["app", "enable", "--json", "--json"])) { XCTAssertEqual($0 as? CLIParseError, .duplicateOption("--json")) }
         XCTAssertThrowsError(try CLIParser.parse(["app", "snooze"])) { XCTAssertEqual($0 as? CLIParseError, .missingValue("--for")) }
