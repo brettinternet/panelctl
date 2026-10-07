@@ -1,10 +1,11 @@
 ---
 id: TASK-55
 title: Run one saved automation immediately from the CLI
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@pi'
 created_date: '2026-10-07 00:50'
-updated_date: '2026-10-07 01:01'
+updated_date: '2026-10-07 01:08'
 labels: []
 dependencies: []
 references:
@@ -34,3 +35,12 @@ Users can invoke a saved Action by UUID but cannot explicitly invoke one automat
 - [ ] #6 app restore, Escape/input, quit and shutdown clean up one-shot runs, including runs started while disabled or snoozed. Automatic trigger evaluation does not cancel the one-shot early or start a duplicate run of the same rule.
 - [ ] #7 Help and docs/usage.md explain one-shot semantics, UUID discovery (status --json rules[].id), safety refusals and the difference from Actions and app hide. Focused fake-backed tests cover enabled, disabled and snoozed states, isolation to one rule, already-active refusal, cleanup and failed runs; no hardware writes or desktop UI are authorized by this task.
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Extend the existing app command protocol/parser/client with UUID-targeted run-rule and no-launch/no-retry behavior.
+2. Implement one-shot rule lifecycle using existing protection helpers, preserving automation settings and enforcing display ownership/recovery gates.
+3. Add focused fake-backed lifecycle, protocol and conflict tests; update help and usage documentation.
+4. Run focused checks and one independent review of lifecycle/ownership risks; fix concrete findings, record evidence and commit on main.
+<!-- SECTION:PLAN:END -->
