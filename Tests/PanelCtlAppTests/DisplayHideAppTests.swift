@@ -85,7 +85,7 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(model.effectiveBlackoutMode, .blocking)
         XCTAssertEqual(model.protectionRuleRowStatus(for: rule).text, "Watching for inactivity · Sleep paused while a display is removed; restores overlay instead")
         let waitingMenuTitles = delegate.makeMenu().items.map(\.title)
-        XCTAssertTrue(waitingMenuTitles.contains("Black Out Now"), "a hidden mirror source turns Dim Now into Black Out Now while waiting")
+        XCTAssertTrue(waitingMenuTitles.contains("Run rule"), "manual automation is selected per rule")
         XCTAssertFalse(waitingMenuTitles.contains("Dim Now"))
         XCTAssertTrue(lines[0].contains("--display \(Self.sourceUUID)"))
         XCTAssertTrue(lines[0].contains("--panelctl-hidden-mirror-source \(Self.sourceUUID)"))

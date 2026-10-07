@@ -1,5 +1,6 @@
 import XCTest
 import CoreGraphics
+import AppKit
 @testable import PanelCtlApp
 @testable import PanelCtlCore
 
@@ -8,6 +9,102 @@ final class ProtectionRuleRunOnceTests: XCTestCase {
     private let fixedNow = Date(timeIntervalSince1970: 1_800_000_000)
     private let firstUUID = "00000000-0000-0000-0000-00000000000A"
     private let secondUUID = "00000000-0000-0000-0000-00000000000B"
+
+    func testSettingsCommandKeepsStableIdentityAfterRenameAndReorder() async throws {
+        try await withHelper(mode: "hold") { _ in
+            let selected = rule(id: UUID(), name: "Original", displayUUID: firstUUID, enabled: false)
+            let other = rule(id: UUID(), name: "Other", displayUUID: secondUUID, enabled: false)
+            let (model, defaults, suite, journals) = try makeModel(
+                preferences: AutomationPreferences(isEnabled: false, rules: [selected, other])
+            )
+            defer {
+                defaults.removePersistentDomain(forName: suite)
+                try? FileManager.default.removeItem(at: journals)
+            }
+            let command = try XCTUnwrap(model.protectionRuleCommandLine(id: selected.id))
+            XCTAssertEqual(command, AppControlCommand.runRule.commandLine(
+                executable: try ProtectionService.helperExecutableURL().path, ruleID: selected.id
+            ))
+            var renamed = selected
+            renamed.name = "Renamed 'rule'"
+            model.automationPreferences.rules = [other, renamed]
+            XCTAssertEqual(model.protectionRuleCommandLine(id: selected.id), command)
+            XCTAssertTrue(command.hasSuffix(" app run-rule --rule \(selected.id.uuidString)"))
+            await shutdown(model)
+        }
+    }
+
+    func testMenuDispatchRunsOnlySelectedDisabledRuleAndPreventsRestart() async throws {
+        try await withHelper(mode: "hold") { log in
+            var selected = rule(id: UUID(), name: "Selected", displayUUID: firstUUID, enabled: false)
+            selected.settings.mode = .working
+            let other = rule(id: UUID(), name: "Other", displayUUID: secondUUID, enabled: false)
+            let preferences = AutomationPreferences(isEnabled: true, rules: [other, selected])
+            let snooze = fixedNow.addingTimeInterval(600)
+            let (model, defaults, suite, journals) = try makeModel(preferences: preferences, snoozeUntil: snooze)
+            defer {
+                defaults.removePersistentDomain(forName: suite)
+                try? FileManager.default.removeItem(at: journals)
+            }
+            let missing = UUID()
+            let priorRefusal = await model.runProtectionRule(id: missing)
+            XCTAssertEqual(priorRefusal.outcome, .refused)
+            XCTAssertEqual(model.protectionRuleRunStatus(id: missing), "Last attempt: \(priorRefusal.summary)")
+            let delegate = AppDelegate()
+            delegate.model = model
+            let submenu = try XCTUnwrap(delegate.makeMenu().items.first { $0.title == "Run rule" }?.submenu)
+            XCTAssertEqual(submenu.items.map(\.title), ["Other (Off)", "Selected (Off)"])
+            let entry = try XCTUnwrap(submenu.items.last)
+            XCTAssertTrue(entry.isEnabled)
+            XCTAssertEqual(entry.representedObject as? UUID, selected.id)
+            XCTAssertEqual(entry.action, #selector(AppDelegate.runRuleFromMenu(_:)))
+            delegate.runRuleFromMenu(entry)
+            try await wait { model.protectionRuleRunResults[selected.id] != nil }
+            XCTAssertEqual(model.protectionRuleRunResults[selected.id]?.outcome, .done)
+            XCTAssertEqual(model.controlRunningRule?.id, selected.id)
+            XCTAssertEqual(model.protectionRuleRunStatus(id: selected.id), "Running once — Restore ends this run.")
+            XCTAssertEqual(model.protectionRuleRunStatus(id: missing), model.protectionRuleRunBlocker(id: missing))
+            XCTAssertTrue(model.protectionRuleRunStatus(id: missing)?.contains("Another one-shot") == true)
+            let activeMenu = try XCTUnwrap(delegate.makeMenu().items.first { $0.title == "Run rule" }?.submenu)
+            XCTAssertEqual(activeMenu.items.last?.title, "Selected (Off) — Running once")
+            XCTAssertFalse(try XCTUnwrap(activeMenu.items.last).isEnabled)
+            let repeated = await model.runProtectionRule(id: selected.id)
+            XCTAssertEqual(repeated.outcome, .busy)
+            XCTAssertEqual(launchLines(at: log).count, 1)
+            XCTAssertEqual(model.automationPreferences, preferences)
+            XCTAssertEqual(model.snoozedUntil, snooze)
+            XCTAssertNil(model.protectionRuleRunResults[other.id])
+            XCTAssertTrue(try model.restoreBlackout())
+            try await wait { model.controlRunningRule == nil }
+            XCTAssertNil(model.protectionRuleRunBlocker(id: selected.id))
+            XCTAssertEqual(model.protectionRuleRunStatus(id: selected.id), "Last attempt: \(repeated.summary)")
+            await shutdown(model)
+        }
+    }
+
+    func testSettingsRunPresentsSameRefusalAndFailureAsCLI() async throws {
+        try await withHelper(mode: "fail") { _ in
+            let selected = rule(id: UUID(), name: "Selected", displayUUID: firstUUID, enabled: false)
+            let preferences = AutomationPreferences(isEnabled: false, rules: [selected])
+            let (model, defaults, suite, journals) = try makeModel(preferences: preferences)
+            defer {
+                defaults.removePersistentDomain(forName: suite)
+                try? FileManager.default.removeItem(at: journals)
+            }
+            let missing = UUID()
+            let cli = await model.handleProtectionRuleControlRequest(AppControlRequest(command: .runRule, ruleID: missing))
+            let ui = await model.runProtectionRule(id: missing)
+            XCTAssertEqual(ui.outcome, cli.outcome)
+            XCTAssertEqual(ui.summary, cli.summary)
+            XCTAssertEqual(model.protectionRuleRunStatus(id: missing), "Last attempt: \(cli.summary)")
+            let failed = await model.runProtectionRule(id: selected.id)
+            XCTAssertEqual(failed.outcome, .failed)
+            XCTAssertEqual(model.protectionRuleRunResults[selected.id]?.summary, failed.summary)
+            XCTAssertEqual(model.protectionRuleRunStatus(id: selected.id), "Last attempt: \(failed.summary)")
+            XCTAssertEqual(model.automationPreferences, preferences)
+            await shutdown(model)
+        }
+    }
 
     func testEnabledRuleRunsOnceInIsolationThenAutomaticSchedulingResumes() async throws {
         try await withHelper(mode: "finish") { log in

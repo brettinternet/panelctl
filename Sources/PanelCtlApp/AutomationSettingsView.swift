@@ -6,6 +6,7 @@ struct AutomationSettingsView: View {
     @ObservedObject var navigation: SettingsNavigation
     @State private var editor: RuleEditorPresentation?
     @State private var actionEditor: DisplayActionEditorPresentation?
+    @State private var copiedRuleID: UUID?
 
     init(model: AppModel, navigation: SettingsNavigation, initialEditor: RuleEditorPresentation? = nil) {
         self.model = model
@@ -59,7 +60,7 @@ struct AutomationSettingsView: View {
             } header: {
                 Text("Rules")
             } footer: {
-                SectionFooter("Rules run on their own when you’re idle. Each display can be in only one rule that’s on.")
+                SectionFooter("Rules run on their own when you’re idle. Run now runs just one rule once, even when it’s off or paused, without enabling its automatic trigger. It uses the rule’s effects and Restore or Sleep follow-up, unlike Hide (until Show) or Actions (ordered display steps). Each display can be in only one rule that’s on.")
             }
 
             Section {
@@ -341,6 +342,29 @@ struct AutomationSettingsView: View {
                 ForEach(status.details, id: \.self) { detail in
                     factLine("info.circle", detail)
                 }
+            }
+            HStack {
+                Button("Run now") {
+                    Task { await model.runProtectionRule(id: rule.id) }
+                }
+                .disabled(model.protectionRuleRunBlocker(id: rule.id) != nil)
+                .accessibilityLabel("Run \(rule.name) once")
+                Button(copiedRuleID == rule.id ? "Copied" : "Copy CLI command") {
+                    guard let command = model.protectionRuleCommandLine(id: rule.id) else { return }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(command, forType: .string)
+                    copiedRuleID = rule.id
+                }
+                .disabled(model.protectionRuleCommandLine(id: rule.id) == nil)
+                .accessibilityLabel("Copy CLI command for \(rule.name)")
+            }
+            if let message = model.protectionRuleRunStatus(id: rule.id) {
+                rowStatus(message, warning: model.controlRunningRule?.id != rule.id &&
+                    (model.protectionRuleRunResults[rule.id]?.ok == false || model.protectionRuleRunBlocker(id: rule.id) != nil))
+            }
+            if model.protectionRuleCommandLine(id: rule.id) == nil {
+                Text("The bundled panelctl command is unavailable in this build.")
+                    .foregroundStyle(.secondary)
             }
             if model.protectionRuleNeedsDisplayReview(rule) {
                 Button("Review in Displays…") {

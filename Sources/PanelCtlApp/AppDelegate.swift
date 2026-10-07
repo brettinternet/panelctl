@@ -428,27 +428,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        switch model.runtimeState {
-        case .blackedOut, .sleeping:
+        let runRule = NSMenuItem(title: "Run rule", action: nil, keyEquivalent: "")
+        let rulesMenu = NSMenu()
+        rulesMenu.autoenablesItems = false
+        for rule in model.automationPreferences.rules {
+            let running = model.controlRunningRule?.id == rule.id
+            let title = rule.name + (rule.isEnabled ? "" : " (Off)") + (running ? " — Running once" : "")
+            let entry = item(title, action: #selector(runRuleFromMenu(_:)))
+            entry.representedObject = rule.id
+            let blocker = model.protectionRuleRunBlocker(id: rule.id)
+            entry.isEnabled = blocker == nil
+            entry.toolTip = blocker ?? "Run just this rule once without changing its automatic trigger."
+            rulesMenu.addItem(entry)
+        }
+        runRule.submenu = rulesMenu
+        runRule.isEnabled = !model.automationPreferences.rules.isEmpty
+        runRule.toolTip = runRule.isEnabled ? "Run one saved Automation rule once." : "Create a rule in Settings → Automations."
+        menu.addItem(runRule)
+        if model.controlRunningRule != nil || !model.blackedOutDisplayIDs.isEmpty {
             menu.addItem(restoreMenuItem())
-        default:
-            let effectiveModes = model.automationPreferences.rules
-                .filter(\.isEnabled)
-                .map { model.effectiveBlackoutMode(for: $0) }
-            let blackout = item(
-                Self.blackoutActionTitle(for: effectiveModes),
-                action: #selector(blackoutNow)
-            )
-            if let busy = model.runningDisplayAction.map({ _ in model.displayActionBusyMessage }) {
-                blackout.isEnabled = false
-                blackout.toolTip = busy
-            } else if !model.automationPreferences.rules.contains(where: \.isEnabled) {
-                blackout.isEnabled = false
-                blackout.toolTip = "Turn on a rule in Settings → Automations."
-            }
-            menu.addItem(blackout)
-            if !model.blackedOutDisplayIDs.isEmpty {
-                menu.addItem(restoreMenuItem())
+        } else {
+            switch model.runtimeState {
+            case .blackedOut, .sleeping: menu.addItem(restoreMenuItem())
+            default: break
             }
         }
         let sleep = item("Sleep Displays", action: #selector(sleepAllNow))
@@ -670,11 +672,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func blackoutNow() {
-        do {
-            try model.blackoutNow()
-        } catch {
-            presentActionError("Could not start blackout", error: error)
+    @objc func runRuleFromMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        Task {
+            let result = await model.runProtectionRule(id: id)
+            if !result.ok { showSettings(tab: .automation) }
         }
     }
 

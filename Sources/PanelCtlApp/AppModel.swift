@@ -140,6 +140,7 @@ final class AppModel: ObservableObject {
     private var observedRuleStates: [UUID: ProtectionRuntimeState] = [:]
     private var ruleStateBeganAt: [UUID: Date] = [:]
     @Published private(set) var ruleEnableRefusals: [UUID: String] = [:]
+    @Published private(set) var protectionRuleRunResults: [UUID: AppControlResponse] = [:]
     @Published private(set) var blackedOutDisplayIDs: Set<UInt32> = [] {
         didSet {
             if oldValue != blackedOutDisplayIDs {
@@ -2253,6 +2254,33 @@ final class AppModel: ObservableObject {
         guard let display = tile.display, display.online else { return "unavailable" }
         if isDisplayMirrored(display.id) { return "mirrored-externally" }
         return display.active ? "separate" : "unavailable"
+    }
+
+    func protectionRuleCommandLine(id: UUID) -> String? {
+        guard let executable = try? ProtectionService.helperExecutableURL() else { return nil }
+        return AppControlCommand.runRule.commandLine(executable: executable.path, ruleID: id)
+    }
+
+    func protectionRuleRunBlocker(id: UUID) -> String? {
+        if runningDisplayAction != nil { return displayActionBusyMessage }
+        return protectionCoordinator.oneShotReadiness(for: id)
+    }
+
+    func protectionRuleRunStatus(id: UUID) -> String? {
+        if controlRunningRule?.id == id {
+            return "Running once — Restore ends this run."
+        }
+        if let blocker = protectionRuleRunBlocker(id: id) { return blocker }
+        if let result = protectionRuleRunResults[id], !result.ok { return "Last attempt: \(result.summary)" }
+        if protectionRuleRunResults[id]?.ok == true { return "Last one-shot run started; no one-shot run is active now." }
+        return nil
+    }
+
+    @discardableResult
+    func runProtectionRule(id: UUID) async -> AppControlResponse {
+        let response = await handleProtectionRuleControlRequest(AppControlRequest(command: .runRule, ruleID: id))
+        protectionRuleRunResults[id] = response
+        return response
     }
 
     func handleProtectionRuleControlRequest(

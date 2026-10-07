@@ -93,7 +93,14 @@ only; it never shows a hidden display.
 
 `panelctl app run-rule --rule UUID` runs exactly one saved Automation rule once,
 immediately bypassing its idle wait. Find stable IDs with `panelctl app status --json`
-in `rules[].id`. The run applies that rule’s display selection, blackout or dimming,
+in `rules[].id`, or use **Settings → Automations → Copy CLI command** on the
+saved rule. **Run now** in Settings and the menu bar’s **Run rule** submenu use
+this same one-shot operation. The submenu replaces the broadcast Blackout Now
+item, lists off rules too, and marks the selected rule while it runs. Run failures
+from the menu open Automations, where the rule shows the refusal and next action.
+Running once does not turn on its automatic trigger.
+
+The run applies that rule’s display selection, blackout or dimming,
 input behavior, duration, and configured Restore or Sleep follow-up. As a manual
 run, playback and camera automatic deferrals do not delay it. It returns when the
 effect is installed or refused, not when the run later restores, and does not

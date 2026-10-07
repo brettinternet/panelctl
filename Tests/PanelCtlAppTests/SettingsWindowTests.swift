@@ -752,7 +752,7 @@ final class SettingsWindowTests: XCTestCase {
         }
     }
 
-    func testBlackOutMenuUsesEnabledRuleEffectsAndExplainsNoEnabledRules() throws {
+    func testRunRuleMenuIncludesDisabledRulesAndExplainsEmptyRules() throws {
         _ = NSApplication.shared
         let (model, defaults) = try makeModel()
         defer { defaults.removePersistentDomain(forName: Self.suiteName) }
@@ -769,7 +769,10 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(AppDelegate.blackoutActionTitle(for: rules), "Black Out and Dim Now")
         model.automationPreferences.rules = rules
         var menu = delegate.makeMenu()
-        XCTAssertTrue(menu.items.contains { $0.title == "Black Out and Dim Now" && $0.isEnabled })
+        let submenu = try XCTUnwrap(menu.items.first { $0.title == "Run rule" }?.submenu)
+        XCTAssertEqual(submenu.items.map(\.title), rules.map(\.name))
+        XCTAssertEqual(submenu.items.map { $0.representedObject as? UUID }, rules.map(\.id))
+        XCTAssertFalse(menu.items.contains { $0.title == "Black Out and Dim Now" })
         XCTAssertFalse(menu.items.contains { ["Display protection", "Desk dimming"].contains($0.title) })
 
         model.automationPreferences.rules = model.automationPreferences.rules.map { rule in
@@ -778,9 +781,12 @@ final class SettingsWindowTests: XCTestCase {
             return rule
         }
         menu = delegate.makeMenu()
-        let blackout = try XCTUnwrap(menu.items.first { $0.title == "Black Out Now" })
-        XCTAssertFalse(blackout.isEnabled)
-        XCTAssertEqual(blackout.toolTip, "Turn on a rule in Settings → Automations.")
+        let disabledRules = try XCTUnwrap(menu.items.first { $0.title == "Run rule" }?.submenu)
+        XCTAssertEqual(disabledRules.items.map(\.title), rules.map { $0.name + " (Off)" })
+        model.automationPreferences.rules = []
+        let empty = try XCTUnwrap(delegate.makeMenu().items.first { $0.title == "Run rule" })
+        XCTAssertFalse(empty.isEnabled)
+        XCTAssertEqual(empty.toolTip, "Create a rule in Settings → Automations.")
     }
 
     func testExperimentalFlagDefaultsOffPersistsAndGatesRemovalButNotShow() throws {
