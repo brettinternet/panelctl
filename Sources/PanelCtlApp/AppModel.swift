@@ -877,6 +877,10 @@ final class AppModel: ObservableObject {
             ($0.target.uuid.lowercased(), $0.source.uuid.lowercased())
         })
         for (index, step) in action.steps.enumerated() {
+            if displayActionStepSkipReason(
+                action: action, step: step, index: index,
+                projectedBlackouts: hiddenBlackouts, projectedRemovals: hiddenRemovals
+            ) != nil { continue }
             guard let blocker = displayActionStepRunBlocker(
                 action: action, step: step, index: index,
                 projectedBlackouts: hiddenBlackouts,
@@ -897,6 +901,62 @@ final class AppModel: ObservableObject {
                 continue
             }
             return blocker
+        }
+        return nil
+    }
+
+    /// Skips are deliberately narrower than failures: no identity substitution or recovery bypass.
+    private func displayActionStepSkipReason(
+        action: DisplayAction, step: DisplayActionStep, index: Int,
+        projectedBlackouts: Set<String>? = nil, projectedRemovals: Set<String>? = nil,
+        actionLeaseID: UUID? = nil
+    ) -> String? {
+        guard displayActionEnvironmentBlocker(prefix: "", actionLeaseID: actionLeaseID) == nil,
+              displayRecoveryProblem == nil,
+              unresolvedHandoffRemovals.allSatisfy({ isVerifiedRemovedDisplay($0.target.uuid) }),
+              let target = step.target, UUID(uuidString: target.uuid) != nil else { return nil }
+        if step.effect == .removeFromDesktop {
+            guard experimentalFeaturesEnabled, step.reviewedRemoval != nil,
+                  displayActionReviewChange(for: action, stepIndex: index) == nil else { return nil }
+        }
+        let key = target.uuid.lowercased()
+        let candidates = displays.filter { $0.uuid?.lowercased() == key }
+        if candidates.isEmpty {
+            // A missing journal target/source still needs recovery, not a disconnected skip.
+            guard !isBlackoutHidden(key),
+                  !unresolvedHandoffRemovals.contains(where: {
+                      $0.target.uuid.lowercased() == key || $0.source.uuid.lowercased() == key
+                  }) else { return nil }
+            return "Display is disconnected."
+        }
+        guard matchingSavedDisplay(target) != nil else { return nil }
+        let removals = projectedRemovals ?? Set(unresolvedHandoffRemovals.map { $0.target.uuid.lowercased() })
+        let blackouts = projectedBlackouts ?? Set(blackoutHiddenDisplays.keys)
+        if step.effect == .blackOut, removals.contains(key), isVerifiedRemovedDisplay(key) {
+            return "Already removed from desktop."
+        }
+        if step.effect == .removeFromDesktop, blackouts.contains(key),
+           let display = candidates.first, coveredHiddenDisplayIDs.contains(display.id) {
+            return "Already blacked out."
+        }
+        return nil
+    }
+
+    private func displayActionEnvironmentBlocker(prefix: String, actionLeaseID: UUID?) -> String? {
+        if hideOperation.isBusy { return prefix + DisplayHideError.actionInProgress.localizedDescription }
+        if runningDisplayAction != nil, runningDisplayAction?.id != actionLeaseID {
+            return displayActionBusyMessage
+        }
+        if controlRunningRule != nil { return protectionRuleBusyMessage }
+        if handoffStatus?.state == .busy { return prefix + DisplayHideError.actionInProgress.localizedDescription }
+        if displayLifecycleTransitioning { return prefix + DisplayHideError.sleeping.localizedDescription }
+        if protectionQuiescencePending { return prefix + Self.automationStopping.localizedDescription }
+        if let failure = protectionQuiescenceFailure {
+            return prefix + "Automation cleanup needs attention. Choose Retry Automation Cleanup, then try again. (\(failure))"
+        }
+        if disconnectAutomationPaused || disconnectInspectionFailure != nil ||
+            disconnectLease != nil || disconnectStatus?.resolved == false {
+            return prefix + "Full disconnect is pausing automation or awaiting verified recovery. Finish it first."
         }
         return nil
     }
@@ -933,20 +993,8 @@ final class AppModel: ObservableObject {
                 return prefix + "Displays setup changed since review. Save this Action to accept the change."
             }
         }
-        if hideOperation.isBusy { return prefix + DisplayHideError.actionInProgress.localizedDescription }
-        if runningDisplayAction != nil, runningDisplayAction?.id != actionLeaseID {
-            return displayActionBusyMessage
-        }
-        if controlRunningRule != nil { return protectionRuleBusyMessage }
-        if handoffStatus?.state == .busy { return prefix + DisplayHideError.actionInProgress.localizedDescription }
-        if displayLifecycleTransitioning { return prefix + DisplayHideError.sleeping.localizedDescription }
-        if protectionQuiescencePending { return prefix + Self.automationStopping.localizedDescription }
-        if let failure = protectionQuiescenceFailure {
-            return prefix + "Automation cleanup needs attention. Choose Retry Automation Cleanup, then try again. (\(failure))"
-        }
-        if disconnectAutomationPaused || disconnectInspectionFailure != nil ||
-            disconnectLease != nil || disconnectStatus?.resolved == false {
-            return prefix + "Full disconnect is pausing automation or awaiting verified recovery. Finish it first."
+        if let blocker = displayActionEnvironmentBlocker(prefix: prefix, actionLeaseID: actionLeaseID) {
+            return blocker
         }
 
         let uuid = target.uuid.lowercased()
@@ -2674,10 +2722,19 @@ final class AppModel: ObservableObject {
         var projectedSources = Dictionary(uniqueKeysWithValues: (handoffStatus?.removals.filter(\.isUnresolved) ?? []).map {
             ($0.target.uuid.lowercased(), $0.source.uuid.lowercased())
         })
+        var skippedSteps: [Int: String] = [:]
         var noOpSteps = Set<Int>()
         var frozenTargets: [Int: DisplayIdentitySnapshot] = [:]
         var preparedHideRequests: [Int: DisplayHideRequest] = [:]
         for (offset, step) in action.steps.enumerated() {
+            if let reason = displayActionStepSkipReason(
+                action: action, step: step, index: offset,
+                projectedBlackouts: projectedBlackouts, projectedRemovals: projectedRemovals,
+                actionLeaseID: id
+            ) {
+                skippedSteps[offset] = reason
+                continue
+            }
             guard let reference = step.target else {
                 refuse(.refused, "Step \(offset + 1): Choose a display.", for: action, atStep: offset)
                 return
@@ -2738,7 +2795,7 @@ final class AppModel: ObservableObject {
         }
 
         let targetUUIDs = action.steps.compactMap { $0.target?.uuid }
-        let wouldWrite = noOpSteps.count != action.steps.count
+        let wouldWrite = noOpSteps.count + skippedSteps.count != action.steps.count
         guard !runningActionInterrupted, !displayLifecycleTransitioning else {
             refuse(.refused, "Displays are sleeping or changing; the run was interrupted.", for: action)
             return
@@ -2755,17 +2812,19 @@ final class AppModel: ObservableObject {
             if stepResults.contains(where: { $0.outcome == .recoveryNeeded }) {
                 aggregate = .recoveryNeeded
             } else if changedAnyDisplay && stepResults.count < action.steps.count ||
-                        (changedAnyDisplay && stepResults.contains(where: { ![.done, .noOp].contains($0.outcome) })) {
+                        (changedAnyDisplay && stepResults.contains(where: { ![.done, .noOp, .skipped].contains($0.outcome) })) {
                 aggregate = .partial
-            } else if stepResults.count == action.steps.count && stepResults.allSatisfy({ $0.outcome == .noOp }) {
+            } else if stepResults.count == action.steps.count && stepResults.allSatisfy({ [.noOp, .skipped].contains($0.outcome) }) {
                 aggregate = .noOp
-            } else if stepResults.count == action.steps.count && stepResults.allSatisfy({ [.done, .noOp].contains($0.outcome) }) {
+            } else if stepResults.count == action.steps.count && stepResults.allSatisfy({ [.done, .noOp, .skipped].contains($0.outcome) }) {
                 aggregate = stepResults.contains(where: { $0.outcome == .done }) ? .done : .noOp
             } else {
                 aggregate = stoppingOutcome ?? .failed
             }
             let summary: String
-            if action.steps.count == 1, let onlyStep = stepResults.first,
+            if aggregate == .noOp, stepResults.contains(where: { $0.outcome == .skipped }) {
+                summary = "Nothing to do; unavailable steps were skipped."
+            } else if action.steps.count == 1, let onlyStep = stepResults.first,
                [.done, .partial, .noOp].contains(aggregate) {
                 summary = onlyStep.desktopSummary
             } else if let stoppingAtIndex {
@@ -2776,7 +2835,8 @@ final class AppModel: ObservableObject {
                     summary = "Action stopped at Step \(stoppingAtIndex) of \(action.steps.count): \(stopped?.desktopSummary ?? "the step did not complete")"
                 }
             } else {
-                summary = aggregate == .done ? "Action completed; steps ran in order." :
+                summary = aggregate == .done ? (stepResults.contains(where: { $0.outcome == .skipped })
+                    ? "Action completed; unavailable steps were skipped." : "Action completed; steps ran in order.") :
                     aggregate == .noOp ? "Action is already at the requested state." : "Action ended with \(aggregate.rawValue)."
             }
             let detailText = stepResults.compactMap { step in
@@ -2845,6 +2905,35 @@ final class AppModel: ObservableObject {
                 stoppingAtIndex = offset + 1
                 appendNotRun(from: offset)
                 finishRun()
+                return
+            }
+            if let reason = skippedSteps[offset] {
+                // Never promote a skipped target into a write after preflight, even if it reconnects.
+                let currentReason = self.displayActionStepSkipReason(
+                    action: action, step: step, index: offset, actionLeaseID: id
+                )
+                let stillSafe = currentReason == reason
+                let recoveryProblem = self.displayRecoveryProblem ??
+                    (self.unresolvedHandoffRemovals.allSatisfy({ self.isVerifiedRemovedDisplay($0.target.uuid) })
+                        ? nil : "Display recovery is not verified. Review it in Displays.")
+                let outcome: AppControlOutcome = stillSafe ? .skipped :
+                    recoveryProblem != nil ? .recoveryNeeded : .refused
+                stepResults.append(AppControlActionStepResult(
+                    index: offset + 1, targetUUID: uuid, effect: step.effect.rawValue,
+                    outcome: outcome,
+                    desktopSummary: stillSafe ? reason : Self.boundedActionStepText(
+                        recoveryProblem ??
+                        "Display state changed after the Action was checked. Review the displays, then run it again."
+                    )
+                ))
+                if stillSafe {
+                    runStep(offset + 1)
+                } else {
+                    stoppingOutcome = outcome
+                    stoppingAtIndex = offset + 1
+                    appendNotRun(from: offset + 1)
+                    finishRun()
+                }
                 return
             }
             guard let expectedTarget = frozenTargets[offset] else {

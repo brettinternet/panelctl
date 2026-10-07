@@ -286,7 +286,7 @@ final class DisplayActionAppTests: XCTestCase {
         XCTAssertEqual(model.handoffStatus?.inspectionFailure, "unreadable journal")
     }
 
-    func testStyleMismatchAndMissingTargetRefuseWithoutAWriter() async throws {
+    func testVerifiedStyleMismatchSkipsButStaleRemovalReviewStillRefuses() async throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
         let box = StatusBox(hiddenStatus())
@@ -307,7 +307,9 @@ final class DisplayActionAppTests: XCTestCase {
         try model.saveDisplayAction(blackOut)
         blackOut = try XCTUnwrap(model.displayActions.actions.first { $0.id == blackOut.id })
         let styleMismatch = await run(model, id: blackOut.id)
-        XCTAssertEqual(styleMismatch.outcome, .refused)
+        XCTAssertEqual(styleMismatch.outcome, .noOp)
+        XCTAssertEqual(styleMismatch.steps?.first?.outcome, .skipped)
+        XCTAssertTrue(styleMismatch.summary.contains("Nothing to do"))
         XCTAssertEqual(hideWrites, 0)
         XCTAssertEqual(coverWrites, 0)
 
@@ -1596,7 +1598,7 @@ final class DisplayActionAppTests: XCTestCase {
         XCTAssertEqual(coverRequests, [[202]], "the second step never writes to the display's replacement numeric ID")
     }
 
-    func testSavedActionsRefuseMissingDuplicateAndChangedIdentityWithoutWrites() async throws {
+    func testSavedActionsSkipMissingButRefuseDuplicateAndChangedIdentityWithoutWrites() async throws {
         let cases: [(String, (inout [DisplayRecord]) -> Void, String)] = [
             ("missing", { $0.removeAll { $0.uuid == self.targetUUID } }, "missing"),
             ("duplicate", { $0.append(self.display(index: 5, id: 505, uuid: self.targetUUID, name: "Duplicate", main: false)) }, "ambiguous"),
@@ -1620,8 +1622,15 @@ final class DisplayActionAppTests: XCTestCase {
             model.refreshDisplays()
 
             let result = await run(model, id: action.id)
-            XCTAssertEqual(result.outcome, .refused, name)
-            XCTAssertTrue(result.error?.localizedCaseInsensitiveContains(reason) == true, result.error ?? name)
+            if name == "missing" {
+                XCTAssertEqual(result.outcome, .noOp)
+                XCTAssertEqual(result.steps?.first?.outcome, .skipped)
+                XCTAssertEqual(result.steps?.first?.desktopSummary, "Display is disconnected.")
+                XCTAssertTrue(result.summary.contains("Nothing to do"))
+            } else {
+                XCTAssertEqual(result.outcome, .refused, name)
+                XCTAssertTrue(result.error?.localizedCaseInsensitiveContains(reason) == true, result.error ?? name)
+            }
             XCTAssertFalse(coverRequests.contains(where: { !$0.isEmpty }), "\(name) identity refusal must occur before any display write")
         }
     }
@@ -1726,6 +1735,157 @@ final class DisplayActionAppTests: XCTestCase {
         XCTAssertEqual(repeated.outcome, .refused)
         XCTAssertTrue(repeated.error?.contains("Experimental features") == true)
         XCTAssertEqual(hideWrites, 1)
+    }
+
+    func testUnavailableStepsSkipAndAvailableBlackoutRuns() async throws {
+        for removed in [false, true] {
+            let defaults = try makeDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+            let box = StatusBox(removed ? hiddenStatus() : noneStatus())
+            let inventory = DisplayRecordsBox(displays)
+            var covers: [Set<UInt32>] = []
+            var hides = 0
+            var shows = 0
+            let model = makeModel(
+                defaults: defaults, box: box, displayProvider: { inventory.value },
+                hide: { _, _, _ in hides += 1; return .notRequested },
+                show: { _, _ in shows += 1; return .notRequested },
+                cover: { covers.append($0); return [] }
+            )
+            await settleQuiescence(model)
+            let action = DisplayAction(name: "Available blackout", steps: [
+                DisplayActionStep(target: DisplayIdentitySnapshot(displays[1]), effect: .blackOut),
+                DisplayActionStep(target: DisplayIdentitySnapshot(displays[2]), effect: .blackOut)
+            ])
+            try model.saveDisplayAction(action)
+            if !removed {
+                inventory.value.removeAll { $0.uuid == targetUUID }
+                model.refreshDisplays()
+            }
+            XCTAssertNil(model.displayActionRunBlocker(for: action))
+            let result = await run(model, id: action.id)
+            XCTAssertTrue(result.ok, result.error ?? "")
+            XCTAssertEqual(result.outcome, .done)
+            XCTAssertEqual(result.steps?.map(\.outcome), [.skipped, .done])
+            XCTAssertEqual(result.steps?.first?.desktopSummary,
+                           removed ? "Already removed from desktop." : "Display is disconnected.")
+            XCTAssertEqual(covers.filter { !$0.isEmpty }, [[303]])
+            XCTAssertEqual(hides, 0)
+            XCTAssertEqual(shows, 0)
+            let decoded = try JSONDecoder().decode(AppControlResponse.self, from: JSONEncoder().encode(result))
+            XCTAssertEqual(decoded.steps?.first?.outcome, .skipped)
+        }
+    }
+
+    func testDisconnectedSkipCannotBypassRecoveryOrLastVisibleGuard() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let inventory = DisplayRecordsBox(displays)
+        let box = StatusBox(noneStatus())
+        var covers: [Set<UInt32>] = []
+        let model = makeModel(defaults: defaults, box: box, displayProvider: { inventory.value },
+                              cover: { covers.append($0); return [] })
+        let action = DisplayAction(name: "Unsafe blackout", steps: [
+            DisplayActionStep(target: DisplayIdentitySnapshot(displays[1]), effect: .blackOut),
+            DisplayActionStep(target: DisplayIdentitySnapshot(displays[0]), effect: .blackOut)
+        ])
+        try model.saveDisplayAction(action)
+        inventory.value = [displays[0]]
+        model.refreshDisplays()
+        XCTAssertNotNil(model.displayActionRunBlocker(for: action))
+        let lastVisible = await run(model, id: action.id)
+        XCTAssertEqual(lastVisible.outcome, .refused)
+        XCTAssertTrue(lastVisible.summary.contains("at least one display visible"))
+        box.value = unreadableStatus()
+        model.refreshHandoffStatus()
+        let recovery = await run(model, id: action.id)
+        XCTAssertFalse(recovery.ok)
+        XCTAssertFalse(covers.contains { !$0.isEmpty })
+    }
+
+    func testSkippedTargetReconnectDuringCleanupNeverBecomesWrite() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let inventory = DisplayRecordsBox(displays)
+        var covers: [Set<UInt32>] = []
+        let model = makeModel(
+            defaults: defaults, displayProvider: { inventory.value },
+            cover: { covers.append($0); return [] },
+            quiesce: { completion in inventory.value = self.displays; completion(true, nil) }
+        )
+        let action = DisplayAction(name: "Reconnect", steps: [
+            DisplayActionStep(target: DisplayIdentitySnapshot(displays[1]), effect: .blackOut),
+            DisplayActionStep(target: DisplayIdentitySnapshot(displays[2]), effect: .blackOut)
+        ])
+        try model.saveDisplayAction(action)
+        inventory.value.removeAll { $0.uuid == targetUUID }
+        model.refreshDisplays()
+        let result = await run(model, id: action.id)
+        XCTAssertEqual(result.outcome, .refused)
+        XCTAssertEqual(result.steps?.map(\.outcome), [.refused, .notRun])
+        XCTAssertFalse(covers.contains { !$0.isEmpty })
+    }
+
+    func testRecoveryAppearingAfterSkipPreflightReportsRecoveryWithoutWrites() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let inventory = DisplayRecordsBox(displays)
+        let box = StatusBox(noneStatus())
+        var covers: [Set<UInt32>] = []
+        let model = makeModel(
+            defaults: defaults, box: box, displayProvider: { inventory.value },
+            cover: { covers.append($0); return [] },
+            quiesce: { completion in box.value = self.unreadableStatus(); completion(true, nil) }
+        )
+        let action = DisplayAction(name: "Recovery during cleanup", steps: [
+            DisplayActionStep(target: DisplayIdentitySnapshot(displays[1]), effect: .blackOut),
+            DisplayActionStep(target: DisplayIdentitySnapshot(displays[2]), effect: .blackOut)
+        ])
+        try model.saveDisplayAction(action)
+        inventory.value.removeAll { $0.uuid == targetUUID }
+        model.refreshDisplays()
+        XCTAssertNil(model.displayActionRunBlocker(for: action))
+        let result = await run(model, id: action.id)
+        XCTAssertFalse(result.ok)
+        XCTAssertEqual(result.outcome, .recoveryNeeded)
+        XCTAssertEqual(result.outcome?.exitCode, 6)
+        XCTAssertEqual(result.steps?.map(\.outcome), [.recoveryNeeded, .notRun])
+        XCTAssertTrue(result.steps?.first?.desktopSummary.contains("unreadable journal") == true,
+                      result.steps?.first?.desktopSummary ?? "Missing summary")
+        XCTAssertFalse(covers.contains { !$0.isEmpty })
+    }
+
+    func testBlackoutHiddenRemovalSkipsWithoutChangingStyle() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        var hides = 0
+        var quiesces = 0
+        var failCover = false
+        let model = makeModel(
+            defaults: defaults, hide: { _, _, _ in hides += 1; return .notRequested },
+            cover: { failCover ? $0 : [] },
+            quiesce: { quiesces += 1; $0(true, nil) }
+        )
+        let blackout = try saveBlackOutAction(on: model)
+        let removal = try saveRemovalAction(on: model)
+        let first = await run(model, id: blackout.id)
+        XCTAssertEqual(first.outcome, .done)
+        XCTAssertNil(model.displayActionRunBlocker(for: removal))
+        let quiescesBeforeSkip = quiesces
+        let result = await run(model, id: removal.id)
+        XCTAssertEqual(result.outcome, .noOp)
+        XCTAssertEqual(result.steps?.first?.outcome, .skipped)
+        XCTAssertEqual(result.steps?.first?.desktopSummary, "Already blacked out.")
+        XCTAssertTrue(model.isBlackoutHidden(targetUUID))
+        XCTAssertEqual(hides, 0)
+        XCTAssertEqual(quiesces, quiescesBeforeSkip)
+
+        failCover = true
+        model.refreshDisplays()
+        XCTAssertNotNil(model.displayActionRunBlocker(for: removal))
+        let uncovered = await run(model, id: removal.id)
+        XCTAssertEqual(uncovered.outcome, .refused)
+        XCTAssertEqual(hides, 0)
     }
 
     private func saveRemovalAction(on model: AppModel) throws -> DisplayAction {

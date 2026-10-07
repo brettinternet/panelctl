@@ -234,7 +234,10 @@ public enum CLIHelp {
             Hide (black out), Hide (remove from desktop) or Show steps, only in
             the running app. It never launches the app, queues or retries a request.
             The workflow is preflighted as a whole, then runs sequentially and
-            non-atomically; it stops at the first problem and keeps earlier changes.
+            non-atomically. Disconnected or verified already-hidden targets can be
+            skipped with a reason; identity and recovery safeguards still apply.
+            Other problems stop the run and keep earlier changes. If no steps need
+            changes, the result is no-op; skipped steps have outcome skipped.
             While it runs, competing display commands, other Actions, recovery
             cleanup, disconnect and quit are busy until completion.
             JSON returns one result per step; text prints one line per step.

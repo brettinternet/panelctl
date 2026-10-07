@@ -86,7 +86,7 @@ struct AutomationSettingsView: View {
             } header: {
                 Text("Actions")
             } footer: {
-                SectionFooter("Run an Action here, or from scripts or other apps. Steps run in order and stop at the first problem; earlier changes stay in place. Actions never run on their own.")
+                SectionFooter("Run an Action here, or from scripts or other apps. Steps run in order, skipping safely unavailable displays. Other problems stop the Action; earlier changes stay in place. Actions never run on their own.")
             }
 
             if model.automationPreferences.rules.contains(where: { $0.settings.followUpAction == .sleepDisplays }) {
@@ -204,8 +204,8 @@ struct AutomationSettingsView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if let result, attention {
-                    stepResultLines(result, attention: true)
+                if let result, attention || result.outcome == .skipped {
+                    stepResultLines(result, attention: attention)
                         .font(.caption)
                         .padding(.top, 2)
                 }
@@ -237,7 +237,7 @@ struct AutomationSettingsView: View {
         } else {
             switch step.outcome {
             case .noOp: (symbol, color) = ("checkmark.circle", .secondary)
-            case .notRun: (symbol, color) = ("minus.circle", .secondary)
+            case .notRun, .skipped: (symbol, color) = ("minus.circle", .secondary)
             default: (symbol, color) = ("checkmark.circle.fill", .green)
             }
         }
@@ -302,6 +302,7 @@ struct AutomationSettingsView: View {
         case .done: return "Done"
         case .noOp: return "Already in state"
         case .notRun: return "Not run"
+        case .skipped: return "Skipped"
         case .partial where step.inputOutcome != nil: return "Done"
         default: return "Stopped"
         }
@@ -510,7 +511,7 @@ struct DisplayActionEditor: View {
                 } header: {
                     Text("Steps")
                 } footer: {
-                    SectionFooter("Each display can appear only once. Steps run in order and stop at the first problem; earlier changes stay in place.")
+                    SectionFooter("Each display can appear only once. Steps run in order, skipping safely unavailable displays. Other problems stop the Action; earlier changes stay in place.")
                 }
 
                 Section {

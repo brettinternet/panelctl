@@ -4,6 +4,8 @@ public enum AppControlOutcome: String, Codable, Sendable {
     /// The display reached the requested state.
     case done
     case noOp = "no-op"
+    /// A safely unavailable Action target was skipped; remaining steps may run.
+    case skipped
     /// PanelCtl didn't start the Hide or Show.
     case refused
     case busy
@@ -17,7 +19,7 @@ public enum AppControlOutcome: String, Codable, Sendable {
 
     public var exitCode: Int32 {
         switch self {
-        case .done, .noOp: return 0
+        case .done, .noOp, .skipped: return 0
         case .refused, .busy, .failed, .responseLost, .notRun: return 1
         case .partial: return 5
         case .recoveryNeeded: return 6

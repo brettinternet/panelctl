@@ -80,11 +80,16 @@ panelctl app run-action --action ACTION_UUID --json
 - Runs only from **Run** or this command, never from rules, login or wake. Action steps keep their saved effects; `--style` applies only to direct Hide and Toggle Hide CLI requests.
 - Before any change, PanelCtl checks every step. A refusal names the step and
   changes nothing.
-- Steps run in order. The first failure stops the run; earlier steps stay done.
+- Steps run in order. Disconnected targets and targets verified hidden by the
+  other Hide style are skipped with a visible reason, without showing them or
+  switching styles. Other failures stop the run; earlier steps stay done.
+- Identity ambiguity, changed metadata, unverified recovery, and last-visible-display
+  safeguards still block. A skipped step never becomes a write during that run.
 - A Remove step saves the display's setup. If that setup changes later, review
   and save the Action again.
-- `done`: every step finished. `no-op`: nothing needed to change. `partial`:
-  some steps changed, then the run stopped.
+- `done`: eligible steps finished. Per-step `skipped` results explain unavailable
+  targets. `no-op`: nothing needed to change; when steps were skipped, the summary
+  says “Nothing to do.” `partial`: some steps changed, then the run stopped.
 
 ## Saved display identity
 
@@ -93,7 +98,9 @@ and restarts, even when macOS assigns a new numeric display ID. Existing saved
 settings load automatically; you don't need to recreate Actions or input choices.
 PanelCtl requires exactly one matching UUID with the same vendor, model and
 serial values. Names and desktop positions aren't used to choose a replacement.
-Missing, duplicate or changed identities remain blocked with a specific reason.
+Duplicate or changed identities remain blocked with a specific reason. Missing
+Action targets can be skipped only when no outstanding recovery involves them;
+other saved-display operations still refuse missing identities.
 
 Each new operation captures current display IDs. An Action keeps those captured
 identities for its entire run; a connection change stops it instead of choosing
