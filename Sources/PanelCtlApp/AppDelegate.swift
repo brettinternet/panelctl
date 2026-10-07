@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var settingsWindowController: SettingsWindowController?
     private let onSettingsPresentationChange: (Bool) -> Void
     private var noticeCancellable: AnyCancellable?
+    private var statusCancellable: AnyCancellable?
     private var launchedAsLoginItem = false
     private var suppressInitialSettings = false
     private var terminationPending = false
@@ -47,7 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if model.protectionPausedForDisplayRecovery {
             displayHideLogger.error("Startup found unresolved display recovery: \(self.model.handoffStatus?.inspectionCommand ?? "inspect shared display journal", privacy: .public)")
         }
-        let controlServer = AppControlServer { [weak self] request, receivedAt in
+        let controlServer = AppControlServer(statusSnapshot: { [weak self] in
+            self?.controlStatusResponse() ?? .unavailable()
+        }) { [weak self] request, receivedAt in
             await self?.handleControlRequest(request, receivedAt: receivedAt) ?? .unavailable()
         }
         do {
@@ -60,9 +63,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         configureStatusItem()
         model.onStatusChange = { [weak self] in
             guard let self else { return }
+            self.controlServer?.statusDidChange()
             self.updateStatusItem()
             self.updateBlackoutFocus()
             self.moveSettingsOffHiddenDisplays()
+        }
+        statusCancellable = model.objectWillChange.sink { [weak self] _ in
+            // Snapshot after the mutation, in the stream's coalescing window.
+            self?.controlServer?.statusDidChange()
         }
         noticeCancellable = model.$notice.sink { [weak self] notice in
             guard let self, let notice else { return }
@@ -763,11 +771,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             model.setProtectionEnabled(!model.preferences.isEnabled)
         case .status:
             model.refreshDisplays()
-            return controlResponse(ok: true, outcome: model.controlDisplayOutcome,
-                                   displays: model.controlDisplayStatuses,
-                                   rules: model.controlRuleStatuses,
-                                   runningAction: model.controlRunningDisplayAction,
-                                   runningRule: model.controlRunningRule)
+            return controlStatusResponse()
         case .blackoutNow:
             return controlResponse(
                 ok: false,
@@ -821,6 +825,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSApp.activate(ignoringOtherApps: true)
         }
         return controlResponse(ok: true)
+    }
+
+    private func controlStatusResponse() -> AppControlResponse {
+        controlResponse(ok: true, outcome: model.controlDisplayOutcome,
+                        displays: model.controlDisplayStatuses,
+                        rules: model.controlRuleStatuses,
+                        runningAction: model.controlRunningDisplayAction,
+                        runningRule: model.controlRunningRule)
     }
 
     private func controlResponse(

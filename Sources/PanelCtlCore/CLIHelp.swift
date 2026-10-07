@@ -204,6 +204,7 @@ public enum CLIHelp {
 
             Commands:
               enable, disable, toggle, status
+              status --watch --json
               restore
               sleep-now
               snooze --for <duration>
@@ -216,7 +217,10 @@ public enum CLIHelp {
               run-rule --rule <UUID>
 
             Control PanelCtl.app; status does not launch the app. --json emits
-            the machine-readable response. snooze temporarily pauses automation
+            the machine-readable response. status --watch --json streams complete
+            line-delimited snapshots until disconnection, then exits non-zero.
+            It never launches or reconnects to the app.
+            snooze temporarily pauses automation
             for up to 30 days; resume ends a snooze early.
             hide, show and toggle-hide act like the display's Hide or Show in
             the running app and wait for the result. Hide uses the configured

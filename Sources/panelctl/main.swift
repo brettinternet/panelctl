@@ -109,6 +109,16 @@ struct PanelCtlMain {
                 }
             case .wakeDisplays:
                 try DisplaySleepController.wake()
+            case .appStatusWatch:
+                let client = try AppControlClient()
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys]
+                let code = try client.watchStatus { response in
+                    var data = try encoder.encode(response)
+                    data.append(0x0A)
+                    try FileHandle.standardOutput.write(contentsOf: data)
+                }
+                exit(code)
             case .app(let appCommand, let durationSeconds, let targetUUID, let actionID, let ruleID, let hideStyle, let json):
                 let client = try AppControlClient()
                 let response: AppControlResponse

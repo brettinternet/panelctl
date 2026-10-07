@@ -8,6 +8,7 @@ final class AppControlServer {
     typealias Handler = @MainActor (AppControlRequest, ContinuousClock.Instant) async -> AppControlResponse
 
     private let handler: Handler
+    private let statusStream: AppStatusStream?
     private let configuredSocketPath: String?
     private let clientQueue = DispatchQueue(
         label: "com.brettinternet.panelctl.control",
@@ -20,12 +21,15 @@ final class AppControlServer {
     private var socketDevice: dev_t?
     private var socketInode: ino_t?
 
+    @MainActor
     init(
         socketPath: String? = nil,
+        statusSnapshot: (@MainActor () -> AppControlResponse)? = nil,
         handler: @escaping Handler
     ) {
         configuredSocketPath = socketPath
         self.handler = handler
+        statusStream = statusSnapshot.map { AppStatusStream(snapshot: $0) }
     }
 
     func start() throws {
@@ -91,7 +95,14 @@ final class AppControlServer {
         }
     }
 
+    @MainActor
+    func statusDidChange() {
+        statusStream?.statusDidChange()
+    }
+
+    @MainActor
     func stop() {
+        statusStream?.stop()
         listenerSource?.cancel()
         listenerSource = nil
         listener = -1
@@ -154,6 +165,10 @@ final class AppControlServer {
             Task { @MainActor [weak self] in
                 guard let self else {
                     Darwin.close(client)
+                    return
+                }
+                if decoded.hasSupportedProtocol, decoded.watch == true, let statusStream {
+                    statusStream.subscribe(client)
                     return
                 }
                 let response = await handler(decoded, receivedAt)

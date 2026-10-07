@@ -2,6 +2,30 @@ import XCTest
 @testable import PanelCtlCore
 
 final class AppControlTests: XCTestCase {
+    func testWatchProtocolIsReadOnlyAndVersionGated() throws {
+        let request = AppControlRequest(command: .status, watch: true)
+        XCTAssertEqual(request.protocolVersion, 3)
+        XCTAssertTrue(request.hasSupportedProtocol)
+        XCTAssertEqual(try JSONDecoder().decode(AppControlRequest.self, from: JSONEncoder().encode(request)), request)
+        for command in [AppControlCommand.enable, .hide, .runAction, .runRule] {
+            XCTAssertFalse(AppControlRequest(command: command, watch: true).hasSupportedProtocol)
+        }
+        XCTAssertFalse(AppControlRequest(command: .status, protocolVersion: 1, watch: true).hasSupportedProtocol)
+        XCTAssertFalse(AppControlRequest(command: .status, protocolVersion: 3).hasSupportedProtocol)
+        XCTAssertFalse(AppControlRequest(command: .status, durationSeconds: 1, watch: true).hasSupportedProtocol)
+        XCTAssertFalse(AppControlRequest(command: .status, watch: false).hasSupportedProtocol)
+    }
+
+    func testWatchUnavailableEmitsOneSequencedDocumentAndNeverLaunches() throws {
+        let path = "\(try AppControlSocket.userTemporaryDirectory())/panelctl-test-\(UUID().uuidString.prefix(8)).sock"
+        var frames: [AppControlResponse] = []
+        let client = try AppControlClient(socketPath: path, launch: { XCTFail("watch must not launch") })
+        XCTAssertEqual(try client.watchStatus { frames.append($0) }, 3)
+        XCTAssertEqual(frames.count, 1)
+        XCTAssertEqual(frames.first?.sequence, 1)
+        XCTAssertEqual(frames.first?.running, false)
+    }
+
     func testRequestUsesVersionOneAndStableCommandNames() throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]

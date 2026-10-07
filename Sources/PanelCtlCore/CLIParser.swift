@@ -127,6 +127,7 @@ public enum PanelCommand: Equatable {
     case ddcPower(selector: String, value: DDCPowerValue?, acceptedRisk: Bool, json: Bool)
     case sleepDisplays(keepSystemAwake: Bool, timeout: TimeInterval?)
     case wakeDisplays
+    case appStatusWatch
     case app(
         command: AppControlCommand,
         durationSeconds: TimeInterval?,
@@ -154,6 +155,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case conflictingTargets
     case conflictingBlackoutLimits
     case allRequiresLimit
+    case appWatchRequiresJSON
     case watchRequiresIdleAfter
     case emptyDisplayBlackoutRequiresWatch
     case persistentDimming
@@ -197,6 +199,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
         case .conflictingTargets: return "--all cannot be combined with --display or --index"
         case .conflictingBlackoutLimits: return "--timeout and --sleep-after are mutually exclusive"
         case .allRequiresLimit: return "--all requires --timeout or --sleep-after"
+        case .appWatchRequiresJSON: return "app status --watch requires --json"
         case .watchRequiresIdleAfter: return "--watch requires --idle-after"
         case .emptyDisplayBlackoutRequiresWatch:
             return "--blackout-empty-displays requires --watch"
@@ -477,6 +480,7 @@ public enum CLIParser {
             throw CLIParseError.retiredBlackoutNow
         }
         var json = false
+        var watch = false
         var hideStyle: AppControlHideStyle?
         var durationSeconds: TimeInterval?
         var targetUUID: String?
@@ -490,6 +494,10 @@ public enum CLIParser {
                     throw CLIParseError.duplicateOption("--json")
                 }
                 json = true
+            case "--watch":
+                guard command == .status else { throw CLIParseError.unknownOption("--watch") }
+                guard !watch else { throw CLIParseError.duplicateOption("--watch") }
+                watch = true
             case "--display":
                 guard command.isDisplayCommand else {
                     throw CLIParseError.unknownOption("--display")
@@ -565,6 +573,10 @@ public enum CLIParser {
         }
         if command == .runRule, ruleID == nil {
             throw CLIParseError.missingValue("--rule")
+        }
+        if watch {
+            guard json else { throw CLIParseError.appWatchRequiresJSON }
+            return .appStatusWatch
         }
         return .app(
             command: command,

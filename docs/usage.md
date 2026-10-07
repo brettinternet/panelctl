@@ -75,6 +75,7 @@ If the menu icon is hidden, reopen the app to show Settings.
 ```sh
 panelctl app enable | disable | toggle        # master Automation switch
 panelctl app status --json
+panelctl app status --watch --json             # live, read-only status
 panelctl app restore | sleep-now
 panelctl app snooze --for 30m
 panelctl app resume
@@ -84,6 +85,39 @@ panelctl app show --display UUID [--json]
 panelctl app run-action --action UUID [--json]
 panelctl app run-rule --rule UUID [--json]
 ```
+
+### Live status for integrations
+
+`panelctl app status --watch --json` opens one read-only connection. It prints a
+complete current status immediately, then newline-delimited JSON (one compact
+document per line), using the same fields as `app status --json` plus `sequence`.
+Sequence numbers start at 1 and increase per connection; compare consecutive
+numbers to detect gaps. No heartbeats or identical consecutive snapshots are
+sent. Changes are coalesced into 100 ms windows (at most ten updates per second,
+plus the initial and terminal snapshots); intermediate states in a burst may be
+omitted, so this is a current-state feed, not an event/audit log.
+
+Display, rule, running Action, snooze and countdown changes update the stream.
+On app shutdown or connection failure the CLI emits a final `running: false`
+document with an error and the next sequence number, then exits 3. It also exits
+3 with one such document if the app is absent. It never launches the app or
+reconnects; restart it explicitly when desired. An older app without streaming
+support produces a terminal error rather than silently falling back to polling.
+
+For a Stream Deck plugin, keep one watcher process and update your button from
+each parsed line. This shell example needs `jq` and prints the button label:
+
+```sh
+panelctl app status --watch --json |
+  jq --unbuffered -r 'if .running then .summary else "PanelCtl disconnected" end'
+```
+
+Consumers must read promptly. The app does not queue unsent snapshots: a full
+socket buffer or partial write disconnects that watcher without affecting others.
+Frames are bounded to 1 MiB; oversized snapshots disconnect rather than omit
+display evidence. At most 64 watchers are accepted. The stream accepts no further
+requests; use a separate normal CLI invocation for commands. Existing one-shot
+status and command requests retain their existing protocol and size limits.
 
 Without a standalone install, use
 `/Applications/PanelCtl.app/Contents/Helpers/panelctl`.

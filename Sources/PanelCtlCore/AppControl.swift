@@ -65,8 +65,14 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
     // Older apps must reject style overrides rather than silently perform removal.
     public static let hideStyleProtocol = 2
 
+    public static let watchProtocol = 3
+
     public var hasSupportedProtocol: Bool {
-        protocolVersion == Self.currentProtocol && hideStyle == nil ||
+        if watch != nil {
+            return protocolVersion == Self.watchProtocol && watch == true && command == .status &&
+                durationSeconds == nil && targetUUID == nil && actionID == nil && ruleID == nil && hideStyle == nil
+        }
+        return protocolVersion == Self.currentProtocol && hideStyle == nil ||
             protocolVersion == Self.hideStyleProtocol
     }
 
@@ -77,6 +83,7 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
     public let actionID: UUID?
     public let ruleID: UUID?
     public let hideStyle: AppControlHideStyle?
+    public let watch: Bool?
 
     public init(
         command: AppControlCommand,
@@ -85,9 +92,11 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
         actionID: UUID? = nil,
         ruleID: UUID? = nil,
         hideStyle: AppControlHideStyle? = nil,
-        protocolVersion: Int? = nil
+        protocolVersion: Int? = nil,
+        watch: Bool? = nil
     ) {
-        self.protocolVersion = protocolVersion ?? (hideStyle == nil ? Self.currentProtocol : Self.hideStyleProtocol)
+        self.watch = watch
+        self.protocolVersion = protocolVersion ?? (watch == nil ? (hideStyle == nil ? Self.currentProtocol : Self.hideStyleProtocol) : Self.watchProtocol)
         self.command = command
         self.durationSeconds = durationSeconds
         self.targetUUID = targetUUID
@@ -99,7 +108,7 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol"
         case command
-        case durationSeconds, targetUUID, actionID, ruleID, hideStyle
+        case durationSeconds, targetUUID, actionID, ruleID, hideStyle, watch
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -111,6 +120,7 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
         try container.encodeIfPresent(actionID, forKey: .actionID)
         try container.encodeIfPresent(ruleID, forKey: .ruleID)
         try container.encodeIfPresent(hideStyle, forKey: .hideStyle)
+        try container.encodeIfPresent(watch, forKey: .watch)
     }
 }
 
@@ -160,6 +170,8 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
     public let steps: [AppControlActionStepResult]?
     public let runningAction: AppControlRunningAction?
     public let runningRule: AppControlRunningRule?
+    /// Present only on a status stream; scoped to that connection.
+    public var sequence: UInt64?
 
     public var exitCode: Int32 {
         if !running { return 3 }
@@ -218,7 +230,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol"
-        case ok, running, enabled, state, summary, detail, error
+        case ok, running, enabled, state, summary, detail, error, sequence
         case nextAction, secondsRemaining, snoozedUntil, outcome, displays, rules, steps, runningAction, runningRule
     }
 
@@ -241,11 +253,13 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         try container.encodeIfPresent(steps, forKey: .steps)
         try container.encodeIfPresent(runningAction, forKey: .runningAction)
         try container.encodeIfPresent(runningRule, forKey: .runningRule)
+        try container.encodeIfPresent(sequence, forKey: .sequence)
     }
 }
 
 public enum AppControlSocket {
     public static let messageLimit = 4 * 1024
+    public static let streamMessageLimit = 1024 * 1024
     static let socketName = "panelctl-app-control.sock"
     static let socketPathCapacity = MemoryLayout.size(
         ofValue: sockaddr_un().sun_path
@@ -411,6 +425,51 @@ public struct AppControlClient {
             } catch {
                 throw AppControlError.transport(error.localizedDescription)
             }
+        }
+    }
+
+    /// One read-only subscription. Never launches or reconnects. The callback is
+    /// synchronous so the client cannot build an unbounded output queue.
+    public func watchStatus(emit: (AppControlResponse) throws -> Void) throws -> Int32 {
+        var sequence: UInt64 = 0
+        do {
+            let fd = try Self.connect(to: socketPath)
+            defer { close(fd) }
+            // An unchanged status can remain silent indefinitely.
+            var timeout = timeval(tv_sec: 0, tv_usec: 0)
+            _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            var request = try JSONEncoder().encode(AppControlRequest(command: .status, watch: true))
+            request.append(0x0A)
+            let sent = request.withUnsafeBytes { Darwin.send(fd, $0.baseAddress, $0.count, MSG_NOSIGNAL) }
+            guard sent == request.count else { throw AppControlError.transport("Status subscription failed") }
+            var pending = Data()
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while true {
+                let count = Darwin.read(fd, &buffer, buffer.count)
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { throw AppControlError.transport("PanelCtl.app status stream disconnected") }
+                pending.append(contentsOf: buffer.prefix(count))
+                while let newline = pending.firstIndex(of: 0x0A) {
+                    guard pending.distance(from: pending.startIndex, to: newline) < AppControlSocket.streamMessageLimit else {
+                        throw AppControlError.messageTooLarge
+                    }
+                    let response = try JSONDecoder().decode(AppControlResponse.self, from: pending[..<newline])
+                    guard response.protocolVersion == AppControlRequest.currentProtocol,
+                          let next = response.sequence, next > sequence, next < UInt64.max else {
+                        throw AppControlError.invalidMessage("missing or invalid stream sequence (app may not support --watch)")
+                    }
+                    sequence = next
+                    try emit(response)
+                    if !response.running { return response.exitCode }
+                    pending.removeSubrange(...newline)
+                }
+                guard pending.count < AppControlSocket.streamMessageLimit else { throw AppControlError.messageTooLarge }
+            }
+        } catch {
+            var response = AppControlResponse.unavailable(error.localizedDescription)
+            response.sequence = sequence + 1
+            try emit(response)
+            return response.exitCode
         }
     }
 

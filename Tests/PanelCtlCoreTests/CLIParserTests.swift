@@ -2,6 +2,18 @@ import XCTest
 @testable import PanelCtlCore
 
 final class CLIParserTests: XCTestCase {
+    func testAppStatusWatchRequiresJSONAndRejectsMutatingCommands() throws {
+        XCTAssertEqual(try CLIParser.parse(["app", "status", "--watch", "--json"]), .appStatusWatch)
+        XCTAssertEqual(try CLIParser.parse(["app", "status", "--json", "--watch"]), .appStatusWatch)
+        XCTAssertThrowsError(try CLIParser.parse(["app", "status", "--watch"])) {
+            XCTAssertEqual($0 as? CLIParseError, .appWatchRequiresJSON)
+        }
+        XCTAssertThrowsError(try CLIParser.parse(["app", "status", "--watch", "--watch", "--json"]))
+        for command in ["enable", "disable", "hide", "run-action", "run-rule"] {
+            XCTAssertThrowsError(try CLIParser.parse(["app", command, "--watch", "--json"]))
+        }
+    }
+
     func testListAndProbeJSON() throws {
         XCTAssertEqual(try CLIParser.parse(["list", "--json"]), .list(json: true))
         XCTAssertEqual(try CLIParser.parse(["probe"]), .probe(json: false))
