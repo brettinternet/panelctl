@@ -1,9 +1,10 @@
 ---
 id: TASK-65
-title: Add opt-in automation to keep windows off a blacked-out display
+title: Keep windows off a display while it is blacked out
 status: To Do
 assignee: []
 created_date: '2026-10-07 22:45'
+updated_date: '2026-10-07 22:52'
 labels: []
 dependencies:
   - TASK-63
@@ -14,6 +15,9 @@ references:
   - Sources/PanelCtlApp/AppModel.swift
   - Sources/PanelCtlCore/Blackout.swift
   - Sources/PanelCtlCore/EmptyDisplayMonitor.swift
+  - Sources/PanelCtlApp/DisplayHidePreferences.swift
+  - Sources/PanelCtlApp/DisplaySettingsView.swift
+  - docs/display-hide-ux.md
 type: feature
 ordinal: 54010
 ---
@@ -21,17 +25,17 @@ ordinal: 54010
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-A one-time move is insufficient when applications later create windows or reopen them on a blacked-out monitor. Users need a separately configured automation that reuses the standalone Move windows effect while the selected display is actually blacked out. It must not be bundled into Hide, automatically enabled by blackout, or implemented as an unowned background side effect of a completed one-shot step. Follow the TASK-63 lifecycle contracts and reuse TASK-64 movement semantics. This scope covers PanelCtl-observed blackout, not guessing that an externally powered-off monitor is hidden.
+A one-time move is not enough: apps create or reopen windows on a blacked-out monitor, where the user cannot see them. Users want an opt-in, per-display option that keeps such windows off while that display is actually blacked out. It is configured alongside the display’s Hide settings (not an Automation rule, per TASK-63), is never enabled by Hide itself, and reuses the TASK-64 mover and destination rules. Remove from desktop does not need it because macOS relocates windows. Only PanelCtl-observed blackout counts; an externally powered-off monitor is not assumed hidden.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Users can independently create, enable, disable and stop a Keep windows off display automation with a source and the same destination choices as Move windows. It is opt-in and migrates disabled/absent for existing users. Blackout works unchanged without it; the one-shot Move action remains independently usable.
-- [ ] #2 When enabled and the selected source is actually blacked out, reconcile existing eligible windows and continue moving newly created or returning windows. Support both explicit Hide black-out and Automation blackout lifetimes through observed actual state, not requested state alone. Becoming armed is distinguishable from actively enforcing.
-- [ ] #3 Enforcement ceases immediately when blackout ends, the rule is disabled, Automation is snoozed/disabled, or the app quits. Cancel stale pending work, release observers/timers and never move windows back automatically. Show/restore retains its existing scope. Resume and restart behavior is documented and reevaluates current eligibility rather than replaying stale moves or creating blackout.
-- [ ] #4 No eligible destination, ambiguous identity, recovery, permission loss or topology change produces a visible paused/refused state with no unsafe move. A safe condition becoming valid may resume under the documented rule lifecycle; reconnection never guesses identities or overrides a specifically selected destination.
-- [ ] #5 Overlapping rules and manual actions have deterministic ownership/conflict behavior with no duplicate watchers, cycles or window ping-pong. Repeated events, application refusal and actively dragged windows do not cause tight retry loops or excessive churn; responsiveness and reconciliation cadence have documented bounds verified with a fake clock/event source.
-- [ ] #6 Keep-window automation never starts blackout, implicitly enables empty-display treatment or treats its own window moves as user activity. Tests demonstrate no self-sustaining hide/move feedback and no inappropriate rearming between empty-display blackout, input restoration and relocation.
-- [ ] #7 UI and app status/status stream expose rule identity, armed/running/paused state, destination, stop control and actionable reasons/partial failures. Documentation explains that ongoing enforcement moves returning windows, its supported-window limits, and the difference from a one-shot action; background work never repeatedly prompts for permission.
-- [ ] #8 Focused fake-backed tests cover blackout entry/exit, app launch/window creation/movement, missed-event reconciliation, sleep/wake, disconnect/reconnect, permission changes, overlapping rules, snooze, quit/restart and cancellation races. Native window movement requires separate explicit user approval with narrow gated checks; no hardware writes are authorized.
+- [ ] #1 Displays settings offer an opt-in “Keep windows off while blacked out” option per display with Automatic or a specific destination (TASK-64 eligibility). It defaults off and existing saved configurations decode as off; with it off, Hide, Actions and Automation are unchanged.
+- [ ] #2 While the option is on and the display is observed blacked out by any owner (manual Hide, Action or Automation rule), existing eligible windows are moved, then new or returning windows are moved within a documented bound. Armed (option on, display visible) is distinguishable from enforcing.
+- [ ] #3 Enforcement stops immediately when blackout ends, the option is turned off or the app quits: pending work is cancelled, observers and timers released, and windows are never moved back. On relaunch it reevaluates current state only; it never replays moves or starts blackout.
+- [ ] #4 No eligible destination, ambiguous identity, recovery, permission loss or topology change gives a visible paused state with a reason and no moves. It resumes without prompting once the condition clears; reconnection never guesses identities or substitutes for a specific destination.
+- [ ] #5 One controller per display, so no duplicate watchers. Windows that refuse moves, keep returning or are being dragged get bounded per-window backoff with no tight loops; cadence and backoff bounds are verified with a fake clock. A manual Move step during enforcement is idempotent.
+- [ ] #6 Enforcement never starts or extends blackout, and its moves do not count as user activity. Tests show no hide/move feedback loop or improper rearming with empty-display blackout and input restoration.
+- [ ] #7 Displays settings, the menu and the status stream show armed/enforcing/paused state with reason and last moved/failed counts. Docs explain ongoing enforcement, supported-window limits and how it differs from the one-shot Move step; background work never prompts for permission.
+- [ ] #8 Fake-backed tests cover blackout entry/exit by each owner, window creation and return, missed-event reconciliation, sleep/wake, disconnect/reconnect, permission changes, quit/relaunch and cancellation races. Native window movement needs separate explicit user approval and narrow gated tests; no hardware writes are authorized.
 <!-- AC:END -->

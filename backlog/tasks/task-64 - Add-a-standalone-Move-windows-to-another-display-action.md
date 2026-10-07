@@ -4,9 +4,11 @@ title: Add a standalone Move windows to another display action
 status: To Do
 assignee: []
 created_date: '2026-10-07 22:44'
+updated_date: '2026-10-07 22:52'
 labels: []
 dependencies:
   - TASK-63
+  - TASK-66
 references:
   - Sources/PanelCtlApp/DisplayActions.swift
   - Sources/PanelCtlApp/AutomationSettingsView.swift
@@ -19,16 +21,16 @@ ordinal: 53010
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-A black cover does not remove a monitor from the macOS desktop, so app windows can remain behind it. Users need an explicit, independently invokable way to relocate those windows without changing blackout state. Deliver the first window effect using the TASK-63 contracts; it must also work on a visible source monitor. Scope is ordinary movable windows on the current desktop, not moving entire applications, changing Spaces, or restoring historical layouts. Existing occupancy detection is read-only and is not evidence that Accessibility can move every window.
+A black cover leaves the monitor in the macOS desktop, so windows stay (and open) behind it. Users need an explicit way to move those windows without changing blackout state; it also works on a visible source, e.g. consolidating before unplugging. Remove from desktop already makes macOS relocate windows, so this mainly serves Black out. This is the first window effect and PanelCtl’s first Accessibility use; follow docs/window-relocation.md (TASK-63). Scope: ordinary movable windows on the current Space, not whole apps, Spaces, or layout restore. Existing occupancy detection is read-only and does not prove Accessibility can move a window.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Users can save and invoke a Move windows step independently, or compose it with Hide in an ordered saved Action targeting the same source display. Blackout alone never moves windows; Move never hides or shows a display. Existing saved actions migrate without changing behavior.
-- [ ] #2 The step selects a source by stable display identity and either a specific destination or Any eligible visible display. Automatic choice deterministically prefers the main display when eligible; otherwise uses a documented stable fallback. The destination excludes the source, hidden/blacked-out/asleep/unavailable displays and unsupported mirrored topology. An unavailable explicit destination never silently falls back.
-- [ ] #3 Revalidate identities, topology, actual destination usability and existing recovery/safety gates before movement. No eligible destination causes an actionable no-move outcome. Do not guess display identities or bypass recovery to relocate windows.
-- [ ] #4 Move individual ordinary windows attributed to the source by a documented deterministic overlap rule, preserving size and relative placement where feasible and keeping them within the destination usable frame without unnecessary resizing. Cover negative coordinates, differing resolutions/scales, spanning windows and oversized/minimum-size windows. Do not activate apps or switch Spaces.
-- [ ] #5 Accessibility permission is requested only through an explicit user interaction and absence/revocation produces actionable status without a prompt loop. Unsupported, fullscreen, minimized, other-Space, vanished and nonmovable windows are handled explicitly; no blanket success if moves fail. Exclude PanelCtl blackout/system surfaces and report moved, skipped and failed counts/reasons without exposing window titles by default.
-- [ ] #6 Existing action UI, run-action CLI and status expose the effect, configuration and partial results consistently. A one-shot run installs no watcher, performs no automatic repeat and never restores windows on Show. Re-running does not perturb windows already off the source.
-- [ ] #7 Focused fake-backed tests cover selection, geometry, migration, same-monitor step composition, permission denial/revocation, topology changes and partial failures; user documentation states limits and permission requirements. Native desktop/window-moving validation requires separate explicit user approval and narrow gated tests; no DDC or private display writes are authorized.
+- [ ] #1 Users can save and run a Move windows step alone or in one ordered Action with Hide/Show of the same source. Hide never moves windows and Move never changes hide state. Existing saved Actions migrate unchanged.
+- [ ] #2 Destination is a specific display or Automatic: the main display when eligible, otherwise a documented stable order. Eligible excludes the source and blacked-out, removed, asleep, offline and mirrored-member displays. An unavailable explicit destination refuses with no fallback.
+- [ ] #3 Identity, topology and recovery gates are revalidated at execution. No eligible destination gives an actionable refusal with no moves. Display IDs are never guessed and recovery is never bypassed.
+- [ ] #4 Windows are attributed by the TASK-63 rule and moved preserving size and relative position within the destination visible frame, resizing only when larger than it. Tests cover negative origins, mixed scale, spanning, oversized and minimum-size windows. Apps are not activated and Spaces are not switched.
+- [ ] #5 Accessibility is requested only from an explicit in-app user interaction; CLI, app-control and background runs report missing or stale permission without prompting. Fullscreen, minimized, other-Space, vanished and nonmovable windows are skipped with reason codes; PanelCtl and system surfaces are excluded. A hung app times out as failed without blocking other moves. Results report moved/skipped/failed counts, never blanket success, and no titles by default.
+- [ ] #6 Action editor, run-action CLI and status expose the step and partial results consistently. A run installs no watcher and nothing is restored on Show. Re-running leaves windows already off the source untouched.
+- [ ] #7 Fake-backed tests cover selection, geometry, migration, same-display composition, permission denial/revocation, hung apps, topology changes and partial failures; docs state limits and the permission requirement. Native window moving needs separate explicit user approval and narrow gated tests; no DDC or private display writes are authorized.
 <!-- AC:END -->
