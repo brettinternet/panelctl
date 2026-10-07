@@ -24,15 +24,17 @@ final class AppStatusStreamTests: XCTestCase {
         let changed = expectation(description: "both changed snapshots")
         changed.expectedFulfillmentCount = 2
         let clients = (0..<2).map { _ in
-            Task.detached { () throws -> ([AppControlResponse], Int32) in
-                var frames: [AppControlResponse] = []
-                let client = try AppControlClient(socketPath: path, launch: { XCTFail("watch must never launch") })
-                let code = try client.watchStatus { response in
-                    frames.append(response)
-                    if response.state == "waiting" { initial.fulfill() }
-                    if response.state == "hidden" { changed.fulfill() }
+            Task {
+                try await Self.blockingClient {
+                    var frames: [AppControlResponse] = []
+                    let client = try AppControlClient(socketPath: path, launch: { XCTFail("watch must never launch") })
+                    let code = try client.watchStatus { response in
+                        frames.append(response)
+                        if response.state == "waiting" { initial.fulfill() }
+                        if response.state == "hidden" { changed.fulfill() }
+                    }
+                    return (frames, code)
                 }
-                return (frames, code)
             }
         }
         await fulfillment(of: [initial], timeout: 2)
@@ -46,9 +48,9 @@ final class AppStatusStreamTests: XCTestCase {
         // Unchanged invalidations do not produce another document.
         for _ in 0..<100 { server.statusDidChange() }
         try await Task.sleep(nanoseconds: 200_000_000)
-        let legacy = try await Task.detached {
+        let legacy = try await Self.blockingClient {
             try AppControlClient(socketPath: path, launch: {}).execute(.status)
-        }.value
+        }
         XCTAssertEqual(legacy, snapshot)
         XCTAssertEqual(commands, [.status], "subscriptions bypass command dispatch")
         server.stop()
@@ -133,12 +135,12 @@ final class AppStatusStreamTests: XCTestCase {
         }
         try server.start()
         defer { server.stop() }
-        let (frames, code) = try await Task.detached {
+        let (frames, code) = try await Self.blockingClient {
             var frames: [AppControlResponse] = []
             let code = try AppControlClient(socketPath: path, launch: { XCTFail("must not launch") })
                 .watchStatus { frames.append($0) }
             return (frames, code)
-        }.value
+        }
         XCTAssertEqual(frames.map(\.state), ["waiting", "unavailable"])
         XCTAssertEqual(frames.map(\.sequence), [1, 2])
         XCTAssertEqual(code, 3)
@@ -151,16 +153,28 @@ final class AppStatusStreamTests: XCTestCase {
         let server = AppControlServer(socketPath: path) { _, _ in Self.status("waiting") }
         try server.start()
         defer { server.stop() }
-        let (frames, code) = try await Task.detached {
+        let (frames, code) = try await Self.blockingClient {
             var frames: [AppControlResponse] = []
             let code = try AppControlClient(socketPath: path, launch: { XCTFail("must not launch") })
                 .watchStatus { frames.append($0) }
             return (frames, code)
-        }.value
+        }
         XCTAssertEqual(frames.count, 1)
         XCTAssertEqual(frames.first?.sequence, 1)
         XCTAssertEqual(frames.first?.running, false)
         XCTAssertEqual(code, 3)
+    }
+
+    // Socket reads block indefinitely while a stream is unchanged. Task.detached
+    // still uses Swift's cooperative pool and can starve the server on small runners.
+    private static func blockingClient<T: Sendable>(
+        _ operation: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(with: Result(catching: operation))
+            }
+        }
     }
 
     private func socketPair() throws -> [Int32] {
