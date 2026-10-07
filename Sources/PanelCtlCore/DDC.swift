@@ -146,9 +146,9 @@ enum DDC {
         let uuid: String
     }
 
-    static func open(selector: String) throws -> (display: DisplayTarget, channel: DDCChannel) {
+    static func open(selector: String, allowInactive: Bool = false) throws -> (display: DisplayTarget, channel: DDCChannel) {
         #if arch(arm64)
-        let display = try resolveDisplay(selector: selector)
+        let display = try resolveDisplay(selector: selector, allowInactive: allowInactive)
         let location = try displayLocation(display.id)
         let transport = try DDCTransport()
         guard let service = try transport.service(for: location) else {
@@ -184,9 +184,12 @@ enum DDC {
         #endif
     }
 
-    static func resolveDisplay(selector: String, records: [DisplayRecord] = DisplayInventory.records()) throws -> DisplayTarget {
+    // Guarded input return runs before unmirroring, when an online follower is inactive.
+    // Other DDC operations remain active-only; identity and online checks always apply.
+    static func resolveDisplay(selector: String, records: [DisplayRecord] = DisplayInventory.records(),
+                               allowInactive: Bool = false) throws -> DisplayTarget {
         guard let record = DisplaySelector.resolve(selector, in: records),
-              record.active, record.online, !record.builtin, let uuid = record.uuid,
+              (record.active || allowInactive), record.online, !record.builtin, let uuid = record.uuid,
               UUID(uuidString: uuid) != nil,
               records.filter({ $0.id == record.id }).count == 1,
               records.filter({ $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame }).count == 1 else {

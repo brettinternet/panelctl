@@ -395,7 +395,9 @@ public enum DisplayHandoff {
 
 struct HandoffController {
     var mirror = MirrorController()
-    var open: (String) throws -> (display: DDC.DisplayTarget, channel: DDCChannel) = { try DDC.open(selector: $0) }
+    var open: (String, Bool) throws -> (display: DDC.DisplayTarget, channel: DDCChannel) = {
+        try DDC.open(selector: $0, allowInactive: $1)
+    }
     var select: (UInt8, DDCChannel, UInt32, String, UInt8?) throws -> DDCInputSelection = {
         try DDCInput.select($0, channel: $1, displayID: $2, uuid: $3, original: $4, readOriginal: false)
     }
@@ -526,7 +528,7 @@ struct HandoffController {
 
         let session: (display: DDC.DisplayTarget, channel: DDCChannel)
         do {
-            session = try open(target.uuid)
+            session = try open(target.uuid, returning)
         } catch {
             do {
                 guard try matchesCapturedIdentity(target, records: mirror.records()) else {

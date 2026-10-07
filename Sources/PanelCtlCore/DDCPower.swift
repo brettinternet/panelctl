@@ -50,7 +50,7 @@ public enum DDCPower {
     public static let observationWarning = "A reported value or delivered command is not proof of visible panel state or desktop removal."
 
     public static func run(selector: String, value: DDCPowerValue?, acceptedRisk: Bool) throws -> DDCPowerResult {
-        try run(selector: selector, value: value, acceptedRisk: acceptedRisk, open: DDC.open)
+        try run(selector: selector, value: value, acceptedRisk: acceptedRisk, open: { try DDC.open(selector: $0) })
     }
 
     static func run(

@@ -73,7 +73,10 @@ A monitor on another computer's input may reconnect with a reduced mode list
 (for example, 60 Hz instead of the saved 240 Hz). Explicit app **Show** or
 `back --input` validates the captured identities, attempts the configured Mac
 input once, waits for modes/topology to settle, then restores and verifies the
-journaled desktop. Returning to mirroring alone does not count as shown.
+journaled desktop. This input-return path accepts online mirror followers that
+macOS marks inactive; ordinary DDC controls remain active-only. Identity and
+connector checks still apply, and the monitor must accept DDC on the Mac's link.
+Returning to mirroring alone does not count as shown.
 Without a configured return input, use the monitor's input button first.
 
 Recovery reports the current identity, lifecycle or exact saved-mode blocker

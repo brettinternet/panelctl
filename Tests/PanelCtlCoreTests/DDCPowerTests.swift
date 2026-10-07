@@ -171,6 +171,20 @@ final class DDCPowerTests: XCTestCase {
         XCTAssertFalse(constructed)
     }
 
+    func testInputReturnAllowsOnlyOnlineUnambiguousExternalInactiveTargets() throws {
+        let inactive = record(active: false)
+        XCTAssertThrowsError(try DDC.resolveDisplay(selector: uuid, records: [inactive]))
+        XCTAssertEqual(try DDC.resolveDisplay(selector: uuid, records: [inactive], allowInactive: true).id, 7)
+        for records in [
+            [], [record(active: false, online: false)], [record(active: false, builtin: true)],
+            [record(uuid: nil, active: false)], [record(uuid: "invalid", active: false)],
+            [inactive, record(id: 8, active: false)],
+            [inactive, record(uuid: "22345678-1234-1234-1234-123456789ABC", active: false)]
+        ] {
+            XCTAssertThrowsError(try DDC.resolveDisplay(selector: "7", records: records, allowInactive: true))
+        }
+    }
+
     private func record(id: UInt32 = 7, uuid: String? = "12345678-1234-1234-1234-123456789ABC", active: Bool = true, online: Bool = true, builtin: Bool = false) -> DisplayRecord {
         DisplayRecord(index: 1, id: id, uuid: uuid, name: "Test", active: active, online: online,
                       asleep: false, builtin: builtin, main: false, vendor: 1, model: 2, serial: 3,

@@ -583,7 +583,7 @@ final class DisplayMirroringTests: XCTestCase {
         _ = try mirror.mirror(selector: snapshotUUID(2), source: snapshotUUID(1), store: scenarioStore)
         var reports: [String] = []
         var handoff = HandoffController(mirror: mirror, report: { reports.append($0) })
-        handoff.open = { _ in throw RecoveryError.unsafe("DDC must not open when input is omitted") }
+        handoff.open = { _, _ in throw RecoveryError.unsafe("DDC must not open when input is omitted") }
         for selector in [snapshotUUID(3), "9", "0x9", "index:3"] {
             reports.removeAll()
             try handoff.away(selector: selector, source: snapshotUUID(1), input: nil, store: scenarioStore)
@@ -1088,7 +1088,9 @@ final class DisplayMirroringTests: XCTestCase {
                 messages.append(message)
                 if message.hasPrefix("To reverse input selection:") { events.append("recovery-command") }
             }
-            sut.open = { uuid in
+            sut.open = { uuid, allowInactive in
+                XCTAssertEqual(allowInactive, returning)
+                _ = try DDC.resolveDisplay(selector: uuid, records: self.records(current), allowInactive: allowInactive)
                 events.append("open")
                 XCTAssertEqual(uuid, original.displays[1].uuid)
                 XCTAssertEqual(try store.load().snapshot, original, "journal precedes DDC")
@@ -1209,7 +1211,9 @@ final class DisplayMirroringTests: XCTestCase {
                 complete: { _, _ in current = mirrored },
                 cancel: { _ in XCTFail("successful fake mirror must consume the transaction") }
             )
-            sut.open = { uuid in
+            sut.open = { uuid, allowInactive in
+                XCTAssertEqual(allowInactive, returning)
+                _ = try DDC.resolveDisplay(selector: uuid, records: self.records(current), allowInactive: allowInactive)
                 operationEvents.values.append("open")
                 XCTAssertEqual(uuid, self.snapshotUUID(2))
                 XCTAssertTrue(FileManager.default.fileExists(atPath: store.url.path), "the recovery journal must precede DDC")
@@ -1332,8 +1336,11 @@ final class DisplayMirroringTests: XCTestCase {
             complete: { _, _ in current = mirrored }, cancel: { _ in })
         try sut.away(selector: "8", source: "7", input: nil, store: store)
         let id = try store.load().id
-        sut.open = { uuid in
-            (DDC.DisplayTarget(id: 8, uuid: uuid), DDCChannel(
+        sut.open = { uuid, allowInactive in
+            XCTAssertTrue(allowInactive)
+            XCTAssertFalse(current.displays[1].active)
+            let target = try DDC.resolveDisplay(selector: uuid, records: self.records(current), allowInactive: allowInactive)
+            return (target, DDCChannel(
                 getVCP: { _ in (17, 0) }, setVCP: { _, _ in XCTFail("fake selector only") }))
         }
         var inputWrites = 0
@@ -1365,8 +1372,9 @@ final class DisplayMirroringTests: XCTestCase {
             complete: { _, _ in current = mirrored }, cancel: { _ in })
         try sut.away(selector: "8", source: "7", input: nil, store: store)
         let id = try store.load().id
-        sut.open = { uuid in
-            (DDC.DisplayTarget(id: 8, uuid: uuid), DDCChannel(
+        sut.open = { uuid, allowInactive in
+            let target = try DDC.resolveDisplay(selector: uuid, records: self.records(current), allowInactive: allowInactive)
+            return (target, DDCChannel(
                 getVCP: { _ in
                     events.append("read")
                     if !events.contains("write") { throw DDCError.invalidReply("invalid payload length") }
@@ -1393,7 +1401,7 @@ final class DisplayMirroringTests: XCTestCase {
         let original = try snapshot()
         _ = try journal(original)
         var sut = HandoffController(mirror: controller(original))
-        sut.open = { _ in XCTFail("must not open DDC"); throw RecoveryError.unsafe("unexpected") }
+        sut.open = { _, _ in XCTFail("must not open DDC"); throw RecoveryError.unsafe("unexpected") }
         for selector in ["7", "9", "missing"] {
             XCTAssertThrowsError(try sut.back(selector: selector, input: 15, store: store))
         }

@@ -234,7 +234,7 @@ final class DisplayHideTests: XCTestCase {
                     })
             }
             var handoff = HandoffController(mirror: mirror, report: { _ in })
-            handoff.open = { uuid in
+            handoff.open = { uuid, _ in
                 if scenario == "no-ddc" { throw RecoveryError.unsafe("fake DDC unavailable") }
                 return (DDC.DisplayTarget(id: self.targetID, uuid: uuid), DDCChannel(
                     getVCP: { _ in (17, 0) }, setVCP: { _, _ in XCTFail("fake selector only") }))
@@ -609,7 +609,7 @@ final class DisplayHideTests: XCTestCase {
         )
         let handoff = HandoffController(
             mirror: mirror,
-            open: { uuid in
+            open: { uuid, _ in
                 (display: DDC.DisplayTarget(id: self.targetID, uuid: uuid), channel: DDCChannel(
                     getVCP: { _ in (current: 0x11, maximum: 0x12) },
                     setVCP: { _, _ in XCTFail("input write must stay fake") }
