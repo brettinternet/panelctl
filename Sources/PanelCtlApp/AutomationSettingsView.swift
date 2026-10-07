@@ -59,7 +59,7 @@ struct AutomationSettingsView: View {
             } header: {
                 Text("Rules")
             } footer: {
-                SectionFooter("Rules run on their own when you’re idle. Run now runs just one rule once, even when it’s off or paused, without enabling its automatic trigger. It uses the rule’s effects and Restore or Sleep follow-up, unlike Hide (until Show) or Actions (ordered display steps). Each display can be in only one rule that’s on.")
+                SectionFooter("Rules run on their own when you’re idle. Run now runs a rule once, even when it’s off or paused. Each display can be in only one rule that’s on.")
             }
 
             Section {
