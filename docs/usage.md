@@ -135,8 +135,8 @@ former broadcast Blackout Now menu item; it never runs every rule at once.
 
 `panelctl app run-rule --rule UUID` runs exactly one saved Automation rule once,
 immediately bypassing its idle wait. Find stable IDs with `panelctl app status --json`
-in `rules[].id`, or use **Settings → Automations → Copy CLI command** on the
-saved rule. **Run now** in Settings and the menu bar’s **Run rule** submenu use
+in `rules[].id`, or edit the rule in **Settings → Automations** and use
+**Command → Copy**. Save the rule before running its command. **Run now** in Settings and the menu bar’s **Run rule** submenu use
 this same one-shot operation. The submenu lists off rules too and marks the
 selected rule while it runs. Run failures
 from the menu open Automations, where the rule shows the refusal and next action.

@@ -1146,6 +1146,8 @@ final class SettingsWindowTests: XCTestCase {
             window.makeKeyAndOrderFront(nil)
             spin { app.isActive && window.isKeyWindow }
             if let editor = scenario.editor {
+                let helper = try writeAutomationFixtureHelper(in: fakeDirectory)
+                setenv("PANELCTL_HELPER", helper.path, 1)
                 let rule: ProtectionRule
                 let existingID: UUID?
                 let isNew: Bool
@@ -1162,6 +1164,16 @@ final class SettingsWindowTests: XCTestCase {
                     in: window, model: model, rule: rule, existingID: existingID, isNew: isNew
                 )
                 try writeSnapshot(of: sheet, to: output, name: "automation-\(scenario.name)")
+                let content = try XCTUnwrap(sheet.contentView)
+                let scrollView = try XCTUnwrap(nativeViews(in: content).compactMap { $0 as? NSScrollView }.first)
+                let document = try XCTUnwrap(scrollView.documentView)
+                let bottom = document.isFlipped
+                    ? max(0, document.bounds.height - scrollView.contentView.bounds.height)
+                    : 0
+                scrollView.contentView.scroll(to: NSPoint(x: 0, y: bottom))
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+                spin { content.layoutSubtreeIfNeeded(); return true }
+                try writeSnapshot(of: sheet, to: output, name: "automation-\(scenario.name)-command")
             } else {
                 let content = try XCTUnwrap(window.contentView)
                 spin { content.layoutSubtreeIfNeeded(); return true }

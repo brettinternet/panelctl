@@ -6,7 +6,6 @@ struct AutomationSettingsView: View {
     @ObservedObject var navigation: SettingsNavigation
     @State private var editor: RuleEditorPresentation?
     @State private var actionEditor: DisplayActionEditorPresentation?
-    @State private var copiedRuleID: UUID?
 
     init(model: AppModel, navigation: SettingsNavigation, initialEditor: RuleEditorPresentation? = nil) {
         self.model = model
@@ -349,22 +348,10 @@ struct AutomationSettingsView: View {
                 }
                 .disabled(model.protectionRuleRunBlocker(id: rule.id) != nil)
                 .accessibilityLabel("Run \(rule.name) once")
-                Button(copiedRuleID == rule.id ? "Copied" : "Copy CLI command") {
-                    guard let command = model.protectionRuleCommandLine(id: rule.id) else { return }
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(command, forType: .string)
-                    copiedRuleID = rule.id
-                }
-                .disabled(model.protectionRuleCommandLine(id: rule.id) == nil)
-                .accessibilityLabel("Copy CLI command for \(rule.name)")
             }
             if let message = model.protectionRuleRunStatus(id: rule.id) {
                 rowStatus(message, warning: model.controlRunningRule?.id != rule.id &&
                     (model.protectionRuleRunResults[rule.id]?.ok == false || model.protectionRuleRunBlocker(id: rule.id) != nil))
-            }
-            if model.protectionRuleCommandLine(id: rule.id) == nil {
-                Text("The bundled panelctl command is unavailable in this build.")
-                    .foregroundStyle(.secondary)
             }
             if model.protectionRuleNeedsDisplayReview(rule) {
                 Button("Review in Displays…") {
@@ -749,6 +736,7 @@ struct ProtectionRuleEditor: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var nameFocused: Bool
     @State private var draft: ProtectionRule
+    @State private var copyConfirmation = false
     @State private var confirmingDelete = false
     @State private var saveFailure: String?
 
@@ -769,6 +757,11 @@ struct ProtectionRuleEditor: View {
     }
 
     private var canSave: Bool { validation.allowsSave(isEnabled: draft.isEnabled) }
+
+    private var commandLine: String? {
+        guard let executable = try? ProtectionService.helperExecutableURL() else { return nil }
+        return AppControlCommand.runRule.commandLine(executable: executable.path, ruleID: draft.id)
+    }
 
     private var blockingMessage: String? {
         if let saveFailure { return saveFailure }
@@ -871,6 +864,31 @@ struct ProtectionRuleEditor: View {
                     if draft.settings.hardwareDimmingEnabled {
                         percentStepper("Brightness", selection: setting(\.hardwareBrightnessPercent), range: 0...100)
                     }
+                }
+
+                Section {
+                    if let commandLine {
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(commandLine)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 4)
+                            Button(copyConfirmation ? "Copied" : "Copy") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(commandLine, forType: .string)
+                                copyConfirmation = true
+                            }
+                            .accessibilityLabel("Copy rule command")
+                        }
+                    } else {
+                        Text("The bundled panelctl command is unavailable in this build.")
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Command")
+                } footer: {
+                    SectionFooter("Runs the saved rule once in the running app. Save changes before running.")
                 }
             }
             .formStyle(.grouped)
