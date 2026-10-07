@@ -204,8 +204,9 @@ final class DisplayDisconnectIntegrationTests: XCTestCase {
           printf '{"state":"stopped","blackedOutDisplayIDs":[],"cleanupSucceeded":true}\\n'
           exit 0
         fi
-        printf 'watch %s\\n' "$*" >> "$PANELCTL_TEST_LOG"
+        # Tests use watch as the launch-complete marker, so log its flag first.
         printf 'rearm %s\\n' "${PANELCTL_REARM_ON_START:-0}" >> "$PANELCTL_TEST_LOG"
+        printf 'watch %s\\n' "$*" >> "$PANELCTL_TEST_LOG"
         printf '{"state":"waiting","blackedOutDisplayIDs":[]}\\n'
         if [ "\(ignoreTermination ? "1" : "0")" = "1" ] && [ "${PANELCTL_IGNORE_TERM:-}" = "1" ]; then
           trap '' TERM
