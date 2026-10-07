@@ -143,7 +143,7 @@ Desktop and input results are reported separately on the selected display:
 
 ## Scripting
 
-**Displays → Scripts** shows a copyable command for Stream Deck or Shortcuts:
+**Displays → Command** shows a copyable command for Stream Deck or Shortcuts:
 
 ```sh
 /Applications/PanelCtl.app/Contents/Helpers/panelctl app toggle-hide --display DISPLAY_UUID --json

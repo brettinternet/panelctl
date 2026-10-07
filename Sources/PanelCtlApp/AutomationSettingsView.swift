@@ -455,7 +455,6 @@ struct DisplayActionEditor: View {
     @State private var draft: DisplayAction
     @State private var confirmingDelete = false
     @State private var saveFailure: String?
-    @State private var copyConfirmation = false
 
     private let existingID: UUID?
     private let isNew: Bool
@@ -516,19 +515,7 @@ struct DisplayActionEditor: View {
 
                 Section {
                     if let commandLine {
-                        HStack(alignment: .top, spacing: 8) {
-                            Text(commandLine)
-                                .font(.system(.caption, design: .monospaced))
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Spacer(minLength: 4)
-                            Button(copyConfirmation ? "Copied" : "Copy") {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(commandLine, forType: .string)
-                                copyConfirmation = true
-                            }
-                            .accessibilityLabel("Copy action command")
-                        }
+                        CommandCopyRow(command: commandLine, accessibilityLabel: "Copy action command")
                     } else {
                         Text("The bundled panelctl command is unavailable in this build.")
                             .foregroundStyle(.secondary)
@@ -736,7 +723,6 @@ struct ProtectionRuleEditor: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var nameFocused: Bool
     @State private var draft: ProtectionRule
-    @State private var copyConfirmation = false
     @State private var confirmingDelete = false
     @State private var saveFailure: String?
 
@@ -868,19 +854,7 @@ struct ProtectionRuleEditor: View {
 
                 Section {
                     if let commandLine {
-                        HStack(alignment: .top, spacing: 8) {
-                            Text(commandLine)
-                                .font(.system(.caption, design: .monospaced))
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Spacer(minLength: 4)
-                            Button(copyConfirmation ? "Copied" : "Copy") {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(commandLine, forType: .string)
-                                copyConfirmation = true
-                            }
-                            .accessibilityLabel("Copy rule command")
-                        }
+                        CommandCopyRow(command: commandLine, accessibilityLabel: "Copy rule command")
                     } else {
                         Text("The bundled panelctl command is unavailable in this build.")
                             .foregroundStyle(.secondary)

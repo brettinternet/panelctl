@@ -94,7 +94,7 @@ struct DisplaySettingsView: View {
                     }
                 }
                 if let command = result.undoInputCommand {
-                    copyRow("Undo input switch", command, monospaced: true)
+                    CommandCopyRow("Undo input switch", command: command)
                 }
             }
             if let note = actionNote(tile) {
@@ -398,10 +398,10 @@ struct DisplaySettingsView: View {
     private func scriptSection(_ tile: DisplayTile) -> some View {
         if let uuid = tile.uuid, let cli = try? ProtectionService.helperExecutableURL() {
             Section {
-                copyRow("Command", AppControlCommand.toggleHide.commandLine(executable: cli.path, displayUUID: uuid),
-                        monospaced: true)
+                CommandCopyRow(command: AppControlCommand.toggleHide.commandLine(executable: cli.path, displayUUID: uuid),
+                               accessibilityLabel: "Copy display command")
             } header: {
-                Text("Scripts")
+                Text("Command")
             } footer: {
                 SectionFooter("For scripts or other apps. Use hide or show to set one state.",
                               learnMore: AppModel.scriptingDocsURL)
@@ -441,18 +441,18 @@ struct DisplaySettingsView: View {
                     Button("Check Again") { model.refreshDisplays() }
                 }
             }
-            copyRow("Journal", status.journalPath)
+            CommandCopyRow("Journal", command: status.journalPath)
             if let selected = targetUUID.flatMap({ status.removal(for: $0) }) {
                 removalDetails(selected)
                 let command = "panelctl recovery restore --display \(shellQuote(selected.target.uuid)) --journal \(shellQuote(status.journalPath))"
-                copyRow("Recovery command", command, monospaced: true)
+                CommandCopyRow("Recovery command", command: command)
             } else if !status.removals.isEmpty {
                 ForEach(status.removals.filter(\.isUnresolved)) { removal in
                     removalDetails(removal)
                     let command = "panelctl recovery restore --display \(shellQuote(removal.target.uuid)) --journal \(shellQuote(status.journalPath))"
-                    copyRow("Restore \(removal.target.name)", command, monospaced: true)
+                    CommandCopyRow("Restore \(removal.target.name)", command: command)
                 }
-                copyRow("Status command", status.inspectionCommand, monospaced: true)
+                CommandCopyRow("Status command", command: status.inspectionCommand)
             } else {
                 if let target = status.target {
                     LabeledContent("Hidden display") {
@@ -466,7 +466,7 @@ struct DisplaySettingsView: View {
                 }
                 let command = status.state == .unsupported || status.inspectionFailure != nil
                     ? status.inspectionCommand : status.recoveryCommand ?? status.inspectionCommand
-                copyRow("Recovery command", command, monospaced: true)
+                CommandCopyRow("Recovery command", command: command)
             }
         }
     }
@@ -492,27 +492,6 @@ struct DisplaySettingsView: View {
 
     private func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
-    private func copyRow(_ title: String, _ value: String, monospaced: Bool = false) -> some View {
-        LabeledContent(title) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(value)
-                    .font(monospaced ? .callout.monospaced() : .callout)
-                    .textSelection(.enabled)
-                    // A command that wraps reads left to right.
-                    .multilineTextAlignment(monospaced ? .leading : .trailing)
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(value, forType: .string)
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                }
-                .buttonStyle(.borderless)
-                .help("Copy")
-                .accessibilityLabel("Copy \(title.lowercased())")
-            }
-        }
     }
 
     // MARK: Helpers

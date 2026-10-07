@@ -50,7 +50,7 @@ Settings has three tabs:
 
 | Tab | Contents |
 | --- | --- |
-| **Displays** | Per-display Hide/Show, input switching, copyable scripts |
+| **Displays** | Per-display Hide/Show, input switching, copyable command |
 | **Automations** | **Rules** run when you're idle; **Actions** run when you trigger them |
 | **General** | Launch at login, menu icon, Experimental features |
 
@@ -173,7 +173,7 @@ selected rule’s stable ID while it runs.
 
 ### Scripted Hide and Show
 
-Copy the exact command from **Displays → Scripts**, or use it in a Stream Deck
+Copy the exact command from **Displays → Command**, or use it in a Stream Deck
 button or Shortcuts **Run Shell Script** action:
 
 ```sh

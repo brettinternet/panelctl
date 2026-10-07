@@ -116,6 +116,42 @@ struct SettingsView: View {
     }
 }
 
+/// A command or path the user can read, select and copy, with an optional title.
+struct CommandCopyRow: View {
+    let title: String?
+    let command: String
+    let accessibilityLabel: String
+    @State private var copied = false
+
+    init(_ title: String? = nil, command: String, accessibilityLabel: String? = nil) {
+        self.title = title
+        self.command = command
+        self.accessibilityLabel = accessibilityLabel ?? "Copy \(title?.lowercased() ?? "command")"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let title {
+                Text(title)
+            }
+            HStack(alignment: .top, spacing: 8) {
+                Text(command)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Button(copied ? "Copied" : "Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(command, forType: .string)
+                    copied = true
+                }
+                .accessibilityLabel(accessibilityLabel)
+            }
+        }
+        .onChange(of: command) { _ in copied = false }
+    }
+}
+
 /// A note under a Settings section. Built with an SDK before macOS 26, a plain
 /// footer is right-aligned body text, so it gets the newer left-aligned style
 /// explicitly.
