@@ -131,6 +131,30 @@ final class CLIParserTests: XCTestCase {
         XCTAssertNil(normal.hiddenMirrorSourceUUID, "ordinary CLI blackout has no mirror permission")
     }
 
+    func testRemovalSessionOneShotRequiresBoundedHardwareFreeOverlay() throws {
+        let source = "00000000-0000-0000-0000-000000000003"
+        for authorization in [["--panelctl-hidden-mirror-source", source], ["--panelctl-removal-session-overlay"]] {
+            let base = ["blackout", "--display", source] + authorization + ["--panelctl-run-once"]
+            let arguments = base + ["--timeout", "60"]
+            guard case .blackout(let options) = try CLIParser.parse(arguments) else {
+                return XCTFail("expected blackout")
+            }
+            XCTAssertTrue(options.runOnce)
+            XCTAssertTrue(options.removalSessionOverlay)
+            XCTAssertFalse(options.watch)
+            XCTAssertNil(options.idleAfter)
+            XCTAssertNoThrow(try BlackoutController.validateOptions(options))
+            for extra in [["--dim-to", "0"], ["--sleep-after", "30"], ["--all"],
+                          ["--mode", "working"], ["--blackout-empty-displays"], ["--caffeinate"],
+                          ["--overlay-opacity", "50"], ["--watch", "--idle-after", "10"],
+                          ["--idle-after", "10"], ["--keep-displays-awake"]] {
+                XCTAssertThrowsError(try CLIParser.parse(arguments + extra), extra.joined(separator: " "))
+            }
+            XCTAssertThrowsError(try CLIParser.parse(base))
+            XCTAssertThrowsError(try CLIParser.parse(arguments.filter { $0 != "--panelctl-run-once" }))
+        }
+    }
+
     func testBoundedOverlayCanCombineMirrorSourcesWithOrdinaryUUIDTargets() throws {
         let source = "00000000-0000-0000-0000-000000000003"
         let ordinary = "00000000-0000-0000-0000-000000000001"

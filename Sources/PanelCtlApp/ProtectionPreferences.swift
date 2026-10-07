@@ -210,7 +210,8 @@ struct ProtectionPreferences: Codable, Equatable {
         for sources: [DisplayRecord],
         additionalDisplays: [DisplayRecord] = [],
         hiddenDisplays: [DisplayRecord] = [],
-        otherRuleDisplays: [DisplayRecord] = []
+        otherRuleDisplays: [DisplayRecord] = [],
+        oneShot: Bool = false
     ) throws -> [String]? {
         guard !sources.isEmpty || !additionalDisplays.isEmpty else { return nil }
         let mirrorUUIDs = Set(sources.compactMap(\.uuid).map { $0.lowercased() })
@@ -274,17 +275,21 @@ struct ProtectionPreferences: Codable, Equatable {
             arguments += ["--panelctl-other-rule-display", siblingUUID]
         }
         arguments += [
-            "--mode", "blocking", "--overlay-opacity", "100",
-            "--idle-after", Self.durationArgument(idleSeconds), "--watch",
-            "--timeout", Self.durationArgument(timeout)
+            "--mode", "blocking", "--overlay-opacity", "100"
         ]
+        if oneShot {
+            arguments.append("--panelctl-run-once")
+        } else {
+            arguments += ["--idle-after", Self.durationArgument(idleSeconds), "--watch"]
+        }
+        arguments += ["--timeout", Self.durationArgument(timeout)]
         if mode == .working || keepBlackoutOnInput {
             arguments.append("--keep-blackout-on-input")
         }
-        if !deferBlackoutDuringPlayback {
+        if oneShot || !deferBlackoutDuringPlayback {
             arguments.append("--ignore-playback")
         }
-        if deferBlackoutWhileCameraInUse {
+        if !oneShot && deferBlackoutWhileCameraInUse {
             arguments.append("--defer-camera")
         }
         return arguments

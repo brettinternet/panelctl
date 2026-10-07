@@ -518,13 +518,14 @@ final class AppModel: ObservableObject {
         automationPreferences.rules.reduce(into: Set<UInt32>()) { result, rule in
             let isRunningOneShot = protectionCoordinator.runningOneShotRuleID == rule.id
             guard (rule.isEnabled || isRunningOneShot),
-                  rule.settings.mode == .blocking || hiddenOverlayRuleIDs.contains(rule.id) else { return }
+                  effectiveBlackoutMode(for: rule) == .blocking else { return }
             result.formUnion(protectionCoordinator.blackedOutDisplayIDs(forRule: rule.id))
         }
     }
 
     func effectiveBlackoutMode(for rule: ProtectionRule) -> BlackoutMode {
-        hiddenOverlayRuleIDs.contains(rule.id) ? .blocking : rule.settings.mode
+        protectionCoordinator.oneShotMode(for: rule.id) ??
+            (hiddenOverlayRuleIDs.contains(rule.id) ? .blocking : rule.settings.mode)
     }
 
     var effectiveBlackoutMode: BlackoutMode {
@@ -1309,7 +1310,8 @@ final class AppModel: ObservableObject {
     private func hiddenMirrorArguments(
         for sources: [DisplayRecord],
         settings: ProtectionPreferences,
-        otherRuleDisplays: [DisplayRecord] = []
+        otherRuleDisplays: [DisplayRecord] = [],
+        oneShot: Bool = false
     ) throws -> [String]? {
         try settings.hiddenMirrorOverlayArguments(
             for: sources,
@@ -1317,7 +1319,8 @@ final class AppModel: ObservableObject {
                 !sources.contains(where: { $0.id == display.id })
             },
             hiddenDisplays: activeDisplays.filter { isBlackoutHidden($0.uuid) },
-            otherRuleDisplays: otherRuleDisplays
+            otherRuleDisplays: otherRuleDisplays,
+            oneShot: oneShot
         )
     }
 
@@ -2367,7 +2370,11 @@ final class AppModel: ObservableObject {
         if protectionQuiescencePending {
             return response(.busy, "Automation is stopping for display recovery. Try again when cleanup finishes.", ruleID: ruleID)
         }
-        if handoffStatus?.hasUnresolvedJournal == true || displayRecoveryProblem != nil || protectionPausedForDisplayRecovery {
+        let needsRemovalOverlay = protectionPausedForDisplayRecovery
+        let verifiedSources = verifiedHiddenMirrorSources
+        let canUseRemovalOverlay = needsRemovalOverlay && !verifiedSources.isEmpty &&
+            verifiedSources.count == journalVerifiedHiddenMirrorSources.count
+        if displayRecoveryProblem != nil || (needsRemovalOverlay && !canUseRemovalOverlay) {
             return response(.recoveryNeeded,
                 displayRecoveryProblem ?? "Display recovery is in progress. Resolve it before running an Automation rule.",
                 ruleID: ruleID)
@@ -2384,6 +2391,17 @@ final class AppModel: ObservableObject {
         }
         var candidate = savedRule
         candidate.isEnabled = true
+        if canUseRemovalOverlay {
+            // Validate the safe overlay policy, not the hardware/sleep effects it replaces.
+            candidate.settings.mode = .blocking
+            candidate.settings.hardwareDimmingEnabled = false
+            candidate.settings.workingOverlayOpacityPercent = 100
+            candidate.settings.followUpAction = .restore
+            candidate.settings.followUpSeconds = min(
+                savedRule.settings.followUpAction == .untilActivity ? 86_400 : savedRule.settings.followUpSeconds,
+                86_400
+            )
+        }
         var proposed = automationPreferences
         proposed.rules[ruleIndex] = candidate
         let validation = ProtectionRuleValidator.validate(
@@ -2393,13 +2411,26 @@ final class AppModel: ObservableObject {
         if let reason = validation.blockingReason ?? validation.waitingReason {
             return response(.refused, "Can’t run “\(savedRule.name)” now: \(reason)", ruleID: ruleID)
         }
-        guard let arguments = validation.arguments else {
+        var preparedArguments = validation.arguments
+        if canUseRemovalOverlay {
+            preparedArguments = (try? hiddenMirrorArguments(
+                for: verifiedSources.filter { source in
+                    guard let uuid = source.uuid else { return false }
+                    return ruleTargets(savedRule, uuid: uuid) && !isBlackoutHidden(uuid)
+                },
+                settings: savedRule.settings,
+                otherRuleDisplays: hiddenMirrorSiblingDisplays(for: savedRule),
+                oneShot: true
+            )).map { $0 + ["--panelctl-rule", ruleID.uuidString] }
+        }
+        guard let arguments = preparedArguments else {
             return response(.refused, "Can’t prepare “\(savedRule.name)” from its saved settings.", ruleID: ruleID)
         }
 
         return await withCheckedContinuation { continuation in
             let accepted = protectionCoordinator.runOneShot(
                 id: ruleID, name: savedRule.name, arguments: arguments,
+                mode: candidate.settings.mode,
                 allDisplays: candidate.settings.allDisplays,
                 selectedDisplayUUIDs: candidate.settings.selectedDisplayUUIDs
             ) { installed, message in

@@ -54,7 +54,7 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
         case .persistentDimming:
             return "refusing persistent blackout with --dim-to because DDC restore is not time-bounded"
         case .invalidHiddenMirrorSourceOverlay:
-            return "invalid PanelCtl hidden-mirror overlay options; use matching source UUIDs, an opaque watched overlay, and a finite Restore timeout without hardware dimming, sleep, or display-awake options"
+            return "invalid PanelCtl hidden-mirror overlay options; use matching source UUIDs, an opaque watched or one-shot overlay, and a finite Restore timeout without hardware dimming, sleep, or display-awake options"
         case .invalidHiddenDisplay:
             return "invalid PanelCtl hidden display; use --watch and distinct UUIDs that aren't blackout targets"
         case .invalidOtherRuleDisplay:
@@ -683,7 +683,7 @@ public final class BlackoutController {
         }
     }
 
-    private func runBlackoutCycle(
+    func runBlackoutCycle(
         policy: BlackoutPolicy,
         options: BlackoutOptions,
         baseline: IdleSample,
@@ -732,7 +732,7 @@ public final class BlackoutController {
             if watch, cycleRestoreGeneration != restoreGeneration {
                 return
             }
-            if watch, options.removalSessionOverlay {
+            if options.removalSessionOverlay {
                 try revalidateCoveredHiddenMirrorSource(options: options)
             }
             let sample = try idleSample()
@@ -936,7 +936,7 @@ public final class BlackoutController {
         return (selected, coveredCount >= drawable.count)
     }
 
-    private func beginFullCycle(
+    func beginFullCycle(
         on screens: [NSScreen],
         mode: BlackoutMode,
         overlayOpacityPercent: Int?,
@@ -1744,9 +1744,7 @@ public final class BlackoutController {
                   options.selectors.allSatisfy({ UUID(uuidString: $0) != nil }),
                   Set(options.selectors.map { $0.lowercased() }).count == options.selectors.count,
                   Set(sourceUUIDs).isSubset(of: Set(options.selectors.map { $0.lowercased() })),
-                  options.watch,
-                  let idleAfter = options.idleAfter,
-                  idleAfter.isFinite, idleAfter > 0,
+                  (options.runOnce || (options.watch && options.idleAfter.map { $0.isFinite && $0 > 0 } == true)),
                   let timeout = options.timeout,
                   timeout.isFinite, timeout > 0,
                   options.sleepAfter == nil,

@@ -412,6 +412,62 @@ final class BlackoutPolicyTests: XCTestCase {
         }
     }
 
+    func testRemovalSessionOneShotRevalidatesOnCycleTickWithoutScreenEvents() throws {
+        for state in [DisplayHandoffStatus.State.recovery, .unsupported] {
+            var now: TimeInterval = 100
+            var inspections = 0
+            let controller = BlackoutController(
+                idleSource: StubIdleSource { 100 },
+                uptime: { now += 1; return now },
+                mirrorHandoffStatus: {
+                    inspections += 1
+                    return DisplayHandoffStatus(
+                        state: state, journalPath: "/tmp/fake-removal.json",
+                        inspectionFailure: state == .unsupported ? "unreadable journal" : nil
+                    )
+                }
+            )
+            let options = BlackoutOptions(
+                selectors: ["00000000-0000-0000-0000-000000000003"], all: false,
+                idleAfter: nil, timeout: 10, sleepAfter: nil, caffeinate: false,
+                runOnce: true, keepBlackoutOnInput: true, removalSessionOverlay: true
+            )
+            // Empty fake coverage exercises the actual cycle without creating native windows.
+            try controller.beginFullCycle(
+                on: [], mode: .blocking, overlayOpacityPercent: 100, hardwareBrightnessPercent: nil
+            )
+            XCTAssertThrowsError(try controller.runBlackoutCycle(
+                policy: BlackoutPolicy(idleAfter: nil, timeout: 10, sleepAfter: nil, keepBlackoutOnInput: true),
+                options: options, baseline: controller.idleSample(),
+                resetLimitOnInput: false, watch: false, restoreGeneration: 0
+            )) {
+                guard case BlackoutError.mirrorSourceNotAuthorized = $0 else {
+                    return XCTFail("Expected revoked removal authorization, got \($0)")
+                }
+            }
+            XCTAssertEqual(inspections, 1, "revocation must stop the first tick, without a screen event")
+        }
+    }
+
+    func testRemovalSessionOneShotOptionsEnforceSafetyWithoutParser() throws {
+        func options(timeout: TimeInterval? = 60, sleep: TimeInterval? = nil,
+                     dim: Int? = nil, opacity: Int = 100, watch: Bool = false,
+                     idle: TimeInterval? = nil) -> BlackoutOptions {
+            BlackoutOptions(
+                selectors: ["00000000-0000-0000-0000-000000000003"], all: false,
+                idleAfter: idle, timeout: timeout, sleepAfter: sleep, caffeinate: false,
+                watch: watch, runOnce: true, overlayOpacityPercent: opacity,
+                hardwareBrightnessPercent: dim, removalSessionOverlay: true
+            )
+        }
+        XCTAssertNoThrow(try BlackoutController.validateOptions(options()))
+        for unsafe in [options(timeout: nil), options(timeout: .infinity), options(timeout: 0),
+                       options(sleep: 60), options(dim: 0), options(opacity: 50),
+                       options(watch: true, idle: 10), options(idle: 10)] {
+            XCTAssertThrowsError(try BlackoutController.validateOptions(unsafe))
+        }
+    }
+
     func testLimitActionsAreInclusive() {
         let timeout = BlackoutPolicy(idleAfter: nil, timeout: 10, sleepAfter: nil)
         XCTAssertEqual(timeout.limitAction(elapsed: 9.999), .none)

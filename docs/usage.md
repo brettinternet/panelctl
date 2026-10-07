@@ -151,6 +151,12 @@ reports the outcome and summary; `--json` returns the structured result. A rule,
 Automation or snooze may be disabled; normal automatic scheduling afterward
 still follows those unchanged settings.
 
+While a display is intentionally hidden in a verified removal session, Run now
+uses the same safe overlay policy as timed automation: it skips hidden displays,
+covers only eligible remaining selected displays, and restores the overlay after
+a bounded timeout instead of dimming hardware or sleeping displays. It does not
+Show hidden displays. Unverified or changed recovery state still blocks the run.
+
 This is different from `run-action` (ordered Hide/Show steps) and app `hide`
 (which keeps one display hidden until Show). `hide` and `toggle-hide` use the
 configured Hide style unless `--style black-out` forces a black cover for that

@@ -766,7 +766,7 @@ public enum CLIParser {
                   !all, selectors.allSatisfy({ UUID(uuidString: $0) != nil }),
                   Set(selectors.map { $0.lowercased() }).count == selectors.count,
                   Set(sourceKeys).isSubset(of: Set(selectors.map { $0.lowercased() })),
-                  watch, idleAfter != nil, timeout != nil, sleepAfter == nil,
+                  ((watch && idleAfter != nil) || runOnce), timeout != nil, sleepAfter == nil,
                   !caffeinate, !keepDisplaysAwake, !blackoutEmptyDisplays,
                   mode == .blocking, overlayOpacityPercent == 100,
                   hardwareBrightnessPercent == nil else {

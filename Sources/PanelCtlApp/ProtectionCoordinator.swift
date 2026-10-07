@@ -12,7 +12,7 @@ final class ProtectionCoordinator {
     private var services: [UUID: ProtectionService] = [:]
     private var oneShotRuleIDs: Set<UUID> = []
     private var oneShotRuleNames: [UUID: String] = [:]
-    private var oneShotDisplaySelections: [UUID: (allDisplays: Bool, uuids: Set<String>)] = [:]
+    private var oneShotDisplaySelections: [UUID: (allDisplays: Bool, uuids: Set<String>, mode: BlackoutMode)] = [:]
     private var legacyCleanupService: ProtectionService?
     private var rules: [UUID: ProtectionRule] = [:]
     private var validations: [UUID: ProtectionRuleValidation] = [:]
@@ -84,6 +84,10 @@ final class ProtectionCoordinator {
     var runningOneShotRuleName: String? { runningOneShotRuleID.flatMap { oneShotRuleNames[$0] } }
     var hasRunningOneShot: Bool { !oneShotRuleIDs.isEmpty }
 
+    func oneShotMode(for id: UUID) -> BlackoutMode? {
+        oneShotDisplaySelections[id]?.mode
+    }
+
     func oneShotReadiness(for id: UUID) -> String? {
         if isShuttingDown {
             return "PanelCtl is shutting down; the rule cannot be started."
@@ -135,6 +139,7 @@ final class ProtectionCoordinator {
         id: UUID,
         name: String,
         arguments: [String],
+        mode: BlackoutMode,
         allDisplays: Bool,
         selectedDisplayUUIDs: Set<String>,
         onInstalled: @escaping (Bool, String?) -> Void
@@ -145,7 +150,8 @@ final class ProtectionCoordinator {
         oneShotRuleNames[id] = name
         oneShotDisplaySelections[id] = (
             allDisplays: allDisplays,
-            uuids: Set(selectedDisplayUUIDs.map { $0.lowercased() })
+            uuids: Set(selectedDisplayUUIDs.map { $0.lowercased() }),
+            mode: mode
         )
         pendingDisplayRearmOnLaunch = true
         publishChanges()

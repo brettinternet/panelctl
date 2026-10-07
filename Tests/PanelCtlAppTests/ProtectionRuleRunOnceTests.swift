@@ -10,6 +10,106 @@ final class ProtectionRuleRunOnceTests: XCTestCase {
     private let firstUUID = "00000000-0000-0000-0000-00000000000A"
     private let secondUUID = "00000000-0000-0000-0000-00000000000B"
 
+    func testHiddenDisplayRunOnceUsesSafeOverlayAndResumesTimer() async throws {
+        let cases: [(Bool, FollowUpAction, Bool)] = [
+            (false, .sleepDisplays, false), (true, .sleepDisplays, false),
+            (false, .untilActivity, false), (true, .restore, true)
+        ]
+        for (enabled, followUp, snoozed) in cases {
+            try await withHelper(mode: "hold") { log in
+                var selected = rule(id: UUID(), name: "OLED", displayUUID: firstUUID, enabled: enabled)
+                selected.settings.selectedDisplayUUIDs.insert(secondUUID)
+                selected.settings.followUpAction = followUp
+                selected.settings.hardwareDimmingEnabled = true
+                selected.settings.deferBlackoutWhileCameraInUse = true
+                let preferences = AutomationPreferences(isEnabled: enabled, rules: [selected])
+                let status = hiddenStatus()
+                let (model, defaults, suite, journals) = try makeModel(
+                    preferences: preferences,
+                    snoozeUntil: snoozed ? fixedNow.addingTimeInterval(600) : nil,
+                    inspectHandoff: { status }
+                )
+                defer {
+                    defaults.removePersistentDomain(forName: suite)
+                    try? FileManager.default.removeItem(at: journals)
+                }
+                try await wait { !model.protectionQuiescencePending }
+                if enabled && !snoozed {
+                    try await wait { launchLines(at: log).contains { $0.contains("--watch") } }
+                }
+                let response = await model.runProtectionRule(id: selected.id)
+                XCTAssertEqual(response.outcome, .done, response.summary)
+                let line = try XCTUnwrap(launchLines(at: log).first { $0.contains("--panelctl-run-once") })
+                guard case .blackout(let options) = try CLIParser.parse(line.split(separator: " ").map(String.init)) else {
+                    return XCTFail("Expected blackout command")
+                }
+                XCTAssertNoThrow(try BlackoutController.validateOptions(options))
+                XCTAssertEqual(options.selectors, [firstUUID])
+                XCTAssertEqual(options.hiddenMirrorSourceUUIDs, [firstUUID])
+                XCTAssertEqual(options.ruleID, selected.id)
+                XCTAssertTrue(options.runOnce)
+                XCTAssertFalse(options.watch)
+                XCTAssertNil(options.idleAfter)
+                XCTAssertNil(options.sleepAfter)
+                XCTAssertNil(options.hardwareBrightnessPercent)
+                XCTAssertFalse(options.keepDisplaysAwake)
+                XCTAssertFalse(options.deferPlayback)
+                XCTAssertFalse(options.deferCamera)
+                XCTAssertEqual(options.timeout, followUp == .untilActivity ? 86_400 : 60)
+                XCTAssertEqual(options.mode, .blocking)
+                XCTAssertEqual(options.overlayOpacityPercent, 100)
+                XCTAssertEqual(model.handoffStatus, status)
+                XCTAssertEqual(model.automationPreferences, preferences)
+                XCTAssertTrue(try model.restoreBlackout())
+                try await wait { model.controlRunningRule == nil }
+                if enabled && !snoozed {
+                    try await wait { launchLines(at: log).filter { $0.contains("--watch") }.count == 2 }
+                } else {
+                    XCTAssertFalse(launchLines(at: log).contains { $0.contains("--watch") })
+                }
+                XCTAssertEqual(model.handoffStatus, status, "Restore must not Show hidden displays")
+                await shutdown(model)
+            }
+        }
+    }
+
+    func testHiddenDisplayRunOnceRefusesUnverifiedRecovery() async throws {
+        for status in [hiddenStatus(verified: false), hiddenStatus(state: .recovery), hiddenStatus(sourceID: 99)] {
+            try await withHelper(mode: "hold") { log in
+                let selected = rule(id: UUID(), name: "OLED", displayUUID: firstUUID, enabled: false)
+                let (model, defaults, suite, journals) = try makeModel(
+                    preferences: AutomationPreferences(isEnabled: false, rules: [selected]),
+                    inspectHandoff: { status }
+                )
+                defer {
+                    defaults.removePersistentDomain(forName: suite)
+                    try? FileManager.default.removeItem(at: journals)
+                }
+                try await wait { !model.protectionQuiescencePending }
+                let response = await model.runProtectionRule(id: selected.id)
+                XCTAssertEqual(response.outcome, .recoveryNeeded, response.summary)
+                XCTAssertTrue(launchLines(at: log).isEmpty)
+                XCTAssertEqual(model.handoffStatus, status)
+                await shutdown(model)
+            }
+        }
+    }
+
+    private func hiddenStatus(
+        verified: Bool = true, state: DisplayHandoffStatus.State = .hidden, sourceID: UInt32 = 1
+    ) -> DisplayHandoffStatus {
+        func identity(_ id: UInt32, _ uuid: String) -> DisplayHandoffIdentity {
+            DisplayHandoffIdentity(DisplayHideIdentity(
+                uuid: uuid, displayID: id, name: "Display", vendor: 0, model: 0, serial: 0
+            ))
+        }
+        return DisplayHandoffStatus(
+            state: state, target: identity(2, secondUUID), source: identity(sourceID, firstUUID),
+            journalPath: "/tmp/no-run-rule-recovery.json", journalID: "hidden-fixture",
+            canShow: true, mirrorTopologyVerified: verified
+        )
+    }
+
     func testSettingsCommandKeepsStableIdentityAfterRenameAndReorder() async throws {
         try await withHelper(mode: "hold") { _ in
             let selected = rule(id: UUID(), name: "Original", displayUUID: firstUUID, enabled: false)
@@ -236,51 +336,62 @@ final class ProtectionRuleRunOnceTests: XCTestCase {
     }
 
     func testDisabledPersistentBlockingOneShotKeepsEscapeFocusAndRestores() async throws {
-        try await withHelper(mode: "hold") { log in
-            var disabled = rule(id: UUID(), name: "Disabled blocker", displayUUID: firstUUID, enabled: false)
-            disabled.settings.keepBlackoutOnInput = true
-            let preferences = AutomationPreferences(isEnabled: false, rules: [disabled])
-            let (model, defaults, suite, journals) = try makeModel(preferences: preferences)
-            defer {
-                defaults.removePersistentDomain(forName: suite)
-                try? FileManager.default.removeItem(at: journals)
-            }
+        for (hidden, snoozed) in [(false, false), (true, false), (true, true)] {
+            try await withHelper(mode: "hold") { log in
+                var disabled = rule(id: UUID(), name: "Disabled blocker", displayUUID: firstUUID, enabled: snoozed)
+                disabled.settings.keepBlackoutOnInput = true
+                disabled.settings.mode = hidden ? .working : .blocking
+                let preferences = AutomationPreferences(isEnabled: snoozed, rules: [disabled])
+                let (model, defaults, suite, journals) = try makeModel(
+                    preferences: preferences,
+                    snoozeUntil: snoozed ? fixedNow.addingTimeInterval(600) : nil,
+                    inspectHandoff: hidden ? { self.hiddenStatus() } : nil
+                )
+                try await wait { !model.protectionQuiescencePending }
+                defer {
+                    defaults.removePersistentDomain(forName: suite)
+                    try? FileManager.default.removeItem(at: journals)
+                }
 
-            let response = await model.handleProtectionRuleControlRequest(
-                AppControlRequest(command: .runRule, ruleID: disabled.id)
-            )
-            XCTAssertEqual(response.outcome, .done)
-            try await wait { model.blackedOutDisplayIDs == [1] }
-            let blockingIDs = model.automationBlockingDisplayIDs
-            XCTAssertEqual(blockingIDs, [1], "a running blocking one-shot remains part of focus membership even when saved disabled")
-            XCTAssertTrue(launchLines(at: log).contains { $0.contains("--keep-blackout-on-input") })
+                let response = await model.handleProtectionRuleControlRequest(
+                    AppControlRequest(command: .runRule, ruleID: disabled.id)
+                )
+                XCTAssertEqual(response.outcome, .done)
+                try await wait { model.blackedOutDisplayIDs == [1] }
+                let blockingIDs = model.automationBlockingDisplayIDs
+                XCTAssertEqual(blockingIDs, [1], "effective blocking mode owns focus even when the saved Dim rule is disabled or snoozed")
+                XCTAssertEqual(model.effectiveBlackoutMode(for: disabled), .blocking)
+                XCTAssertTrue(launchLines(at: log).contains { $0.contains("--keep-blackout-on-input") })
 
-            var escape: (() -> Void)?
-            let focus = BlackoutFocusController(operations: BlackoutFocusOperations(
-                currentProcessIdentifier: 7,
-                frontmostApplication: { nil },
-                makeProxyWindow: { callback in
-                    escape = callback
-                    return BlackoutFocusWindow(show: {}, close: {})
-                },
-                requestActivation: {},
-                panelIsActive: { true },
-                mouseLocation: { CGPoint(x: 50, y: 50) },
-                hideCursor: { .success },
-                showCursor: { .success },
-                schedule: { $0() },
-                activationTimeout: 0
-            )) {
-                (try? model.restoreBlackout()) ?? false
+                var escape: (() -> Void)?
+                let focus = BlackoutFocusController(operations: BlackoutFocusOperations(
+                    currentProcessIdentifier: 7,
+                    frontmostApplication: { nil },
+                    makeProxyWindow: { callback in
+                        escape = callback
+                        return BlackoutFocusWindow(show: {}, close: {})
+                    },
+                    requestActivation: {},
+                    panelIsActive: { true },
+                    mouseLocation: { CGPoint(x: 50, y: 50) },
+                    hideCursor: { .success },
+                    showCursor: { .success },
+                    schedule: { $0() },
+                    activationTimeout: 0
+                )) {
+                    (try? model.restoreBlackout()) ?? false
+                }
+                let displayFrame = CGRect(x: 0, y: 0, width: 100, height: 100)
+                focus.enter(targetFrames: blockingIDs.contains(1) ? [displayFrame] : [])
+                XCTAssertTrue(focus.isEngaged, "focus proxy must cover the one-shot's blocking display")
+                escape?()
+                try await wait { model.controlRunningRule == nil }
+                XCTAssertEqual(launchLines(at: log).filter { $0.contains("--panelctl-run-once") }.count, 1)
+                focus.shutdown()
+                XCTAssertEqual(model.effectiveBlackoutMode(for: disabled), disabled.settings.mode)
+                XCTAssertEqual(model.automationPreferences, preferences)
+                await shutdown(model)
             }
-            let displayFrame = CGRect(x: 0, y: 0, width: 100, height: 100)
-            focus.enter(targetFrames: blockingIDs.contains(1) ? [displayFrame] : [])
-            XCTAssertTrue(focus.isEngaged, "focus proxy must cover the one-shot's blocking display")
-            escape?()
-            try await wait { model.controlRunningRule == nil }
-            XCTAssertEqual(launchLines(at: log).filter { $0.contains("--panelctl-run-once") }.count, 1)
-            focus.shutdown()
-            await shutdown(model)
         }
     }
 
@@ -556,7 +667,8 @@ final class ProtectionRuleRunOnceTests: XCTestCase {
         snoozeUntil: Date? = nil,
         nowProvider: (() -> Date)? = nil,
         displayProvider: (() -> [DisplayRecord])? = nil,
-        verifyJournal: ((UUID?) -> Bool)? = nil
+        verifyJournal: ((UUID?) -> Bool)? = nil,
+        inspectHandoff: (() -> DisplayHandoffStatus)? = nil
     ) throws -> (AppModel, UserDefaults, String, URL) {
         let suite = "panelctl-run-rule-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -581,7 +693,8 @@ final class ProtectionRuleRunOnceTests: XCTestCase {
             displayProvider: displayProvider ?? { self.inventory },
             now: nowProvider ?? { self.fixedNow },
             idleSecondsProvider: { nil },
-            inspectHandoff: { DisplayHandoffStatus(state: .none, journalPath: "/tmp/no-run-rule-recovery.json") },
+            isDisplayMirrored: { _ in false },
+            inspectHandoff: inspectHandoff ?? { DisplayHandoffStatus(state: .none, journalPath: "/tmp/no-run-rule-recovery.json") },
             protectionCoordinator: coordinator
         )
         return (model, defaults, suite, journals)
