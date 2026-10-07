@@ -261,6 +261,27 @@ final class CLIParserTests: XCTestCase {
         ])) {
             XCTAssertEqual($0 as? CLIParseError, .duplicateOption("--panelctl-rule"))
         }
+
+        let oneShot = try CLIParser.parse([
+            "blackout", "--display", target,
+            "--panelctl-hidden-display", "00000000-0000-0000-0000-000000000004",
+            "--panelctl-other-rule-display", sibling,
+            "--panelctl-rule", ruleID.uuidString,
+            "--panelctl-run-once", "--blackout-empty-displays", "--timeout", "30"
+        ])
+        guard case .blackout(let oneShotOptions) = oneShot else {
+            return XCTFail("expected one-shot blackout options")
+        }
+        XCTAssertTrue(oneShotOptions.runOnce)
+        XCTAssertFalse(oneShotOptions.watch)
+        XCTAssertNoThrow(try BlackoutController.validateOptions(oneShotOptions))
+        for extra in [["--watch"], ["--idle-after", "10"]] {
+            XCTAssertThrowsError(try CLIParser.parse([
+                "blackout", "--display", target, "--panelctl-run-once"
+            ] + extra)) {
+                XCTAssertEqual($0 as? CLIParseError, .invalidRunOnce)
+            }
+        }
     }
 
     func testBlackoutModeAndChannelDefaults() throws {
@@ -499,6 +520,9 @@ final class CLIParserTests: XCTestCase {
         XCTAssertEqual(CLIHelp.version, "panelctl 0.6.1")
         XCTAssertTrue(CLIHelp.text(for: "app").contains("snooze --for <duration>"))
         XCTAssertTrue(CLIHelp.text(for: "app").contains("toggle-hide --display <UUID>"))
+        XCTAssertTrue(CLIHelp.text(for: "app").contains("run-rule --rule <UUID>"))
+        XCTAssertTrue(CLIHelp.text(for: "app").contains("rules[].id"))
+        XCTAssertTrue(CLIHelp.text(for: "app").contains("runningRule"))
         XCTAssertTrue(CLIHelp.text(for: "app").contains("0 done or no-op"))
         XCTAssertFalse(CLIHelp.text(for: "app").contains("confirmation"), "exit 4 is no longer used")
         XCTAssertTrue(CLIHelp.text(for: "blackout").contains("--watch"))

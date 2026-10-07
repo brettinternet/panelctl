@@ -296,7 +296,8 @@ struct ProtectionPreferences: Codable, Equatable {
         for displays: [DisplayRecord],
         hiddenDisplayUUIDs: Set<String> = [],
         otherRuleDisplayUUIDs: Set<String> = [],
-        ruleID: UUID? = nil
+        ruleID: UUID? = nil,
+        oneShot: Bool = false
     ) throws -> [String] {
         guard Self.isValidDuration(idleSeconds) else {
             throw ProtectionConfigurationError.invalidIdleDuration
@@ -406,7 +407,11 @@ struct ProtectionPreferences: Codable, Equatable {
         } else {
             arguments += ["--overlay-opacity", "100"]
         }
-        arguments += ["--idle-after", Self.durationArgument(idleSeconds), "--watch"]
+        if oneShot {
+            arguments.append("--panelctl-run-once")
+        } else {
+            arguments += ["--idle-after", Self.durationArgument(idleSeconds), "--watch"]
+        }
         if blackoutEmptyDisplays {
             arguments.append("--blackout-empty-displays")
         }
@@ -427,10 +432,10 @@ struct ProtectionPreferences: Codable, Equatable {
         if hardwareDimmingEnabled {
             arguments += ["--dim-to", String(hardwareBrightnessPercent)]
         }
-        if !deferBlackoutDuringPlayback {
+        if oneShot || !deferBlackoutDuringPlayback {
             arguments.append("--ignore-playback")
         }
-        if deferBlackoutWhileCameraInUse {
+        if !oneShot && deferBlackoutWhileCameraInUse {
             arguments.append("--defer-camera")
         }
         return arguments
@@ -759,7 +764,8 @@ enum ProtectionRuleValidator {
         _ rule: ProtectionRule,
         in ruleSet: AutomationPreferences,
         displays: [DisplayRecord],
-        hiddenUUIDs: Set<String> = []
+        hiddenUUIDs: Set<String> = [],
+        oneShot: Bool = false
     ) -> ProtectionRuleValidation {
         guard ruleSet.rules.filter({ $0.id == rule.id }).count == 1 else {
             return .init(
@@ -853,7 +859,8 @@ enum ProtectionRuleValidator {
                 for: displays,
                 hiddenDisplayUUIDs: hiddenUUIDs,
                 otherRuleDisplayUUIDs: siblingUUIDs,
-                ruleID: rule.id
+                ruleID: rule.id,
+                oneShot: oneShot
             )
             return .init(blockingReason: nil, waitingReason: nil, arguments: arguments)
         } catch let error as ProtectionConfigurationError where error.waitsForDisplays {

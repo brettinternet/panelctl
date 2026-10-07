@@ -14,6 +14,7 @@ public struct BlackoutOptions: Equatable {
     public let caffeinate: Bool
     public let keepDisplaysAwake: Bool
     public let watch: Bool
+    public let runOnce: Bool
     public let keepBlackoutOnInput: Bool
     public let blackoutEmptyDisplays: Bool
     public let mode: BlackoutMode
@@ -38,11 +39,11 @@ public struct BlackoutOptions: Equatable {
         mode == .working || keepBlackoutOnInput
     }
 
-    /// Hidden displays need --watch and distinct UUIDs that aren't selected.
+    /// Hidden displays need watcher or one-shot ownership and UUIDs that aren't selected.
     var hiddenDisplaysAreValid: Bool {
         guard !hiddenDisplayUUIDs.isEmpty else { return true }
         let keys = hiddenDisplayUUIDs.map { $0.uppercased() }
-        return watch &&
+        return (watch || runOnce) &&
             keys.allSatisfy { UUID(uuidString: $0) != nil } &&
             Set(keys).count == keys.count &&
             !selectors.contains { keys.contains($0.uppercased()) }
@@ -52,7 +53,7 @@ public struct BlackoutOptions: Equatable {
         guard !otherRuleDisplayUUIDs.isEmpty else { return true }
         let keys = otherRuleDisplayUUIDs.map { $0.uppercased() }
         let hidden = Set(hiddenDisplayUUIDs.map { $0.uppercased() })
-        return watch &&
+        return (watch || runOnce) &&
             keys.allSatisfy { UUID(uuidString: $0) != nil } &&
             Set(keys).count == keys.count &&
             hidden.isDisjoint(with: keys) &&
@@ -68,6 +69,7 @@ public struct BlackoutOptions: Equatable {
         caffeinate: Bool,
         keepDisplaysAwake: Bool = false,
         watch: Bool = false,
+        runOnce: Bool = false,
         blackoutEmptyDisplays: Bool = false,
         keepBlackoutOnInput: Bool = false,
         mode: BlackoutMode = .blocking,
@@ -90,6 +92,7 @@ public struct BlackoutOptions: Equatable {
         self.caffeinate = caffeinate
         self.keepDisplaysAwake = keepDisplaysAwake
         self.watch = watch
+        self.runOnce = runOnce
         self.blackoutEmptyDisplays = blackoutEmptyDisplays
         self.keepBlackoutOnInput = keepBlackoutOnInput
         self.mode = mode
@@ -129,6 +132,7 @@ public enum PanelCommand: Equatable {
         durationSeconds: TimeInterval?,
         targetUUID: String? = nil,
         actionID: UUID? = nil,
+        ruleID: UUID? = nil,
         json: Bool
     )
     case help(command: String?)
@@ -173,6 +177,7 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
     case invalidHiddenDisplay
     case invalidOtherRuleDisplay
     case invalidRuleID
+    case invalidRunOnce
     public var description: String {
         switch self {
         case .missingCommand: return "missing command (use 'panelctl help' for usage)"
@@ -211,6 +216,8 @@ public enum CLIParseError: Error, Equatable, CustomStringConvertible {
             return "--panelctl-other-rule-display requires --watch and a distinct UUID that isn't a --display target or hidden display"
         case .invalidRuleID:
             return "--panelctl-rule requires a rule UUID"
+        case .invalidRunOnce:
+            return "--panelctl-run-once cannot be combined with --watch or --idle-after"
         case .invalidLuminance: return "luminance must be an integer from 0 through 65535"
         case .invalidInputValue(let value):
             return "invalid input value: \(value) (expected dp1, dp2, hdmi1, hdmi2, or 1 through 255; hex with 0x)"
@@ -464,6 +471,7 @@ public enum CLIParser {
         var durationSeconds: TimeInterval?
         var targetUUID: String?
         var actionID: UUID?
+        var ruleID: UUID?
         var i = 1
         while i < args.count {
             switch args[i] {
@@ -492,6 +500,16 @@ public enum CLIParser {
                     throw CLIParseError.missingValue("--action (UUID)")
                 }
                 actionID = parsed
+            case "--rule":
+                guard command == .runRule else {
+                    throw CLIParseError.unknownOption("--rule")
+                }
+                guard ruleID == nil else { throw CLIParseError.duplicateOption("--rule") }
+                i += 1
+                guard i < args.count, let parsed = UUID(uuidString: args[i]) else {
+                    throw CLIParseError.missingValue("--rule (UUID)")
+                }
+                ruleID = parsed
             case "--for":
                 guard command == .snooze else {
                     throw CLIParseError.unknownOption("--for")
@@ -522,11 +540,15 @@ public enum CLIParser {
         if command == .runAction, actionID == nil {
             throw CLIParseError.missingValue("--action")
         }
+        if command == .runRule, ruleID == nil {
+            throw CLIParseError.missingValue("--rule")
+        }
         return .app(
             command: command,
             durationSeconds: durationSeconds,
             targetUUID: targetUUID,
             actionID: actionID,
+            ruleID: ruleID,
             json: json
         )
     }
@@ -540,6 +562,7 @@ public enum CLIParser {
         var caffeinate = false
         var keepDisplaysAwake = false
         var watch = false
+        var runOnce = false
         var blackoutEmptyDisplays = false
         var keepBlackoutOnInput = false
         var mode: BlackoutMode = .blocking
@@ -589,6 +612,9 @@ public enum CLIParser {
             case "--watch":
                 guard !watch else { throw CLIParseError.duplicateOption("--watch") }
                 watch = true
+            case "--panelctl-run-once":
+                guard !runOnce else { throw CLIParseError.duplicateOption("--panelctl-run-once") }
+                runOnce = true
             case "--blackout-empty-displays":
                 guard !blackoutEmptyDisplays else {
                     throw CLIParseError.duplicateOption("--blackout-empty-displays")
@@ -678,8 +704,11 @@ public enum CLIParser {
             }
             i += 1
         }
-        if blackoutEmptyDisplays && !watch {
+        if blackoutEmptyDisplays && !watch && !runOnce {
             throw CLIParseError.emptyDisplayBlackoutRequiresWatch
+        }
+        if runOnce && (watch || idleAfter != nil) {
+            throw CLIParseError.invalidRunOnce
         }
         if noOverlay && overlayOpacitySupplied { throw CLIParseError.conflictingOverlayOptions }
         if mode == .blocking && overlayOpacityPercent != 100 {
@@ -717,6 +746,7 @@ public enum CLIParser {
             caffeinate: caffeinate,
             keepDisplaysAwake: keepDisplaysAwake,
             watch: watch,
+            runOnce: runOnce,
             blackoutEmptyDisplays: blackoutEmptyDisplays,
             keepBlackoutOnInput: keepBlackoutOnInput,
             mode: mode,

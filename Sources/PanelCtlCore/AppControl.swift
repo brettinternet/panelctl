@@ -8,6 +8,7 @@ public enum AppControlCommand: String, Codable, Equatable, Sendable {
     case show
     case toggleHide = "toggle-hide"
     case runAction = "run-action"
+    case runRule = "run-rule"
     case enable
     case disable
     case toggle
@@ -24,9 +25,9 @@ public enum AppControlCommand: String, Codable, Equatable, Sendable {
         self == .hide || self == .show || self == .toggleHide
     }
 
-    /// Manually invoked display operations never launch or resend the app request.
+    /// Manually invoked display operations and one-shot rules never launch or resend the app request.
     public var isManualDisplayCommand: Bool {
-        isDisplayCommand || self == .runAction
+        isDisplayCommand || self == .runAction || self == .runRule
     }
 
     /// A shell command line that runs this display command with the CLI at
@@ -37,6 +38,10 @@ public enum AppControlCommand: String, Codable, Equatable, Sendable {
 
     public func commandLine(executable: String, actionID: UUID) -> String {
         "\(Self.shellSafeExecutable(executable)) app \(rawValue) --action \(actionID.uuidString)"
+    }
+
+    public func commandLine(executable: String, ruleID: UUID) -> String {
+        "\(Self.shellSafeExecutable(executable)) app \(rawValue) --rule \(ruleID.uuidString)"
     }
 
     private static func shellSafeExecutable(_ executable: String) -> String {
@@ -56,12 +61,14 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
     public let durationSeconds: TimeInterval?
     public let targetUUID: String?
     public let actionID: UUID?
+    public let ruleID: UUID?
 
     public init(
         command: AppControlCommand,
         durationSeconds: TimeInterval? = nil,
         targetUUID: String? = nil,
         actionID: UUID? = nil,
+        ruleID: UUID? = nil,
         protocolVersion: Int = AppControlRequest.currentProtocol
     ) {
         self.protocolVersion = protocolVersion
@@ -69,12 +76,13 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
         self.durationSeconds = durationSeconds
         self.targetUUID = targetUUID
         self.actionID = actionID
+        self.ruleID = ruleID
     }
 
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol"
         case command
-        case durationSeconds, targetUUID, actionID
+        case durationSeconds, targetUUID, actionID, ruleID
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -84,6 +92,7 @@ public struct AppControlRequest: Codable, Equatable, Sendable {
         try container.encodeIfPresent(durationSeconds, forKey: .durationSeconds)
         try container.encodeIfPresent(targetUUID, forKey: .targetUUID)
         try container.encodeIfPresent(actionID, forKey: .actionID)
+        try container.encodeIfPresent(ruleID, forKey: .ruleID)
     }
 }
 
@@ -132,6 +141,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
     public let rules: [AppControlRuleStatus]?
     public let steps: [AppControlActionStepResult]?
     public let runningAction: AppControlRunningAction?
+    public let runningRule: AppControlRunningRule?
 
     public var exitCode: Int32 {
         if !running { return 3 }
@@ -155,7 +165,8 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         displays: [AppControlDisplayStatus]? = nil,
         rules: [AppControlRuleStatus]? = nil,
         steps: [AppControlActionStepResult]? = nil,
-        runningAction: AppControlRunningAction? = nil
+        runningAction: AppControlRunningAction? = nil,
+        runningRule: AppControlRunningRule? = nil
     ) {
         self.protocolVersion = protocolVersion
         self.ok = ok
@@ -173,6 +184,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         self.rules = rules
         self.steps = steps
         self.runningAction = runningAction
+        self.runningRule = runningRule
     }
 
     public static func unavailable(_ message: String = "PanelCtl.app is not running") -> Self {
@@ -189,7 +201,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol"
         case ok, running, enabled, state, summary, detail, error
-        case nextAction, secondsRemaining, snoozedUntil, outcome, displays, rules, steps, runningAction
+        case nextAction, secondsRemaining, snoozedUntil, outcome, displays, rules, steps, runningAction, runningRule
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -210,6 +222,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         try container.encodeIfPresent(rules, forKey: .rules)
         try container.encodeIfPresent(steps, forKey: .steps)
         try container.encodeIfPresent(runningAction, forKey: .runningAction)
+        try container.encodeIfPresent(runningRule, forKey: .runningRule)
     }
 }
 
@@ -312,21 +325,22 @@ public struct AppControlClient {
         self.isAppRunning = isAppRunning
     }
 
-    /// Sends one request.  Status and display commands never start the app;
-    /// other mutating commands launch it after an unavailable first attempt
-    /// and retry once after the bounded startup poll.  A toggle or display
-    /// command is never retried after request bytes have reached the socket.
+    /// Sends one request. Status, Hide/Show, Actions and one-shot rules never
+    /// start the app. Other mutating commands may launch it after an unavailable
+    /// first attempt; manual commands are never retried after request bytes land.
     public func execute(
         _ command: AppControlCommand,
         durationSeconds: TimeInterval? = nil,
         targetUUID: String? = nil,
-        actionID: UUID? = nil
+        actionID: UUID? = nil,
+        ruleID: UUID? = nil
     ) throws -> AppControlResponse {
         try execute(
             command,
             durationSeconds: durationSeconds,
             targetUUID: targetUUID,
             actionID: actionID,
+            ruleID: ruleID,
             deadline: Self.defaultDeadline
         )
     }
@@ -336,10 +350,11 @@ public struct AppControlClient {
         durationSeconds: TimeInterval? = nil,
         targetUUID: String? = nil,
         actionID: UUID? = nil,
+        ruleID: UUID? = nil,
         deadline: TimeInterval
     ) throws -> AppControlResponse {
         do {
-            return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID, actionID: actionID)
+            return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID, actionID: actionID, ruleID: ruleID)
         } catch let error as AppControlTransportError {
             if command == .status || command.isManualDisplayCommand {
                 if !error.requestBytesWritten, !isAppRunning() {
@@ -357,7 +372,7 @@ public struct AppControlClient {
                     )
                 }
                 do {
-                    return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID, actionID: actionID)
+                    return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID, actionID: actionID, ruleID: ruleID)
                 } catch {
                     throw AppControlError.transport(error.localizedDescription)
                 }
@@ -371,7 +386,7 @@ public struct AppControlClient {
             }
             _ = waitForSocket(deadline: deadline)
             do {
-                return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID, actionID: actionID)
+                return try send(command, durationSeconds: durationSeconds, targetUUID: targetUUID, actionID: actionID, ruleID: ruleID)
             } catch {
                 throw AppControlError.transport(error.localizedDescription)
             }
@@ -391,13 +406,15 @@ public struct AppControlClient {
         _ command: AppControlCommand,
         durationSeconds: TimeInterval?,
         targetUUID: String?,
-        actionID: UUID?
+        actionID: UUID?,
+        ruleID: UUID?
     ) throws -> AppControlResponse {
         let request = AppControlRequest(
             command: command,
             durationSeconds: durationSeconds,
             targetUUID: targetUUID,
-            actionID: actionID
+            actionID: actionID,
+            ruleID: ruleID
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]

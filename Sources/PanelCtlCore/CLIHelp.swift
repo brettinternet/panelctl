@@ -214,6 +214,7 @@ public enum CLIHelp {
               show --display <UUID>
               toggle-hide --display <UUID>
               run-action --action <UUID>
+              run-rule --rule <UUID>
 
             Control PanelCtl.app; status does not launch the app. --json emits
             the machine-readable response. snooze temporarily pauses automation
@@ -235,6 +236,23 @@ public enum CLIHelp {
             deciding what to do. Do not assume atomic success or retry blindly.
             Actions run only when you choose Run or run their command; startup,
             login, wake, reconnection and Automation never run them.
+            run-rule --rule <UUID> immediately runs exactly one saved Automation
+            rule in the running app, bypassing its idle wait. It runs one cycle
+            with that rule’s selection, dimming/blackout, input behavior and
+            configured Restore or Sleep follow-up, then ends without re-arming.
+            As a manual run, playback and camera automatic deferrals do not delay it.
+            It works while that rule, Automation or Automation’s snooze is off
+            and never changes saved settings. Find UUIDs with `app status --json`
+            in `rules[].id`. Missing or malformed UUIDs are usage errors; a running
+            selected rule or competing display operation returns busy. An unknown
+            UUID or overlapping rule is refused; Full disconnect and unresolved
+            recovery need recovery before the run can proceed.
+            It never launches the app, queues or retries. A lost response does
+            not cancel the run; check `app status --json` before deciding what
+            to do. This is different from `run-action`, which executes ordered
+            display Hide/Show steps, and from app Hide, which keeps a display
+            hidden until Show.
+            Status includes `runningRule` with the stable UUID while it runs.
             Exit codes: 0 done or no-op, 1 refused, busy, failed or control
             failure, 2 usage, 3 app unavailable, 5 partial input outcome,
             6 recovery needed. Status includes each display and its input outcome.

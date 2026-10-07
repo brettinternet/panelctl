@@ -114,7 +114,13 @@ final class ProtectionService {
 
     private var process: Process?
     private var currentArguments: [String]?
+    private var currentRunIsOneShot = false
     private var pendingArguments: [String]?
+    private var pendingRunIsOneShot = false
+    private var oneShotLifecycleActive = false
+    private var oneShotInstallationReported = false
+    private var oneShotInstalledCompletion: ((Bool, String?) -> Void)?
+    private var oneShotFinishedCompletion: ((Bool, String?) -> Void)?
     private var pendingControlIntent: ControlIntent?
     private var pendingControlSourceProcess: Process?
     private var pendingDisplayRearm = false
@@ -157,6 +163,21 @@ final class ProtectionService {
         process != nil
     }
 
+    var isRunningOneShot: Bool { oneShotLifecycleActive }
+
+    var hasActiveEffect: Bool {
+        state == .starting || state == .blackedOut || state == .sleeping || state == .stopping ||
+            !blackedOutDisplayIDs.isEmpty
+    }
+
+    var canStartOneShot: Bool {
+        guard !oneShotLifecycleActive, cleanupRetryCompletion == nil, shutdownCompletion == nil,
+              unresolvedCleanupFailure == nil else { return false }
+        guard let process else { return true }
+        return process.isRunning && pendingArguments == nil && stateAfterTermination == nil &&
+            ![.starting, .stopping, .blackedOut, .sleeping].contains(state) && blackedOutDisplayIDs.isEmpty
+    }
+
     var canReceiveControl: Bool {
         pendingArguments != nil || (
             process?.isRunning == true &&
@@ -166,7 +187,7 @@ final class ProtectionService {
     }
 
     func run(arguments: [String], restartForDisplayChange: Bool = false) {
-        guard cleanupRetryCompletion == nil, shutdownCompletion == nil else { return }
+        guard cleanupRetryCompletion == nil, shutdownCompletion == nil, !oneShotLifecycleActive else { return }
         if restartForDisplayChange {
             pendingDisplayRearm = true
         }
@@ -199,6 +220,41 @@ final class ProtectionService {
     func disable() {
         guard cleanupRetryCompletion == nil else { return }
         stop(then: .disabled)
+    }
+
+    @discardableResult
+    func runOneShot(
+        arguments: [String],
+        onInstalled: @escaping (Bool, String?) -> Void,
+        onFinished: @escaping (Bool, String?) -> Void
+    ) -> Bool {
+        guard canStartOneShot else { return false }
+        oneShotLifecycleActive = true
+        oneShotInstallationReported = false
+        oneShotInstalledCompletion = onInstalled
+        oneShotFinishedCompletion = onFinished
+        if let process {
+            blackedOutDisplayIDs = []
+            pendingArguments = arguments
+            pendingRunIsOneShot = true
+            pendingControlIntent = nil
+            pendingControlSourceProcess = nil
+            inFlightControlIntent = nil
+            stateAfterTermination = nil
+            state = .stopping
+            requestTermination(of: process)
+        } else {
+            blackedOutDisplayIDs = []
+            _ = launch(arguments: arguments, oneShot: true)
+        }
+        return true
+    }
+
+    @discardableResult
+    func stopOneShot() -> Bool {
+        guard oneShotLifecycleActive else { return false }
+        stop(then: .disabled)
+        return true
     }
 
     func retryCleanup(completion: @escaping (Bool, String?) -> Void) {
@@ -288,6 +344,7 @@ final class ProtectionService {
         shutdownStartedAt = ProcessInfo.processInfo.systemUptime
         shutdownLogger.info("Blackout helper shutdown requested")
         pendingArguments = nil
+        pendingRunIsOneShot = false
         pendingControlIntent = nil
         pendingControlSourceProcess = nil
         pendingDisplayRearm = false
@@ -314,6 +371,7 @@ final class ProtectionService {
             stopCompletions.append(completion)
         }
         pendingArguments = nil
+        pendingRunIsOneShot = false
         pendingControlIntent = nil
         pendingControlSourceProcess = nil
         pendingDisplayRearm = false
@@ -330,6 +388,9 @@ final class ProtectionService {
                 state = finalState
                 finishStopCompletions(succeeded: true)
             }
+            if oneShotLifecycleActive {
+                finishOneShot(succeeded: unresolvedCleanupFailure == nil, message: unresolvedCleanupFailure)
+            }
             return
         }
         state = .stopping
@@ -342,8 +403,10 @@ final class ProtectionService {
         completions.forEach { $0(succeeded, message) }
     }
 
-    private func launch(arguments: [String], cleanupOnly: Bool = false) {
+    @discardableResult
+    private func launch(arguments: [String], cleanupOnly: Bool = false, oneShot: Bool = false) -> Bool {
         self.cleanupOnly = cleanupOnly
+        currentRunIsOneShot = oneShot
         let statusPipe = Pipe()
         let errorPipe = Pipe()
         let lifetimePipe = Pipe()
@@ -418,7 +481,9 @@ final class ProtectionService {
 
             self.process = process
             currentArguments = arguments
+            currentRunIsOneShot = oneShot
             pendingArguments = nil
+            pendingRunIsOneShot = false
             stateAfterTermination = nil
             state = .starting
             try process.run()
@@ -432,6 +497,7 @@ final class ProtectionService {
                 forceTerminationWorkItem = timeout
                 DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: timeout)
             }
+            return true
         } catch {
             statusPipe.fileHandleForReading.readabilityHandler = nil
             errorPipe.fileHandleForReading.readabilityHandler = nil
@@ -439,12 +505,36 @@ final class ProtectionService {
             lifetimePipe.fileHandleForWriting.closeFile()
             process = nil
             currentArguments = nil
+            currentRunIsOneShot = false
             let message = "Could not start the helper: \(error.localizedDescription)"
             state = .failed(message)
             if cleanupOnly {
                 finishCleanupRetry(succeeded: false, message: message)
             }
+            if oneShot { finishOneShot(succeeded: false, message: message) }
+            return false
         }
+    }
+
+    private func reportOneShotInstalled(_ succeeded: Bool, message: String? = nil) {
+        guard oneShotLifecycleActive, !oneShotInstallationReported else { return }
+        oneShotInstallationReported = true
+        let completion = oneShotInstalledCompletion
+        oneShotInstalledCompletion = nil
+        completion?(succeeded, message)
+    }
+
+    private func finishOneShot(succeeded: Bool, message: String? = nil) {
+        guard oneShotLifecycleActive else { return }
+        if !oneShotInstallationReported {
+            reportOneShotInstalled(false, message: message ?? "The one-shot rule ended before its effect was installed.")
+        }
+        oneShotLifecycleActive = false
+        oneShotInstallationReported = false
+        oneShotInstalledCompletion = nil
+        let completion = oneShotFinishedCompletion
+        oneShotFinishedCompletion = nil
+        completion?(succeeded, message)
     }
 
     private func consumeStatus(_ data: Data, from sourceProcess: Process) {
@@ -476,6 +566,9 @@ final class ProtectionService {
             }
             blackedOutDisplayIDs = Set(status.blackedOutDisplayIDs)
             updateControlIntent(for: status)
+            if currentRunIsOneShot && (runtimeState == .blackedOut || runtimeState == .sleeping) {
+                reportOneShotInstalled(true)
+            }
             switch runtimeState {
             case .waiting: self.state = .waiting
             case .waitingForInput: self.state = .waitingForInput
@@ -593,6 +686,8 @@ final class ProtectionService {
     private func processDidTerminate(_ finished: Process) {
         guard process === finished else { return }
         let terminatedArguments = currentArguments
+        let terminatedWasOneShot = currentRunIsOneShot
+        currentRunIsOneShot = false
         forceTerminationWorkItem?.cancel()
         forceTerminationWorkItem = nil
         lifetimeWriteHandle?.closeFile()
@@ -627,13 +722,45 @@ final class ProtectionService {
         }
 
         if let pendingArguments {
+            let pendingIsOneShot = pendingRunIsOneShot
             self.pendingArguments = nil
+            pendingRunIsOneShot = false
             pendingControlSourceProcess = nil
             if let unresolvedCleanupFailure {
                 state = .failed(unresolvedCleanupFailure)
+                if pendingIsOneShot { finishOneShot(succeeded: false, message: unresolvedCleanupFailure) }
                 return
             }
-            launch(arguments: pendingArguments)
+            _ = launch(arguments: pendingArguments, oneShot: pendingIsOneShot)
+            return
+        }
+        if terminatedWasOneShot {
+            let intentionalStop = stateAfterTermination != nil
+            let finalState = stateAfterTermination ?? .disabled
+            stateAfterTermination = nil
+            pendingControlIntent = nil
+            pendingControlSourceProcess = nil
+            inFlightControlIntent = nil
+            let exitWasClean = finished.terminationReason == .exit && finished.terminationStatus == 0
+            let cleanupVerified = cleanupResultObserved == true && cleanupIsVerified() && unresolvedCleanupFailure == nil
+            let succeeded = cleanupVerified && (intentionalStop || exitWasClean)
+            let errorText = String(data: errorBuffer, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let failure = succeeded ? nil : unresolvedCleanupFailure ??
+                (errorText?.isEmpty == false ? errorText : nil) ??
+                "The one-shot helper exited before cleanup was verified."
+            errorBuffer.removeAll(keepingCapacity: true)
+            if let failure {
+                state = .failed(failure)
+            } else {
+                state = finalState
+            }
+            finishStopCompletions(succeeded: succeeded, message: failure)
+            finishOneShot(succeeded: succeeded, message: failure)
+            let completion = shutdownCompletion
+            shutdownCompletion = nil
+            shutdownStartedAt = nil
+            completion?()
             return
         }
         if let finalState = stateAfterTermination {
@@ -650,6 +777,9 @@ final class ProtectionService {
             } else {
                 state = finalState
                 finishStopCompletions(succeeded: true)
+            }
+            if oneShotLifecycleActive {
+                finishOneShot(succeeded: stopFailure == nil, message: stopFailure)
             }
             let completion = shutdownCompletion
             shutdownCompletion = nil

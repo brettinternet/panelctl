@@ -15,6 +15,10 @@ final class AppControlTests: XCTestCase {
             #"{"actionID":"80B92489-591F-45A5-8B5C-1B9D203020A4","command":"run-action","protocol":1}"#
         )
         XCTAssertEqual(
+            String(data: try encoder.encode(AppControlRequest(command: .runRule, ruleID: actionID)), encoding: .utf8),
+            #"{"command":"run-rule","protocol":1,"ruleID":"80B92489-591F-45A5-8B5C-1B9D203020A4"}"#
+        )
+        XCTAssertEqual(
             String(data: try encoder.encode(AppControlRequest(command: .blackoutNow)), encoding: .utf8),
             #"{"command":"blackout-now","protocol":1}"#
         )
@@ -156,13 +160,26 @@ final class AppControlTests: XCTestCase {
         }
         XCTAssertFalse(AppControlCommand.toggle.isDisplayCommand)
         XCTAssertTrue(AppControlCommand.runAction.isManualDisplayCommand)
+        XCTAssertTrue(AppControlCommand.runRule.isManualDisplayCommand)
         XCTAssertFalse(AppControlCommand.runAction.isDisplayCommand)
+        XCTAssertFalse(AppControlCommand.runRule.isDisplayCommand)
         let actionID = UUID(uuidString: "80B92489-591F-45A5-8B5C-1B9D203020A4")!
         XCTAssertEqual(
             try CLIParser.parse(["app", "run-action", "--action", actionID.uuidString, "--json"]),
             .app(command: .runAction, durationSeconds: nil, actionID: actionID, json: true)
         )
+        let ruleID = UUID(uuidString: "C4D9E188-2D26-4EE5-A492-A7E122E854D7")!
+        XCTAssertEqual(
+            try CLIParser.parse(["app", "run-rule", "--rule", ruleID.uuidString, "--json"]),
+            .app(command: .runRule, durationSeconds: nil, ruleID: ruleID, json: true)
+        )
         for invalid in [
+            ["app", "run-rule"],
+            ["app", "run-rule", "--rule", "not-a-uuid"],
+            ["app", "run-rule", "--rule", ruleID.uuidString, "--rule", ruleID.uuidString],
+            ["app", "run-rule", "--rule", ruleID.uuidString, "--display", uuid],
+            ["app", "status", "--rule", ruleID.uuidString],
+            ["app", "run-action", "--rule", ruleID.uuidString],
             ["app", "run-action"],
             ["app", "run-action", "--action", "not-a-uuid"],
             ["app", "run-action", "--action", actionID.uuidString, "--action", actionID.uuidString],
@@ -222,6 +239,48 @@ final class AppControlTests: XCTestCase {
             isAppRunning: { false }
         )
         XCTAssertEqual(try client.execute(.runAction, actionID: actionID).exitCode, 3)
+    }
+
+    func testRunRuleCommandLineIsShellSafeAndNeverLaunchesTheApp() throws {
+        let ruleID = UUID(uuidString: "C4D9E188-2D26-4EE5-A492-A7E122E854D7")!
+        let bundled = "/Applications/PanelCtl.app/Contents/Helpers/panelctl"
+        let command = AppControlCommand.runRule.commandLine(executable: bundled, ruleID: ruleID)
+        XCTAssertEqual(command, "\(bundled) app run-rule --rule \(ruleID.uuidString)")
+        XCTAssertEqual(
+            AppControlCommand.runRule.commandLine(
+                executable: "/Users/me/My Apps/Bob's/PanelCtl.app/Contents/Helpers/panelctl",
+                ruleID: ruleID
+            ),
+            "'/Users/me/My Apps/Bob'\\''s/PanelCtl.app/Contents/Helpers/panelctl' app run-rule --rule \(ruleID.uuidString)"
+        )
+        let words = command.split(separator: " ").map(String.init)
+        XCTAssertEqual(
+            try CLIParser.parse(Array(words.dropFirst())),
+            .app(command: .runRule, durationSeconds: nil, ruleID: ruleID, json: false)
+        )
+        let client = try AppControlClient(
+            socketPath: "/private/tmp/panelctl-no-rule-app-\(UUID().uuidString)",
+            launch: { XCTFail("run-rule must never launch PanelCtl.app") },
+            isAppRunning: { false }
+        )
+        XCTAssertEqual(try client.execute(.runRule, ruleID: ruleID).exitCode, 3)
+    }
+
+    func testRunningRuleStatusRoundTripsAndOldStatusRemainsCompatible() throws {
+        let run = AppControlRunningRule(
+            id: UUID(uuidString: "C4D9E188-2D26-4EE5-A492-A7E122E854D7")!,
+            name: "Desk dimming"
+        )
+        let response = AppControlResponse(
+            ok: true, running: true, enabled: false, state: "disabled",
+            summary: "Automation off", runningRule: run
+        )
+        XCTAssertEqual(try JSONDecoder().decode(AppControlResponse.self, from: JSONEncoder().encode(response)), response)
+        let old = try JSONDecoder().decode(
+            AppControlResponse.self,
+            from: Data(#"{"protocol":1,"ok":true,"running":true,"enabled":false,"state":"disabled","summary":"Automation off"}"#.utf8)
+        )
+        XCTAssertNil(old.runningRule)
     }
 
     func testEightStepActionReplyFitsTheControlMessageBudget() throws {

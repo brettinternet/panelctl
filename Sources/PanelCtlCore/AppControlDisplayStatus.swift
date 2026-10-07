@@ -58,6 +58,17 @@ public struct AppControlRunningAction: Codable, Equatable, Sendable {
     }
 }
 
+/// Session-only progress for an explicitly running one-shot Automation rule.
+public struct AppControlRunningRule: Codable, Equatable, Sendable {
+    public let id: UUID
+    public let name: String
+
+    public init(id: UUID, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
 /// One ordered step's honest desktop and input result; these are not an atomic transaction.
 public struct AppControlActionStepResult: Codable, Equatable, Sendable {
     public let index: Int

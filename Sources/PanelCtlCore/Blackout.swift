@@ -29,6 +29,7 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
     case invalidHiddenMirrorSourceOverlay
     case invalidHiddenDisplay
     case invalidOtherRuleDisplay
+    case invalidRunOnce
     case mirrorSourceNotAuthorized(String, String)
     public var description: String {
         switch self {
@@ -57,7 +58,9 @@ public enum BlackoutError: Error, Equatable, CustomStringConvertible {
         case .invalidHiddenDisplay:
             return "invalid PanelCtl hidden display; use --watch and distinct UUIDs that aren't blackout targets"
         case .invalidOtherRuleDisplay:
-            return "invalid PanelCtl sibling-rule display; use --watch and distinct UUIDs outside this rule and hidden displays"
+            return "invalid PanelCtl sibling-rule display; use --watch or --panelctl-run-once and distinct UUIDs outside this rule and hidden displays"
+        case .invalidRunOnce:
+            return "--panelctl-run-once cannot be combined with --watch or --idle-after"
         case .mirrorSourceNotAuthorized(let selector, let reason):
             return "refusing mirrored display target \(selector): \(reason)"
     }
@@ -424,6 +427,7 @@ public final class BlackoutController {
     private var intentionalDisplaySleep = false
     private var displayWakeObserved = false
     private var watchMode = false
+    private var runOnceMode = false
     private var watchState = BlackoutWatchState()
     private var fullCycleActive = false
     private var runtimeState: BlackoutRuntimeState = .waiting
@@ -519,6 +523,7 @@ public final class BlackoutController {
     public func run(options: BlackoutOptions) throws {
         try Self.validateOptions(options)
         watchMode = options.watch
+        runOnceMode = options.runOnce
         keepDisplaysAwake = options.keepDisplaysAwake
         blackoutEmptyDisplays = options.blackoutEmptyDisplays
         let app = NSApplication.shared
@@ -628,7 +633,8 @@ public final class BlackoutController {
     }
 
     public func handleControl(_ command: BlackoutControlCommand) {
-        guard watchMode, !stopRequested else { return }
+        guard !stopRequested,
+              watchMode || (runOnceMode && command == .restore) else { return }
         let displaysAreAsleep =
             watchState.suspensions.contains(.screensAsleep) ||
             Self.currentDisplaysAreAsleep()
@@ -1711,6 +1717,9 @@ public final class BlackoutController {
     }
 
     static func validateOptions(_ options: BlackoutOptions) throws {
+        if options.runOnce && (options.watch || options.idleAfter != nil) {
+            throw BlackoutError.invalidRunOnce
+        }
         if let opacity = options.overlayOpacityPercent,
            !(1...100).contains(opacity) {
             throw BlackoutError.invalidOverlayOpacity

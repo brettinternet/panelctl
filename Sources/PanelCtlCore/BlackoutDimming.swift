@@ -140,14 +140,18 @@ final class BlackoutDimming {
     ) {
         guard lockFD != nil, (0...100).contains(targetPercent) else { return }
         let currentRecords = records()
-        var targetIDs = targets.map(\.id)
-        if targetIDs.isEmpty {
+        let selectedIDs = Set(screenIDs)
+        let selectedTargets = screenIDs.isEmpty
+            ? targets
+            : targets.filter { selectedIDs.contains($0.id) }
+        var targetIDs = selectedTargets.map(\.id)
+        if targets.isEmpty {
             targetIDs = screenIDs
         }
         let generatedTargets = targetIDs
-            .filter { id in !targets.contains(where: { $0.id == id }) }
+            .filter { id in !selectedTargets.contains(where: { $0.id == id }) }
             .map { id in BlackoutScreenTarget(id: id, uuid: nil, selector: "\(id)") }
-        for target in targets + generatedTargets {
+        for target in selectedTargets + generatedTargets {
             guard let record = currentRecords.first(where: {
                 if let targetUUID = target.uuid {
                     return $0.uuid?.caseInsensitiveCompare(targetUUID) == .orderedSame

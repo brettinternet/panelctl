@@ -10,6 +10,9 @@ final class ProtectionCoordinator {
     private let initialService: ProtectionService?
     private var initialServiceAvailable: Bool
     private var services: [UUID: ProtectionService] = [:]
+    private var oneShotRuleIDs: Set<UUID> = []
+    private var oneShotRuleNames: [UUID: String] = [:]
+    private var oneShotDisplaySelections: [UUID: (allDisplays: Bool, uuids: Set<String>)] = [:]
     private var legacyCleanupService: ProtectionService?
     private var rules: [UUID: ProtectionRule] = [:]
     private var validations: [UUID: ProtectionRuleValidation] = [:]
@@ -29,6 +32,7 @@ final class ProtectionCoordinator {
 
     var onStateChange: (() -> Void)?
     var onMembershipChange: ((Set<UInt32>) -> Void)?
+    var onOneShotFinished: ((UUID) -> Void)?
 
     init(
         initialCleanupFailure: String? = nil,
@@ -77,6 +81,113 @@ final class ProtectionCoordinator {
     }
 
     var ruleIDs: [UUID] { rules.keys.sorted { $0.uuidString < $1.uuidString } }
+    var runningOneShotRuleID: UUID? { oneShotRuleIDs.first }
+    var runningOneShotRuleName: String? { runningOneShotRuleID.flatMap { oneShotRuleNames[$0] } }
+    var hasRunningOneShot: Bool { !oneShotRuleIDs.isEmpty }
+
+    func oneShotReadiness(for id: UUID) -> String? {
+        if isShuttingDown {
+            return "PanelCtl is shutting down; the rule cannot be started."
+        }
+        if retryInProgress || reconciliationInProgress || pendingBlackoutNow {
+            return "Automation is starting, stopping or awaiting a display operation. Try again when it settles."
+        }
+        if oneShotRuleIDs.contains(id) {
+            return "This Automation rule is already running once. Try again when it finishes."
+        }
+        if hasRunningOneShot {
+            return "Another one-shot Automation rule is running. Try again when it finishes."
+        }
+        if let service = services[id], !service.canStartOneShot {
+            if service.hasActiveEffect {
+                return "This rule is already active. Restore it and wait for it to finish before running it once."
+            }
+            return "This rule is starting, stopping or needs cleanup. Try again after it settles."
+        }
+        if let selectedRule = rules[id] {
+            for (otherID, service) in services where otherID != id && service.hasActiveEffect {
+                guard let otherRule = rules[otherID], Self.rulesOverlap(selectedRule, otherRule) else { continue }
+                return "Another Automation rule is active on this rule’s selected displays. Restore it and wait for it to finish."
+            }
+        }
+        return nil
+    }
+
+    private static func rulesOverlap(_ lhs: ProtectionRule, _ rhs: ProtectionRule) -> Bool {
+        if lhs.settings.allDisplays || rhs.settings.allDisplays { return true }
+        let left = Set(lhs.settings.selectedDisplayUUIDs.map { $0.lowercased() })
+        return rhs.settings.selectedDisplayUUIDs.contains { left.contains($0.lowercased()) }
+    }
+
+    private func canScheduleRule(_ id: UUID) -> Bool {
+        guard !oneShotRuleIDs.contains(id), unresolvedCleanupFailure == nil, runtimeJournalsAreVerified,
+              let rule = rules[id] else { return false }
+        for (activeID, selection) in oneShotDisplaySelections where activeID != id {
+            if selection.allDisplays || rule.settings.allDisplays ||
+                rule.settings.selectedDisplayUUIDs.contains(where: { selection.uuids.contains($0.lowercased()) }) {
+                return false
+            }
+        }
+        return true
+    }
+
+    @discardableResult
+    func runOneShot(
+        id: UUID,
+        name: String,
+        arguments: [String],
+        allDisplays: Bool,
+        selectedDisplayUUIDs: Set<String>,
+        onInstalled: @escaping (Bool, String?) -> Void
+    ) -> Bool {
+        guard oneShotReadiness(for: id) == nil else { return false }
+        let service = service(for: id)
+        oneShotRuleIDs.insert(id)
+        oneShotRuleNames[id] = name
+        oneShotDisplaySelections[id] = (
+            allDisplays: allDisplays,
+            uuids: Set(selectedDisplayUUIDs.map { $0.lowercased() })
+        )
+        pendingDisplayRearmOnLaunch = true
+        publishChanges()
+        let accepted = service.runOneShot(
+            arguments: arguments,
+            onInstalled: onInstalled
+        ) { [weak self] _, _ in
+            guard let self else { return }
+            self.oneShotRuleIDs.remove(id)
+            self.oneShotRuleNames.removeValue(forKey: id)
+            self.oneShotDisplaySelections.removeValue(forKey: id)
+            self.publishChanges()
+            self.onOneShotFinished?(id)
+        }
+        if !accepted {
+            oneShotRuleIDs.remove(id)
+            oneShotRuleNames.removeValue(forKey: id)
+            oneShotDisplaySelections.removeValue(forKey: id)
+            publishChanges()
+        }
+        return accepted
+    }
+
+    @discardableResult
+    func stopOneShotsForRestore() -> Bool {
+        var stopped = false
+        for id in Array(oneShotRuleIDs) {
+            stopped = services[id]?.stopOneShot() == true || stopped
+        }
+        return stopped
+    }
+
+    func resumeAutomaticRulesAfterOneShot() {
+        guard !isShuttingDown, unresolvedCleanupFailure == nil, runtimeJournalsAreVerified else { return }
+        for (id, arguments) in desiredArguments where canScheduleRule(id) {
+            let service = service(for: id)
+            guard !service.hasManagedProcess else { continue }
+            service.run(arguments: arguments, restartForDisplayChange: true)
+        }
+        pendingDisplayRearmOnLaunch = false
+    }
 
     func runtimeState(for id: UUID, automationEnabled: Bool, snoozedUntil: Date?) -> ProtectionRuntimeState {
         guard let rule = rules[id] else { return .disabled }
@@ -105,11 +216,12 @@ final class ProtectionCoordinator {
             _ = service(for: firstRuleID)
         }
         self.validations = validations
+        desiredArguments = arguments
+        let scheduledArguments = arguments.filter { canScheduleRule($0.key) }
         let signature = Self.signature(for: arguments)
         let changed = forceRestart || signature != desiredSignature
-        desiredArguments = arguments
         desiredSignature = signature
-        if !ruleSet.isEnabled || arguments.isEmpty { pendingBlackoutNow = false }
+        if !ruleSet.isEnabled || scheduledArguments.isEmpty { pendingBlackoutNow = false }
         guard changed else {
             publishChanges()
             return
@@ -117,7 +229,7 @@ final class ProtectionCoordinator {
         reconciliationGeneration &+= 1
         let generation = reconciliationGeneration
         reconciliationInProgress = true
-        let current = Array(services.values)
+        let current = services.filter { !oneShotRuleIDs.contains($0.key) }.map(\.value)
         if !current.isEmpty || forceRestart {
             pendingDisplayRearmOnLaunch = true
         }
@@ -284,7 +396,7 @@ final class ProtectionCoordinator {
     private func finishReconciliation(generation: UInt64, succeeded: Bool, message: String?) {
         guard generation == reconciliationGeneration, !isShuttingDown else { return }
         reconciliationInProgress = false
-        guard succeeded, unresolvedCleanupFailure == nil, allJournalsAreVerified else {
+        guard succeeded, unresolvedCleanupFailure == nil, runtimeJournalsAreVerified else {
             pendingBlackoutNow = false
             if storedCleanupFailure == nil {
                 storedCleanupFailure = message ?? Self.unknownCleanup
@@ -295,10 +407,10 @@ final class ProtectionCoordinator {
         }
         removeVerifiedDeletedDirectories()
         let knownRuleIDs = Set(rules.keys)
-        for id in Array(services.keys) where !knownRuleIDs.contains(id) {
+        for id in Array(services.keys) where !oneShotRuleIDs.contains(id) && !knownRuleIDs.contains(id) {
             services.removeValue(forKey: id)?.disable()
         }
-        for (id, arguments) in desiredArguments {
+        for (id, arguments) in desiredArguments where canScheduleRule(id) {
             service(for: id).run(
                 arguments: arguments,
                 restartForDisplayChange: pendingDisplayRearmOnLaunch
@@ -313,7 +425,7 @@ final class ProtectionCoordinator {
         guard pendingBlackoutNow else { return }
         pendingBlackoutNow = false
         var firstError: Error?
-        for (id, arguments) in desiredArguments {
+        for (id, arguments) in desiredArguments where canScheduleRule(id) {
             let service = service(for: id)
             service.run(
                 arguments: arguments,

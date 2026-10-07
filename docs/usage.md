@@ -81,14 +81,35 @@ panelctl app resume
 panelctl app open-settings
 panelctl app hide | show | toggle-hide --display UUID [--json]
 panelctl app run-action --action UUID [--json]
+panelctl app run-rule --rule UUID [--json]
 ```
 
 Without a standalone install, use
 `/Applications/PanelCtl.app/Contents/Helpers/panelctl`.
 
-`status`, `hide`, `show`, `toggle-hide` and `run-action` need the app running;
-the rest launch it in the background. `restore` ends automation blackouts only;
-it never shows a hidden display.
+`status`, `hide`, `show`, `toggle-hide`, `run-action` and `run-rule` need the app
+running; the rest launch it in the background. `restore` ends automation blackouts
+only; it never shows a hidden display.
+
+`panelctl app run-rule --rule UUID` runs exactly one saved Automation rule once,
+immediately bypassing its idle wait. Find stable IDs with `panelctl app status --json`
+in `rules[].id`. The run applies that rule’s display selection, blackout or dimming,
+input behavior, duration, and configured Restore or Sleep follow-up. As a manual
+run, playback and camera automatic deferrals do not delay it. It returns when the
+effect is installed or refused, not when the run later restores, and does not
+change the rule, master Automation switch, snooze expiry or saved preferences. Text
+reports the outcome and summary; `--json` returns the structured result. A rule,
+Automation or snooze may be disabled; normal automatic scheduling afterward
+still follows those unchanged settings.
+
+This is different from `run-action` (ordered Hide/Show steps) and app `hide`
+(which keeps one display hidden until Show). An active selected rule or competing
+display operation returns `busy`; overlapping rules are refused, and Full disconnect
+or unresolved recovery returns `recovery-needed`. Run-rule never launches the app, queues,
+retries, broadcasts to another rule or automatically replays a lost response. After
+`response-lost`, check `panelctl app status --json`; a lost response does not cancel
+the run or make retry safe. The status response includes `runningRule` with the
+selected rule’s stable ID while it runs.
 
 ### Scripted Hide and Show
 
@@ -113,8 +134,9 @@ button or Shortcuts **Run Shell Script** action:
 | 5 | `partial` | Desktop changed, but the input switch didn't complete |
 | 6 | `recovery-needed` | Display needs recovery; only Show is allowed |
 
-Hide/Show waits up to 30 seconds; an Action waits 30 seconds per step.
-Requests are never queued or resent. After `response-lost`, check
+Hide/Show waits up to 30 seconds; an Action waits 30 seconds per step; run-rule
+returns as soon as its effect is installed. Requests are never queued or resent.
+After `response-lost`, check
 `app status --json` before retrying.
 
 ### Status JSON
@@ -123,6 +145,7 @@ Requests are never queued or resent. After `response-lost`, check
 {
   "ok": true, "running": true, "enabled": true, "state": "waiting",
   "summary": "…", "nextAction": "blackout", "secondsRemaining": 240,
+  "runningRule": { "id": "…", "name": "Desk dimming" },
   "rules": [
     { "id": "…", "name": "Desk dimming", "enabled": true, "state": "waiting",
       "displays": ["DISPLAY_UUID"], "nextAction": "dim", "secondsRemaining": 180 }
@@ -138,7 +161,8 @@ Requests are never queued or resent. After `response-lost`, check
 - `observedState`: `separate`, `hidden-by-panelctl`, `mirrored-externally`,
   `unavailable`, `recovery-needed`, `unsupported-recovery` or `unknown`.
 - `operation`: `idle`, `hiding` or `showing`.
-- `runningAction` appears while an Action runs.
+- `runningAction` appears while an Action runs; `runningRule` identifies the
+  single rule running once.
 - `lastInputOutcome` is the last input result since launch, with a
   `recoveryCommand` to switch back.
 

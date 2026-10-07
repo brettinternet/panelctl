@@ -109,7 +109,7 @@ struct PanelCtlMain {
                 }
             case .wakeDisplays:
                 try DisplaySleepController.wake()
-            case .app(let appCommand, let durationSeconds, let targetUUID, let actionID, let json):
+            case .app(let appCommand, let durationSeconds, let targetUUID, let actionID, let ruleID, let json):
                 let client = try AppControlClient()
                 let response: AppControlResponse
                 do {
@@ -117,7 +117,8 @@ struct PanelCtlMain {
                         appCommand,
                         durationSeconds: durationSeconds,
                         targetUUID: targetUUID,
-                        actionID: actionID
+                        actionID: actionID,
+                        ruleID: ruleID
                     )
                 } catch {
                     guard appCommand.isManualDisplayCommand else { throw error }
@@ -141,12 +142,15 @@ struct PanelCtlMain {
                         fputs("panelctl: \(response.error ?? response.summary)\n", stderr)
                     }
                 } else if !response.ok, appCommand != .status {
-                    fputs(
-                        "panelctl: \(response.error ?? response.summary)\n",
-                        stderr
-                    )
+                    let result = appCommand == .runRule
+                        ? "\(response.outcome?.rawValue ?? "failed"): \(response.error ?? response.summary)"
+                        : (response.error ?? response.summary)
+                    fputs("panelctl: \(result)\n", stderr)
                 } else {
                     var line = "running=\(response.running) enabled=\(response.enabled) state=\(response.state) summary=\(quoted(response.summary))"
+                    if appCommand == .runRule, let outcome = response.outcome {
+                        line += " outcome=\(outcome.rawValue)"
+                    }
                     if let detail = response.detail, !detail.isEmpty {
                         line += " detail=\(quoted(detail))"
                     }
@@ -161,6 +165,9 @@ struct PanelCtlMain {
                     }
                     if let action = response.runningAction {
                         line += " runningAction=\(quoted(action.name)) step=\(action.currentStep)/\(action.totalSteps)"
+                    }
+                    if let rule = response.runningRule {
+                        line += " runningRule=\(quoted(rule.name)) id=\(rule.id.uuidString)"
                     }
                     print(line)
                 }

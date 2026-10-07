@@ -779,14 +779,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             )
         }
         if model.runningDisplayAction != nil,
-           ![AppControlCommand.status, .openSettings, .hide, .show, .toggleHide, .runAction].contains(request.command) {
+           ![AppControlCommand.status, .openSettings, .hide, .show, .toggleHide, .runAction, .runRule].contains(request.command) {
             return controlResponse(ok: false, summary: model.displayActionBusyMessage,
                                    error: model.displayActionBusyMessage, outcome: .busy)
+        }
+
+        if model.controlRunningRule != nil && [.blackoutNow, .sleepNow].contains(request.command) {
+            return controlResponse(ok: false, summary: model.protectionRuleBusyMessage,
+                                   error: model.protectionRuleBusyMessage, outcome: .busy)
         }
 
         switch request.command {
         case .hide, .show, .toggleHide, .runAction:
             return await model.handleDisplayControlRequest(request, receivedAt: receivedAt)
+        case .runRule:
+            return await model.handleProtectionRuleControlRequest(request, receivedAt: receivedAt)
         case .enable:
             model.setProtectionEnabled(true)
         case .disable:
@@ -798,7 +805,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return controlResponse(ok: true, outcome: model.controlDisplayOutcome,
                                    displays: model.controlDisplayStatuses,
                                    rules: model.controlRuleStatuses,
-                                   runningAction: model.controlRunningDisplayAction)
+                                   runningAction: model.controlRunningDisplayAction,
+                                   runningRule: model.controlRunningRule)
         case .blackoutNow:
             do {
                 try model.blackoutNow()
@@ -877,7 +885,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         displays: [AppControlDisplayStatus]? = nil,
         rules: [AppControlRuleStatus]? = nil,
         detail: String? = nil,
-        runningAction: AppControlRunningAction? = nil
+        runningAction: AppControlRunningAction? = nil,
+        runningRule: AppControlRunningRule? = nil
     ) -> AppControlResponse {
         AppControlResponse(
             ok: ok,
@@ -893,7 +902,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             outcome: outcome,
             displays: displays,
             rules: rules,
-            runningAction: runningAction
+            runningAction: runningAction,
+            runningRule: runningRule ?? model.controlRunningRule
         )
     }
 

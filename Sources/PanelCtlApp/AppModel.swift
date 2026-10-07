@@ -93,6 +93,7 @@ final class AppModel: ObservableObject {
     private var actionTopologyWriteInProgress = false
     private var preflightingDisplayAction = false
     private var lastDisplayActionFinished: ContinuousClock.Instant?
+    private var lastOneShotFinished: ContinuousClock.Instant?
     private var deferredActionHiddenDisplayReconciliation = false
     private var deferredActionRecoveryReconciliation = false
     @Published private(set) var handoffStatus: DisplayHandoffStatus?
@@ -343,6 +344,13 @@ final class AppModel: ObservableObject {
         protectionCoordinator.onMembershipChange = { [weak self] ids in
             self?.blackedOutDisplayIDs = ids
         }
+        protectionCoordinator.onOneShotFinished = { [weak self] _ in
+            guard let self else { return }
+            self.lastOneShotFinished = .now
+            self.reconcileProtection()
+            self.protectionCoordinator.resumeAutomaticRulesAfterOneShot()
+            self.onStatusChange?()
+        }
         saveAutomationPreferences()
         defaults.set(showMenuBarIcon, forKey: Self.showMenuBarIconKey)
         refreshHandoffStatus()
@@ -507,7 +515,8 @@ final class AppModel: ObservableObject {
 
     var automationBlockingDisplayIDs: Set<UInt32> {
         automationPreferences.rules.reduce(into: Set<UInt32>()) { result, rule in
-            guard rule.isEnabled,
+            let isRunningOneShot = protectionCoordinator.runningOneShotRuleID == rule.id
+            guard (rule.isEnabled || isRunningOneShot),
                   rule.settings.mode == .blocking || hiddenOverlayRuleIDs.contains(rule.id) else { return }
             result.formUnion(protectionCoordinator.blackedOutDisplayIDs(forRule: rule.id))
         }
@@ -926,6 +935,7 @@ final class AppModel: ObservableObject {
         if runningDisplayAction != nil, runningDisplayAction?.id != actionLeaseID {
             return displayActionBusyMessage
         }
+        if controlRunningRule != nil { return protectionRuleBusyMessage }
         if handoffStatus?.state == .busy { return prefix + DisplayHideError.actionInProgress.localizedDescription }
         if displayLifecycleTransitioning { return prefix + DisplayHideError.sleeping.localizedDescription }
         if protectionQuiescencePending { return prefix + Self.automationStopping.localizedDescription }
@@ -1022,6 +1032,17 @@ final class AppModel: ObservableObject {
             id: runningDisplayAction.id, name: Self.bounded(runningDisplayAction.name),
             currentStep: runningDisplayAction.currentStep, totalSteps: runningDisplayAction.totalSteps
         )
+    }
+
+    var controlRunningRule: AppControlRunningRule? {
+        guard let id = protectionCoordinator.runningOneShotRuleID,
+              let name = protectionCoordinator.runningOneShotRuleName else { return nil }
+        return AppControlRunningRule(id: id, name: Self.bounded(name))
+    }
+
+    var protectionRuleBusyMessage: String {
+        guard let rule = controlRunningRule else { return DisplayHideError.actionInProgress.localizedDescription }
+        return "Automation rule “\(rule.name)” is running once. Try again when it finishes."
     }
 
     /// Why the Action can't run right now, or its progress; nil when it's ready.
@@ -1399,6 +1420,9 @@ final class AppModel: ObservableObject {
         if runningDisplayAction != nil, runningDisplayAction?.id != actionLeaseID {
             return .recoveryBlocksAction(displayActionBusyMessage)
         }
+        if controlRunningRule != nil {
+            return .recoveryBlocksAction(protectionRuleBusyMessage)
+        }
         if disconnectAutomationPaused || disconnectInspectionFailure != nil {
             return .recoveryBlocksAction("Full disconnect is pausing automation or awaiting verified recovery.")
         }
@@ -1563,6 +1587,9 @@ final class AppModel: ObservableObject {
         if runningDisplayAction != nil, runningDisplayAction?.id != actionLeaseID {
             return .recoveryBlocksAction(displayActionBusyMessage)
         }
+        if controlRunningRule != nil {
+            return .recoveryBlocksAction(protectionRuleBusyMessage)
+        }
         // Disconnect preparation, consent and recovery exclude other display changes.
         if disconnectAutomationPaused || disconnectInspectionFailure != nil ||
             disconnectLease != nil || disconnectStatus?.resolved == false {
@@ -1607,7 +1634,8 @@ final class AppModel: ObservableObject {
 
     /// Escape on a hidden display shows it; false when Hide didn't black it out.
     func showHiddenDisplay(at displayID: UInt32) -> Bool {
-        guard let key = connectedHiddenDisplays[displayID] else { return false }
+        guard controlRunningRule == nil,
+              let key = connectedHiddenDisplays[displayID] else { return false }
         show(targetUUID: key)
         return true
     }
@@ -1933,6 +1961,9 @@ final class AppModel: ObservableObject {
         if runningDisplayAction != nil, runningDisplayAction?.id != actionLeaseID {
             return .recoveryBlocksAction(displayActionBusyMessage)
         }
+        if controlRunningRule != nil {
+            return .recoveryBlocksAction(protectionRuleBusyMessage)
+        }
         if disconnectAutomationPaused || disconnectInspectionFailure != nil {
             return .recoveryBlocksAction("Full disconnect is pausing automation or awaiting verified recovery.")
         }
@@ -2224,6 +2255,144 @@ final class AppModel: ObservableObject {
         return display.active ? "separate" : "unavailable"
     }
 
+    func handleProtectionRuleControlRequest(
+        _ request: AppControlRequest,
+        receivedAt: ContinuousClock.Instant = .now
+    ) async -> AppControlResponse {
+        func response(
+            _ outcome: AppControlOutcome,
+            _ summary: String,
+            error: String? = nil,
+            ruleID: UUID? = nil
+        ) -> AppControlResponse {
+            let ok = outcome == .done || outcome == .noOp
+            let ruleDisplays = ruleID.flatMap { id in
+                automationPreferences.rules.first(where: { $0.id == id }).map { rule in
+                    controlDisplayStatuses.filter { display in
+                        rule.settings.allDisplays || rule.settings.selectedDisplayUUIDs.contains {
+                            $0.caseInsensitiveCompare(display.targetUUID) == .orderedSame
+                        }
+                    }
+                }
+            }
+            return AppControlResponse(
+                ok: ok, running: true, enabled: automationPreferences.isEnabled,
+                state: runtimeState.controlIdentifier, summary: Self.bounded(summary),
+                error: ok ? nil : Self.bounded(error ?? summary), outcome: outcome,
+                displays: ruleDisplays, runningRule: controlRunningRule
+            )
+        }
+
+        guard request.protocolVersion == AppControlRequest.currentProtocol,
+              request.command == .runRule, request.durationSeconds == nil,
+              request.targetUUID == nil, request.actionID == nil,
+              let ruleID = request.ruleID else {
+            return response(.refused, "Run rule needs --rule with a saved Automation rule UUID.")
+        }
+        guard let savedRule = automationPreferences.rules.first(where: { $0.id == ruleID }) else {
+            return response(.refused,
+                "No saved Automation rule has ID \(ruleID.uuidString). Find rule IDs with `panelctl app status --json`.",
+                ruleID: ruleID)
+        }
+        if runningDisplayAction != nil {
+            return response(.busy, displayActionBusyMessage, ruleID: ruleID)
+        }
+        if let blocker = protectionCoordinator.oneShotReadiness(for: ruleID) {
+            return response(.busy, blocker, ruleID: ruleID)
+        }
+        if hideOperation.isBusy || handoffStatus?.state == .busy {
+            return response(.busy, "A display operation is running. Try again when it finishes.", ruleID: ruleID)
+        }
+        if let finished = lastHideOrShowFinished, receivedAt < finished {
+            return response(.busy, "A Hide or Show finished while this request waited. Check the displays, then try again.", ruleID: ruleID)
+        }
+        if let finished = lastDisplayActionFinished, receivedAt < finished {
+            return response(.busy, "A named Action finished while this request waited. Check the displays, then try again.", ruleID: ruleID)
+        }
+        if let finished = lastOneShotFinished, receivedAt < finished {
+            return response(.busy, "An Automation rule finished while this request waited. Check the displays, then try again.", ruleID: ruleID)
+        }
+        guard !displayLifecycleTransitioning else {
+            return response(.refused, DisplayHideError.sleeping.localizedDescription, ruleID: ruleID)
+        }
+        if protectionQuiescencePending {
+            return response(.busy, "Automation is stopping for display recovery. Try again when cleanup finishes.", ruleID: ruleID)
+        }
+        if let failure = protectionQuiescenceFailure {
+            return response(.recoveryNeeded,
+                "Automation cleanup needs attention. Retry Automation Cleanup before running a rule. (\(failure))",
+                ruleID: ruleID)
+        }
+        if disconnectAutomationPaused || disconnectPreparationPending || disconnectConsentPending ||
+            disconnectInspectionFailure != nil || disconnectLease != nil || disconnectStatus?.resolved == false ||
+            disconnectRecoveryBlocked {
+            return response(.recoveryNeeded,
+                "Full disconnect is pausing automation or awaiting verified recovery. Finish it first.",
+                ruleID: ruleID)
+        }
+
+        displays = displayProvider()
+        refreshHandoffStatus()
+        if displayLifecycleTransitioning || hideOperation.isBusy || handoffStatus?.state == .busy {
+            return response(.busy, "Displays changed while the rule was being prepared. Try again when they settle.", ruleID: ruleID)
+        }
+        if protectionQuiescencePending {
+            return response(.busy, "Automation is stopping for display recovery. Try again when cleanup finishes.", ruleID: ruleID)
+        }
+        if handoffStatus?.hasUnresolvedJournal == true || displayRecoveryProblem != nil || protectionPausedForDisplayRecovery {
+            return response(.recoveryNeeded,
+                displayRecoveryProblem ?? "Display recovery is in progress. Resolve it before running an Automation rule.",
+                ruleID: ruleID)
+        }
+        if disconnectAutomationPaused || disconnectInspectionFailure != nil || disconnectLease != nil ||
+            disconnectStatus?.resolved == false || disconnectRecoveryBlocked {
+            return response(.recoveryNeeded,
+                "Full disconnect is pausing automation or awaiting verified recovery. Finish it first.",
+                ruleID: ruleID)
+        }
+
+        guard let ruleIndex = automationPreferences.rules.firstIndex(where: { $0.id == ruleID }) else {
+            return response(.refused, "The saved Automation rule changed before it could run. Try again.", ruleID: ruleID)
+        }
+        var candidate = savedRule
+        candidate.isEnabled = true
+        var proposed = automationPreferences
+        proposed.rules[ruleIndex] = candidate
+        let validation = ProtectionRuleValidator.validate(
+            candidate, in: proposed, displays: displays,
+            hiddenUUIDs: Set(blackoutHiddenDisplays.keys), oneShot: true
+        )
+        if let reason = validation.blockingReason ?? validation.waitingReason {
+            return response(.refused, "Can’t run “\(savedRule.name)” now: \(reason)", ruleID: ruleID)
+        }
+        guard let arguments = validation.arguments else {
+            return response(.refused, "Can’t prepare “\(savedRule.name)” from its saved settings.", ruleID: ruleID)
+        }
+
+        return await withCheckedContinuation { continuation in
+            let accepted = protectionCoordinator.runOneShot(
+                id: ruleID, name: savedRule.name, arguments: arguments,
+                allDisplays: candidate.settings.allDisplays,
+                selectedDisplayUUIDs: candidate.settings.selectedDisplayUUIDs
+            ) { installed, message in
+                if installed {
+                    continuation.resume(returning: response(
+                        .done, "Started one-shot Automation rule “\(savedRule.name)”.", ruleID: ruleID
+                    ))
+                } else {
+                    let failure = message ?? "The rule couldn’t be started."
+                    continuation.resume(returning: response(.failed, failure, error: failure, ruleID: ruleID))
+                }
+            }
+            if !accepted {
+                continuation.resume(returning: response(
+                    .busy, protectionCoordinator.oneShotReadiness(for: ruleID) ??
+                        "The Automation rule could not acquire its one-shot run.", ruleID: ruleID
+                ))
+            }
+        }
+    }
+
     /// Runs Hide, Show or Toggle Hide for a script, like the display's Hide or
     /// Show button, and answers when it finishes. A request that can't run now
     /// is refused, never queued for later. The response includes only the
@@ -2256,6 +2425,9 @@ final class AppModel: ObservableObject {
         if runningDisplayAction != nil {
             return response(.busy, displayActionBusyMessage)
         }
+        if controlRunningRule != nil {
+            return response(.busy, protectionRuleBusyMessage)
+        }
         guard !hideOperation.isBusy else {
             return response(.busy, DisplayHideError.actionInProgress.localizedDescription)
         }
@@ -2266,6 +2438,9 @@ final class AppModel: ObservableObject {
         }
         if let finished = lastDisplayActionFinished, receivedAt < finished {
             return response(.busy, "A named Action finished while this request waited. Check the displays, then try again.")
+        }
+        if let finished = lastOneShotFinished, receivedAt < finished {
+            return response(.busy, "An Automation rule finished while this request waited. Check the displays, then try again.")
         }
         refreshDisplays()
         guard handoffStatus?.state != .busy else {
@@ -2385,8 +2560,8 @@ final class AppModel: ObservableObject {
             return
         }
         let action = savedAction
-        if runningDisplayAction != nil || hideOperation.isBusy || handoffStatus?.state == .busy {
-            refuse(.busy, displayActionBusyMessage, for: action)
+        if runningDisplayAction != nil || controlRunningRule != nil || hideOperation.isBusy || handoffStatus?.state == .busy {
+            refuse(.busy, runningDisplayAction != nil ? displayActionBusyMessage : protectionRuleBusyMessage, for: action)
             return
         }
         if let finished = lastHideOrShowFinished, receivedAt < finished {
@@ -2395,6 +2570,10 @@ final class AppModel: ObservableObject {
         }
         if let actionFinished = lastDisplayActionFinished, receivedAt < actionFinished {
             refuse(.busy, "A named Action finished while this request waited. Check the displays, then try again.", for: action)
+            return
+        }
+        if let oneShotFinished = lastOneShotFinished, receivedAt < oneShotFinished {
+            refuse(.busy, "An Automation rule finished while this request waited. Check the displays, then try again.", for: action)
             return
         }
 
@@ -3379,9 +3558,11 @@ final class AppModel: ObservableObject {
                 ? activeDisplays.compactMap(\.uuid).sorted()
                 : rule.settings.selectedDisplayUUIDs.sorted()
             let timer = ruleTimer(for: rule, state: state)
+            let isRunningOnce = protectionCoordinator.runningOneShotRuleID == rule.id
             return AppControlRuleStatus(
                 id: rule.id, name: rule.name, enabled: rule.isEnabled,
-                state: state.controlIdentifier, summary: state.label,
+                state: isRunningOnce ? "running-once" : state.controlIdentifier,
+                summary: isRunningOnce ? "Running once" : state.label,
                 detail: state.detailMessage, displays: targetUUIDs,
                 nextAction: timer?.action ?? nil, secondsRemaining: timer?.remaining ?? nil
             )
@@ -3446,7 +3627,7 @@ final class AppModel: ObservableObject {
     }
 
     func retryProtection() {
-        guard runningDisplayAction == nil else { return }
+        guard runningDisplayAction == nil, controlRunningRule == nil else { return }
         if protectionQuiescenceFailure != nil {
             retryAutomationCleanup()
             return
@@ -3457,7 +3638,8 @@ final class AppModel: ObservableObject {
     }
 
     func retryAutomationCleanup() {
-        guard runningDisplayAction == nil, !protectionQuiescencePending, !hideOperation.isBusy else { return }
+        guard runningDisplayAction == nil, controlRunningRule == nil,
+              !protectionQuiescencePending, !hideOperation.isBusy else { return }
         protectionQuiescencePending = true
         onStatusChange?()
         protectionCoordinator.retryCleanup { [weak self] succeeded, message in
@@ -3478,6 +3660,7 @@ final class AppModel: ObservableObject {
 
     func blackoutNow() throws {
         guard runningDisplayAction == nil else { throw RecoveryError.unsafe(displayActionBusyMessage) }
+        guard controlRunningRule == nil else { throw RecoveryError.unsafe(protectionRuleBusyMessage) }
         guard !disconnectAutomationPaused, disconnectInspectionFailure == nil else {
             throw RecoveryError.unsafe("Automation is paused during Full disconnect and verified recovery.")
         }
@@ -3499,6 +3682,18 @@ final class AppModel: ObservableObject {
     @discardableResult
     func restoreBlackout() throws -> Bool {
         if runningDisplayAction != nil { return false }
+        if protectionCoordinator.hasRunningOneShot {
+            var restored = protectionCoordinator.stopOneShotsForRestore()
+            if !disconnectAutomationPaused, disconnectInspectionFailure == nil,
+               !protectionPausedForDisplayRecovery || hiddenMirrorOverlayPolicyEligible,
+               snoozedUntil == nil, automationPreferences.isEnabled,
+               automationPreferences.rules.contains(where: \.isEnabled),
+               protectionCoordinator.canReceiveControl {
+                restored = try protectionCoordinator.sendControl(.restore) || restored
+            }
+            if restored { manualActivityDate = now() }
+            return restored
+        }
         if disconnectAutomationPaused || disconnectInspectionFailure != nil { return false }
         if protectionPausedForDisplayRecovery && !hiddenMirrorOverlayPolicyEligible { return false }
         guard snoozedUntil == nil, automationPreferences.isEnabled,
@@ -3511,6 +3706,7 @@ final class AppModel: ObservableObject {
 
     func sleepAllNow() throws {
         guard runningDisplayAction == nil else { throw RecoveryError.unsafe(displayActionBusyMessage) }
+        guard controlRunningRule == nil else { throw RecoveryError.unsafe(protectionRuleBusyMessage) }
         guard !disconnectAutomationPaused, disconnectInspectionFailure == nil else {
             throw RecoveryError.unsafe("Display actions are paused during Full disconnect and verified recovery.")
         }
@@ -4285,6 +4481,7 @@ final class AppModel: ObservableObject {
     // app-control command. Inspection and startup never run private recovery.
     private var disconnectEligibilityBlocker: String? {
         if runningDisplayAction != nil { return displayActionBusyMessage }
+        if controlRunningRule != nil { return protectionRuleBusyMessage }
         if !experimentalFeaturesEnabled { return "Turn on Experimental features in General first." }
         if let disconnectInspectionFailure {
             return "Disconnect recovery cannot be inspected; automation remains paused. Check `panelctl recovery status` and preserve \(disconnectJournalPath). (\(disconnectInspectionFailure))"
@@ -4318,6 +4515,7 @@ final class AppModel: ObservableObject {
 
     func prepareDisconnect(_ uuid: String) {
         guard runningDisplayAction == nil else { disconnectFailure = displayActionBusyMessage; return }
+        guard controlRunningRule == nil else { disconnectFailure = protectionRuleBusyMessage; return }
         disconnectRequest = nil
         disconnectConsentPending = false
         disconnectFailure = nil
@@ -4411,6 +4609,7 @@ final class AppModel: ObservableObject {
 
     func confirmDisconnect() {
         guard runningDisplayAction == nil else { disconnectFailure = displayActionBusyMessage; return }
+        guard controlRunningRule == nil else { disconnectFailure = protectionRuleBusyMessage; return }
         disconnectConsentPending = false
         guard let request = disconnectRequest else { return }
         disconnectRequest = nil // Never persist or reuse consent, even on refusal.
@@ -4433,6 +4632,7 @@ final class AppModel: ObservableObject {
 
     func reconnectDisconnect(expectedJournalID: String? = nil) {
         guard runningDisplayAction == nil else { disconnectFailure = displayActionBusyMessage; return }
+        guard controlRunningRule == nil else { disconnectFailure = protectionRuleBusyMessage; return }
         disconnectFailure = nil
         do {
             if let disconnectInspectionFailure {

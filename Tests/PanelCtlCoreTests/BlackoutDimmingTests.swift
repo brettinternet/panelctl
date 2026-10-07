@@ -129,6 +129,34 @@ final class BlackoutDimmingTests: XCTestCase {
         )
     }
 
+    func testResolvedScreenIDsRestrictExistingTargets() {
+        let url = temporaryURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        var writes: [String] = []
+        let manager = BlackoutDimming(
+            journalURL: url,
+            records: { [displayRecord(id: 1, uuid: "visible"), displayRecord(id: 2, uuid: "hidden")] },
+            read: { uuid in
+                DDCLuminanceReading(displayID: uuid == "visible" ? 1 : 2, uuid: uuid, current: 50, maximum: 100)
+            },
+            set: { uuid, value in
+                writes.append("\(uuid):\(value)")
+                return DDCLuminanceWriteResult(
+                    displayID: uuid == "visible" ? 1 : 2, uuid: uuid, original: 50,
+                    requested: value, observed: value, maximum: 100
+                )
+            }
+        )
+        manager.start()
+        defer { manager.stop() }
+        manager.dim([
+            BlackoutScreenTarget(id: 1, uuid: "visible", selector: "visible"),
+            BlackoutScreenTarget(id: 2, uuid: "hidden", selector: "hidden")
+        ], to: 10, screenIDs: [1])
+
+        XCTAssertEqual(writes, ["visible:10"], "only displays in the resolved blackout selection may be dimmed")
+    }
+
     func testCommittedScreenIDsDimAllDisplayTargets() {
         var writes: [(String, UInt16)] = []
         let manager = makeManager(
