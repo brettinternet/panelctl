@@ -123,6 +123,7 @@ struct BlackoutFocusOperations {
         window.isReleasedWhenClosed = false
         return BlackoutFocusWindow(
             show: {
+                guard !window.isKeyWindow else { return }
                 window.orderFrontRegardless()
                 window.makeKeyAndOrderFront(nil)
             },
@@ -181,7 +182,10 @@ final class BlackoutFocusController {
             guard !operations.panelIsActive() else { return }
             waitingForPreviousApplicationActivation = false
         }
-        if proxyWindow != nil {
+        if let proxyWindow {
+            // App activation does not imply key-window ownership: Settings or
+            // another app window may have taken it since the previous poll.
+            proxyWindow.show()
             beginActivation()
             return
         }

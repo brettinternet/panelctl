@@ -4,6 +4,66 @@ import XCTest
 
 @MainActor
 final class BlackoutFocusControllerTests: XCTestCase {
+    func testNativeEscapeAfterAnotherWindowTakesKeyFocus() async throws {
+        try requireInteractiveUI()
+        let app = NSApplication.shared
+        let originalPolicy = app.activationPolicy()
+        app.setActivationPolicy(.accessory)
+        let settings = NSWindow(
+            contentRect: CGRect(x: 100, y: 100, width: 200, height: 100),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        settings.isReleasedWhenClosed = false
+        var restores = 0
+        let controller = BlackoutFocusController(operations: BlackoutFocusOperations(
+            mouseLocation: { CGPoint(x: 5, y: 5) },
+            hideCursor: { .success },
+            showCursor: { .success }
+        )) {
+            restores += 1
+            return false
+        }
+        defer {
+            settings.close()
+            controller.shutdown()
+            app.setActivationPolicy(originalPolicy)
+        }
+        let target = CGRect(x: 0, y: 0, width: 10, height: 10)
+        controller.enter(targetFrames: [target])
+        let deadline = Date(timeIntervalSinceNow: 1)
+        while Date() < deadline {
+            // XCTest runs the run loop, not NSApplication's event dispatch loop.
+            for _ in 0..<100 {
+                guard let event = app.nextEvent(matching: .any, until: Date(), inMode: .default, dequeue: true) else { break }
+                app.sendEvent(event)
+            }
+            if app.isActive && app.keyWindow != nil { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(app.isActive)
+        // Let the controller observe activation before exercising the responder chain.
+        try await Task.sleep(nanoseconds: 30_000_000)
+        let proxy = try XCTUnwrap(app.keyWindow)
+        func escape() throws {
+            let event = try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: try XCTUnwrap(app.keyWindow).windowNumber,
+                context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}",
+                isARepeat: false, keyCode: 53
+            ))
+            app.sendEvent(event)
+        }
+        try escape()
+        XCTAssertEqual(restores, 1, "initial Escape must reach the native proxy")
+
+        settings.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(app.keyWindow === settings)
+        controller.enter(targetFrames: [target])
+        XCTAssertTrue(app.keyWindow === proxy, "pointer polling must recover key focus even while PanelCtl stays active")
+        try escape()
+        XCTAssertEqual(restores, 2, "Escape must still restore after another app window took key focus")
+    }
+
     func testFocusPredicateEngagesOnlyForBlockingBlackout() {
         XCTAssertTrue(
             AppDelegate.shouldEngageBlackoutFocus(
@@ -216,6 +276,26 @@ final class BlackoutFocusControllerTests: XCTestCase {
 
         XCTAssertEqual(hideCount, 1)
         XCTAssertTrue(showResults.isEmpty)
+    }
+
+    func testPointerPollingReassertsProxyFocusWithoutReactivatingApplication() {
+        var shows = 0
+        var activations = 0
+        var hides = 0
+        let controller = BlackoutFocusController(operations: makeOperations(
+            makeProxyWindow: { _ in
+                BlackoutFocusWindow(show: { shows += 1 }, close: {})
+            },
+            requestActivation: { activations += 1 },
+            hideCursor: { hides += 1; return .success }
+        ))
+        defer { controller.shutdown() }
+        let target = CGRect(x: 0, y: 0, width: 10_000, height: 10_000)
+        controller.enter(targetFrames: [target])
+        controller.enter(targetFrames: [target])
+        XCTAssertEqual(shows, 2, "each pointer poll must ensure the existing proxy is key")
+        XCTAssertEqual(activations, 1)
+        XCTAssertEqual(hides, 1)
     }
 
     func testRepeatedEnterAndLeaveAreIdempotent() {
