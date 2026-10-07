@@ -364,7 +364,7 @@ final class DisplayMirroringTests: XCTestCase {
                 writes += 1
                 // macOS places the target at y=0 rather than its saved -4 both
                 // times; that is accepted. The first write leaves the wrong
-                // mode, which is not: do not report success or return input.
+                // mode, which is not: do not report desktop success.
                 if writes == 1 {
                     current = try self.changedSnapshot(self.sessionSnapshot([3: 1], includeFourth: true)) {
                         var mode = $0[1]["mode"] as! [String: Any]; mode["refreshRate"] = 30; $0[1]["mode"] = mode
@@ -376,14 +376,14 @@ final class DisplayMirroringTests: XCTestCase {
                 XCTAssertEqual(current.displays[2], siblingBefore)
             })
         XCTAssertThrowsError(try sut.unmirror(store: scenarioStore, selector: snapshotUUID(2),
-                                             afterRestore: { _ in inputCalls += 1 }))
+                                             returnInputBeforeRestore: { _ in inputCalls += 1 }))
         let inspector = DisplayHideController(store: scenarioStore, mirror: sut, operationLock: { operation })
         let status = try inspector.inspect()
         XCTAssertEqual(status.removals.first?.state, "needsAttention")
         XCTAssertEqual(status.removals.first?.canShow, true)
         XCTAssertThrowsError(try sut.verifyRemoval(store: scenarioStore, selector: snapshotUUID(2)))
         XCTAssertEqual(writes, 1)
-        XCTAssertEqual(inputCalls, 0)
+        XCTAssertEqual(inputCalls, 1)
         let persisted = try XCTUnwrap(scenarioStore.load().publicMirrorSession)
         let wrongSibling = try changedSnapshot(current) { $0[2]["mirrorUUID"] = self.snapshotUUID(4) }
         XCTAssertFalse(MirrorSessionTopology.canRepairTargetLayout(
@@ -392,9 +392,9 @@ final class DisplayMirroringTests: XCTestCase {
         XCTAssertFalse(MirrorSessionTopology.canRepairTargetLayout(
             baseline: baseline, removals: persisted.removals, targetUUID: snapshotUUID(2), current: wrongIdentity))
         let repaired = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(2),
-                                        afterRestore: { _ in inputCalls += 1 })
+                                        returnInputBeforeRestore: { _ in inputCalls += 1 })
         XCTAssertEqual(writes, 2, "only a separate explicit Show retries the failed target layout")
-        XCTAssertEqual(inputCalls, 1, "input return happens only after the partial-Show postcondition verifies")
+        XCTAssertEqual(inputCalls, 2, "each explicit request returns input before checking the desktop postcondition")
         XCTAssertEqual(repaired.publicMirrorSession?.removals.map(\.state), [.restored, .mirrored])
         XCTAssertEqual(current.displays[1].y, 0, "macOS placement is accepted until the last Show")
     }
@@ -438,16 +438,16 @@ final class DisplayMirroringTests: XCTestCase {
         let inspector = DisplayHideController(store: scenarioStore, mirror: sut, operationLock: { operation })
         XCTAssertTrue(try XCTUnwrap(inspector.inspect().removals.last).canShow)
         XCTAssertThrowsError(try sut.unmirror(store: scenarioStore, selector: snapshotUUID(3),
-                                             afterRestore: { returnedInputs.append($0.uuid) }))
-        XCTAssertTrue(returnedInputs.isEmpty)
+                                             returnInputBeforeRestore: { returnedInputs.append($0.uuid) }))
+        XCTAssertEqual(returnedInputs, [snapshotUUID(3)])
         XCTAssertTrue(try scenarioStore.load().publicMirrorSession?.removals.allSatisfy { !$0.state.resolved } == true)
         shouldMatch = true
         let result = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(3),
-                                      afterRestore: { returnedInputs.append($0.uuid) })
+                                      returnInputBeforeRestore: { returnedInputs.append($0.uuid) })
         XCTAssertEqual(writes, 2)
         XCTAssertEqual(result.state, .restored)
         XCTAssertTrue(result.publicMirrorSession?.removals.allSatisfy { $0.state.resolved } == true)
-        XCTAssertEqual(returnedInputs, [snapshotUUID(3)], "never switch a sibling input without its own request")
+        XCTAssertEqual(returnedInputs, [snapshotUUID(3), snapshotUUID(3)], "never switch a sibling input without its own request")
         try baseline.verify(current)
     }
 
@@ -704,7 +704,7 @@ final class DisplayMirroringTests: XCTestCase {
         var inputs: [String] = []
         _ = try sut.mirror(selector: snapshotUUID(2), source: snapshotUUID(1), store: scenarioStore)
         _ = try sut.mirror(selector: snapshotUUID(3), source: snapshotUUID(1), store: scenarioStore)
-        _ = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(2), afterRestore: { inputs.append($0.uuid) })
+        _ = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(2), returnInputBeforeRestore: { inputs.append($0.uuid) })
         XCTAssertEqual(current.displays[1].y, 0)
         XCTAssertEqual(inputs, [snapshotUUID(2)])
         // The placed display is an ordinary visible display: inspection keeps
@@ -712,9 +712,9 @@ final class DisplayMirroringTests: XCTestCase {
         let inspector = DisplayHideController(store: scenarioStore, mirror: sut, operationLock: { operation })
         XCTAssertFalse(try inspector.inspect().removals.contains { $0.state == "needsAttention" })
         _ = try sut.mirror(selector: snapshotUUID(2), source: snapshotUUID(1), store: scenarioStore)
-        _ = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(3), afterRestore: { inputs.append($0.uuid) })
+        _ = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(3), returnInputBeforeRestore: { inputs.append($0.uuid) })
         XCTAssertEqual(fullRestores, 0)
-        let final = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(2), afterRestore: { inputs.append($0.uuid) })
+        let final = try sut.unmirror(store: scenarioStore, selector: snapshotUUID(2), returnInputBeforeRestore: { inputs.append($0.uuid) })
         XCTAssertEqual(fullRestores, 1, "the last Show stages the whole baseline")
         XCTAssertEqual(final.state, .restored)
         XCTAssertEqual(current, baseline, "the original -4 origin returns only with the final Show")
@@ -1161,15 +1161,17 @@ final class DisplayMirroringTests: XCTestCase {
             let back = { try sut.back(selector: "8", input: scenario == "no-input" ? nil : 15, store: store) }
             if ["back-ddc-failure", "unhide-failure"].contains(scenario) {
                 XCTAssertThrowsError(try back()) { error in
-                    XCTAssertTrue(String(describing: error).contains("panelctl recovery restore --journal"))
                     if scenario == "back-ddc-failure" {
                         XCTAssertTrue(String(describing: error).contains("panelctl ddc-input --display"))
+                    } else {
+                        XCTAssertTrue(String(describing: error).contains("panelctl recovery restore --journal"))
                     }
                 }
             } else { try back() }
-            XCTAssertEqual(events.first, "unhide", scenario)
+            XCTAssertEqual(events.first, scenario == "no-input" ? "unhide" : "open", scenario)
+            XCTAssertEqual(events.last, "unhide", "desktop restoration must follow the optional input return")
             if scenario == "unhide-failure" {
-                XCTAssertEqual(events, ["unhide"])
+                XCTAssertEqual(events.filter { $0 == "back-input" }.count, 1, "input is not retried when restore fails")
                 XCTAssertEqual(try store.load().state, .needsAttention)
             } else {
                 XCTAssertEqual(current, original)
@@ -1305,8 +1307,8 @@ final class DisplayMirroringTests: XCTestCase {
         let returnOutcome = try backend.show(expectedJournalID: journalID, returnInput: 15)
         XCTAssertEqual(returnOutcome.state, .failed)
         XCTAssertTrue(returnOutcome.recoveryCommand?.contains("panelctl ddc-input --display") == true)
-        XCTAssertEqual(try scenarioStore.load().state, .restored, "DDC failure after verified Show cannot retain or replay topology recovery")
-        XCTAssertLessThan(try XCTUnwrap(events.values.firstIndex(of: "restore")), try XCTUnwrap(events.values.lastIndex(of: "open")))
+        XCTAssertEqual(try scenarioStore.load().state, .restored, "optional DDC failure cannot replay a subsequently verified desktop restore")
+        XCTAssertLessThan(try XCTUnwrap(events.values.lastIndex(of: "open")), try XCTUnwrap(events.values.firstIndex(of: "restore")))
 
         let opensBeforeDuplicateShow = events.values.filter { $0 == "open" }.count
         let duplicateOutcome = try backend.show(expectedJournalID: journalID, returnInput: 15)
@@ -1315,6 +1317,38 @@ final class DisplayMirroringTests: XCTestCase {
         XCTAssertEqual(events.values.filter { $0 == "open" }.count, opensBeforeDuplicateShow,
                        "resolved-journal app Show must not reopen DDC after an earlier input failure")
         XCTAssertEqual(try scenarioStore.load().state, .restored)
+    }
+
+    func testExplicitShowVerifiesDesktopAfterInputReturnEvenWhenModesWereAvailable() throws {
+        let original = try snapshot()
+        let mirrored = try snapshot { $0[1]["mirrorUUID"] = self.sourceUUID; $0[1]["active"] = false }
+        var current = original
+        var sut = HandoffController(mirror: controller(original), report: { _ in })
+        sut.mirror.records = { self.records(current) }
+        sut.mirror.engine.capture = { current }
+        sut.mirror.engine.apply = { current = $0 }
+        sut.mirror.transaction = MirrorTransaction(
+            begin: { OpaquePointer(bitPattern: 1)! }, stage: { _, _, _ in },
+            complete: { _, _ in current = mirrored }, cancel: { _ in })
+        try sut.away(selector: "8", source: "7", input: nil, store: store)
+        let id = try store.load().id
+        sut.open = { uuid in
+            (DDC.DisplayTarget(id: 8, uuid: uuid), DDCChannel(
+                getVCP: { _ in (17, 0) }, setVCP: { _, _ in XCTFail("fake selector only") }))
+        }
+        var inputWrites = 0
+        sut.select = { requested, _, displayID, uuid, originalInput in
+            inputWrites += 1
+            // Selecting the Mac input causes WindowServer to reinstate its
+            // mirror topology. Mode availability alone cannot predict this.
+            current = mirrored
+            return DDCInputSelection(displayID: displayID, uuid: uuid, original: originalInput,
+                requested: requested, observed: requested, outcome: .verified, detail: nil)
+        }
+        _ = try sut.guardedBack(expectedJournalID: id, input: 15, store: store)
+        XCTAssertEqual(inputWrites, 1)
+        XCTAssertNoThrow(try original.verify(current), "successful explicit Show must verify AFTER input return")
+        XCTAssertTrue(try store.load().state.resolved)
     }
 
     func testShowAttemptsKnownReturnInputWhenPreReadIsMalformed() throws {
@@ -1348,7 +1382,7 @@ final class DisplayMirroringTests: XCTestCase {
         XCTAssertEqual(result.state, .verified)
         XCTAssertEqual(result.observedInput, 15)
         XCTAssertNil(result.recoveryCommand, "the previous input is unknown, not guessed")
-        XCTAssertEqual(events, ["restore", "read", "write", "read"])
+        XCTAssertEqual(events, ["read", "write", "read", "restore"])
         XCTAssertEqual(try store.load().state, .restored)
         let duplicate = try sut.guardedBack(expectedJournalID: id, input: 15, store: store)
         XCTAssertEqual(duplicate.state, .notAttempted)

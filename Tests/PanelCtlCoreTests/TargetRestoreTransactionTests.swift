@@ -164,7 +164,7 @@ final class TargetRestoreTransactionTests: XCTestCase {
         }
     }
 
-    func testControllerVerifiesPartialShowPostconditionBeforeInputReturn() throws {
+    func testControllerVerifiesPartialShowPostconditionAfterInputReturn() throws {
         let baseline = try fixture("baseline")
         let before = try fixture("bothHidden")
         let target = try XCTUnwrap(baseline.displays.first { $0.uuid == targetUUID })
@@ -236,12 +236,12 @@ final class TargetRestoreTransactionTests: XCTestCase {
                 })
             let success = succeeds.contains(outcome)
             if success {
-                _ = try sut.unmirror(store: store, selector: targetUUID, afterRestore: { _ in inputs += 1 })
+                _ = try sut.unmirror(store: store, selector: targetUUID, returnInputBeforeRestore: { _ in inputs += 1 })
             } else {
-                XCTAssertThrowsError(try sut.unmirror(store: store, selector: targetUUID, afterRestore: { _ in inputs += 1 }), outcome)
+                XCTAssertThrowsError(try sut.unmirror(store: store, selector: targetUUID, returnInputBeforeRestore: { _ in inputs += 1 }), outcome)
             }
             XCTAssertEqual(completions, 1, "verification reads never retry the writer")
-            XCTAssertEqual(inputs, success ? 1 : 0, outcome)
+            XCTAssertEqual(inputs, 1, "input return runs once before the desktop postcondition: \(outcome)")
             let saved = try store.load()
             XCTAssertEqual(saved.publicMirrorSession?.removals.first?.state, success ? .restored : .needsAttention, outcome)
             XCTAssertEqual(saved.publicMirrorSession?.removals.last?.state, .mirrored, outcome)
@@ -270,7 +270,7 @@ final class TargetRestoreTransactionTests: XCTestCase {
                                      "partial repair cannot adopt a changed survivor as its new expectation")
                 XCTAssertEqual(try store.load().publicMirrorSession?.removals.first?.restoreFrom, before)
                 XCTAssertEqual(completions, 1)
-                XCTAssertEqual(inputs, 0)
+                XCTAssertEqual(inputs, 1, "inspection and failed repair never replay input return")
                 // Interrupted after macOS placed the target: the durable
                 // pre-Show expectations resolve it without the saved origin.
                 current = placed

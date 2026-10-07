@@ -69,6 +69,18 @@ macOS may undo mirroring on wake. If the whole original layout came back
 cleanly, the app mirrors each hidden display again, once, without switching
 inputs. Anything unexpected is left alone and shown as needing recovery.
 
+A monitor on another computer's input may reconnect with a reduced mode list
+(for example, 60 Hz instead of the saved 240 Hz). Explicit app **Show** or
+`back --input` validates the captured identities, attempts the configured Mac
+input once, waits for modes/topology to settle, then restores and verifies the
+journaled desktop. Returning to mirroring alone does not count as shown.
+Without a configured return input, use the monitor's input button first.
+
+Recovery reports the current identity, lifecycle or exact saved-mode blocker
+rather than hiding it behind an earlier generic layout error. Failed restoration
+retains the unresolved journal. An online display is not evidence that its Mac
+input is selected and never causes automatic Show or an input write.
+
 Hide is session-only: after logout or reboot, macOS loads its own layout. If
 macOS brings back a mirror itself, PanelCtl shows that display as **Mirrored**;
 turn off mirroring in System Settings → Displays.

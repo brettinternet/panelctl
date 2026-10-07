@@ -356,6 +356,40 @@ final class DisplayActionAppTests: XCTestCase {
         XCTAssertEqual(box.value.state, .none)
     }
 
+    func testExplicitShowActionReachesInputRecoveryAndPreservesPreciseRefusal() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let box = StatusBox(unverifiedRemovalStatus())
+        var showCalls = 0
+        var modeReturned = false
+        let blocker = "Saved 3440×1440 at 240 Hz mode is unavailable. Select the Mac input, then retry Show."
+        let model = makeModel(defaults: defaults, box: box, show: { journal, input in
+            XCTAssertEqual(journal, "unverified-action-journal")
+            XCTAssertEqual(input, 0x10, "explicit recovery must retain the configured Mac input")
+            showCalls += 1
+            if !modeReturned {
+                throw DisplayHandoffOperationFailure(action: "show",
+                    inputOutcome: DisplayInputOutcome(state: .unverified, requestedInput: input), message: blocker)
+            }
+            box.value = self.noneStatus()
+            return DisplayInputOutcome(state: .verified, requestedInput: input, observedInput: input)
+        })
+        await settleQuiescence(model)
+        let show = DisplayAction(name: "Return to Mac",
+            target: DisplayIdentitySnapshot(try XCTUnwrap(displays.first { $0.uuid == targetUUID })), effect: .show)
+        try model.saveDisplayAction(show)
+        XCTAssertEqual(showCalls, 0, "online recovery inspection is not explicit Show intent")
+        let refused = await run(model, id: show.id)
+        XCTAssertEqual(showCalls, 1, "recovery must not prevent explicit Show reaching the guarded backend")
+        XCTAssertTrue(String(describing: refused).contains(blocker), String(describing: refused))
+        XCTAssertTrue(box.value.hasUnresolvedJournal)
+        modeReturned = true
+        let restored = await run(model, id: show.id)
+        XCTAssertEqual(restored.outcome, .done)
+        XCTAssertEqual(showCalls, 2)
+        XCTAssertFalse(box.value.hasUnresolvedJournal)
+    }
+
     func testCleanupFailureAndContentionDoNotStartTheWriter() async throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }

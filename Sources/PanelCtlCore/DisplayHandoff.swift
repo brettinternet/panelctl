@@ -435,21 +435,22 @@ struct HandoffController {
                      store: RecoveryStore) throws -> DisplayInputOutcome {
         var inputOutcome = input.map {
             DisplayInputOutcome(state: .notAttempted, requestedInput: $0,
-                                detail: "Input selection was not attempted because the captured desktop was not restored.")
+                                detail: "Input selection was not attempted because Show did not pass journal and display validation.")
         } ?? .notRequested
         do {
-            var afterRestoreRan = false
+            var inputAttempted = false
+            let returnInput: ((RecoveryDisplay) throws -> Void)? = input == nil ? nil : { target in
+                inputAttempted = true
+                inputOutcome = selectInput(input, target: target, returning: true)
+            }
             _ = try mirror.unmirror(
                 store: store,
                 selector: targetUUID,
                 expectedID: expectedJournalID,
-                noOpWhenAlreadyResolved: true
-            ) { target in
-                afterRestoreRan = true
-                guard input != nil else { return }
-                inputOutcome = selectInput(input, target: target, returning: true)
-            }
-            if let input, !afterRestoreRan {
+                noOpWhenAlreadyResolved: true,
+                returnInputBeforeRestore: returnInput
+            )
+            if let input, !inputAttempted {
                 inputOutcome = DisplayInputOutcome(
                     state: .notAttempted,
                     requestedInput: input,
@@ -458,8 +459,9 @@ struct HandoffController {
             }
             return inputOutcome
         } catch {
+            let inputDetail = inputOutcome.detail.map { " Input return: \($0)" } ?? ""
             throw DisplayHandoffOperationFailure(action: "show", inputOutcome: inputOutcome,
-                                                 message: error.localizedDescription)
+                                                 message: error.localizedDescription + inputDetail)
         }
     }
 
@@ -483,10 +485,20 @@ struct HandoffController {
     }
 
     func back(selector: String, input: UInt8?, store: RecoveryStore) throws {
-        // No DDC open/read/write can prevent the topology restoration.
-        let journal = try mirror.unmirror(store: store, selector: selector) { target in
-            try switchInput(input, target: target, returning: true) { report("Input recovery: \($0)") }
+        var inputFailure: Error?
+        let returnInput: ((RecoveryDisplay) throws -> Void)? = input == nil ? nil : { target in
+            do {
+                try switchInput(input, target: target, returning: true) { report("Input recovery: \($0)") }
+            } catch { inputFailure = error }
         }
+        let journal: RecoveryJournal
+        do {
+            journal = try mirror.unmirror(store: store, selector: selector, returnInputBeforeRestore: returnInput)
+        } catch {
+            throw RecoveryError.unsafe(error.localizedDescription + (inputFailure.map { " Input return: \($0.localizedDescription)" } ?? ""))
+        }
+        if let inputFailure { throw inputFailure }
+        if input == nil { report("DDC skipped (no --input configured); use the monitor's input button.") }
         let remaining = journal.publicMirrorSession?.removals.filter { !$0.state.resolved }.count ?? 0
         if remaining > 0 {
             report("Back: selected display shown and verified; \(remaining) removal(s) remain hidden. Its position may differ slightly until the last Show restores the original arrangement. Journal: \(store.url.path)")

@@ -5,8 +5,13 @@ import Darwin
 
 public enum RecoveryError: Error, CustomStringConvertible, LocalizedError {
     case unsafe(String)
+    case modeUnavailable(displayUUID: String, mode: String)
     public var description: String {
-        switch self { case .unsafe(let reason): return "display recovery: \(reason)" }
+        switch self {
+        case .unsafe(let reason): return "display recovery: \(reason)"
+        case .modeUnavailable(let uuid, let mode):
+            return "display recovery: original mode unavailable for \(uuid): \(mode). Switch this monitor to its Mac input, then retry Show. The journal is retained."
+        }
     }
     public var errorDescription: String? { description }
 }
@@ -25,6 +30,10 @@ struct RecoveryMode: Codable, Equatable {
         width = mode.width; height = mode.height
         pixelWidth = mode.pixelWidth; pixelHeight = mode.pixelHeight
         refreshRate = mode.refreshRate; flags = mode.ioFlags
+    }
+
+    var description: String {
+        "\(width)×\(height) at \(refreshRate) Hz (pixels \(pixelWidth)×\(pixelHeight), mode \(id), flags \(flags))"
     }
 
     // IDs are only meaningful in the captured boot. Still compare the mode's
@@ -325,7 +334,7 @@ enum RecoveryConfiguration {
             let options = [kCGDisplayShowDuplicateLowResolutionModes as String: true] as CFDictionary
             let available = CGDisplayCopyAllDisplayModes(display.id, options) as? [CGDisplayMode] ?? []
             guard let mode = available.first(where: { RecoveryMode($0) == display.mode }) else {
-                throw RecoveryError.unsafe("original mode unavailable for \(display.uuid)")
+                throw RecoveryError.modeUnavailable(displayUUID: display.uuid, mode: display.mode.description)
             }
             return mode
         }
@@ -345,7 +354,7 @@ struct TargetRestoreTransaction {
         let options = [kCGDisplayShowDuplicateLowResolutionModes as String: true] as CFDictionary
         let available = CGDisplayCopyAllDisplayModes(target.id, options) as? [CGDisplayMode] ?? []
         guard let mode = available.first(where: { RecoveryMode($0) == target.mode }) else {
-            throw RecoveryError.unsafe("original mode unavailable for \(target.uuid)")
+            throw RecoveryError.modeUnavailable(displayUUID: target.uuid, mode: target.mode.description)
         }
         return { try checked(CGConfigureDisplayWithDisplayMode($0, target.id, mode, nil), "restore target mode") }
     }

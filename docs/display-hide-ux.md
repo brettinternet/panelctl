@@ -138,8 +138,13 @@ Desktop and input results are reported separately on the selected display:
 | No DDC | Hidden | Skipped; use monitor buttons |
 | Input write fails | Not hidden | Failed, with a switch-back command |
 | Mirroring fails after input switched | Failed; recovery offered | Switch-back command shown |
-| Show: layout fails | Not restored | Not switched |
-| Show: input fails | Restored | Failed |
+| Show: layout fails | Not restored; journal retained | May already have switched; outcome shown |
+| Show: input fails | Restored only if fresh layout/mode checks pass | Failed |
+
+Explicit Show returns the configured Mac input before restoring the desktop,
+then verifies the post-input layout. Online status alone never triggers Show.
+A missing saved mode names the display and mode to recover; switch its input
+manually if DDC is unavailable, then retry Show.
 
 ## Scripting
 

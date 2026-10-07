@@ -414,6 +414,9 @@ public struct DisplayHideController {
         let sessionVerified = MirrorSessionTopology.matches(
             baseline: session.baseline, removals: session.removals, current: current
         )
+        let restorationFailure: String?
+        do { try session.baseline.validateRestoration(to: current); restorationFailure = nil }
+        catch { restorationFailure = error.localizedDescription }
         let modeFailure: String?
         do { try mirror.preflightModes(session.baseline); modeFailure = nil }
         catch { modeFailure = error.localizedDescription }
@@ -446,19 +449,25 @@ public struct DisplayHideController {
                     targetUUID: removal.targetUUID, current: current
                 )) && targetRecord?.online == true && targetRecord?.asleep == false &&
                 sourceRecord?.online == true && sourceRecord?.active == true && sourceRecord?.asleep == false
-            let canShow = modeFailure == nil &&
+            let canShow = restorationFailure == nil && modeFailure == nil &&
                 ((removal.state == .mirrored && sessionVerified && relationVerified) || canRepairLayout)
             let refusal: String?
             if canShow {
                 refusal = nil
+            } else if let restorationFailure {
+                refusal = restorationFailure
+            } else if targetRecord?.online != true || targetRecord?.asleep != false {
+                refusal = "The journaled target is asleep or unavailable. Wake or reconnect it before Show."
+            } else if sourceRecord?.online != true || sourceRecord?.active != true || sourceRecord?.asleep != false {
+                refusal = "The journaled mirror source is asleep, inactive, or unavailable. Wake or reconnect it before Show."
+            } else if let modeFailure {
+                refusal = modeFailure
             } else if removal.state == .needsAttention {
                 refusal = removal.failure ?? "This removal needs recovery."
             } else if !relationVerified {
                 refusal = "The exact removed display or its source is unavailable or no longer matches. Reconnect the captured displays and inspect recovery."
             } else if !sessionVerified {
                 refusal = journal.failure ?? "Another removal in this session needs attention; inspect recovery before Show."
-            } else if let modeFailure {
-                refusal = modeFailure
             } else if removal.state != .mirrored {
                 refusal = "This removal is still in an interrupted operation; inspect recovery before continuing."
             } else {
@@ -485,7 +494,7 @@ public struct DisplayHideController {
                 detail = "Desktop hidden by PanelCtl; monitor input is unknown. Use the monitor's input buttons if needed."
             } else if let targetRemoval {
                 state = .recoveryNeeded
-                detail = targetRemoval.failure ?? targetRemoval.showRefusal
+                detail = targetRemoval.showRefusal ?? targetRemoval.failure
             } else if saved?.mirrorUUID != nil {
                 state = .mirroredExternally
                 detail = "Mirrored outside PanelCtl; correct this manually in macOS Displays settings."

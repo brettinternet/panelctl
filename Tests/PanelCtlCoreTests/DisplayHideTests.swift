@@ -157,6 +157,158 @@ final class DisplayHideTests: XCTestCase {
         XCTAssertNoThrow(try baseline.verify(topology.snapshot))
     }
 
+    func testExplicitShowRecoversMissingModeAfterInputReturnWithoutTreatingOnlineAsIntent() throws {
+        for scenario in ["mirrors-return", "separate", "unverified", "late-mode", "failed", "no-ddc", "no-input",
+                         "timeout", "unstable", "identity-before", "identity-after", "journal-after", "other-mode"] {
+            store = RecoveryStore(url: directory.appendingPathComponent("\(scenario).json"))
+            let baseline = try snapshot { displays in
+                var mode = displays[1]["mode"] as! [String: Any]
+                mode["refreshRate"] = 240
+                displays[1]["mode"] = mode
+                displays[1]["x"] = 0
+                displays[1]["y"] = 1080
+            }
+            let bothHidden = RecoverySnapshot(bootSession: baseline.bootSession, osBuild: baseline.osBuild,
+                userID: baseline.userID, displays: try snapshot { displays in
+                    for index in [1, 2] {
+                        displays[index]["mirrorUUID"] = self.sourceUUID
+                        displays[index]["active"] = false
+                    }
+                }.displays)
+            let firstHidden = RecoverySnapshot(bootSession: baseline.bootSession, osBuild: baseline.osBuild,
+                userID: baseline.userID, displays: bothHidden.displays.map {
+                    $0.uuid == self.otherUUID ? baseline.displays[2] : $0
+                })
+            var journal = RecoveryJournal(snapshot: baseline, publicMirrorSession: PublicMirrorSession(
+                baseline: baseline, removals: [
+                    PublicMirrorRemoval(target: baseline.displays[1], source: baseline.displays[0],
+                                        beforeOperation: baseline, state: .mirrored),
+                    PublicMirrorRemoval(target: baseline.displays[2], source: baseline.displays[0],
+                                        beforeOperation: firstHidden, state: .mirrored)
+                ]))
+            journal.state = .mirrored
+            try save(journal)
+            topology.snapshot = try snapshot { displays in
+                displays[1]["main"] = true
+                displays[0]["main"] = false
+                if scenario == "identity-before" { displays[0]["serial"] = 999 }
+            }
+            var modeAvailable = false
+            var pauses = 0
+            var inputs = 0
+            var restores = 0
+            var mirror = MirrorController(
+                records: { self.topology.records }, operationLock: { self.operationStore },
+                engine: RecoveryEngine(capture: { self.topology.snapshot }, apply: { saved in
+                    XCTAssertTrue(modeAvailable)
+                    restores += 1
+                    self.topology.snapshot = saved
+                }, convergencePause: {
+                    pauses += 1
+                    if scenario == "unstable", inputs > 0 {
+                        modeAvailable = true
+                        self.topology.snapshot = try! self.snapshot { $0[1]["x"] = pauses % 2 }
+                    }
+                    if inputs > 0, pauses == (scenario == "late-mode" ? 12 : 2),
+                       !["timeout", "failed", "unstable"].contains(scenario) {
+                        modeAvailable = true
+                        self.topology.snapshot = scenario == "separate" ? baseline : bothHidden
+                        if scenario == "identity-after" {
+                            self.topology.snapshot = try! self.snapshot { $0[1]["id"] = 88 }
+                        }
+                    }
+                }), preflightModes: { _ in
+                    if !modeAvailable {
+                        let missing = baseline.displays[scenario == "other-mode" ? 2 : 1]
+                        throw RecoveryError.modeUnavailable(displayUUID: missing.uuid, mode: missing.mode.description)
+                    }
+                })
+            mirror.restoreTarget = { saved, uuid, revalidate, _ in
+                XCTAssertEqual(uuid, self.targetUUID)
+                XCTAssertTrue(modeAvailable)
+                try revalidate()
+                restores += 1
+                self.topology.snapshot = RecoverySnapshot(bootSession: saved.bootSession, osBuild: saved.osBuild,
+                    userID: saved.userID, displays: bothHidden.displays.map {
+                        $0.uuid == uuid ? saved.displays[1] : $0
+                    })
+            }
+            var handoff = HandoffController(mirror: mirror, report: { _ in })
+            handoff.open = { uuid in
+                if scenario == "no-ddc" { throw RecoveryError.unsafe("fake DDC unavailable") }
+                return (DDC.DisplayTarget(id: self.targetID, uuid: uuid), DDCChannel(
+                    getVCP: { _ in (17, 0) }, setVCP: { _, _ in XCTFail("fake selector only") }))
+            }
+            handoff.select = { requested, _, id, uuid, original in
+                XCTAssertEqual(restores, 0, "input must precede restoration of the unavailable mode")
+                inputs += 1
+                if scenario == "failed" { throw RecoveryError.unsafe("fake input failure") }
+                if scenario == "journal-after" {
+                    var changed = try self.store.load()
+                    changed.trigger = "external-change"
+                    try self.store.save(changed)
+                }
+                return DDCInputSelection(displayID: id, uuid: uuid, original: original, requested: requested,
+                    observed: scenario == "unverified" ? nil : requested,
+                    outcome: scenario == "unverified" ? .unverified : .verified, detail: nil)
+            }
+            let backend = DisplayHideController(store: store, mirror: mirror,
+                operationLock: { self.operationStore }, handoff: handoff)
+            let status = try backend.inspect()
+            XCTAssertEqual(restores, 0, "online inspection cannot unmirror, even with an unresolved journal")
+            XCTAssertEqual(inputs, 0, "inspection cannot switch away from another computer")
+            let reason = try XCTUnwrap(status.journal?.showRefusal)
+            XCTAssertTrue(reason.contains(scenario == "identity-before" ? "identity" : "original mode unavailable"), reason)
+            if scenario != "identity-before" && scenario != "other-mode" {
+                XCTAssertTrue(reason.contains("240.0 Hz"), reason)
+                XCTAssertTrue(status.observations.first { $0.identity.uuid == self.targetUUID }?.detail?.contains("240.0 Hz") == true)
+            }
+            let success = ["mirrors-return", "separate", "unverified", "late-mode"].contains(scenario)
+            do {
+                let result = try backend.show(expectedJournalID: journal.id.uuidString, targetUUID: targetUUID,
+                                              returnInput: scenario == "no-input" ? nil : 15)
+                XCTAssertTrue(success, scenario)
+                XCTAssertEqual(inputs, 1, "input return is never retried or replayed after Show")
+                XCTAssertEqual(result.state, scenario == "unverified" ? .unverified : .verified)
+                if scenario == "separate" {
+                    XCTAssertEqual(restores, 0, "input return itself restored the exact baseline")
+                    XCTAssertFalse(try backend.inspect().hasUnresolvedRecovery)
+                } else {
+                    XCTAssertEqual(restores, 1, "mirror reappearance is not successful Show: explicitly unmirror the target")
+                    let shown = try XCTUnwrap(self.topology.snapshot.displays.first { $0.uuid == self.targetUUID })
+                    XCTAssertNil(shown.mirrorUUID)
+                    XCTAssertEqual(shown.mode, baseline.displays[1].mode)
+                    XCTAssertEqual(try backend.inspect().removals.filter(\.isUnresolved).map(\.target.uuid), [otherUUID])
+                    _ = try backend.show(expectedJournalID: journal.id.uuidString, targetUUID: otherUUID)
+                    XCTAssertNoThrow(try baseline.verify(self.topology.snapshot), "last Show restores the exact stacked layout")
+                    XCTAssertFalse(try backend.inspect().hasUnresolvedRecovery)
+                    XCTAssertEqual(inputs, 1)
+                }
+            } catch {
+                XCTAssertFalse(success, "\(scenario): \(error)")
+                XCTAssertEqual(restores, 0, scenario)
+                XCTAssertFalse(try store.load().state.resolved, scenario)
+                XCTAssertEqual(try store.load().id, journal.id)
+                if scenario == "journal-after" {
+                    XCTAssertEqual(try store.load().trigger, "external-change", "never overwrite a changed journal")
+                }
+                let expected: String = switch scenario {
+                case "failed": "fake input failure"
+                case "no-ddc": "input button"
+                case "identity-before", "identity-after": "identity"
+                case "journal-after": "journal changed"
+                case "unstable": "did not settle"
+                default: "original mode unavailable"
+                }
+                XCTAssertTrue(error.localizedDescription.contains(expected), "\(scenario): \(error)")
+                if ["identity-before", "no-input", "other-mode", "no-ddc"].contains(scenario) {
+                    XCTAssertEqual(inputs, 0, "do not switch an unrelated or unverified monitor")
+                } else { XCTAssertEqual(inputs, 1) }
+            }
+            XCTAssertLessThanOrEqual(pauses, 25, "mode/identity settlement is bounded; writers are not retried")
+        }
+    }
+
     func testWakeResumeRejectsJournalMutationBeforeAnyMirrorStage() throws {
         let status = try prepareWakeResetStatus()
         let expected = try wakeExpectation(status, targetUUID: targetUUID)

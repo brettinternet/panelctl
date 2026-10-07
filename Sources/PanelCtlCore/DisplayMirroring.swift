@@ -537,7 +537,7 @@ struct MirrorController {
 
     func unmirror(store: RecoveryStore, selector: String? = nil, expectedID: UUID? = nil,
                   noOpWhenAlreadyResolved: Bool = false,
-                  afterRestore: (RecoveryDisplay) throws -> Void = { _ in }) throws -> RecoveryJournal {
+                  returnInputBeforeRestore: ((RecoveryDisplay) throws -> Void)? = nil) throws -> RecoveryJournal {
         do {
             let operation = operationLock()
             try operation.lock()
@@ -551,7 +551,7 @@ struct MirrorController {
             if journal.publicMirrorSession != nil {
                 return try unmirrorSession(&journal, selector: selector, expectedID: expectedID,
                                           noOpWhenAlreadyResolved: noOpWhenAlreadyResolved,
-                                          store: store, afterRestore: afterRestore)
+                                          store: store, returnInputBeforeRestore: returnInputBeforeRestore)
             }
             guard journal.mirrorTargetID != nil, journal.mirrorSourceID != nil else {
                 throw RecoveryError.unsafe("not a mirror journal; inspect recovery status")
@@ -582,9 +582,21 @@ struct MirrorController {
                 throw RecoveryError.unsafe("journaled mirror source is asleep, inactive, or unavailable; wake or reconnect the exact display, then inspect recovery status before Show")
             }
             if wasResolved && noOpWhenAlreadyResolved { return journal }
+            if !wasResolved {
+                do {
+                    _ = try prepareShow(journal, baseline: journal.snapshot, target: target, source: source,
+                                        store: store, returnInputBeforeRestore: returnInputBeforeRestore)
+                } catch {
+                    if Self.sameStoredJournal(journal, try store.load()) {
+                        journal.state = .needsAttention
+                        journal.failure = error.localizedDescription
+                        try store.save(journal)
+                    }
+                    throw error
+                }
+            }
             // Public-only engine: no private re-enable, helper or gamma path.
             try engine.finish(&journal, store: store, verifyOnly: false, trigger: "unmirror")
-            try afterRestore(target)
             return journal
         } catch {
             throw fallback(error, store: store, selector: selector)
@@ -593,7 +605,7 @@ struct MirrorController {
 
     private func unmirrorSession(_ journal: inout RecoveryJournal, selector: String?, expectedID: UUID?,
                                  noOpWhenAlreadyResolved: Bool, store: RecoveryStore,
-                                 afterRestore: (RecoveryDisplay) throws -> Void) throws -> RecoveryJournal {
+                                 returnInputBeforeRestore: ((RecoveryDisplay) throws -> Void)?) throws -> RecoveryJournal {
         guard var session = journal.publicMirrorSession else {
             throw RecoveryError.unsafe("missing public-mirror session")
         }
@@ -654,9 +666,12 @@ struct MirrorController {
         }), sourceRecord.online, sourceRecord.active, !sourceRecord.asleep else {
             throw RecoveryError.unsafe("journaled mirror source is asleep, inactive, or unavailable; wake or reconnect the exact display, then inspect recovery status before Show")
         }
-        let current = try engine.capture()
-        try session.baseline.validateRestoration(to: current)
-        try preflightModes(session.baseline)
+        guard let target = session.baseline.displays.first(where: { $0.uuid == selected.targetUUID }),
+              let source = session.baseline.displays.first(where: { $0.uuid == selected.sourceUUID }) else {
+            throw RecoveryError.unsafe("captured target or source identity is missing")
+        }
+        let current = try prepareShow(journal, baseline: session.baseline, target: target, source: source,
+                                      store: store, returnInputBeforeRestore: returnInputBeforeRestore)
         guard MirrorSessionTopology.matches(baseline: session.baseline, removals: session.removals, current: current) ||
                 MirrorSessionTopology.canRestoreFinalLayout(baseline: session.baseline, removals: session.removals,
                                                            targetUUID: selected.targetUUID, current: current) ||
@@ -683,7 +698,6 @@ struct MirrorController {
         journal.trigger = "unmirror-\(selected.targetUUID)"
         try store.save(journal)
 
-        var topologySaved = false
         do {
             if finalShow {
                 if (try? session.baseline.verify(current)) == nil {
@@ -727,18 +741,86 @@ struct MirrorController {
                 journal.failure = completed.removals.first(where: { $0.state == .needsAttention })?.failure
             }
             try store.save(journal)
-            topologySaved = true
-            guard let target = session.baseline.displays.first(where: { $0.uuid == selected.targetUUID }) else {
-                throw RecoveryError.unsafe("captured target identity is missing")
-            }
-            try afterRestore(target)
             return journal
         } catch {
-            if !topologySaved {
-                markRemovalNeedsAttention(&journal, removalID: selected.id, reason: String(describing: error))
-                try? store.save(journal)
-            }
+            markRemovalNeedsAttention(&journal, removalID: selected.id, reason: String(describing: error))
+            try? store.save(journal)
             throw RecoveryError.unsafe(String(describing: error))
+        }
+    }
+
+    /// Only explicit Show/back supplies the input callback. Online is not proof
+    /// of the selected monitor input, nor permission to unmirror. Both locks
+    /// remain held across the one input attempt and all read-only observations.
+    private func prepareShow(_ journal: RecoveryJournal, baseline: RecoverySnapshot,
+                             target: RecoveryDisplay, source: RecoveryDisplay, store: RecoveryStore,
+                             returnInputBeforeRestore: ((RecoveryDisplay) throws -> Void)?) throws -> RecoverySnapshot {
+        let current = try engine.capture()
+        try baseline.validateRestoration(to: current)
+        try validateShowAvailability(target: target, source: source)
+        do {
+            try preflightModes(baseline)
+        } catch let error as RecoveryError {
+            // Only the selected monitor's missing mode can be addressed by
+            // this input return. Never switch another removal's input.
+            guard case .modeUnavailable(let uuid, _) = error,
+                  uuid.caseInsensitiveCompare(target.uuid) == .orderedSame,
+                  returnInputBeforeRestore != nil else { throw error }
+        }
+        guard let returnInputBeforeRestore else { return current }
+        guard Self.sameStoredJournal(journal, try store.load()) else {
+            throw RecoveryError.unsafe("journal changed before input return; inspect recovery status")
+        }
+        try returnInputBeforeRestore(target)
+
+        // At most five seconds, with two matching ready observations. Input
+        // return can reconnect the target and reinstate *both* mirrors; never
+        // restore from the pre-input topology or consider mirror return a Show.
+        var previous: String?
+        for attempt in 0..<26 {
+            guard Self.sameStoredJournal(journal, try store.load()) else {
+                throw RecoveryError.unsafe("journal changed during input return; inspect recovery status")
+            }
+            do {
+                let observed = try engine.capture()
+                try baseline.validateRestoration(to: observed)
+                try validateShowAvailability(target: target, source: source)
+                try preflightModes(baseline)
+                let identity = observed.stableTopologyIdentity()
+                if let identity, identity == previous {
+                    guard Self.sameStoredJournal(journal, try store.load()) else {
+                        throw RecoveryError.unsafe("journal changed during input return; inspect recovery status")
+                    }
+                    return observed
+                }
+                previous = identity
+                if attempt == 25 {
+                    throw RecoveryError.unsafe("display topology did not settle after input return; retry Show when stable; journal retained")
+                }
+            } catch {
+                previous = nil
+                if attempt == 25 { throw error }
+            }
+            engine.convergencePause()
+        }
+        throw RecoveryError.unsafe("display topology did not settle after input return; journal retained")
+    }
+
+    private func validateShowAvailability(target: RecoveryDisplay, source: RecoveryDisplay) throws {
+        let available = try records()
+        guard Set(available.map(\.id)).count == available.count,
+              Set(available.compactMap { $0.uuid?.lowercased() }).count == available.count else {
+            throw RecoveryError.unsafe("display identities are ambiguous; inspect recovery status")
+        }
+        for saved in [target, source] {
+            guard let record = available.first(where: { $0.uuid?.caseInsensitiveCompare(saved.uuid) == .orderedSame }),
+                  record.id == saved.id, record.vendor == saved.vendor, record.model == saved.model,
+                  record.serial == saved.serial else {
+                throw RecoveryError.unsafe("identity changed for \(saved.uuid); refusing to guess")
+            }
+            guard record.online, !record.asleep, saved.id != source.id || record.active else {
+                throw RecoveryError.unsafe("journaled display \(saved.uuid) is asleep, inactive, or unavailable; wake or reconnect it before Show")
+            }
         }
     }
 
