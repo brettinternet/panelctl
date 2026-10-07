@@ -55,6 +55,11 @@ scripts/package-release.sh v1.2.3
 This writes universal app and CLI archives with SHA-256 files to `dist/`.
 Artifacts are ad-hoc signed, not notarized.
 
+General settings shows the packaged release version. When HEAD is not at the
+matching release tag, packaging appends the short Git SHA (for example,
+`1.2.3 (abc1234)`) to distinguish development builds. Packaging requires a Git
+checkout; bundle marketing and build numbers remain unchanged.
+
 Release builds pass the SDK to the linker (`-Xclang-linker -isysroot`).
 Without it, SwiftPM can record macOS 13.0 as the SDK and macOS runs the app
 with macOS 13 behavior (for example, truncated Settings rows).

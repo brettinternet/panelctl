@@ -1,5 +1,19 @@
 #!/usr/bin/env bash
 
+# Display the validated release version, identifying builds not at that tag.
+release_version_display() {
+	local repo=$1 tag=$2 head tagged_head
+	head=$(git -C "$repo" rev-parse --verify HEAD) || return 1
+	tagged_head=$(git -C "$repo" rev-parse --verify "refs/tags/$tag^{commit}" 2>/dev/null) || tagged_head=
+	if [[ "$head" == "$tagged_head" ]]; then
+		printf '%s\n' "${tag#v}"
+	else
+		local sha
+		sha=$(git -C "$repo" rev-parse --short HEAD) || return 1
+		printf '%s (%s)\n' "${tag#v}" "$sha"
+	fi
+}
+
 # Parse a release tag and derive the bundle's release and build versions.
 # Callers should check the return status before using the RELEASE_* variables.
 release_version_parse() {

@@ -28,6 +28,8 @@ fi
 
 marketing_version=$RELEASE_MARKETING_VERSION
 build_number=$RELEASE_BUILD_NUMBER
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+display_version=$(release_version_display "$repo_root" "$tag")
 
 for binary in "$arm64_ui" "$x86_64_ui" "$arm64_cli" "$x86_64_cli"; do
 	if [[ ! -f "$binary" || ! -x "$binary" ]]; then
@@ -69,7 +71,7 @@ chmod 0755 "$staging/Contents/MacOS/PanelCtl" "$staging/Contents/Helpers/panelct
 
 sed \
 	-e "s/@MARKETING_VERSION@/$marketing_version/g" \
-	-e "s/@RELEASE_VERSION@/$RELEASE_FULL_VERSION/g" \
+	-e "s/@RELEASE_VERSION@/$display_version/g" \
 	-e "s/@BUILD_NUMBER@/$build_number/g" \
 	"$(dirname "${BASH_SOURCE[0]}")/../Packaging/Info.plist" \
 	> "$staging/Contents/Info.plist"
