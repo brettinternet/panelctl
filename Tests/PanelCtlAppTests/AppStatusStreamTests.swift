@@ -73,7 +73,7 @@ final class AppStatusStreamTests: XCTestCase {
         defer { stream.stop() }
         let first = try socketPair()
         stream.subscribe(first[0])
-        XCTAssertEqual(try readFrame(first[1]).sequence, 1)
+        XCTAssertEqual(try Self.readFrame(first[1]).sequence, 1)
         Darwin.close(first[1])
         try await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertEqual(stream.watcherCount, 0)
@@ -81,7 +81,7 @@ final class AppStatusStreamTests: XCTestCase {
         let second = try socketPair()
         defer { Darwin.close(second[1]) }
         stream.subscribe(second[0])
-        _ = try readFrame(second[1])
+        _ = try Self.readFrame(second[1])
         let command = Data("{\"protocol\":1,\"command\":\"enable\"}\n".utf8)
         _ = command.withUnsafeBytes { Darwin.send(second[1], $0.baseAddress, $0.count, MSG_NOSIGNAL) }
         try await Task.sleep(nanoseconds: 50_000_000)
@@ -93,7 +93,7 @@ final class AppStatusStreamTests: XCTestCase {
     @MainActor
     func testStalledConsumerIsDisconnectedWithoutBlockingHealthyWatcher() async throws {
         var snapshot = Self.status("waiting")
-        let stream = AppStatusStream(coalescingNanoseconds: 1_000_000) { snapshot }
+        let stream = AppStatusStream(coalescingNanoseconds: 20_000_000) { snapshot }
         defer { stream.stop() }
         let slow = try socketPair()
         let fast = try socketPair()
@@ -102,12 +102,14 @@ final class AppStatusStreamTests: XCTestCase {
         XCTAssertEqual(setsockopt(slow[0], SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout<Int32>.size)), 0)
         stream.subscribe(slow[0])
         stream.subscribe(fast[0])
-        _ = try readFrame(fast[1])
+        _ = try Self.readFrame(fast[1])
         for index in 0..<100 {
             snapshot = Self.status("\(index)-" + String(repeating: "x", count: 256))
             stream.statusDidChange()
-            try await Task.sleep(nanoseconds: 5_000_000)
-            XCTAssertEqual(try readFrame(fast[1]).state, snapshot.state)
+            // Wait off the main actor so the coalesced publisher can run even
+            // when the runner takes longer than its nominal timer interval.
+            let response = try await Self.blockingClient { try Self.readFrame(fast[1]) }
+            XCTAssertEqual(response.state, snapshot.state)
             if stream.watcherCount == 1 { break }
         }
         XCTAssertEqual(stream.watcherCount, 1)
@@ -185,7 +187,7 @@ final class AppStatusStreamTests: XCTestCase {
         return pair
     }
 
-    private func readFrame(_ fd: Int32) throws -> AppControlResponse {
+    private static func readFrame(_ fd: Int32) throws -> AppControlResponse {
         var data = Data()
         var byte: UInt8 = 0
         while Darwin.read(fd, &byte, 1) == 1 {
