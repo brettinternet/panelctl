@@ -394,9 +394,18 @@ final class AppModel: ObservableObject {
         protectionCoordinator.onMembershipChange = { [weak self] ids in
             self?.blackedOutDisplayIDs = ids
         }
-        protectionCoordinator.onOneShotFinished = { [weak self] _ in
+        protectionCoordinator.onOneShotFinished = { [weak self] id, succeeded, message in
             guard let self else { return }
             self.lastOneShotFinished = .now
+            if !succeeded {
+                // Failures after installation would otherwise leave the run's .done response.
+                let failure = message ?? "The one-shot run ended without verified cleanup."
+                self.protectionRuleRunResults[id] = AppControlResponse(
+                    ok: false, running: true, enabled: self.automationPreferences.isEnabled,
+                    state: self.runtimeState.controlIdentifier, summary: Self.bounded(failure),
+                    error: Self.bounded(failure), outcome: .failed
+                )
+            }
             self.reconcileProtection()
             self.protectionCoordinator.resumeAutomaticRulesAfterOneShot()
             self.onStatusChange?()
@@ -2899,8 +2908,10 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func runProtectionRule(id: UUID) async -> AppControlResponse {
+        protectionRuleRunResults[id] = nil
         let response = await handleProtectionRuleControlRequest(AppControlRequest(command: .runRule, ruleID: id))
-        protectionRuleRunResults[id] = response
+        // Keep a failure the run reported while this request awaited installation.
+        if protectionRuleRunResults[id] == nil { protectionRuleRunResults[id] = response }
         return response
     }
 

@@ -32,7 +32,7 @@ final class ProtectionCoordinator {
 
     var onStateChange: (() -> Void)?
     var onMembershipChange: ((Set<UInt32>) -> Void)?
-    var onOneShotFinished: ((UUID) -> Void)?
+    var onOneShotFinished: ((UUID, Bool, String?) -> Void)?
 
     init(
         initialCleanupFailure: String? = nil,
@@ -215,13 +215,13 @@ final class ProtectionCoordinator {
         let accepted = service.runOneShot(
             arguments: arguments,
             onInstalled: onInstalled
-        ) { [weak self] _, _ in
+        ) { [weak self] succeeded, message in
             guard let self else { return }
             self.oneShotRuleIDs.remove(id)
             self.oneShotRuleNames.removeValue(forKey: id)
             self.oneShotDisplaySelections.removeValue(forKey: id)
             self.publishChanges()
-            self.onOneShotFinished?(id)
+            self.onOneShotFinished?(id, succeeded, message)
         }
         if !accepted {
             oneShotRuleIDs.remove(id)

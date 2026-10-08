@@ -663,6 +663,27 @@ final class ProtectionRuleRunOnceTests: XCTestCase {
         }
     }
 
+    func testSettingsRunShowsFailureAfterInstallation() async throws {
+        try await withHelper(mode: "crash-after-install") { log in
+            let selected = rule(id: UUID(), name: "Crashes later", displayUUID: firstUUID, enabled: false)
+            let preferences = AutomationPreferences(isEnabled: false, rules: [selected])
+            let (model, defaults, suite, journals) = try makeModel(preferences: preferences)
+            defer {
+                defaults.removePersistentDomain(forName: suite)
+                try? FileManager.default.removeItem(at: journals)
+            }
+
+            let response = await model.runProtectionRule(id: selected.id)
+            XCTAssertEqual(response.outcome, .done, "the effect was installed before the helper failed")
+            try await wait { model.controlRunningRule == nil }
+            XCTAssertEqual(model.protectionRuleRunResults[selected.id]?.outcome, .failed)
+            let status = try XCTUnwrap(model.protectionRuleRunStatus(id: selected.id))
+            XCTAssertEqual(status, "Last attempt: The one-shot helper exited before cleanup was verified.")
+            XCTAssertEqual(launchLines(at: log).filter { $0.contains("--panelctl-run-once") }.count, 1)
+            await shutdown(model)
+        }
+    }
+
     func testRequestsReceivedDuringOneShotStayBusyAfterCleanup() async throws {
         try await withHelper(mode: "hold") { log in
             let selected = rule(id: UUID(), name: "Run once", displayUUID: firstUUID, enabled: false)
@@ -807,6 +828,10 @@ final class ProtectionRuleRunOnceTests: XCTestCase {
             exit 2
         fi
         printf '{"state":"blacked_out","blackedOutDisplayIDs":[1]}\\n'
+        if [[ "$PANELCTL_TEST_RUN_RULE_MODE" == "crash-after-install" ]]; then
+            /bin/sleep 0.1
+            exit 1
+        fi
         if [[ "$PANELCTL_TEST_RUN_RULE_MODE" == "finish" ]]; then
             /bin/sleep 0.08
             printf '{"state":"stopped","blackedOutDisplayIDs":[],"cleanupSucceeded":true}\\n'
