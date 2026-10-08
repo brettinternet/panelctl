@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@agent'
 created_date: '2026-10-08 20:06'
-updated_date: '2026-10-08 20:22'
+updated_date: '2026-10-08 20:27'
 labels: []
 dependencies: []
 type: bug
@@ -36,4 +36,6 @@ Use NSSwitch.performClick and current-control rendering waits; select the target
 Main CI 37837084104 proves hidden-display pause/resume now passes with performClick and rendering waits. Remaining unhidden-display test clicks the prior display control before SwiftUI selection updates; select switches by their existing display-specific accessibility label rather than count.
 
 CI 37837757000 showed native NSSwitch accessibility labels are nil. User approved exactly the two affected local UI tests, with fake displays and no real window movement or hardware writes. Direct inspection confirmed nil labels; selecting the target before presenting Settings removes the stale first-display control race. Both affected tests now pass locally (2 tests, 0 failures), retaining all behavior assertions; diagnostic prints removed.
+
+Main CI 37838933066 still exposes initial-page rendering on macOS 15 even after preselecting before present. Changed approach: enable keep-off on the initial main display, leave target off, and wait for off before clicking, so stale controls are observably distinct. Added regression assertion that target clicks leave the initial display preference unchanged. Both scoped local UI tests pass again (2/2); no production behavior or existing assertions weakened.
 <!-- SECTION:NOTES:END -->

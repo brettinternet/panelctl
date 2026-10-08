@@ -443,6 +443,9 @@ final class SettingsWindowTests: XCTestCase {
     func testKeepWindowsOffSettingsToggleDestinationAndStatusWithoutMoving() throws {
         try requireInteractiveUI()
         let (model, defaults) = try makeModel(windowMovePermission: SettingsGrantedWindowMovePermission())
+        // The initially rendered main display must differ from the selected target.
+        // Otherwise an off switch can still belong to the old page on slower runners.
+        model.setKeepWindowsOffEnabled(true, for: Self.mainUUID)
         defer {
             model.stopKeepWindowsOff()
             defaults.removePersistentDomain(forName: Self.suiteName)
@@ -455,11 +458,11 @@ final class SettingsWindowTests: XCTestCase {
         window.setContentSize(NSSize(width: 680, height: 1000))
         let content = try XCTUnwrap(window.contentView)
         func keepOffSwitch() -> NSSwitch? {
-            // Select before presentation so this control belongs to the intended display.
+            // Experimental removal is off, so each display page has one switch.
             let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
             return switches.count == 1 ? switches[0] : nil
         }
-        spin { content.layoutSubtreeIfNeeded(); return keepOffSwitch() != nil }
+        spin { content.layoutSubtreeIfNeeded(); return keepOffSwitch()?.state == .off }
         let toggle = try XCTUnwrap(keepOffSwitch())
         XCTAssertEqual(toggle.state, .off)
         toggle.performClick(nil)
@@ -487,6 +490,8 @@ final class SettingsWindowTests: XCTestCase {
         try XCTUnwrap(keepOffSwitch()).performClick(nil)
         spin { model.hideConfiguration(for: Self.sideUUID)?.keepWindowsOff == nil }
         XCTAssertNil(model.hideConfiguration(for: Self.sideUUID)?.keepWindowsOff)
+        XCTAssertNotNil(model.hideConfiguration(for: Self.mainUUID)?.keepWindowsOff,
+                        "Target-display clicks must not change the previously rendered display")
     }
 
     func testHiddenKeepWindowsOffSwitchPausesOnlyThisHide() throws {
