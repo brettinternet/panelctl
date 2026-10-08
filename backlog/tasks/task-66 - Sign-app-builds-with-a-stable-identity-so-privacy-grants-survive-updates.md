@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pi'
 created_date: '2026-10-07 22:51'
-updated_date: '2026-10-08 01:46'
+updated_date: '2026-10-08 01:54'
 labels: []
 dependencies: []
 references:
@@ -26,7 +26,7 @@ TASK-64 introduces PanelCtl’s first TCC permission (Accessibility). scripts/pa
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 Release and local app packaging sign the helper and app with one configured stable identity; `codesign -d -r-` shows a designated requirement without a cdhash that is identical for builds from two different commits.
-- [ ] #2 Release CI reads the identity from a repository secret and fails rather than silently falling back to ad-hoc; PR/local builds without the identity may sign ad-hoc with a visible warning. No private key material is committed.
+- [x] #2 Release CI reads the identity from a repository secret and fails rather than silently falling back to ad-hoc; PR/local builds without the identity may sign ad-hoc with a visible warning. No private key material is committed.
 - [ ] #3 Launch at login, helper execution, install-release.swift and the README Gatekeeper guidance keep working with the new signature.
 - [x] #4 docs/development.md records identity creation, secret setup and rotation, and that rotation (or the first upgrade from an ad-hoc build) requires users to re-grant privacy permissions once.
 <!-- AC:END -->
@@ -45,4 +45,6 @@ Human gate: an agent can change the packaging scripts and the CI workflow offlin
 Owner explicitly superseded the original key-generation gate in this session: authorized this agent to generate the signing identity, import it into the login Keychain with code-signing trust, and upload the three GitHub Actions secrets to brettinternet/PanelCtl. No private key/password may enter the checkout, logs or commits; no push or publication is authorized. Native install/login interaction remains separately gated.
 
 Offline implementation complete. Eleven fake-tool tests pass, including real csreq compilation of the literal certificate-pinned requirement; actionlint 1.7.12, ShellCheck 0.11.0, bash syntax, release-version checks and diff checks pass. One independent verifier found no concrete defects; it correctly left real signatures/native behavior unverified. Parent fixed the requirement literal prefix and workflow runner-context placement, then reran checks. Python language server exited; no clean LSP result claimed. Under explicit owner authorization, generated a 3072-bit RSA self-signed code-signing identity valid 3650 days; imported into login Keychain with code-signing-only user trust. Public SHA-1 D5A5619A224539EE0DF351817AC95525587D5E5D. security find-identity now reports one valid identity; gh secret list confirms PANELCTL_SIGNING_IDENTITY, PANELCTL_SIGNING_P12_BASE64 and PANELCTL_SIGNING_P12_PASSWORD. Private artifacts existed only in an OS temporary directory removed on exit. No key/password in checkout/logs. Real signing and native acceptance next.
+
+Implementation committed as bab006f on main. Real universal release packaging passed with required identity: PANELCTL_SIGNING_IDENTITY=D5A5619A224539EE0DF351817AC95525587D5E5D PANELCTL_REQUIRE_SIGNING=1 scripts/package-release.sh v0.6.2 .build/task66-bab006f. App/helper/standalone CLI requirements pin their fixed identifiers to the certificate and contain no cdhash; strict app verification and bundled helper help pass. Owner explicitly approved installing/updating /Applications/PanelCtl.app and native Launch at Login toggles, restoring the prior setting. Installed bab006f with scripts/install-release.swift, opened it and verified displayed version 0.6.2 (bab006f). Launch at Login was initially enabled; toggled off/on and verified both UI values and sfltool disabled/enabled dispositions. Automation was temporarily snoozed during these checks, with all displays separate/idle and no recovery pending; it will be resumed after validation. Production CI importer also passed a real isolated-keychain rehearsal with a disposable untrusted test certificate: import, scoped key access, actual signing and strict verification all passed without modifying user trust/search list. Temporary test keychain/keys removed. GitHub secrets are present; no remote release run/push was performed. Next: package the following evidence commit, compare designated requirements, validate the signed update and restore UI/automation state.
 <!-- SECTION:NOTES:END -->
