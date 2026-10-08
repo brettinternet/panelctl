@@ -378,8 +378,8 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(saved.effect, .blackOut)
         XCTAssertEqual(model.handoffStatus?.state, .hidden)
         XCTAssertEqual(
-            try JSONDecoder().decode(DisplayActionSet.self, from: XCTUnwrap(defaults.data(forKey: AppModel.displayActionsKey))),
-            model.displayActions,
+            try JSONDecoder().decode(DisplayActionSet.self, from: XCTUnwrap(defaults.data(forKey: AppModel.displayActionsKey))).actions,
+            model.displayActions.actions,
             "The production editor Save shortcut persists the action"
         )
         saveParent.close()
@@ -1867,13 +1867,13 @@ final class SettingsWindowTests: XCTestCase {
         spin {
             content.layoutSubtreeIfNeeded()
             let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
+            // Windows precedes Hide and is absent while removal is on; without Experimental, Hide has no switch.
             return model.experimentalFeaturesEnabled
-                ? switches.count == 2 && switches[0].state == expectedState
+                ? switches.count == (expectedState == .on ? 1 : 2) && switches.last?.state == expectedState
                 : switches.count == 1
         }
-        // Hide precedes Window relocation; the latter is always present.
         let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
-        return model.experimentalFeaturesEnabled && switches.count == 2 ? switches[0] : nil
+        return model.experimentalFeaturesEnabled ? switches.last : nil
     }
 
     private var hiddenDisplays: [DisplayRecord] {

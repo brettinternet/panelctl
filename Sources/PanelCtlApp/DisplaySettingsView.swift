@@ -199,7 +199,7 @@ struct DisplaySettingsView: View {
             let display = tile.display
             let hidden = model.isBlackoutHidden(uuid)
             let removes = display.map { model.hideRemovesFromDesktop($0) } ?? false
-            if hidden || !removes {
+            if hidden || (!removes && !isJournalTarget(tile)) {
                 let configuration = model.hideConfiguration(for: uuid)
                 let cover = model.keepWindowsOffCovers[uuid.lowercased()]
                 let enabled = hidden ? cover.map { !$0.pausedByUser } ?? false : configuration?.keepWindowsOff != nil

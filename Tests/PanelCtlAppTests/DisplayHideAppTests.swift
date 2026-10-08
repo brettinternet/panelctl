@@ -3858,10 +3858,9 @@ final class DisplayHideAppTests: XCTestCase {
         window.contentView.map(nativeControls) ?? []
     }
 
-    /// The Displays tab's only switch: Remove from desktop.
+    /// Remove from desktop is the Displays tab's last switch; the Windows section precedes Hide.
     private func removalSwitch(in window: NSWindow) -> NSSwitch? {
-        let switches = controls(in: window).compactMap { $0 as? NSSwitch }
-        return switches.count == 1 ? switches[0] : nil
+        controls(in: window).compactMap { $0 as? NSSwitch }.last
     }
 
     private func controlSummary(_ window: NSWindow) -> String {

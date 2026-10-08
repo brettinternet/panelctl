@@ -205,6 +205,7 @@ final class AppModel: ObservableObject {
     private var keepWindowsOffControllers: [String: KeepWindowsOffDisplayController] = [:]
     private var keepWindowsOffTick: KeepWindowsOffTick?
     private var isShuttingDown = false
+    private var windowMovePermissionWatch: Task<Void, Never>?
     private let keepWindowsOffScheduler: KeepWindowsOffScheduling
     private let displayProvider: () -> [DisplayRecord]
     private let now: () -> Date
@@ -951,6 +952,23 @@ final class AppModel: ObservableObject {
     func requestWindowMoveAccessibilityPermission() {
         windowMovePermission.requestFromExplicitUserInteraction()
         refreshWindowMovePermissionState()
+        watchForWindowMovePermissionChange()
+    }
+
+    /// macOS doesn't tell apps when Accessibility is granted in System Settings,
+    /// so check for a few minutes after the explicit request instead of asking twice.
+    private func watchForWindowMovePermissionChange() {
+        windowMovePermissionWatch?.cancel()
+        guard windowMovePermissionState != .granted else { return }
+        windowMovePermissionWatch = Task { [weak self] in
+            for _ in 0..<300 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self, !Task.isCancelled, !self.isShuttingDown else { return }
+                guard self.windowMovePermission.state() != self.windowMovePermissionState else { continue }
+                self.refreshWindowMovePermissionState()
+                if self.windowMovePermissionState == .granted { return }
+            }
+        }
     }
 
     func displayActionRunBlocker(for action: DisplayAction) -> String? {
@@ -1017,7 +1035,7 @@ final class AppModel: ObservableObject {
         case .identityAmbiguous: return "The saved display identity is ambiguous. Review connected displays; PanelCtl will not guess an ID."
         case .recoveryRequired: return "Display recovery needs attention. Review it in Displays before moving windows."
         case .permissionMissing: return "Accessibility permission is required. Choose Allow Accessibility in Settings."
-        case .permissionStale: return "Accessibility permission is stale. Allow PanelCtl again in System Settings → Privacy & Security → Accessibility."
+        case .permissionStale: return "Accessibility permission is stale. Allow PanelCtl again in System Settings → Privacy & Security → Device Control and Data Access."
         case .topologyChanged: return "Display topology changed during the move. Review the displays and run the Action again."
         case .fullscreen: return "Full-screen windows are skipped."
         case .minimized: return "Minimized windows are skipped."
@@ -4680,6 +4698,7 @@ final class AppModel: ObservableObject {
 
     func shutdown(completion: @escaping () -> Void) {
         isShuttingDown = true
+        windowMovePermissionWatch?.cancel()
         stopKeepWindowsOff()
         snoozeTimer?.invalidate()
         protectionCoordinator.shutdown(completion: completion)

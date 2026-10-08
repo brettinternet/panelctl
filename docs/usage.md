@@ -83,8 +83,10 @@ UUID) or one exact destination. The source, blacked-out, removed, asleep,
 offline and mirrored-member displays are ineligible; an unavailable explicit
 destination is refused rather than replaced. Moving windows requires PanelCtl’s
 Accessibility permission. Use **Allow Accessibility** in **Settings → Automations
-→ Actions**, or beside the enabled keep-windows-off option in Displays. CLI and
-background runs never open a permission prompt.
+→ Actions**, or beside the enabled keep-windows-off option in Displays, then turn
+on PanelCtl in System Settings → Privacy & Security → Device Control and Data
+Access (Accessibility on earlier macOS versions). PanelCtl notices the change within
+seconds. CLI and background runs never open a permission prompt.
 `panelctl app run-action --action UUID` sends the request to the running app and
 returns privacy-safe moved/skipped/failed counts and reason codes. No window
 titles are stored.
