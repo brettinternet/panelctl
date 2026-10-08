@@ -486,6 +486,34 @@ final class ProtectionRuleRunOnceTests: XCTestCase {
         }
     }
 
+    func testDeletingRuleDuringOneShotEndsTheRun() async throws {
+        try await withHelper(mode: "hold") { log in
+            var selected = rule(id: UUID(), name: "Deleted while running", displayUUID: firstUUID, enabled: false)
+            selected.settings.mode = .blocking
+            selected.settings.followUpAction = .untilActivity
+            selected.settings.keepBlackoutOnInput = true
+            let preferences = AutomationPreferences(isEnabled: true, rules: [selected])
+            let (model, defaults, suite, journals) = try makeModel(preferences: preferences)
+            defer {
+                defaults.removePersistentDomain(forName: suite)
+                try? FileManager.default.removeItem(at: journals)
+            }
+
+            let response = await model.handleProtectionRuleControlRequest(
+                AppControlRequest(command: .runRule, ruleID: selected.id)
+            )
+            XCTAssertEqual(response.outcome, .done)
+            try await wait { model.automationBlockingDisplayIDs == [1] }
+
+            model.deleteProtectionRule(id: selected.id)
+            XCTAssertTrue(model.automationPreferences.rules.isEmpty)
+            try await wait { model.controlRunningRule == nil && model.blackedOutDisplayIDs.isEmpty }
+            XCTAssertTrue(model.automationBlockingDisplayIDs.isEmpty)
+            XCTAssertEqual(launchLines(at: log).filter { $0.contains("--panelctl-run-once") }.count, 1)
+            await shutdown(model)
+        }
+    }
+
     func testActiveSelectedRuleIsRefusedWithoutRestartingItsTimer() async throws {
         try await withHelper(mode: "active-watch") { log in
             let selected = rule(id: UUID(), name: "Already active", displayUUID: firstUUID, enabled: true)

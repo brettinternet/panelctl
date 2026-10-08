@@ -274,6 +274,10 @@ final class ProtectionCoordinator {
     ) {
         guard !isShuttingDown else { return }
         rules = Dictionary(ruleSet.rules.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // Deleting a rule ends any blackout or dimming it is running once.
+        for id in oneShotRuleIDs where rules[id] == nil {
+            services[id]?.stopOneShot()
+        }
         if initialServiceAvailable, let firstRuleID = ruleSet.rules.first?.id {
             _ = service(for: firstRuleID)
         }
