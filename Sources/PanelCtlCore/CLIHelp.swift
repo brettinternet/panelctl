@@ -1,6 +1,6 @@
 public enum CLIHelp {
     /// Release version displayed by `panelctl --version`.
-    public static let version = "panelctl 0.6.2"
+    public static let version = "panelctl 0.7.0"
 
     public static func text(for command: String? = nil) -> String {
         switch command {

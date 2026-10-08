@@ -462,8 +462,7 @@ final class SettingsWindowTests: XCTestCase {
         spin { content.layoutSubtreeIfNeeded(); return keepOffSwitch() != nil }
         let toggle = try XCTUnwrap(keepOffSwitch())
         XCTAssertEqual(toggle.state, .off)
-        toggle.state = .on
-        XCTAssertTrue(toggle.sendAction(toggle.action, to: toggle.target))
+        toggle.performClick(nil)
         spin { model.hideConfiguration(for: Self.sideUUID)?.keepWindowsOff != nil }
         XCTAssertEqual(model.hideConfiguration(for: Self.sideUUID)?.keepWindowsOff?.destination, .automatic)
         XCTAssertEqual(model.keepWindowsOffStatuses[Self.sideUUID.lowercased()]?.state, .armed)
@@ -484,8 +483,8 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertTrue(menu.items.contains { $0.attributedTitle?.string.contains("Keep windows off: Armed") == true })
         XCTAssertTrue(model.displayActionResults.isEmpty)
         XCTAssertFalse(model.isBlackoutHidden(Self.sideUUID))
-        toggle.state = .off
-        XCTAssertTrue(toggle.sendAction(toggle.action, to: toggle.target))
+        spin { content.layoutSubtreeIfNeeded(); return keepOffSwitch()?.state == .on }
+        try XCTUnwrap(keepOffSwitch()).performClick(nil)
         spin { model.hideConfiguration(for: Self.sideUUID)?.keepWindowsOff == nil }
         XCTAssertNil(model.hideConfiguration(for: Self.sideUUID)?.keepWindowsOff)
     }
@@ -517,19 +516,18 @@ final class SettingsWindowTests: XCTestCase {
             let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
             return switches.count == 1 ? switches[0] : nil
         }
-        spin { content.layoutSubtreeIfNeeded(); return keepOffSwitch() != nil }
+        spin { content.layoutSubtreeIfNeeded(); return keepOffSwitch()?.state == .on }
         let toggle = try XCTUnwrap(keepOffSwitch())
         XCTAssertEqual(toggle.state, .on, "the switch reflects this Hide's intent")
-        toggle.state = .off
-        XCTAssertTrue(toggle.sendAction(toggle.action, to: toggle.target))
+        toggle.performClick(nil)
         spin { model.keepWindowsOffCovers[key]?.pausedByUser == true }
         XCTAssertEqual(model.keepWindowsOffStatuses[key]?.reason, "Paused for this hide.")
         XCTAssertNotNil(model.hideConfiguration(for: Self.sideUUID)?.keepWindowsOff, "the remembered choice is unchanged")
         if let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] {
             try writeSnapshot(of: window, to: output, name: "keep-windows-off-hidden-paused")
         }
-        toggle.state = .on
-        XCTAssertTrue(toggle.sendAction(toggle.action, to: toggle.target))
+        spin { content.layoutSubtreeIfNeeded(); return keepOffSwitch()?.state == .off }
+        try XCTUnwrap(keepOffSwitch()).performClick(nil)
         spin { model.keepWindowsOffCovers[key]?.pausedByUser == false }
         XCTAssertEqual(model.keepWindowsOffCovers[key]?.pausedByUser, false)
     }

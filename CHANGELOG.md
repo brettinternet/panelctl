@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0
+
+- Add a standalone Move windows action and opt-in Keep windows off for individual hides, with explicit Accessibility permission controls.
+- Sign app and CLI releases with a stable self-signed identity so privacy grants can survive updates. The first upgrade from ad-hoc signing requires re-granting permissions.
+- Improve Settings layout, window-moving controls, and copyable CLI commands.
+- Fix Show recovery after monitor input return, Escape focus recovery, and Run now with verified hidden displays.
+- Fix one-shot automation lifecycle and failure reporting, prevent combined full-display coverage, and handle larger status-stream frames.
+- Add local development initialization, formatting and lint hooks, and signing settings in `.env`.
+
 ## 0.6.2
 
 - Add `panelctl app status --watch` for live status integrations.
