@@ -25,7 +25,7 @@ and reconnects, and end on quit. Automation skips blacked-out displays, and
 
 ### Keep windows off while blacked out
 
-In **Settings → Displays → Window relocation**, opt in separately for each
+In **Settings → Displays → Windows**, opt in separately for each
 stable display identity. The option defaults off and is independent of both Hide
 and **Remove from desktop**; enabling Hide never enables window movement. Choose
 **Automatic** (current main display, then stable UUID order) or one exact
@@ -51,8 +51,8 @@ Only ordinary movable windows with public, unique on-screen evidence on the
 current Space can move. Full-screen, minimized, other-Space, nonmovable, vanished,
 or unverified windows are skipped; titles and persistent window identifiers are
 not stored. The app checks Accessibility permission in the background and never
-prompts. Grant it only with the explicit **Allow Accessibility** control in
-**Settings → Automations → Actions**. Coverage ending, sleep/topology changes,
+prompts. Use **Allow Accessibility** beside the enabled option in Displays,
+or in **Settings → Automations → Actions**. Coverage ending, sleep/topology changes,
 permission loss, recovery, or turning the option off cancels pending work. An
 already-dispatched setter may finish; windows are never moved back. Relaunch only
 reevaluates current state and never starts a blackout or replays moves.

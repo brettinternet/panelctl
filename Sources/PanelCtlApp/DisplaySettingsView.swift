@@ -207,7 +207,7 @@ struct DisplaySettingsView: View {
                     set: { model.setKeepWindowsOffEnabled($0, for: uuid) }
                 )) {
                     Text("Keep windows off while blacked out")
-                    Text("Continue moving eligible windows while PanelCtl has this display covered.")
+                    Text("Move new and returning windows to another display.")
                 }
                 .disabled(!enabled && (display.map { !$0.active || !$0.online || $0.asleep } ?? true))
                 .accessibilityLabel("Keep windows off while blacked out on \(tile.name)")
@@ -226,6 +226,9 @@ struct DisplaySettingsView: View {
                             Text("\(saved.presentationName) (unavailable)").tag(saved.uuid.lowercased())
                         }
                     }
+                    if model.windowMovePermissionState != .granted {
+                        WindowMovePermissionRow(model: model)
+                    }
                     if let status = model.keepWindowsOffStatuses[tile.id] {
                         Text(status.description)
                             .font(.caption)
@@ -235,9 +238,9 @@ struct DisplaySettingsView: View {
                     }
                 }
             } header: {
-                Text("Window relocation")
+                Text("Windows")
             } footer: {
-                SectionFooter("This ongoing option is separate from the one-shot Move windows Action step. It moves only supported, publicly verified, movable windows on the current Space; it never moves them back. Accessibility permission is checked in the background and never prompted.")
+                SectionFooter("Moves supported windows on the current Space while blacked out; Show doesn’t move them back. Automatic prefers the main available display.")
             }
         }
     }

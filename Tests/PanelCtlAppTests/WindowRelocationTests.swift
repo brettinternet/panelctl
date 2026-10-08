@@ -515,11 +515,16 @@ final class WindowRelocationTests: XCTestCase {
                                      moveWindows: MoveWindowsConfiguration())
         let action = DisplayAction(name: "Move only", steps: [move])
         try model.saveDisplayAction(action)
-        let refused = await run(model, id: action.id)
-        XCTAssertEqual(refused.outcome, .refused)
-        XCTAssertEqual(refused.steps?.first?.windowMove?.refusalReason, .permissionMissing)
-        XCTAssertEqual(permission.promptCount, 0)
-        XCTAssertTrue(mover.requests.isEmpty)
+        for (state, reason) in [(WindowMovePermissionState.missing, AppControlWindowMoveReason.permissionMissing),
+                                (.stale, .permissionStale)] {
+            permission.value = state
+            let refused = await run(model, id: action.id)
+            XCTAssertEqual(refused.outcome, .refused)
+            XCTAssertEqual(refused.steps?.first?.windowMove?.refusalReason, reason,
+                           "Concise permission copy must preserve the typed refusal")
+            XCTAssertEqual(permission.promptCount, 0)
+            XCTAssertTrue(mover.requests.isEmpty)
+        }
 
         permission.value = .granted
         mover.result = AppControlWindowMoveResult(moved: 1, refusalReason: .permissionStale)

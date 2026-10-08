@@ -84,16 +84,7 @@ struct AutomationSettingsView: View {
                     }
                     .accessibilityElement(children: .combine)
                 }
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Accessibility: \(windowMovePermissionLabel)")
-                        Text("Move windows needs Accessibility. CLI and background runs never request permission.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Allow Accessibility…", action: model.requestWindowMoveAccessibilityPermission)
-                        .disabled(model.windowMovePermissionState == .granted)
-                }
+                WindowMovePermissionRow(model: model)
                 Button("Add Action…") {
                     actionEditor = DisplayActionEditorPresentation(
                         action: model.makeNewDisplayAction(selectedDisplayID: navigation.selectedDisplayID),
@@ -104,7 +95,7 @@ struct AutomationSettingsView: View {
             } header: {
                 Text("Actions")
             } footer: {
-                SectionFooter("Run an Action here, or from scripts or other apps. Steps run in order; Hide/Show and Move windows are separate effects and can share a source. Other problems stop the Action; earlier changes stay in place. Actions never run on their own.")
+                SectionFooter("Actions run only when requested, here or from scripts and other apps. Steps run in order; if one stops, earlier changes stay in place.")
             }
 
             if model.automationPreferences.rules.contains(where: { $0.settings.followUpAction == .sleepDisplays }) {
@@ -136,14 +127,6 @@ struct AutomationSettingsView: View {
                 existingID: presentation.isNew ? nil : presentation.action.id,
                 isNew: presentation.isNew
             )
-        }
-    }
-
-    private var windowMovePermissionLabel: String {
-        switch model.windowMovePermissionState {
-        case .granted: return "Granted"
-        case .missing: return "Not granted"
-        case .stale: return "Stale or revoked"
         }
     }
 
@@ -551,7 +534,7 @@ struct DisplayActionEditor: View {
                 } header: {
                     Text("Steps")
                 } footer: {
-                    SectionFooter("A display can appear once in the display-state effects and once in Move windows. Steps run in order; earlier changes stay in place if a later step stops.")
+                    SectionFooter("Move windows can share a display with another effect. Steps run in order; stopping does not undo earlier steps.")
                 }
 
                 Section {
@@ -564,7 +547,7 @@ struct DisplayActionEditor: View {
                 } header: {
                     Text("Command")
                 } footer: {
-                    SectionFooter("Run only in the running app. Check app status after an uncertain result.")
+                    SectionFooter("Requires PanelCtl to be open. Save changes before running.")
                 }
             }
             .formStyle(.grouped)
@@ -758,7 +741,7 @@ struct DisplayActionEditor: View {
     private func moveWindowsDetails(_ step: DisplayActionStep, index: Int) -> some View {
         let current = step.moveWindows?.destination ?? .automatic
         let selectedValue = moveDestinationKey(current)
-        Picker("Destination", selection: Binding(
+        Picker("Move to", selection: Binding(
             get: { selectedValue },
             set: { selectMoveDestination($0, at: index) }
         )) {
@@ -774,7 +757,7 @@ struct DisplayActionEditor: View {
             }
         }
         .accessibilityLabel("Step \(index + 1) Move windows destination")
-        Text("Automatic uses the main eligible display, then the lowest stable UUID. Blacked-out, removed, asleep, offline and mirrored displays are not destinations.")
+        Text("Moves supported windows on the current Space once, without hiding the display. Automatic prefers the main display; hidden or unavailable displays are excluded.")
             .font(.caption).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -965,7 +948,7 @@ struct ProtectionRuleEditor: View {
                 } header: {
                     Text("Command")
                 } footer: {
-                    SectionFooter("Runs the saved rule once in the running app. Save changes before running.")
+                    SectionFooter("Requires PanelCtl to be open. Runs the saved rule once; save changes first.")
                 }
             }
             .formStyle(.grouped)

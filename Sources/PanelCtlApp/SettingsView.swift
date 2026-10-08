@@ -152,6 +152,30 @@ struct CommandCopyRow: View {
     }
 }
 
+/// The explicit permission action shared by window-moving settings.
+struct WindowMovePermissionRow: View {
+    @ObservedObject var model: AppModel
+
+    private var status: String {
+        switch model.windowMovePermissionState {
+        case .granted: return "Allowed"
+        case .missing: return "Not allowed"
+        case .stale: return "Needs reauthorization"
+        }
+    }
+
+    var body: some View {
+        LabeledContent {
+            Button("Allow Accessibility…", action: model.requestWindowMoveAccessibilityPermission)
+                .disabled(model.windowMovePermissionState == .granted)
+        } label: {
+            Text("Accessibility: \(status)")
+            Text("Required to move windows. Never requested automatically.")
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
 /// A note under a Settings section. Built with an SDK before macOS 26, a plain
 /// footer is right-aligned body text, so it gets the newer left-aligned style
 /// explicitly.

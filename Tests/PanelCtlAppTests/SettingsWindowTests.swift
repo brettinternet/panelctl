@@ -490,6 +490,61 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertNil(model.hideConfiguration(for: Self.sideUUID)?.keepWindowsOff)
     }
 
+    func testWindowMovePermissionIsExplicitAndAvailableInBothSettingsPages() throws {
+        try requireInteractiveUI()
+        let permission = SettingsWindowMovePermission()
+        let (model, defaults) = try makeModel(windowMovePermission: permission)
+        defer {
+            model.stopKeepWindowsOff()
+            defaults.removePersistentDomain(forName: Self.suiteName)
+        }
+        let controller = SettingsWindowController(model: model)
+        controller.present()
+        controller.selectDisplay(uuid: Self.sideUUID)
+        let window = try XCTUnwrap(controller.window)
+        defer { window.close() }
+        // Use the narrow supported width to catch wrapping in the shared row.
+        window.setContentSize(NSSize(width: 440, height: 900))
+        XCTAssertNil(model.hideConfiguration(for: Self.sideUUID)?.keepWindowsOff)
+        model.setKeepWindowsOffEnabled(true, for: Self.sideUUID)
+        XCTAssertEqual(permission.requests, 0, "Enabling keep-off must not prompt")
+        XCTAssertEqual(model.windowMovePermissionState, .missing)
+        if let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] {
+            try writeSnapshot(of: window, to: output, name: "keep-windows-off-permission-missing-narrow")
+        }
+        permission.current = .stale
+        model.refreshWindowMovePermissionState()
+        XCTAssertEqual(permission.requests, 0, "Refreshing stale permission must not prompt")
+        if let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] {
+            try writeSnapshot(of: window, to: output, name: "keep-windows-off-permission-stale-narrow")
+        }
+        // SwiftUI renders this button without an NSButton. Review its snapshots
+        // and exercise the shared action with a fake provider, never a real prompt.
+        model.requestWindowMoveAccessibilityPermission()
+        XCTAssertEqual(permission.requests, 1)
+        XCTAssertEqual(model.windowMovePermissionState, .granted)
+        if let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] {
+            try writeSnapshot(of: window, to: output, name: "keep-windows-off-permission-granted-narrow")
+        }
+        XCTAssertEqual(model.keepWindowsOffStatuses[Self.sideUUID.lowercased()]?.state, .armed)
+
+        controller.select(.automation)
+        if let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] {
+            try writeSnapshot(of: window, to: output, name: "automation-permission-granted-narrow")
+        }
+        permission.current = .missing
+        model.refreshWindowMovePermissionState()
+        XCTAssertEqual(permission.requests, 1, "Changing tabs must not prompt")
+        if let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] {
+            try writeSnapshot(of: window, to: output, name: "automation-permission-missing-narrow")
+        }
+        model.requestWindowMoveAccessibilityPermission()
+        XCTAssertEqual(model.windowMovePermissionState, .granted)
+        XCTAssertEqual(permission.requests, 2)
+        XCTAssertTrue(model.displayActionResults.isEmpty)
+        XCTAssertFalse(model.isBlackoutHidden(Self.sideUUID))
+    }
+
     func testDefaultDisplayActionEditorShowsMissingRemovalSetupAndNavigatesToSelectedDisplay() throws {
         try requireInteractiveUI()
         let app = NSApplication.shared
@@ -1836,6 +1891,18 @@ final class SettingsWindowTests: XCTestCase {
 private final class SettingsGrantedWindowMovePermission: WindowMovePermissionProviding {
     func state() -> WindowMovePermissionState { .granted }
     func requestFromExplicitUserInteraction() { XCTFail("Settings fixture must never prompt") }
+}
+
+@MainActor
+private final class SettingsWindowMovePermission: WindowMovePermissionProviding {
+    var current: WindowMovePermissionState = .missing
+    var requests = 0
+
+    func state() -> WindowMovePermissionState { current }
+    func requestFromExplicitUserInteraction() {
+        requests += 1
+        current = .granted
+    }
 }
 
 @MainActor
