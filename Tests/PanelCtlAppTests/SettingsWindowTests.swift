@@ -1867,13 +1867,13 @@ final class SettingsWindowTests: XCTestCase {
         spin {
             content.layoutSubtreeIfNeeded()
             let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
-            // Windows precedes Hide and is absent while removal is on; without Experimental, Hide has no switch.
+            // Hide precedes Windows, which is absent while removal is on; without Experimental, Hide has no switch.
             return model.experimentalFeaturesEnabled
-                ? switches.count == (expectedState == .on ? 1 : 2) && switches.last?.state == expectedState
+                ? switches.count == (expectedState == .on ? 1 : 2) && switches.first?.state == expectedState
                 : switches.count == 1
         }
         let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
-        return model.experimentalFeaturesEnabled ? switches.last : nil
+        return model.experimentalFeaturesEnabled ? switches.first : nil
     }
 
     private var hiddenDisplays: [DisplayRecord] {

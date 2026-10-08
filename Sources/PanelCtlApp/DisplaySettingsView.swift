@@ -34,8 +34,8 @@ struct DisplaySettingsView: View {
                 }
                 if let selected {
                     summarySection(selected)
-                    keepWindowsOffSection(selected)
                     hideSection(selected, tiles: tiles)
+                    keepWindowsOffSection(selected)
                     if pageProblem == nil, isJournalTarget(selected), let status = model.handoffStatus {
                         Section {
                             recoveryDetails(status, targetUUID: selected.uuid)
