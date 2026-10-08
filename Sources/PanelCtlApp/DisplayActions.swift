@@ -6,6 +6,7 @@ enum DisplayActionEffect: String, Codable, CaseIterable, Identifiable {
     case blackOut
     case removeFromDesktop
     case show
+    case moveWindows
 
     var id: Self { self }
 
@@ -14,6 +15,7 @@ enum DisplayActionEffect: String, Codable, CaseIterable, Identifiable {
         case .blackOut: return "Hide (black out)"
         case .removeFromDesktop: return "Hide (remove from desktop)"
         case .show: return "Show"
+        case .moveWindows: return "Move windows"
         }
     }
 }
@@ -32,23 +34,85 @@ struct ReviewedRemovalSetup: Codable, Equatable {
     }
 }
 
+enum MoveWindowsDestination: Codable, Equatable {
+    case automatic
+    case display(DisplayIdentityReference)
+
+    private enum CodingKeys: String, CodingKey { case kind, display }
+    private enum Kind: String, Codable { case automatic, display }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        switch try values.decode(Kind.self, forKey: .kind) {
+        case .automatic: self = .automatic
+        case .display: self = .display(try values.decode(DisplayIdentityReference.self, forKey: .display))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .automatic:
+            try values.encode(Kind.automatic, forKey: .kind)
+        case .display(let identity):
+            try values.encode(Kind.display, forKey: .kind)
+            try values.encode(identity, forKey: .display)
+        }
+    }
+}
+
+struct MoveWindowsConfiguration: Codable, Equatable {
+    var destination: MoveWindowsDestination
+
+    init(destination: MoveWindowsDestination = .automatic) {
+        self.destination = destination
+    }
+}
+
 struct DisplayActionStep: Codable, Equatable, Identifiable {
+    var id: UUID
     var target: DisplayIdentityReference?
     var effect: DisplayActionEffect
     var reviewedRemoval: ReviewedRemovalSetup?
+    var moveWindows: MoveWindowsConfiguration?
 
-    var id: String { target?.uuid.lowercased() ?? "step-\(effect.rawValue)" }
-
-    init(target: DisplayIdentityReference? = nil, effect: DisplayActionEffect = .blackOut,
-         reviewedRemoval: ReviewedRemovalSetup? = nil) {
+    init(id: UUID = UUID(), target: DisplayIdentityReference? = nil, effect: DisplayActionEffect = .blackOut,
+         reviewedRemoval: ReviewedRemovalSetup? = nil, moveWindows: MoveWindowsConfiguration? = nil) {
+        self.id = id
         self.target = target
         self.effect = effect
         self.reviewedRemoval = reviewedRemoval
+        self.moveWindows = moveWindows
     }
 
-    init(target: DisplayIdentitySnapshot, effect: DisplayActionEffect = .blackOut,
-         reviewedRemoval: ReviewedRemovalSetup? = nil) {
-        self.init(target: DisplayIdentityReference(target), effect: effect, reviewedRemoval: reviewedRemoval)
+    init(id: UUID = UUID(), target: DisplayIdentitySnapshot, effect: DisplayActionEffect = .blackOut,
+         reviewedRemoval: ReviewedRemovalSetup? = nil, moveWindows: MoveWindowsConfiguration? = nil) {
+        self.init(id: id, target: DisplayIdentityReference(target), effect: effect,
+                  reviewedRemoval: reviewedRemoval, moveWindows: moveWindows)
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, target, effect, reviewedRemoval, moveWindows }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        target = try values.decodeIfPresent(DisplayIdentityReference.self, forKey: .target)
+        effect = try values.decode(DisplayActionEffect.self, forKey: .effect)
+        reviewedRemoval = try values.decodeIfPresent(ReviewedRemovalSetup.self, forKey: .reviewedRemoval)
+        moveWindows = try values.decodeIfPresent(MoveWindowsConfiguration.self, forKey: .moveWindows)
+        guard (effect == .moveWindows) == (moveWindows != nil) else {
+            throw DecodingError.dataCorruptedError(forKey: .moveWindows, in: values,
+                debugDescription: "Move windows steps require a destination; other effects cannot have one.")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encodeIfPresent(target, forKey: .target)
+        try values.encode(effect, forKey: .effect)
+        try values.encodeIfPresent(reviewedRemoval, forKey: .reviewedRemoval)
+        try values.encodeIfPresent(moveWindows, forKey: .moveWindows)
     }
 }
 
@@ -141,33 +205,156 @@ struct DisplayAction: Codable, Equatable, Identifiable {
     }
 }
 
+struct UnsupportedDisplayAction: Equatable, Identifiable {
+    let id: String
+    let name: String
+    let reason: String
+    let raw: ActionStorageJSON
+}
+
+/// A small Codable JSON tree keeps unsupported saved Actions losslessly editable alongside valid siblings.
+indirect enum ActionStorageJSON: Codable, Equatable {
+    case object([String: ActionStorageJSON])
+    case array([ActionStorageJSON])
+    case string(String)
+    case integer(Int64)
+    case unsignedInteger(UInt64)
+    case number(Double)
+    case bool(Bool)
+    case null
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if value.decodeNil() { self = .null; return }
+        if let bool = try? value.decode(Bool.self) { self = .bool(bool); return }
+        // Decode integers before floating point so unknown payload IDs/counters survive sibling edits.
+        if let integer = try? value.decode(Int64.self) { self = .integer(integer); return }
+        if let integer = try? value.decode(UInt64.self) { self = .unsignedInteger(integer); return }
+        if let number = try? value.decode(Double.self) { self = .number(number); return }
+        if let string = try? value.decode(String.self) { self = .string(string); return }
+        if let object = try? value.decode([String: ActionStorageJSON].self) { self = .object(object); return }
+        if let array = try? value.decode([ActionStorageJSON].self) { self = .array(array); return }
+        throw DecodingError.dataCorruptedError(in: value, debugDescription: "Invalid JSON value.")
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var value = encoder.singleValueContainer()
+        switch self {
+        case .object(let object): try value.encode(object)
+        case .array(let array): try value.encode(array)
+        case .string(let string): try value.encode(string)
+        case .integer(let integer): try value.encode(integer)
+        case .unsignedInteger(let integer): try value.encode(integer)
+        case .number(let number): try value.encode(number)
+        case .bool(let bool): try value.encode(bool)
+        case .null: try value.encodeNil()
+        }
+    }
+
+    var object: [String: ActionStorageJSON]? { if case .object(let object) = self { object } else { nil } }
+    var string: String? { if case .string(let string) = self { string } else { nil } }
+}
+
+private struct StoredDisplayActionRow: Equatable {
+    let id: UUID?
+    let raw: ActionStorageJSON
+    let reason: String?
+}
+
 struct DisplayActionSet: Codable, Equatable {
-    static let currentVersion = 2
+    static let currentVersion = 3
 
     var version = currentVersion
     var actions: [DisplayAction] = []
+    var unsupportedActions: [UnsupportedDisplayAction] = []
+    private var storedRows: [StoredDisplayActionRow] = []
 
     init(actions: [DisplayAction] = []) {
         version = Self.currentVersion
         self.actions = actions
     }
 
-    private enum CodingKeys: String, CodingKey {
-        case version, actions
-    }
+    private enum CodingKeys: String, CodingKey { case version, actions }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         let storedVersion = try values.decode(Int.self, forKey: .version)
-        guard storedVersion == 1 || storedVersion == Self.currentVersion else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .version, in: values,
-                debugDescription: "Unsupported display action version \(storedVersion)."
-            )
+        guard (1...Self.currentVersion).contains(storedVersion) else {
+            throw DecodingError.dataCorruptedError(forKey: .version, in: values,
+                debugDescription: "Unsupported display action version \(storedVersion).")
         }
         version = Self.currentVersion
-        actions = try values.decode([DisplayAction].self, forKey: .actions)
+        actions = []
+        unsupportedActions = []
+        storedRows = []
+        let rows = try values.decode([ActionStorageJSON].self, forKey: .actions)
+        for (offset, raw) in rows.enumerated() {
+            do {
+                if storedVersion == Self.currentVersion { try Self.validateV3Shape(raw) }
+                let rowData = try JSONEncoder().encode(raw)
+                let action = try JSONDecoder().decode(DisplayAction.self, from: rowData)
+                guard Set(action.steps.map(\.id)).count == action.steps.count else {
+                    throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                        debugDescription: "Action contains duplicate step UUIDs."))
+                }
+                actions.append(action)
+                storedRows.append(StoredDisplayActionRow(id: action.id, raw: raw, reason: nil))
+            } catch {
+                let fields = raw.object ?? [:]
+                let parsedID = fields["id"]?.string.flatMap(UUID.init(uuidString:))?.uuidString ?? "unsupported-\(offset + 1)"
+                let name = fields["name"]?.string ?? "Unsupported Action \(offset + 1)"
+                let reason = "This Action uses an unsupported effect or invalid saved data and is preserved but unavailable. (\(error.localizedDescription))"
+                unsupportedActions.append(UnsupportedDisplayAction(id: parsedID, name: name, reason: reason, raw: raw))
+                storedRows.append(StoredDisplayActionRow(id: nil, raw: raw, reason: reason))
+            }
+        }
     }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(Self.currentVersion, forKey: .version)
+        var encodedActions: [ActionStorageJSON] = []
+        var emitted = Set<UUID>()
+        for row in storedRows {
+            guard let id = row.id else {
+                encodedActions.append(row.raw)
+                continue
+            }
+            guard let action = actions.first(where: { $0.id == id }) else { continue }
+            encodedActions.append(try Self.merging(try Self.json(action), over: row.raw))
+            emitted.insert(id)
+        }
+        for action in actions where !emitted.contains(action.id) {
+            encodedActions.append(try Self.json(action))
+        }
+        try values.encode(encodedActions, forKey: .actions)
+    }
+
+    private static func validateV3Shape(_ raw: ActionStorageJSON) throws {
+        guard let fields = raw.object, case .array(let steps)? = fields["steps"] else {
+            throw DisplayActionStorageShapeError.invalid
+        }
+        for step in steps {
+            guard let stepFields = step.object, stepFields["id"]?.string.flatMap(UUID.init(uuidString:)) != nil else {
+                throw DisplayActionStorageShapeError.invalid
+            }
+        }
+    }
+
+    private static func json<T: Encodable>(_ value: T) throws -> ActionStorageJSON {
+        try JSONDecoder().decode(ActionStorageJSON.self, from: JSONEncoder().encode(value))
+    }
+
+    private static func merging(_ current: ActionStorageJSON, over original: ActionStorageJSON) throws -> ActionStorageJSON {
+        guard case .object(var fields) = original, case .object(let updated) = current else { return current }
+        fields.merge(updated) { _, new in new }
+        return .object(fields)
+    }
+}
+
+private enum DisplayActionStorageShapeError: Error, LocalizedError {
+    case invalid
+    var errorDescription: String? { "This saved Action is missing stable step identity or has an invalid shape." }
 }
 
 enum DisplayActionValidationError: Error, Equatable, LocalizedError {
@@ -176,6 +363,8 @@ enum DisplayActionValidationError: Error, Equatable, LocalizedError {
     case duplicateIdentity
     case invalidStepCount
     case duplicateDisplay(String)
+    case duplicateStepIdentity
+    case invalidMoveConfiguration(Int)
     case missingTarget(Int)
     case invalidTarget(Int)
     case removalSetupUnavailable(Int, String)
@@ -195,7 +384,11 @@ enum DisplayActionValidationError: Error, Equatable, LocalizedError {
         case .invalidStepCount:
             return "An Action needs 1–8 steps."
         case .duplicateDisplay(let name):
-            return "“\(name)” can appear only once in an Action."
+            return "“\(name)” can appear only once in the same Action effect class."
+        case .duplicateStepIdentity:
+            return "Every Action step must have a unique stable identity."
+        case .invalidMoveConfiguration(let index):
+            return "Step \(index): Choose the required Move windows destination."
         case .missingTarget(let index):
             return "Step \(index): Choose a display."
         case .invalidTarget(let index):
@@ -245,6 +438,14 @@ enum DisplayActionPresentation {
             }
             let input = step.reviewedRemoval?.awayInput.map { "Switch to \(MonitorInput.name($0))" } ?? "Don’t switch input"
             return ("Hide \(targetName)", "Remove from desktop · \(source) · \(input)")
+        case .moveWindows:
+            let destination: String
+            switch step.moveWindows?.destination {
+            case .automatic: destination = "Automatic destination"
+            case .display(let identity): destination = "Move to \(displayName(for: identity, displays: displays))"
+            case nil: destination = "Choose a destination"
+            }
+            return ("Move windows from \(targetName)", destination)
         }
     }
 

@@ -44,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        model = AppModel()
+        model = AppModel(windowMovePermission: SystemWindowMovePermission())
         if model.protectionPausedForDisplayRecovery {
             displayHideLogger.error("Startup found unresolved display recovery: \(self.model.handoffStatus?.inspectionCommand ?? "inspect shared display journal", privacy: .public)")
         }
@@ -831,6 +831,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controlResponse(ok: true, outcome: model.controlDisplayOutcome,
                         displays: model.controlDisplayStatuses,
                         rules: model.controlRuleStatuses,
+                        actions: model.controlActionStatuses,
                         runningAction: model.controlRunningDisplayAction,
                         runningRule: model.controlRunningRule)
     }
@@ -842,6 +843,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         outcome: AppControlOutcome? = nil,
         displays: [AppControlDisplayStatus]? = nil,
         rules: [AppControlRuleStatus]? = nil,
+        actions: [AppControlActionStatus]? = nil,
         detail: String? = nil,
         runningAction: AppControlRunningAction? = nil,
         runningRule: AppControlRunningRule? = nil
@@ -860,6 +862,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             outcome: outcome,
             displays: displays,
             rules: rules,
+            actions: actions,
             runningAction: runningAction,
             runningRule: runningRule ?? model.controlRunningRule
         )

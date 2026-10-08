@@ -62,9 +62,29 @@ Each rule picks displays, an idle delay, blackout or dimming, and what happens
 afterward (**Restore** or **Sleep**). Two enabled rules can't share a display.
 The master switch and Pause apply to all rules.
 
-An Action is 1–8 ordered steps, each hiding or showing one display. It runs
-only from **Run** or `panelctl app run-action`. Steps run in order and stop at
-the first problem; earlier steps are not undone.
+An Action is 1–8 ordered steps: Hide, Show or Move windows for a display. It
+runs only from **Run** or `panelctl app run-action`. Steps run in order and stop
+at the first problem; earlier changes are not undone. Hide only covers or
+removes a display; Move only relocates windows and never changes Hide state.
+
+Move windows is a one-shot operation for ordinary movable windows on the
+current Space. It preserves window size and relative placement where possible,
+resizing only when a window exceeds the destination’s visible frame. It does
+not activate apps, switch Spaces, restore a layout on Show, or move windows
+that are already off the source. Full-screen, minimized, vanished, nonmovable,
+and publicly unverified windows are skipped with reason codes; macOS does not
+provide enough public evidence to distinguish every other-Space window from an
+unknown window.
+
+Choose **Automatic** (the main eligible display, then the lowest stable display
+UUID) or one exact destination. The source, blacked-out, removed, asleep,
+offline and mirrored-member displays are ineligible; an unavailable explicit
+destination is refused rather than replaced. Moving windows requires PanelCtl’s
+Accessibility permission. Grant it only from **Settings → Automations → Actions
+→ Allow Accessibility**; CLI and background runs never open a permission prompt.
+`panelctl app run-action --action UUID` sends the request to the running app and
+returns privacy-safe moved/skipped/failed counts and reason codes. No window
+titles are stored.
 
 Closing Settings keeps everything running. Quitting removes black-outs but can
 leave removed displays hidden, so the quit prompt offers **Show and Quit**.
@@ -205,7 +225,12 @@ After `response-lost`, check
 {
   "ok": true, "running": true, "enabled": true, "state": "waiting",
   "summary": "…", "nextAction": "blackout", "secondsRemaining": 240,
+  "runningAction": {"id": "…", "name": "Desk setup", "currentStep": 2, "totalSteps": 2},
   "runningRule": { "id": "…", "name": "Desk dimming" },
+  "actions": [{"id": "…", "name": "Desk setup", "outcome": "partial", "summary": "…",
+    "steps": [{"index": 1, "effect": "moveWindows", "outcome": "partial",
+      "windowMove": {"moved": 2, "skipped": 1, "failed": 0, "reasons": [
+        {"reason": "minimized", "count": 1}], "appFailures": 0}}]}],
   "rules": [
     { "id": "…", "name": "Desk dimming", "enabled": true, "state": "waiting",
       "displays": ["DISPLAY_UUID"], "nextAction": "dim", "secondsRemaining": 180 }
@@ -222,7 +247,8 @@ After `response-lost`, check
   `unavailable`, `recovery-needed`, `unsupported-recovery` or `unknown`.
 - `operation`: `idle`, `hiding` or `showing`.
 - `runningAction` appears while an Action runs; `runningRule` identifies the
-  single rule running once.
+  single rule running once. `actions[].steps[].windowMove` carries the same
+  privacy-safe counts and bounded reason codes returned by `run-action`.
 - `lastInputOutcome` is the last input result since launch, with a
   `recoveryCommand` to switch back.
 

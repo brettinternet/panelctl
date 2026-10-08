@@ -403,6 +403,43 @@ final class SettingsWindowTests: XCTestCase {
         editParent.close()
     }
 
+    func testMoveWindowsEditorShowsDestinationAndSavesWithoutRunning() throws {
+        try requireInteractiveUI()
+        let app = NSApplication.shared
+        let originalPolicy = app.activationPolicy()
+        app.setActivationPolicy(.accessory)
+        app.activate(ignoringOtherApps: true)
+        defer { app.setActivationPolicy(originalPolicy) }
+        let (model, defaults) = try makeModel()
+        defer { defaults.removePersistentDomain(forName: Self.suiteName) }
+        let step = DisplayActionStep(target: DisplayIdentitySnapshot(displays[1]), effect: .moveWindows,
+                                     moveWindows: MoveWindowsConfiguration())
+        let action = DisplayAction(name: "Move test windows", steps: [step])
+        let (parent, sheet) = try presentProductionDisplayActionEditor(
+            model: model, navigation: SettingsNavigation(), action: action, existingID: nil, isNew: true)
+        defer { parent.close() }
+        let content = try XCTUnwrap(sheet.contentView)
+        content.layoutSubtreeIfNeeded()
+        if let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] {
+            try writeSnapshot(of: sheet, to: output, name: "move-windows-editor")
+        }
+        try replaceEditorName(in: sheet, with: "Move test windows saved")
+        let returnKey = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: sheet.windowNumber, context: nil, characters: "\r",
+            charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        app.sendEvent(returnKey)
+        spin { parent.attachedSheet == nil && model.displayActions.actions.count == 1 }
+        XCTAssertNil(parent.attachedSheet)
+        let saved = try XCTUnwrap(model.displayActions.actions.first)
+        XCTAssertEqual(saved.name, "Move test windows saved")
+        XCTAssertEqual(saved.steps.first?.id, step.id)
+        XCTAssertEqual(saved.steps.first?.effect, .moveWindows)
+        XCTAssertEqual(saved.steps.first?.moveWindows?.destination, .automatic)
+        XCTAssertTrue(model.displayActionResults.isEmpty, "Editing never runs the Action")
+        XCTAssertEqual(model.windowMovePermissionState, .missing, "The editor does not request Accessibility")
+    }
+
     func testDefaultDisplayActionEditorShowsMissingRemovalSetupAndNavigatesToSelectedDisplay() throws {
         try requireInteractiveUI()
         let app = NSApplication.shared

@@ -231,8 +231,10 @@ public enum CLIHelp {
             \(AppControlCommand.blackoutNowMigrationGuidance)
             `restore` ends Automation blackouts only; Show ends a manual Hide.
             run-action --action <UUID> invokes one saved Action with 1–8 ordered
-            Hide (black out), Hide (remove from desktop) or Show steps, only in
-            the running app. It never launches the app, queues or retries a request.
+            Hide (black out), Hide (remove from desktop), Show or Move windows steps,
+            only in the running app. Accessibility is checked without prompting; use
+            the in-app Allow Accessibility button before Move windows. It never launches,
+            queues or retries a request.
             The workflow is preflighted as a whole, then runs sequentially and
             non-atomically. Disconnected or verified already-hidden targets can be
             skipped with a reason; identity and recovery safeguards still apply.
@@ -240,8 +242,9 @@ public enum CLIHelp {
             changes, the result is no-op; skipped steps have outcome skipped.
             While it runs, competing display commands, other Actions, recovery
             cleanup, disconnect and quit are busy until completion.
-            JSON returns one result per step; text prints one line per step.
-            Status reports the current Action and step. A response-lost result
+            JSON returns one result per step, including privacy-safe Move windows
+            counts and reason codes; text prints one line per step. Status reports the
+            current/last Action result. A response-lost result
             does not cancel the run; inspect `panelctl app status --json` before
             deciding what to do. Do not assume atomic success or retry blindly.
             Actions run only when you choose Run or run their command; startup,
@@ -260,7 +263,7 @@ public enum CLIHelp {
             It never launches the app, queues or retries. A lost response does
             not cancel the run; check `app status --json` before deciding what
             to do. This is different from `run-action`, which executes ordered
-            display Hide/Show steps, and from app Hide, which keeps a display
+            display Hide/Show/Move windows steps, and from app Hide, which keeps a display
             hidden until Show.
             Status includes `runningRule` with the stable UUID while it runs.
             Exit codes: 0 done or no-op, 1 refused, busy, failed or control

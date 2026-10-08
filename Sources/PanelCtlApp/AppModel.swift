@@ -81,12 +81,16 @@ final class AppModel: ObservableObject {
     @Published private(set) var displayActions: DisplayActionSet {
         didSet {
             guard displayActions != oldValue else { return }
+            displayActionResults.removeAll()
+            lastDisplayActionResultID = nil
             saveDisplayActions()
             onStatusChange?()
         }
     }
     @Published private(set) var displayActionStorageFailure: String?
+    @Published private(set) var windowMovePermissionState: WindowMovePermissionState
     @Published private(set) var displayActionResults: [UUID: AppControlResponse] = [:]
+    private var lastDisplayActionResultID: UUID?
     @Published private(set) var runningDisplayActionIDs: Set<UUID> = []
     @Published private(set) var runningDisplayAction: AppControlRunningAction?
     private var runningActionInterrupted = false
@@ -171,6 +175,8 @@ final class AppModel: ObservableObject {
     var onStatusChange: (() -> Void)?
 
     private let defaults: UserDefaults
+    private let windowMovePermission: WindowMovePermissionProviding
+    private let windowMoveExecutor: WindowMoveExecuting
     private let displayProvider: () -> [DisplayRecord]
     private let now: () -> Date
     private let idleSecondsProvider: () -> TimeInterval?
@@ -196,8 +202,9 @@ final class AppModel: ObservableObject {
     private static let preferencesKey = "blackoutPreferences"
     private static let automationPreferencesKey = "automationRules"
     private static let hidePreferencesKey = "displayHidePreferences"
-    /// Versioned separately so older binaries keep writing only the legacy key.
-    static let displayActionsKey = "displayActions.v2"
+    /// Versioned separately so older binaries keep writing only their downgrade snapshots.
+    static let displayActionsKey = "displayActions.v3"
+    static let previousDisplayActionsKey = "displayActions.v2"
     static let legacyDisplayActionsKey = "displayActions"
     private static let showMenuBarIconKey = "showMenuBarIcon"
     private static let experimentalFeaturesKey = "experimentalFeaturesEnabled"
@@ -241,11 +248,17 @@ final class AppModel: ObservableObject {
         quiesceProtection: ProtectionQuiesce? = nil,
         protectionService: ProtectionService? = nil,
         protectionCoordinator injectedProtectionCoordinator: ProtectionCoordinator? = nil,
+        windowMovePermission: WindowMovePermissionProviding? = nil,
+        windowMoveExecutor: WindowMoveExecuting? = nil,
         disconnectController: DisplayDisconnectController = DisplayDisconnectController(),
         disconnectExecutable: @escaping @MainActor () throws -> URL = ProtectionService.helperExecutableURL,
         displayWakeSettleDelay: TimeInterval = 1
     ) {
         self.defaults = defaults
+        let permissionProvider = windowMovePermission ?? NoWindowMovePermission()
+        self.windowMovePermission = permissionProvider
+        self.windowMoveExecutor = windowMoveExecutor ?? AccessibilityWindowMover(permission: permissionProvider)
+        self.windowMovePermissionState = permissionProvider.state()
         self.disconnectController = disconnectController
         self.disconnectExecutable = disconnectExecutable
         self.disconnectRecoveryBlocked = defaults.bool(forKey: Self.disconnectRecoveryBlockedKey)
@@ -271,13 +284,18 @@ final class AppModel: ObservableObject {
         let loadedHidePreferences = defaults.data(forKey: Self.hidePreferencesKey)
             .flatMap { try? JSONDecoder().decode(DisplayHidePreferences.self, from: $0) }
         self.hidePreferences = loadedHidePreferences ?? DisplayHidePreferences()
-        let upgradedActions = defaults.data(forKey: Self.displayActionsKey)
+        let currentActions = defaults.data(forKey: Self.displayActionsKey)
+        let previousActions = defaults.data(forKey: Self.previousDisplayActionsKey)
         let legacyActions = defaults.data(forKey: Self.legacyDisplayActionsKey)
-        let actionData = upgradedActions ?? legacyActions
+        let actionData = currentActions ?? previousActions ?? legacyActions
         if let actionData {
             do {
-                self.displayActions = try JSONDecoder().decode(DisplayActionSet.self, from: actionData)
+                let decodedActions = try JSONDecoder().decode(DisplayActionSet.self, from: actionData)
+                self.displayActions = decodedActions
                 self.displayActionStorageFailure = nil
+                if currentActions == nil, let migrated = try? JSONEncoder().encode(decodedActions) {
+                    defaults.set(migrated, forKey: Self.displayActionsKey)
+                }
             } catch {
                 self.displayActions = DisplayActionSet()
                 self.displayActionStorageFailure = "Saved Actions could not be read and were preserved. Do not edit them with this build. (\(error.localizedDescription))"
@@ -702,14 +720,19 @@ final class AppModel: ObservableObject {
             return .duplicateIdentity
         }
         guard (1...8).contains(draft.steps.count) else { return .invalidStepCount }
+        guard Set(draft.steps.map(\.id)).count == draft.steps.count else { return .duplicateStepIdentity }
         let previous = existingID.flatMap { id in displayActions.actions.first(where: { $0.id == id }) }
         var seen = Set<String>()
         for (offset, step) in draft.steps.enumerated() {
             let number = offset + 1
             guard let target = step.target else { return .missingTarget(number) }
             guard UUID(uuidString: target.uuid) != nil else { return .invalidTarget(number) }
-            guard seen.insert(target.uuid.lowercased()).inserted else {
+            let effectClass = step.effect == .moveWindows ? "windows" : "display"
+            guard seen.insert("\(target.uuid.lowercased())|\(effectClass)").inserted else {
                 return .duplicateDisplay(DisplayActionPresentation.displayName(for: target, displays: displays))
+            }
+            guard (step.effect == .moveWindows) == (step.moveWindows != nil) else {
+                return .invalidMoveConfiguration(number)
             }
             if step.effect == .removeFromDesktop {
                 let previousStep = previous?.steps.first(where: {
@@ -758,6 +781,8 @@ final class AppModel: ObservableObject {
             case .show:
                 hidden.remove(targetKey)
                 removalSources.removeValue(forKey: targetKey)
+            case .moveWindows:
+                break
             }
         }
         return nil
@@ -867,6 +892,16 @@ final class AppModel: ObservableObject {
         return nil
     }
 
+    func refreshWindowMovePermissionState() {
+        windowMovePermissionState = windowMovePermission.state()
+    }
+
+    /// This is the sole permission-prompt call site and is wired only to an explicit Settings button.
+    func requestWindowMoveAccessibilityPermission() {
+        windowMovePermission.requestFromExplicitUserInteraction()
+        refreshWindowMovePermissionState()
+    }
+
     func displayActionRunBlocker(for action: DisplayAction) -> String? {
         if let displayActionStorageFailure { return displayActionStorageFailure }
         guard (1...8).contains(action.steps.count) else { return DisplayActionValidationError.invalidStepCount.localizedDescription }
@@ -897,12 +932,117 @@ final class AppModel: ObservableObject {
                     hiddenBlackouts.remove(key)
                     hiddenRemovals.remove(key)
                     sources.removeValue(forKey: key)
+                case .moveWindows:
+                    break
                 }
                 continue
             }
             return blocker
         }
         return nil
+    }
+
+    private func makeWindowMovePlan(
+        source: DisplayIdentitySnapshot,
+        configuration: MoveWindowsConfiguration,
+        displays inventory: [DisplayRecord]? = nil
+    ) -> WindowMovePlanRequest {
+        let current = inventory ?? displays
+        let mirrored = Set(current.filter { isDisplayMirrored($0.id) }.map(\.id))
+        let removed = Set(unresolvedHandoffRemovals.map { $0.target.uuid.lowercased() })
+        return WindowMovePlanRequest(
+            source: source, configuration: configuration, displays: current,
+            coveredDisplayIDs: coveredHiddenDisplayIDs.union(blackedOutDisplayIDs),
+            removedDisplayUUIDs: removed, mirroredDisplayIDs: mirrored
+        )
+    }
+
+    private func windowMoveReasonText(_ reason: AppControlWindowMoveReason) -> String {
+        switch reason {
+        case .noWindows: return "No windows are attributed to the source display."
+        case .sourceUnavailable: return "The exact source display is unavailable. Reconnect it and review the Action."
+        case .noDestination: return "No eligible destination is available. Automatic chooses the main eligible display, then the lowest stable display UUID."
+        case .destinationUnavailable: return "The selected destination is unavailable or ineligible. Choose an available display; PanelCtl will not fall back."
+        case .identityAmbiguous: return "The saved display identity is ambiguous. Review connected displays; PanelCtl will not guess an ID."
+        case .recoveryRequired: return "Display recovery needs attention. Review it in Displays before moving windows."
+        case .permissionMissing: return "Accessibility permission is required. Use Allow Accessibility in Settings; background and CLI runs never prompt."
+        case .permissionStale: return "Accessibility permission is stale or revoked. Re-authorize PanelCtl in System Settings → Privacy & Security → Accessibility."
+        case .topologyChanged: return "Display topology changed during the move. Review the displays and run the Action again."
+        case .fullscreen: return "Full-screen windows are skipped."
+        case .minimized: return "Minimized windows are skipped."
+        case .visibilityUnverified: return "Public window visibility could not be verified; no uncertain window was moved."
+        case .vanished: return "A window disappeared before it could be moved."
+        case .nonmovable: return "The window does not expose a settable position or size."
+        case .unattributed: return "A window frame could not be attributed to one display."
+        case .appTimeout: return "An application did not respond within the bounded Accessibility time."
+        case .enumerationFailed: return "An application’s windows could not be enumerated."
+        case .moveFailed: return "The application refused the window move."
+        case .moveUnverified: return "A timed-out or unverified move may have taken effect; PanelCtl will not retry it."
+        case .cancelled: return "The Action was interrupted; no further window moves were started."
+        }
+    }
+
+    private func windowMoveRefusalReason(for message: String) -> AppControlWindowMoveReason {
+        let text = message.lowercased()
+        if text.contains("permission is stale") || text.contains("revoked") { return .permissionStale }
+        if text.contains("accessibility permission") { return .permissionMissing }
+        if text.contains("recovery") || text.contains("journal") { return .recoveryRequired }
+        if text.contains("no eligible destination") { return .noDestination }
+        if text.contains("selected destination") { return .destinationUnavailable }
+        if text.contains("identity") || text.contains("ambiguous") { return .identityAmbiguous }
+        if text.contains("source display") { return .sourceUnavailable }
+        if text.contains("topology") || text.contains("displays are sleeping") { return .topologyChanged }
+        return .destinationUnavailable
+    }
+
+    private func validateWindowMoveGate(
+        _ request: WindowMovePlanRequest,
+        baseline: [DisplayRecord],
+        destinationID: UInt32,
+        actionID: UUID
+    ) -> WindowMoveGate {
+        guard runningDisplayAction?.id == actionID, !runningActionInterrupted else { return .refused(.cancelled) }
+        guard !displayLifecycleTransitioning else { return .refused(.topologyChanged) }
+        let current = displayProvider()
+        guard current == baseline else { return .refused(.topologyChanged) }
+        refreshHandoffStatus()
+        if handoffInspectionFailure != nil || displayRecoveryProblem != nil || handoffStatus?.hasUnresolvedJournal == true {
+            return .refused(.recoveryRequired)
+        }
+        if let reason = windowMovePermission.state().reason { return .refused(reason) }
+        let sourceMatches = current.filter { $0.uuid?.caseInsensitiveCompare(request.source.uuid) == .orderedSame }
+        guard sourceMatches.count == 1, let source = sourceMatches.first else {
+            return .refused(sourceMatches.isEmpty ? .sourceUnavailable : .identityAmbiguous)
+        }
+        guard source.vendor == request.source.vendor, source.model == request.source.model,
+              source.serial == request.source.serial, source.active, source.online, !source.asleep,
+              !isDisplayMirrored(source.id) else { return .refused(.sourceUnavailable) }
+        let fresh = makeWindowMovePlan(source: request.source, configuration: request.configuration, displays: current)
+        switch WindowMoveDisplaySelector.select(
+            configuration: request.configuration, sourceUUID: request.source.uuid, displays: current,
+            coveredDisplayIDs: fresh.coveredDisplayIDs,
+            removedDisplayUUIDs: fresh.removedDisplayUUIDs,
+            mirroredDisplayIDs: fresh.mirroredDisplayIDs
+        ) {
+        case .failure(let reason): return .refused(reason)
+        case .success(let destination):
+            guard destination.id == destinationID else { return .refused(.topologyChanged) }
+        }
+        return .allowed
+    }
+
+    private func windowMoveSummary(_ result: AppControlWindowMoveResult) -> String {
+        if result.refusalReason == .noWindows { return "No source windows were available to move." }
+        if let reason = result.refusalReason {
+            return "Move windows stopped: \(windowMoveReasonText(reason)) Counts: \(result.moved) moved, \(result.skipped) skipped, \(result.failed) failed."
+        }
+        var summary = "\(result.moved) moved, \(result.skipped) skipped, \(result.failed) failed."
+        if result.appFailures > 0 { summary += " \(result.appFailures) application(s) failed." }
+        let reasons = result.reasons.filter { $0.reason != .noWindows }.map { "\($0.reason.rawValue): \($0.count)" }
+        let appReasons = result.appFailureReasons.map { "\($0.reason.rawValue): \($0.count) app(s)" }
+        let details = (reasons + appReasons).joined(separator: ", ")
+        if !details.isEmpty { summary += " Reasons: \(details)." }
+        return summary
     }
 
     /// Skips are deliberately narrower than failures: no identity substitution or recovery bypass.
@@ -938,6 +1078,9 @@ final class AppModel: ObservableObject {
         if step.effect == .removeFromDesktop, blackouts.contains(key),
            let display = candidates.first, coveredHiddenDisplayIDs.contains(display.id) {
             return "Already blacked out."
+        }
+        if step.effect == .moveWindows, isVerifiedRemovedDisplay(key) {
+            return "Already removed from desktop."
         }
         return nil
     }
@@ -1001,6 +1144,30 @@ final class AppModel: ObservableObject {
         let hiddenBlackout = projectedBlackouts ?? Set(blackoutHiddenDisplays.keys)
         let hiddenRemoved = projectedRemovals ?? Set(unresolvedHandoffRemovals.map { $0.target.uuid.lowercased() })
         switch step.effect {
+        case .moveWindows:
+            if handoffInspectionFailure != nil || displayRecoveryProblem != nil || handoffStatus?.hasUnresolvedJournal == true {
+                return prefix + "Display recovery needs attention. Review it in Displays before moving windows."
+            }
+            guard display.active, display.online, !display.asleep,
+                  !isDisplayMirrored(display.id), !isRemovedDisplay(uuid) else {
+                return prefix + "The source display is unavailable. Reconnect or Show that exact display first."
+            }
+            if let reason = windowMovePermission.state().reason {
+                return prefix + windowMoveReasonText(reason)
+            }
+            guard let configuration = step.moveWindows else {
+                return prefix + DisplayActionValidationError.invalidMoveConfiguration(index + 1).localizedDescription
+            }
+            let request = makeWindowMovePlan(source: DisplayIdentitySnapshot(display), configuration: configuration)
+            switch WindowMoveDisplaySelector.select(
+                configuration: configuration, sourceUUID: uuid, displays: request.displays,
+                coveredDisplayIDs: request.coveredDisplayIDs,
+                removedDisplayUUIDs: request.removedDisplayUUIDs,
+                mirroredDisplayIDs: request.mirroredDisplayIDs
+            ) {
+            case .success: return nil
+            case .failure(let reason): return prefix + windowMoveReasonText(reason)
+            }
         case .show:
             if hiddenBlackout.contains(uuid) { return nil }
             if hiddenRemoved.contains(uuid) {
@@ -1074,6 +1241,15 @@ final class AppModel: ObservableObject {
     var displayActionBusyMessage: String {
         guard let runningDisplayAction else { return DisplayHideError.actionInProgress.localizedDescription }
         return "Action “\(runningDisplayAction.name)” is running step \(runningDisplayAction.currentStep) of \(runningDisplayAction.totalSteps). Try again when it finishes."
+    }
+
+    var controlActionStatuses: [AppControlActionStatus]? {
+        guard let id = lastDisplayActionResultID,
+              let action = displayActions.actions.first(where: { $0.id == id }),
+              let result = displayActionResults[id], let outcome = result.outcome,
+              let steps = result.steps else { return nil }
+        return [AppControlActionStatus(id: id, name: Self.bounded(action.name), outcome: outcome,
+                                       summary: Self.bounded(result.summary), steps: steps)]
     }
 
     var controlRunningDisplayAction: AppControlRunningAction? {
@@ -2639,7 +2815,8 @@ final class AppModel: ObservableObject {
     ) {
         var acquiredActionLease = false
         func refuse(_ outcome: AppControlOutcome, _ message: String,
-                    for action: DisplayAction? = nil, atStep requestedStep: Int = 0) {
+                    for action: DisplayAction? = nil, atStep requestedStep: Int = 0,
+                    windowMove: AppControlWindowMoveResult? = nil) {
             if acquiredActionLease, runningDisplayAction?.id == id {
                 runningDisplayAction = nil
                 runningDisplayActionIDs.remove(id)
@@ -2656,7 +2833,8 @@ final class AppModel: ObservableObject {
                     outcome: offset == requestedStep ? outcome : .notRun,
                     desktopSummary: offset == requestedStep
                         ? (isMultiStepAction ? Self.boundedActionStepText(message) : Self.bounded(message))
-                        : "Not run."
+                        : "Not run.",
+                    windowMove: offset == requestedStep ? windowMove : nil
                 )
             }
             let response = AppControlResponse(
@@ -2669,7 +2847,10 @@ final class AppModel: ObservableObject {
                 ),
                 steps: stepResults
             )
-            if runningDisplayAction?.id != id { displayActionResults[id] = response }
+            if runningDisplayAction?.id != id {
+                displayActionResults[id] = response
+                lastDisplayActionResultID = action?.id
+            }
             onStatusChange?()
             completion?(response)
         }
@@ -2756,7 +2937,9 @@ final class AppModel: ObservableObject {
             ) {
                 let outcome: AppControlOutcome = hideOperation.isBusy || handoffStatus?.state == .busy ? .busy
                     : blocker.localizedCaseInsensitiveContains("recovery") || blocker.localizedCaseInsensitiveContains("journal") ? .recoveryNeeded : .refused
-                refuse(outcome, blocker, for: action, atStep: offset)
+                let moveResult = step.effect == .moveWindows
+                    ? AppControlWindowMoveResult(refusalReason: windowMoveRefusalReason(for: blocker)) : nil
+                refuse(outcome, blocker, for: action, atStep: offset, windowMove: moveResult)
                 return
             }
             let key = uuid.lowercased()
@@ -2765,6 +2948,7 @@ final class AppModel: ObservableObject {
             case .blackOut: isNoOp = projectedBlackouts.contains(key)
             case .removeFromDesktop: isNoOp = projectedRemovals.contains(key) && isVerifiedRemovedDisplay(uuid)
             case .show: isNoOp = !projectedBlackouts.contains(key) && !projectedRemovals.contains(key)
+            case .moveWindows: isNoOp = false
             }
             if isNoOp {
                 noOpSteps.insert(offset)
@@ -2791,11 +2975,16 @@ final class AppModel: ObservableObject {
                 projectedBlackouts.remove(key)
                 projectedRemovals.remove(key)
                 projectedSources.removeValue(forKey: key)
+            case .moveWindows:
+                break
             }
         }
 
         let targetUUIDs = action.steps.compactMap { $0.target?.uuid }
         let wouldWrite = noOpSteps.count + skippedSteps.count != action.steps.count
+        let requiresProtectionQuiescence = action.steps.enumerated().contains { offset, step in
+            !skippedSteps.keys.contains(offset) && !noOpSteps.contains(offset) && step.effect != .moveWindows
+        }
         guard !runningActionInterrupted, !displayLifecycleTransitioning else {
             refuse(.refused, "Displays are sleeping or changing; the run was interrupted.", for: action)
             return
@@ -2862,6 +3051,7 @@ final class AppModel: ObservableObject {
             self.runningDisplayActionIDs.remove(id)
             self.finishDisplayActionLease()
             self.displayActionResults[id] = response
+            self.lastDisplayActionResultID = id
             self.onStatusChange?()
             completion?(response)
         }
@@ -2888,7 +3078,9 @@ final class AppModel: ObservableObject {
                 let message = "Step \(offset + 1): Displays are sleeping or changing; the run was interrupted."
                 stepResults.append(AppControlActionStepResult(index: offset + 1, targetUUID: uuid,
                     effect: action.steps[offset].effect.rawValue, outcome: .refused,
-                    desktopSummary: message))
+                    desktopSummary: message,
+                    windowMove: action.steps[offset].effect == .moveWindows
+                        ? AppControlWindowMoveResult(refusalReason: .cancelled) : nil))
                 stoppingOutcome = .refused
                 stoppingAtIndex = offset + 1
                 appendNotRun(from: offset + 1)
@@ -2924,7 +3116,9 @@ final class AppModel: ObservableObject {
                     desktopSummary: stillSafe ? reason : Self.boundedActionStepText(
                         recoveryProblem ??
                         "Display state changed after the Action was checked. Review the displays, then run it again."
-                    )
+                    ),
+                    windowMove: step.effect == .moveWindows
+                        ? AppControlWindowMoveResult(refusalReason: .sourceUnavailable) : nil
                 ))
                 if stillSafe {
                     runStep(offset + 1)
@@ -2951,7 +3145,9 @@ final class AppModel: ObservableObject {
                     : blocker.localizedCaseInsensitiveContains("recovery") ? .recoveryNeeded : .refused
                 stepResults.append(AppControlActionStepResult(index: offset + 1, targetUUID: uuid,
                     effect: step.effect.rawValue, outcome: outcome,
-                    desktopSummary: action.steps.count > 1 ? Self.boundedActionStepText(blocker) : Self.bounded(blocker)))
+                    desktopSummary: action.steps.count > 1 ? Self.boundedActionStepText(blocker) : Self.bounded(blocker),
+                    windowMove: step.effect == .moveWindows
+                        ? AppControlWindowMoveResult(refusalReason: windowMoveRefusalReason(for: blocker)) : nil))
                 stoppingOutcome = outcome
                 stoppingAtIndex = offset + 1
                 appendNotRun(from: offset + 1)
@@ -2963,6 +3159,7 @@ final class AppModel: ObservableObject {
             case .blackOut: alreadyAtDesiredState = self.isBlackoutHidden(uuid)
             case .removeFromDesktop: alreadyAtDesiredState = self.isVerifiedRemovedDisplay(uuid)
             case .show: alreadyAtDesiredState = !self.isBlackoutHidden(uuid) && !self.isRemovedDisplay(uuid)
+            case .moveWindows: alreadyAtDesiredState = false
             }
             if alreadyAtDesiredState {
                 let name = step.target.map { DisplayActionPresentation.displayName(for: $0, displays: self.displays) } ?? uuid
@@ -2971,6 +3168,7 @@ final class AppModel: ObservableObject {
                 case .blackOut: summary = "\(name) is already blacked out."
                 case .removeFromDesktop: summary = "\(name) is already removed from the desktop."
                 case .show: summary = "\(name) isn’t hidden."
+                case .moveWindows: summary = "Windows are already off the source display."
                 }
                 stepResults.append(AppControlActionStepResult(index: offset + 1, targetUUID: uuid,
                     effect: step.effect.rawValue, outcome: .noOp,
@@ -3042,10 +3240,87 @@ final class AppModel: ObservableObject {
                           completion: complete)
             case .show:
                 self.show(targetUUID: uuid, actionLeaseID: id, completion: complete)
+            case .moveWindows:
+                guard let configuration = step.moveWindows else {
+                    let result = AppControlWindowMoveResult(refusalReason: .destinationUnavailable)
+                    stepResults.append(AppControlActionStepResult(index: offset + 1, targetUUID: uuid,
+                        effect: step.effect.rawValue, outcome: .refused,
+                        desktopSummary: "Step \(offset + 1): Choose a Move windows destination.", windowMove: result))
+                    stoppingOutcome = .refused
+                    stoppingAtIndex = offset + 1
+                    appendNotRun(from: offset + 1)
+                    finishRun()
+                    return
+                }
+                let baseline = self.displays
+                let request = self.makeWindowMovePlan(source: expectedTarget, configuration: configuration,
+                                                      displays: baseline)
+                let initialDestination: DisplayRecord
+                switch WindowMoveDisplaySelector.select(
+                    configuration: configuration, sourceUUID: expectedTarget.uuid, displays: request.displays,
+                    coveredDisplayIDs: request.coveredDisplayIDs,
+                    removedDisplayUUIDs: request.removedDisplayUUIDs,
+                    mirroredDisplayIDs: request.mirroredDisplayIDs
+                ) {
+                case .success(let selected):
+                    initialDestination = selected
+                case .failure(let reason):
+                    let result = AppControlWindowMoveResult(refusalReason: reason)
+                    stepResults.append(AppControlActionStepResult(index: offset + 1, targetUUID: uuid,
+                        effect: step.effect.rawValue, outcome: .refused,
+                        desktopSummary: Self.bounded(windowMoveReasonText(reason)), windowMove: result))
+                    stoppingOutcome = .refused
+                    stoppingAtIndex = offset + 1
+                    appendNotRun(from: offset + 1)
+                    finishRun()
+                    return
+                }
+                Task { @MainActor in
+                    let result = await self.windowMoveExecutor.move(request) {
+                        self.validateWindowMoveGate(request, baseline: baseline,
+                            destinationID: initialDestination.id, actionID: id)
+                    }
+                    guard self.runningDisplayAction?.id == id else { return }
+                    let failed = result.failed > 0 || result.appFailures > 0 || result.refusalReason != nil
+                    let resultOutcome: AppControlOutcome
+                    if result.refusalReason == .recoveryRequired && result.moved == 0 {
+                        resultOutcome = .recoveryNeeded
+                    } else if result.moved > 0 {
+                        resultOutcome = failed ? .partial : .done
+                        changedAnyDisplay = true
+                    } else if let refusal = result.refusalReason {
+                        resultOutcome = refusal == .recoveryRequired ? .recoveryNeeded : .refused
+                    } else if failed {
+                        resultOutcome = .failed
+                    } else {
+                        resultOutcome = .noOp
+                    }
+                    let summary = Self.bounded(windowMoveSummary(result))
+                    stepResults.append(AppControlActionStepResult(
+                        index: offset + 1, targetUUID: uuid, effect: step.effect.rawValue,
+                        outcome: resultOutcome, desktopSummary: summary, windowMove: result
+                    ))
+                    if resultOutcome == .done || resultOutcome == .noOp {
+                        if offset + 1 < action.steps.count &&
+                            (self.runningActionInterrupted || self.displayLifecycleTransitioning) {
+                            stoppingOutcome = .partial
+                            stoppingAtIndex = offset + 1
+                            appendNotRun(from: offset + 1)
+                            finishRun()
+                        } else {
+                            runStep(offset + 1)
+                        }
+                    } else {
+                        stoppingOutcome = resultOutcome
+                        stoppingAtIndex = offset + 1
+                        appendNotRun(from: offset + 1)
+                        finishRun()
+                    }
+                }
             }
         }
 
-        if wouldWrite {
+        if wouldWrite && requiresProtectionQuiescence {
             self.protectionQuiescencePending = true
             self.onStatusChange?()
             self.stopManagedProtection { succeeded, message in

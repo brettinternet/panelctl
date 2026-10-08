@@ -168,6 +168,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
     public let displays: [AppControlDisplayStatus]?
     public let rules: [AppControlRuleStatus]?
     public let steps: [AppControlActionStepResult]?
+    public let actions: [AppControlActionStatus]?
     public let runningAction: AppControlRunningAction?
     public let runningRule: AppControlRunningRule?
     /// Present only on a status stream; scoped to that connection.
@@ -195,6 +196,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         displays: [AppControlDisplayStatus]? = nil,
         rules: [AppControlRuleStatus]? = nil,
         steps: [AppControlActionStepResult]? = nil,
+        actions: [AppControlActionStatus]? = nil,
         runningAction: AppControlRunningAction? = nil,
         runningRule: AppControlRunningRule? = nil
     ) {
@@ -213,6 +215,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         self.displays = displays
         self.rules = rules
         self.steps = steps
+        self.actions = actions
         self.runningAction = runningAction
         self.runningRule = runningRule
     }
@@ -231,7 +234,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol"
         case ok, running, enabled, state, summary, detail, error, sequence
-        case nextAction, secondsRemaining, snoozedUntil, outcome, displays, rules, steps, runningAction, runningRule
+        case nextAction, secondsRemaining, snoozedUntil, outcome, displays, rules, steps, actions, runningAction, runningRule
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -251,6 +254,7 @@ public struct AppControlResponse: Codable, Equatable, Sendable {
         try container.encodeIfPresent(displays, forKey: .displays)
         try container.encodeIfPresent(rules, forKey: .rules)
         try container.encodeIfPresent(steps, forKey: .steps)
+        try container.encodeIfPresent(actions, forKey: .actions)
         try container.encodeIfPresent(runningAction, forKey: .runningAction)
         try container.encodeIfPresent(runningRule, forKey: .runningRule)
         try container.encodeIfPresent(sequence, forKey: .sequence)

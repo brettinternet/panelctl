@@ -69,12 +69,30 @@ struct AutomationSettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
-                if model.displayActions.actions.isEmpty && model.displayActionStorageFailure == nil {
+                if model.displayActions.actions.isEmpty && model.displayActions.unsupportedActions.isEmpty && model.displayActionStorageFailure == nil {
                     Text("No actions.")
                         .foregroundStyle(.secondary)
                 }
                 ForEach(model.displayActions.actions) { action in
                     displayActionRow(action)
+                }
+                ForEach(model.displayActions.unsupportedActions) { action in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(action.name).font(.body.weight(.semibold))
+                        Text(action.reason).font(.caption).foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Accessibility: \(windowMovePermissionLabel)")
+                        Text("Move windows needs Accessibility. CLI and background runs never request permission.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Allow Accessibility…", action: model.requestWindowMoveAccessibilityPermission)
+                        .disabled(model.windowMovePermissionState == .granted)
                 }
                 Button("Add Action…") {
                     actionEditor = DisplayActionEditorPresentation(
@@ -86,7 +104,7 @@ struct AutomationSettingsView: View {
             } header: {
                 Text("Actions")
             } footer: {
-                SectionFooter("Run an Action here, or from scripts or other apps. Steps run in order, skipping safely unavailable displays. Other problems stop the Action; earlier changes stay in place. Actions never run on their own.")
+                SectionFooter("Run an Action here, or from scripts or other apps. Steps run in order; Hide/Show and Move windows are separate effects and can share a source. Other problems stop the Action; earlier changes stay in place. Actions never run on their own.")
             }
 
             if model.automationPreferences.rules.contains(where: { $0.settings.followUpAction == .sleepDisplays }) {
@@ -118,6 +136,14 @@ struct AutomationSettingsView: View {
                 existingID: presentation.isNew ? nil : presentation.action.id,
                 isNew: presentation.isNew
             )
+        }
+    }
+
+    private var windowMovePermissionLabel: String {
+        switch model.windowMovePermissionState {
+        case .granted: return "Granted"
+        case .missing: return "Not granted"
+        case .stale: return "Stale or revoked"
         }
     }
 
@@ -226,6 +252,7 @@ struct AutomationSettingsView: View {
         switch effect {
         case .show: return "eye"
         case .blackOut, .removeFromDesktop: return "eye.slash"
+        case .moveWindows: return "arrow.left.arrow.right"
         }
     }
 
@@ -255,6 +282,7 @@ struct AutomationSettingsView: View {
         } else if let inputDetail = step.inputDetail {
             parts.append("Input: \(inputDetail)")
         }
+        if let windowMove = step.windowMove { parts.append(windowMoveDescription(windowMove)) }
         return parts.joined(separator: "\n")
     }
 
@@ -283,12 +311,24 @@ struct AutomationSettingsView: View {
             } else if let inputDetail = step.inputDetail {
                 rowStatus("Input: \(inputDetail)", warning: true)
             }
+            if let windowMove = step.windowMove {
+                rowStatus(windowMoveDescription(windowMove), warning: attention)
+            }
             if step.outcome == .recoveryNeeded {
                 Button("Review in Displays…") { navigation.showDisplays(selecting: step.targetUUID) }
                     .accessibilityLabel("Review Step \(step.index) recovery in Displays")
             }
         }
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func windowMoveDescription(_ result: AppControlWindowMoveResult) -> String {
+        var parts = ["Windows: \(result.moved) moved, \(result.skipped) skipped, \(result.failed) failed"]
+        if result.appFailures > 0 { parts.append("\(result.appFailures) application failures") }
+        if let reason = result.refusalReason { parts.append("\(reason.rawValue)") }
+        parts.append(contentsOf: result.reasons.filter { $0.count > 0 }.map { "\($0.reason.rawValue): \($0.count)" })
+        parts.append(contentsOf: result.appFailureReasons.map { "\($0.reason.rawValue): \($0.count) apps" })
+        return parts.joined(separator: " · ")
     }
 
     private func desktopDetail(for step: AppControlActionStepResult) -> String {
@@ -511,7 +551,7 @@ struct DisplayActionEditor: View {
                 } header: {
                     Text("Steps")
                 } footer: {
-                    SectionFooter("Each display can appear only once. Steps run in order, skipping safely unavailable displays. Other problems stop the Action; earlier changes stay in place.")
+                    SectionFooter("A display can appear once in the display-state effects and once in Move windows. Steps run in order; earlier changes stay in place if a later step stops.")
                 }
 
                 Section {
@@ -599,6 +639,11 @@ struct DisplayActionEditor: View {
                     current.effect = effect
                     if effect != .removeFromDesktop { current.reviewedRemoval = nil }
                     else if step.effect != .removeFromDesktop { current.reviewedRemoval = nil }
+                    if effect == .moveWindows {
+                        current.moveWindows = current.moveWindows ?? MoveWindowsConfiguration()
+                    } else {
+                        current.moveWindows = nil
+                    }
                 }
             }
         )) {
@@ -608,6 +653,8 @@ struct DisplayActionEditor: View {
 
         if step.effect == .removeFromDesktop {
             removalDetails(step, index: index)
+        } else if step.effect == .moveWindows {
+            moveWindowsDetails(step, index: index)
         }
         HStack(spacing: 10) {
             Button("Move Up") { moveStep(from: index, to: index - 1) }
@@ -659,9 +706,13 @@ struct DisplayActionEditor: View {
     }
 
     private func availableDisplays(for index: Int) -> [DisplayTile] {
-        let current = draft.steps[index].target?.uuid.lowercased()
-        let used = Set(draft.steps.enumerated().compactMap { offset, step in
-            offset == index ? nil : step.target?.uuid.lowercased()
+        let currentStep = draft.steps[index]
+        let current = currentStep.target?.uuid.lowercased()
+        let currentClass = currentStep.effect == .moveWindows ? "windows" : "display"
+        let used: Set<String> = Set(draft.steps.enumerated().compactMap { pair -> String? in
+            let (offset, step) = pair
+            guard offset != index, (step.effect == .moveWindows ? "windows" : "display") == currentClass else { return nil }
+            return step.target?.uuid.lowercased()
         })
         return stableDisplays.filter { display in
             guard let uuid = display.uuid?.lowercased() else { return false }
@@ -701,6 +752,57 @@ struct DisplayActionEditor: View {
         guard draft.steps.count > 1, draft.steps.indices.contains(index) else { return }
         draft.steps.remove(at: index)
         saveFailure = nil
+    }
+
+    @ViewBuilder
+    private func moveWindowsDetails(_ step: DisplayActionStep, index: Int) -> some View {
+        let current = step.moveWindows?.destination ?? .automatic
+        let selectedValue = moveDestinationKey(current)
+        Picker("Destination", selection: Binding(
+            get: { selectedValue },
+            set: { selectMoveDestination($0, at: index) }
+        )) {
+            Text("Automatic").tag("automatic")
+            ForEach(stableDisplays.filter { $0.uuid?.caseInsensitiveCompare(step.target?.uuid ?? "") != .orderedSame }, id: \.id) { display in
+                if let uuid = display.uuid { Text(display.automationChoiceLabel).tag("display:\(uuid.lowercased())") }
+            }
+            if case .display(let identity) = current,
+               identity.uuid.caseInsensitiveCompare(step.target?.uuid ?? "") == .orderedSame ||
+               !stableDisplays.contains(where: { $0.uuid?.caseInsensitiveCompare(identity.uuid) == .orderedSame }) {
+                Text("\(DisplayActionPresentation.displayName(for: identity, displays: model.displays)) (unavailable)")
+                    .tag("display:\(identity.uuid.lowercased())")
+            }
+        }
+        .accessibilityLabel("Step \(index + 1) Move windows destination")
+        Text("Automatic uses the main eligible display, then the lowest stable UUID. Blacked-out, removed, asleep, offline and mirrored displays are not destinations.")
+            .font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func moveDestinationKey(_ destination: MoveWindowsDestination) -> String {
+        switch destination {
+        case .automatic: return "automatic"
+        case .display(let identity): return "display:\(identity.uuid.lowercased())"
+        }
+    }
+
+    private func selectMoveDestination(_ value: String, at index: Int) {
+        guard draft.steps.indices.contains(index) else { return }
+        updateStep(at: index) { step in
+            guard value != "automatic" else {
+                step.moveWindows = MoveWindowsConfiguration(destination: .automatic)
+                return
+            }
+            let uuid = String(value.dropFirst("display:".count))
+            let identity = stableDisplays.first(where: { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame })
+                .flatMap { model.automationDisplayIdentity(for: $0) }
+                ?? step.moveWindows.flatMap { configuration -> DisplayIdentityReference? in
+                    if case .display(let saved) = configuration.destination,
+                       saved.uuid.caseInsensitiveCompare(uuid) == .orderedSame { return saved }
+                    return nil
+                }
+            if let identity { step.moveWindows = MoveWindowsConfiguration(destination: .display(identity)) }
+        }
     }
 
     private func sourceName(_ uuid: String?) -> String {

@@ -69,9 +69,11 @@ consent each time and reconnects automatically after 15 seconds. See
 
 ## Named manual actions
 
-**Automations → Actions** stores named workflows of 1–8 steps. Each step
-targets a different display with **Hide (black out)**, **Hide (remove from
-desktop)** or **Show**.
+**Automations → Actions** stores named workflows of 1–8 steps. Each step targets
+a display with **Hide (black out)**, **Hide (remove from desktop)**, **Show** or
+**Move windows**. A display may appear once in the Hide/Show class and once in
+the separate Move class, so Hide and Move can share a source in either order.
+Hide never moves windows; Move never changes Hide state.
 
 ```sh
 panelctl app run-action --action ACTION_UUID --json
@@ -87,6 +89,15 @@ panelctl app run-action --action ACTION_UUID --json
   safeguards still block. A skipped step never becomes a write during that run.
 - A Remove step saves the display's setup. If that setup changes later, review
   and save the Action again.
+- Move windows is a one-shot relocation of ordinary movable windows on the
+  current Space. It does not activate apps, switch Spaces, or restore windows on
+  Show; windows already off the source stay untouched. Full-screen, minimized,
+  vanished, nonmovable and publicly unverified windows are skipped with reasons.
+- Move windows requires Accessibility permission granted by the explicit
+  **Allow Accessibility** button in **Settings → Automations → Actions**. CLI and
+  background runs report missing or stale permission and never prompt. Results
+  include privacy-safe moved/skipped/failed counts and reason codes; window titles
+  are not stored.
 - `done`: eligible steps finished. Per-step `skipped` results explain unavailable
   targets. `no-op`: nothing needed to change; when steps were skipped, the summary
   says “Nothing to do.” `partial`: some steps changed, then the run stopped.

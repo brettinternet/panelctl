@@ -632,12 +632,15 @@ final class DisplayActionAppTests: XCTestCase {
             var malformedAction: [String: Any] = [
                 "id": malformedID.uuidString,
                 "name": "Malformed legacy action",
-                "target": identityJSON
+                "target": identityJSON,
+                "futureField": ["preserve": "me"]
             ]
             if nullEffect { malformedAction["effect"] = NSNull() }
+            let supported = DisplayAction(name: "Supported sibling", target: DisplayIdentityReference(identity))
+            let supportedObject = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(supported)) as? [String: Any])
             let malformedBytes = try JSONSerialization.data(withJSONObject: [
                 "version": 1,
-                "actions": [malformedAction]
+                "actions": [malformedAction, supportedObject]
             ])
             malformedDefaults.set(malformedBytes, forKey: AppModel.legacyDisplayActionsKey)
             var writerCalls = 0
@@ -646,10 +649,16 @@ final class DisplayActionAppTests: XCTestCase {
                 hide: { _, _, _ in writerCalls += 1; return .notRequested },
                 cover: { _ in writerCalls += 1; return [] }
             )
-            XCTAssertTrue(malformedModel.displayActions.actions.isEmpty)
-            XCTAssertTrue(malformedModel.displayActionStorageFailure?.contains("preserved") == true)
-            XCTAssertThrowsError(try malformedModel.saveDisplayAction(DisplayAction(name: "Do not overwrite")))
+            XCTAssertNil(malformedModel.displayActionStorageFailure)
+            XCTAssertEqual(malformedModel.displayActions.actions.map(\.name), ["Supported sibling"])
+            XCTAssertEqual(malformedModel.displayActions.unsupportedActions.first?.id, malformedID.uuidString)
+            try malformedModel.saveDisplayAction(DisplayAction(name: "New supported sibling", target: DisplayIdentityReference(identity)))
             XCTAssertEqual(malformedDefaults.data(forKey: AppModel.legacyDisplayActionsKey), malformedBytes)
+            let preservedBytes = try XCTUnwrap(malformedDefaults.data(forKey: AppModel.displayActionsKey))
+            let preserved = try XCTUnwrap(JSONSerialization.jsonObject(with: preservedBytes) as? [String: Any])
+            let preservedRows = try XCTUnwrap(preserved["actions"] as? [[String: Any]])
+            let preservedRaw = try XCTUnwrap(preservedRows.first { ($0["id"] as? String) == malformedID.uuidString })
+            XCTAssertEqual((preservedRaw["futureField"] as? [String: String])?["preserve"], "me")
             var runResponse: AppControlResponse?
             malformedModel.runDisplayAction(id: malformedID) { runResponse = $0 }
             XCTAssertEqual(runResponse?.outcome, .refused)

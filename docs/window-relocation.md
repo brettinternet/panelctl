@@ -1,9 +1,9 @@
 # Window relocation contract
 
-Design for TASK-64 (one-shot Move windows) and TASK-65 (keep-off). This document
-records decisions, not shipped functionality or permission to move real windows.
-The shared direction was approved during TASK-63. TASK-64 also depends on stable
-app signing (TASK-66). Neither task authorizes native window movement without
+Contract for TASK-64 (implemented one-shot Move windows) and TASK-65 (planned
+keep-off). The shared direction was approved during TASK-63; the keep-off section
+is not shipped functionality. TASK-64 depends on stable app signing (TASK-66).
+Neither task authorizes native window movement without
 separate approval, DDC writes, or private display setters.
 
 ## 1. Saved Actions
@@ -230,7 +230,7 @@ Native validation, when separately approved, uses narrow tests gated by
 
 ## Evidence
 
-Current contracts: `DisplayActions.swift` (v2 and result alignment),
+TASK-63 design-time evidence: `DisplayActions.swift` (then v2 and result alignment),
 `AppControlDisplayStatus.swift` (outcomes), `AppModel.swift` (storage preservation,
 Action aggregation and manual coverage), `ProtectionService.swift` /
 `ProtectionCoordinator.swift` (helper membership), `ProtectionPreferences.swift`
