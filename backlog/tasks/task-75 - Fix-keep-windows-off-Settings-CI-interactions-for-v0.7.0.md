@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@agent'
 created_date: '2026-10-08 20:06'
-updated_date: '2026-10-08 20:12'
+updated_date: '2026-10-08 20:22'
 labels: []
 dependencies: []
 type: bug
@@ -27,11 +27,13 @@ Main CI reports seven failures in two keep-windows-off Settings tests. Release v
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-Use existing NSSwitch.performClick test convention, wait for selected-display rendering, validate fake-backed tests locally, then push main and tag v0.7.0 after main CI succeeds.
+Use NSSwitch.performClick and current-control rendering waits; select the target display before presenting Settings. Validate the two tests locally with scoped approval and fake-backed suites, then push main, tag v0.7.0 after main CI succeeds, and verify release CI/assets.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Main CI 37837084104 proves hidden-display pause/resume now passes with performClick and rendering waits. Remaining unhidden-display test clicks the prior display control before SwiftUI selection updates; select switches by their existing display-specific accessibility label rather than count.
+
+CI 37837757000 showed native NSSwitch accessibility labels are nil. User approved exactly the two affected local UI tests, with fake displays and no real window movement or hardware writes. Direct inspection confirmed nil labels; selecting the target before presenting Settings removes the stale first-display control race. Both affected tests now pass locally (2 tests, 0 failures), retaining all behavior assertions; diagnostic prints removed.
 <!-- SECTION:NOTES:END -->

@@ -448,17 +448,16 @@ final class SettingsWindowTests: XCTestCase {
             defaults.removePersistentDomain(forName: Self.suiteName)
         }
         let controller = SettingsWindowController(model: model)
-        controller.present()
         controller.selectDisplay(uuid: Self.sideUUID)
+        controller.present()
         let window = try XCTUnwrap(controller.window)
         defer { window.close() }
         window.setContentSize(NSSize(width: 680, height: 1000))
         let content = try XCTUnwrap(window.contentView)
         func keepOffSwitch() -> NSSwitch? {
-            // Wait for the selected display, not the previous display's still-mounted control.
-            nativeViews(in: content).compactMap { $0 as? NSSwitch }.first {
-                $0.accessibilityLabel() == "Also keep windows off \(displays[1].name ?? "") when hidden"
-            }
+            // Select before presentation so this control belongs to the intended display.
+            let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
+            return switches.count == 1 ? switches[0] : nil
         }
         spin { content.layoutSubtreeIfNeeded(); return keepOffSwitch() != nil }
         let toggle = try XCTUnwrap(keepOffSwitch())
@@ -504,8 +503,8 @@ final class SettingsWindowTests: XCTestCase {
         let key = Self.sideUUID.lowercased()
         XCTAssertEqual(model.keepWindowsOffCovers[key]?.pausedByUser, false)
         let controller = SettingsWindowController(model: model)
-        controller.present()
         controller.selectDisplay(uuid: Self.sideUUID)
+        controller.present()
         let window = try XCTUnwrap(controller.window)
         defer {
             window.close()
@@ -514,9 +513,8 @@ final class SettingsWindowTests: XCTestCase {
         window.setContentSize(NSSize(width: 680, height: 1000))
         let content = try XCTUnwrap(window.contentView)
         func keepOffSwitch() -> NSSwitch? {
-            nativeViews(in: content).compactMap { $0 as? NSSwitch }.first {
-                $0.accessibilityLabel() == "Keep windows off \(displays[1].name ?? "") while hidden"
-            }
+            let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
+            return switches.count == 1 ? switches[0] : nil
         }
         spin { content.layoutSubtreeIfNeeded(); return keepOffSwitch()?.state == .on }
         let toggle = try XCTUnwrap(keepOffSwitch())
