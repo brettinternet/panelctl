@@ -20,6 +20,8 @@ arm64_cli=$4
 x86_64_cli=$5
 output_app=$6
 
+source "$(dirname "${BASH_SOURCE[0]}")/signing.sh"
+panelctl_signing_configure
 source "$(dirname "${BASH_SOURCE[0]}")/release-version.sh"
 if ! release_version_parse "$tag"; then
 	echo "package-app.sh: tag must be a semantic version such as v1.2.3 or v1.2.3-beta.1: $tag" >&2
@@ -85,10 +87,9 @@ xcrun actool \
 	--app-icon AppIcon \
 	--output-partial-info-plist /dev/null \
 	>/dev/null
-# Ad-hoc signing needs no Apple Developer key. Sign nested code first so
-# launch-at-login and helper execution have a coherent local requirement.
-codesign --force --sign - "$staging/Contents/Helpers/panelctl"
-codesign --force --sign - "$staging"
+# Sign nested code first; both use the same configured certificate.
+panelctl_sign "$staging/Contents/Helpers/panelctl" "com.brettinternet.panelctl.cli"
+panelctl_sign "$staging" "com.brettinternet.panelctl"
 codesign --verify --deep --strict "$staging"
 
 for binary in "$staging/Contents/MacOS/PanelCtl" "$staging/Contents/Helpers/panelctl"; do

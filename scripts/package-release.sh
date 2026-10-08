@@ -18,6 +18,8 @@ fi
 
 tag=$1
 output_dir=${2:-dist}
+source "$(dirname "${BASH_SOURCE[0]}")/signing.sh"
+panelctl_signing_configure
 source "$(dirname "${BASH_SOURCE[0]}")/release-version.sh"
 if ! release_version_parse "$tag"; then
 	echo "package-release.sh: tag must be a semantic version such as v1.2.3 or v1.2.3-beta.1: $tag" >&2
@@ -89,16 +91,21 @@ for binary in "$arm64_ui" "$x86_64_ui" "$arm64_cli" "$x86_64_cli"; do
 done
 
 universal_staging=$(mktemp -d "${TMPDIR:-/tmp}/panelctl-release.XXXXXX")
+: > "$universal_staging/.panelctl-release-owned"
 cleanup() {
-	if [[ -x /usr/bin/trash && -e "$universal_staging" ]]; then
-		/usr/bin/trash "$universal_staging" || true
+	local cleanup_root cleanup_staging
+	cleanup_root=$(cd "${TMPDIR:-/tmp}" && pwd -P) || return
+	cleanup_staging=$(cd "$universal_staging" && pwd -P) || return
+	if [[ -x /usr/bin/trash && "$cleanup_staging" == "$cleanup_root"/panelctl-release.* &&
+		-f "$cleanup_staging/.panelctl-release-owned" ]]; then
+		/usr/bin/trash "$cleanup_staging" || true
 	fi
 }
 trap cleanup EXIT
 
 lipo -create "$arm64_cli" "$x86_64_cli" -output "$universal_staging/panelctl"
 chmod 0755 "$universal_staging/panelctl"
-codesign --force --sign - "$universal_staging/panelctl"
+panelctl_sign "$universal_staging/panelctl" "com.brettinternet.panelctl.cli"
 codesign --verify --strict "$universal_staging/panelctl"
 lipo -info "$universal_staging/panelctl"
 

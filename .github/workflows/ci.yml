@@ -43,6 +43,8 @@ jobs:
             test-stack-*.log
       - name: Check release version policy
         run: ./scripts/test-release-version.sh
+      - name: Check signing policy (fake tools, no keys)
+        run: python3 scripts/test-signing.py
       - name: Compile CLI product
         run: swift build --disable-sandbox --product panelctl
       - name: Compile app product
@@ -54,6 +56,9 @@ jobs:
     runs-on: macos-15
     permissions:
       contents: write
+    env:
+      PANELCTL_REQUIRE_SIGNING: '1'
+      PANELCTL_SIGNING_IDENTITY: ${{ secrets.PANELCTL_SIGNING_IDENTITY }}
     steps:
       - name: Check out source
         uses: actions/checkout@v6
@@ -68,8 +73,24 @@ jobs:
           path: |
             test-output.log
             test-stack-*.log
+      - name: Check signing policy (fake tools, no keys)
+        run: python3 scripts/test-signing.py
+      - name: Import release signing identity
+        env:
+          PANELCTL_SIGNING_P12_BASE64: ${{ secrets.PANELCTL_SIGNING_P12_BASE64 }}
+          PANELCTL_SIGNING_P12_PASSWORD: ${{ secrets.PANELCTL_SIGNING_P12_PASSWORD }}
+        run: |
+          export PANELCTL_SIGNING_KEYCHAIN="$RUNNER_TEMP/panelctl-signing.keychain-db"
+          echo "PANELCTL_SIGNING_KEYCHAIN=$PANELCTL_SIGNING_KEYCHAIN" >> "$GITHUB_ENV"
+          python3 scripts/import-signing.py
       - name: Package release
         run: ./scripts/package-release.sh "$GITHUB_REF_NAME"
+      - name: Remove release signing keychain
+        if: always()
+        run: |
+          if [[ -f "$PANELCTL_SIGNING_KEYCHAIN" ]]; then
+            security delete-keychain "$PANELCTL_SIGNING_KEYCHAIN"
+          fi
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -78,7 +99,7 @@ jobs:
             - **PanelCtl menu-bar app** — `PanelCtl-…-macos-universal.zip`
             - **Standalone panelctl CLI** — `panelctl-cli-…-macos-universal.zip`
 
-            Both archives are universal arm64/x86_64 and ad-hoc signed, not Developer ID signed or notarized. Verify the matching SHA-256 checksum; macOS may require Privacy & Security → Open Anyway.
+            Both archives are universal arm64/x86_64 and signed with a stable self-signed certificate, not Developer ID signed or notarized. Verify the matching SHA-256 checksum; macOS may require Privacy & Security → Open Anyway.
         run: |
           source scripts/release-version.sh
           release_version_parse "$GITHUB_REF_NAME"

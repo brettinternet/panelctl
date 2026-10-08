@@ -22,8 +22,11 @@ Or download the app or CLI and its SHA-256 checksum from
 [GitHub Releases](https://github.com/brettinternet/panelctl/releases). Move
 `PanelCtl.app` to `/Applications`, or put `panelctl` on your `PATH`.
 
-Releases are ad-hoc signed, not notarized. If macOS blocks one, verify the
-checksum, then choose **Open Anyway** in System Settings → Privacy & Security.
+Releases use a stable self-signed certificate, not Developer ID signing or
+notarization (older releases were ad-hoc signed). If macOS blocks one, verify
+the checksum, then choose **Open Anyway** in System Settings → Privacy & Security.
+The first upgrade from ad-hoc signing, or a signing-certificate rotation,
+requires re-granting any privacy permissions once.
 
 To build the CLI (macOS 13+, Swift 5.9+):
 
