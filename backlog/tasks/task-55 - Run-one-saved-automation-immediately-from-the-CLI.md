@@ -4,8 +4,9 @@ title: Run one saved automation immediately from the CLI
 status: Done
 assignee: []
 created_date: '2026-10-07 00:50'
-updated_date: '2026-10-07 02:16'
-labels: []
+updated_date: '2026-10-08 05:53'
+labels:
+  - reviewed
 dependencies: []
 references:
   - Sources/PanelCtlApp/AppModel.swift
@@ -49,6 +50,8 @@ Users can invoke a saved Action by UUID but cannot explicitly invoke one automat
 <!-- SECTION:NOTES:BEGIN -->
 Delivered on main in commit 40b2df3 (Add one-shot automation rule execution). CLI/protocol tests cover exact UUID parsing, unavailable app, no launch/retry and response loss. Fake-helper tests cover installation acknowledgment, stable running-rule status, enabled/disabled/snoozed settings preservation, isolation, active/overlap refusal, failure, Restore/Escape cleanup and automatic resumption. One independent review found four concrete defects; corrected live-journal ownership checks, disabled blocking-rule Escape membership, hidden-target dimming exclusion and stale-request refusal, with regression tests. No second general review was performed.
 Final parent verification: swift test --disable-sandbox --filter "ProtectionRuleRunOnceTests|BlackoutDimmingTests" passed 27 tests. Affected regression filter AppControlTests|AppControlServerTests|CLIParserTests|AutomationRulesTests|AutomationCleanupTests|ProtectionPreferencesTests|DisplayHideAppTests|AutomationSafetyTests|DisplayActionAppTests passed 240 tests (10 native UI tests skipped), zero failures. Executor also built PanelCtlApp and panelctl successfully. git diff --check passed. LSP diagnostics were unknown (bounded report timeout); compiler/tests supplied verification. No hardware writes or native desktop UI were performed. No remaining blocker or resumable implementation step; TASK-56 is the next dependency-ready item, not started.
+
+Post-delivery review 2026-10-08 found two defects, both fixed with red-to-green regressions: automatic rules could combine with a disabled running one-shot to cover every display (TASK-70, 9f8051d); deleting a rule during its one-shot left the run active (TASK-71, 7a63faf).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

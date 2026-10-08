@@ -4,8 +4,9 @@ title: Retire broadcast blackout-now and let Hide force black-out style
 status: Done
 assignee: []
 created_date: '2026-10-07 00:50'
-updated_date: '2026-10-07 02:56'
-labels: []
+updated_date: '2026-10-08 05:53'
+labels:
+  - reviewed
 dependencies:
   - TASK-55
   - TASK-56
@@ -45,6 +46,8 @@ The legacy `app blackout-now` (CLI, control socket and menu item) broadcasts to 
 
 <!-- SECTION:NOTES:BEGIN -->
 Delivered on main in commit 42c66a0. Removed model/coordinator broadcast and obsolete menu helpers; legacy CLI/socket requests refuse with shared migration guidance. Added request-scoped black-out Hide/Toggle style, preserving Scripts, Actions, saved preferences and automation-only Restore. One independent review found two concrete defects, both corrected: styled requests now use protocol 2 so older apps refuse instead of silently removing a display, and forced black-out uses black-out readiness rather than incomplete removal setup. Protocol 1 ordinary requests/responses remain compatible. Final parent checks: AppControlTests 15 passed; CLIParserTests 24 passed; AppControlServerTests 7 passed; DisplayHideAppTests 73 executed, 10 native tests skipped, zero failures. New regressions cover legacy protocol refusal, missing mirror source, no removal calls, unchanged preferences, Show/Escape and side-effect-free socket refusal. Executor also passed ProtectionPreferencesTests (40), AutomationRulesTests (15), BlackoutFocusControllerTests (15), targeted hidden-display Restore and safety tests; CLI smoke returned exit 2. git diff --check passed; core LSP diagnostics clean, initial AppModel LSP result unknown (compiler/tests passed). Native UI and hardware writes were not performed or authorized. No remaining blocker or implementation step; optional native validation requires separate scoped approval. No worktrees created; provider claim released by Done and clearing assignee.
+
+Post-delivery review 2026-10-08: no runtime or safety defects. AC6 doc gap (docs/display-hide-ux.md lacked the blackout-now retirement and replacements) fixed in 95d961d.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

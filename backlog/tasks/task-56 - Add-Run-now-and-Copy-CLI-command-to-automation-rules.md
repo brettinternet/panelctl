@@ -4,8 +4,9 @@ title: 'Add Run now, Copy CLI command and a menu Run submenu for automation rule
 status: Done
 assignee: []
 created_date: '2026-10-07 00:50'
-updated_date: '2026-10-07 02:24'
-labels: []
+updated_date: '2026-10-08 05:53'
+labels:
+  - reviewed
 dependencies:
   - TASK-55
 references:
@@ -44,6 +45,8 @@ Delivered on main in c3d6be3 (Add per-rule run controls and menu). Settings Run 
 Verification: swift test --disable-sandbox --filter "ProtectionRuleRunOnceTests|SettingsWindowTests.testRunRuleMenuIncludesDisabledRulesAndExplainsEmptyRules|SettingsWindowTests.testMenuUsesAutomationWording|AppControlTests.testRunRule|DisplayHideAppTests.testHiddenOverlayIsSourceOnlyRestoreOnlyAndQuiescedBeforeShow" passed 20 tests (16 one-shot, 2 menu, 1 overlay integration, 1 shell-safe command). New tests cover stable identity after rename/reorder, disabled/snoozed menu dispatch, unchanged preferences, selected-only launch, restart refusal, working-mode run text, retained-failure labeling and current-blocker precedence. git diff --check passed; LSP diagnostics clean for changed source files and new tests.
 One independent review completed (ccd89ec1-3709-4132-ba19-34bc3f3232cb): corrected unconditional Escape guidance for dimming and stale refusal precedence; affected checks rerun green. No second general review.
 Native visual validation BLOCKED by withheld desktop-UI approval: user explicitly chose Skip desktop UI. No native Settings window, interactive clipboard click, hardware writes or visual fixture run claimed. Model/menu behavior and command text were verified without presenting UI. Optional next validation: obtain scoped permission, then run SettingsWindowTests.testAutomationFixtureSnapshots with the interactive flag and inspect screenshots. No remaining implementation blocker; claim released.
+
+Post-delivery review 2026-10-08 found that failures after installation were hidden from per-rule feedback; fixed in TASK-72 (c3df9a2).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

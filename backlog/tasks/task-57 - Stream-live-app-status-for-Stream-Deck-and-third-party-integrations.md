@@ -4,8 +4,9 @@ title: Stream live app status for Stream Deck and third-party integrations
 status: Done
 assignee: []
 created_date: '2026-10-07 01:08'
-updated_date: '2026-10-07 03:02'
-labels: []
+updated_date: '2026-10-08 05:53'
+labels:
+  - reviewed
 dependencies: []
 references:
   - Sources/PanelCtlApp/AppControlServer.swift
@@ -51,6 +52,8 @@ Acceptance evidence: AppControlTests.testWatchUnavailableEmitsOneSequencedDocume
 Verification: swift test --disable-sandbox --filter AppControlServerTests (7 passed); filter AppStatusStreamTests (6 passed); AppControlTests and CLIParserTests (42 passed); DisplayActionAppTests.testActionLeaseBlocksCompetingEntryPointsAndKeepsRequestsStaleAfterFinish (1 passed); AutomationRulesTests.testAggregateStatusAndMasterControlsCoverMultipleEnabledRules (1 passed). Total 57 distinct focused tests passed. CLI invocation without --json confirmed exit 2; git diff --check passed. LSP clean for AppControl.swift, CLIParser.swift, main.swift, AppDelegate.swift and AppControlServer.swift; new stream file diagnostic report was unknown, so successful Swift build/tests are authoritative.
 Single independent reviewer pass f7803d49-784d-49c7-991d-32dc6300d082: no validated findings. Residual limitation: model notification wiring was source-reviewed, not directly exercised end-to-end by new stream fixtures; existing fake model status/Action tests passed. No native UI or hardware writes performed. docs/usage.md documents NDJSON, sequences, coalescing, terminal behavior, limits and a Stream Deck/jq example.
 No remaining blocker or resumable implementation step. Claim released by Done status and clearing the temporary assignee. No worktree created; no push or PR requested.
+
+Post-delivery review 2026-10-08 found healthy watchers were dropped for valid frames above the 8 KiB default AF_UNIX send buffer (measured offline); fixed in TASK-69 (4181779).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
