@@ -23,24 +23,39 @@ out several displays, but never the last visible one. Covers survive sleep, wake
 and reconnects, and end on quit. Automation skips blacked-out displays, and
 **Restore** doesn't show them.
 
-### Keep windows off while blacked out
+### Keep windows off while hidden
 
-In **Settings → Displays → Windows**, opt in separately for each
-stable display identity. The option defaults off and is independent of both Hide
-and **Remove from desktop**; enabling Hide never enables window movement. Choose
-**Automatic** (current main display, then stable UUID order) or one exact
+| You want to | Use |
+| --- | --- |
+| Black out and leave windows alone | **Hide** (default) |
+| Bring windows over once | An Action's **Move windows** step |
+| Keep a blacked-out display clear | **Hide** with keep windows off |
+| Stop using the display as desktop space | **Remove from desktop** (experimental) |
+
+Keep windows off belongs to one blackout Hide, not to the display. In
+**Settings → Displays → Windows**, **Also keep windows off** (default off) is
+remembered per stable display identity and applies to that display's next manual
+Hide from Settings, the menu or `app hide`. An Action's **Hide (black out)** step
+has its own **Keep windows off while hidden** option and ignores the remembered
+choice. While the display is hidden, the **Keep windows off** switch pauses or
+resumes this Hide only. Show, a failed Hide and quit end it; relaunch never
+restores it. Automation rule blackouts never move windows: they end on input,
+occupancy or time limits, so a display they cover stays **Armed**. Remove from
+desktop doesn't use the option.
+
+Choose **Automatic** (current main display, then stable UUID order) or one exact
 destination. If that destination is asleep, disconnected, covered, mirrored,
 removed, or has an ambiguous identity, movement pauses instead of choosing a
 replacement. Monitor power-off alone is not a PanelCtl blackout.
 
-While PanelCtl is covering the opted-in display—through manual Hide, an Action,
-or Automation—the app rescans once per second and moves newly appearing or
-returning eligible windows off it. A healthy scan considers new windows within
+While a Hide that asked for it covers the display, the app rescans once per
+second and moves newly appearing or returning eligible windows off it. A healthy scan considers new windows within
 one tick plus the current pass (up to one second per application and one in-flight
 250 ms Accessibility call); this is a service bound, not a promise that every app
 will accept a move. Refusing, returning, or actively dragged windows back off
-with a bounded 1, 2, 4, 8, 16, then 30 second delay. Armed means opted in but
-visible; Enforcing means covered and eligible; Paused includes the reason. The
+with a bounded 1, 2, 4, 8, 16, then 30 second delay. Armed means remembered on
+but not hidden by PanelCtl; Enforcing means hidden with keep-off and eligible;
+Paused includes the reason, including **Paused for this hide.** The
 Displays settings, menu, and status stream report state and last moved/failed
 counts. Each pass attempts at most 64 windows; remaining windows wait for later
 passes. Before each setter, managed helpers must acknowledge relocation suppression
@@ -48,17 +63,19 @@ within one second, otherwise movement pauses. Helper replacement invalidates the
 old permission to write.
 
 Only ordinary movable windows with public, unique on-screen evidence on the
-current Space can move. Full-screen, minimized, other-Space, nonmovable, vanished,
-or unverified windows are skipped; titles and persistent window identifiers are
+desktop currently showing on the display can move; other desktops are left
+unchanged. Full-screen, minimized, nonmovable, vanished, or unverified windows
+are skipped; titles and persistent window identifiers are
 not stored. The app checks Accessibility permission in the background and never
 prompts. Use **Allow Accessibility** beside the enabled option in Displays,
 or in **Settings → Automations → Actions**. Coverage ending, sleep/topology changes,
-permission loss, recovery, or turning the option off cancels pending work. An
-already-dispatched setter may finish; windows are never moved back. Relaunch only
+permission loss, recovery, or pausing cancels pending work. An
+already-dispatched setter may finish. Showing the display won't move windows
+back. Relaunch only
 reevaluates current state and never starts a blackout or replays moves.
 
 This ongoing option reuses the one-shot **Move windows** behavior in [Actions](#named-manual-actions),
-but it is configured per display and continues while that display is covered.
+but it continues for as long as that Hide lasts.
 It does not trigger Hide, extend blackout, synthesize input, or count a move as
 user activity. **Remove from desktop** already lets macOS relocate windows, so
 it does not need this option. Keyboard input, pointer restoration and time limits
@@ -134,8 +151,10 @@ panelctl app run-action --action ACTION_UUID --json
   safeguards still block. A skipped step never becomes a write during that run.
 - A Remove step saves the display's setup. If that setup changes later, review
   and save the Action again.
+- A **Hide (black out)** step can **Keep windows off while hidden** with its own
+  destination. Steps saved before this option keep the display's windows alone.
 - Move windows is a one-shot relocation of ordinary movable windows on the
-  current Space. It does not activate apps, switch Spaces, or restore windows on
+  desktop currently showing on the display. It does not activate apps, switch Spaces, or restore windows on
   Show; windows already off the source stay untouched. Full-screen, minimized,
   vanished, nonmovable and publicly unverified windows are skipped with reasons.
 - Move windows requires Accessibility permission granted by the explicit

@@ -817,7 +817,7 @@ final class WindowRelocationTests: XCTestCase {
                 ProtectionRule(name: "Idle", isEnabled: false, settings: settings)
             ])
             model.setKeepWindowsOffEnabled(true, for: sourceUUID)
-            service.applyRuntimeStatus(BlackoutRuntimeStatus(state: .blackedOut, blackedOutDisplayIDs: [source.id]))
+            model.hide(targetUUID: sourceUUID)
             await Task.detached { waitForSemaphoreSignal(entered) }.value
 
             if revokePermission {
@@ -893,9 +893,12 @@ final class WindowRelocationTests: XCTestCase {
         let destination = display(index: 2, id: 2, uuid: mainUUID, main: true)
         let alternate = display(index: 3, id: 3, uuid: alternateUUID, main: false,
                                 bounds: CGRect(x: 100, y: 0, width: 100, height: 100))
+        let extraUUID = "00000000-0000-0000-0000-000000000204"
+        let extra = display(index: 4, id: 4, uuid: extraUUID, main: false,
+                            bounds: CGRect(x: 200, y: 0, width: 100, height: 100))
         var firstSettings = ProtectionPreferences()
-        firstSettings.selectedDisplayUUIDs = [sourceUUID]
-        let firstRule = ProtectionRule(name: "Source", isEnabled: true, settings: firstSettings)
+        firstSettings.selectedDisplayUUIDs = [alternateUUID]
+        let firstRule = ProtectionRule(name: "Alternate", isEnabled: true, settings: firstSettings)
         let initialRules = AutomationPreferences(isEnabled: true, rules: [firstRule])
         defaults.set(try JSONEncoder().encode(initialRules), forKey: "automationRules")
 
@@ -907,15 +910,21 @@ final class WindowRelocationTests: XCTestCase {
         )]
         executor.enforcementTargetFrame = CGRect(x: 10, y: 10, width: 40, height: 40)
         executor.pausePoint = .afterFirstWrite
-        let model = makeModel(defaults: defaults, records: [source, destination, alternate], mover: executor,
+        let model = makeModel(defaults: defaults, records: [source, destination, alternate, extra], mover: executor,
             scheduler: scheduler, uptime: { scheduler.now }, cover: { _ in [] })
         defer { model.stopKeepWindowsOff() }
-        for _ in 0..<250 where !model.blackedOutDisplayIDs.contains(source.id) {
+        // Hide restarts automation without the hidden display; let each helper settle first.
+        for _ in 0..<250 where !model.blackedOutDisplayIDs.contains(alternate.id) {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        XCTAssertTrue(model.blackedOutDisplayIDs.contains(source.id),
-            "the original fake helper must establish source coverage before enforcement")
-        model.setKeepWindowsOffEnabled(true, for: sourceUUID)
+        model.hide(targetUUID: sourceUUID)
+        for _ in 0..<250 {
+            if logOccurrenceCount("started", in: log) >= 2, model.blackedOutDisplayIDs.contains(alternate.id) { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(model.blackedOutDisplayIDs.contains(alternate.id),
+            "the fake helper must be running before enforcement")
+        model.setHiddenKeepWindowsOff(true, for: sourceUUID)
         for _ in 0..<250 where !executor.isSuspended { try await Task.sleep(nanoseconds: 10_000_000) }
         let startupLog = try? String(contentsOf: log, encoding: .utf8)
         XCTAssertTrue(executor.isSuspended,
@@ -924,19 +933,20 @@ final class WindowRelocationTests: XCTestCase {
 
         setenv("PANELCTL_TEST_ACK_DELAY", "0.25", 1)
         var secondSettings = ProtectionPreferences()
-        secondSettings.selectedDisplayUUIDs = [alternateUUID]
-        let secondRule = ProtectionRule(name: "Alternate", isEnabled: true, settings: secondSettings)
+        secondSettings.selectedDisplayUUIDs = [extraUUID]
+        let secondRule = ProtectionRule(name: "Extra", isEnabled: true, settings: secondSettings)
+        let startedBeforeReplacement = logOccurrenceCount("started", in: log)
         model.automationPreferences = AutomationPreferences(isEnabled: true, rules: [firstRule, secondRule])
         for _ in 0..<300 {
-            if logOccurrenceCount("started", in: log) >= 3 { break }
+            if logOccurrenceCount("started", in: log) >= startedBeforeReplacement + 2 { break }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        XCTAssertGreaterThanOrEqual(logOccurrenceCount("started", in: log), 3,
+        XCTAssertGreaterThanOrEqual(logOccurrenceCount("started", in: log), startedBeforeReplacement + 2,
             "the replacement rule set starts both managed helpers")
-        for _ in 0..<250 where !model.blackedOutDisplayIDs.contains(source.id) {
+        for _ in 0..<250 where !model.blackedOutDisplayIDs.contains(alternate.id) {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        XCTAssertTrue(model.blackedOutDisplayIDs.contains(source.id))
+        XCTAssertTrue(model.blackedOutDisplayIDs.contains(alternate.id))
         executor.resumeSuspended()
         await waitForEnforcement(executor, calls: 1)
         XCTAssertEqual(executor.enforcementWrites, 1,
@@ -982,8 +992,8 @@ final class WindowRelocationTests: XCTestCase {
         let alternate = display(index: 3, id: 3, uuid: alternateUUID, main: false,
                                 bounds: CGRect(x: 100, y: 0, width: 100, height: 100))
         var settings = ProtectionPreferences()
-        settings.selectedDisplayUUIDs = [sourceUUID]
-        let rule = ProtectionRule(name: "Source", isEnabled: true, settings: settings)
+        settings.selectedDisplayUUIDs = [alternateUUID]
+        let rule = ProtectionRule(name: "Alternate", isEnabled: true, settings: settings)
         defaults.set(try JSONEncoder().encode(AutomationPreferences(isEnabled: true, rules: [rule])),
             forKey: "automationRules")
         let scheduler = FakeKeepWindowsOffScheduler()
@@ -993,12 +1003,16 @@ final class WindowRelocationTests: XCTestCase {
         executor.enforcementWriteResult = .timedOut
         let model = makeModel(defaults: defaults, records: [source, destination, alternate], mover: executor,
             scheduler: scheduler, uptime: { scheduler.now }, cover: { _ in [] })
-        model.setKeepWindowsOffEnabled(true, for: sourceUUID)
-        for _ in 0..<250 where !model.blackedOutDisplayIDs.contains(source.id) {
+        for _ in 0..<250 where !model.blackedOutDisplayIDs.contains(alternate.id) {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        XCTAssertTrue(model.blackedOutDisplayIDs.contains(source.id))
-        model.refreshWindowMovePermissionState()
+        model.hide(targetUUID: sourceUUID)
+        for _ in 0..<250 {
+            if logOccurrenceCount("started", in: log) >= 2, model.blackedOutDisplayIDs.contains(alternate.id) { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(model.blackedOutDisplayIDs.contains(alternate.id))
+        model.setHiddenKeepWindowsOff(true, for: sourceUUID)
         for _ in 0..<250 where executor.completedEnforcements < 1 {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
@@ -1100,14 +1114,30 @@ final class WindowRelocationTests: XCTestCase {
         permission.value = .granted
         scheduler.advance(by: 1)
         XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.state, .armed)
-        let action = DisplayAction(name: "Black out", steps: [DisplayActionStep(
+        let plain = DisplayAction(name: "Black out only", steps: [DisplayActionStep(
             target: DisplayIdentitySnapshot(source), effect: .blackOut
+        )])
+        let stepJSON = String(decoding: try JSONEncoder().encode(plain.steps[0]), as: UTF8.self)
+        XCTAssertFalse(stepJSON.contains("keepWindowsOff"))
+        XCTAssertNil(try JSONDecoder().decode(DisplayActionStep.self, from: Data(stepJSON.utf8)).keepWindowsOff,
+            "steps saved before this option decode as off")
+        try model.saveDisplayAction(plain)
+        let plainResult = await run(model, id: plain.id)
+        XCTAssertEqual(plainResult.outcome, .done)
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.state, .off,
+            "an Action Hide without keep-off ignores the display's remembered choice")
+        scheduler.advance(by: 1)
+        XCTAssertEqual(executor.enforcementCalls, 0)
+        model.show(targetUUID: sourceUUID)
+
+        let action = DisplayAction(name: "Black out", steps: [DisplayActionStep(
+            target: DisplayIdentitySnapshot(source), effect: .blackOut, keepWindowsOff: MoveWindowsConfiguration()
         )])
         try model.saveDisplayAction(action)
         let result = await run(model, id: action.id)
         XCTAssertEqual(result.outcome, .done)
         await waitForEnforcement(executor, calls: 1)
-        XCTAssertEqual(executor.enforcementWrites, 1, "Action-owned blackout coverage starts the same per-display controller")
+        XCTAssertEqual(executor.enforcementWrites, 1, "an Action Hide step that opts in starts enforcement")
         XCTAssertEqual(permission.promptCount, 0, "background enforcement never prompts")
         XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.state, .enforcing)
         model.show(targetUUID: sourceUUID)
@@ -1142,8 +1172,8 @@ final class WindowRelocationTests: XCTestCase {
         ])
         model.setKeepWindowsOffEnabled(true, for: sourceUUID)
         model.setKeepWindowsOffEnabled(true, for: alternateUUID)
-        service.applyRuntimeStatus(BlackoutRuntimeStatus(state: .blackedOut,
-            blackedOutDisplayIDs: [source.id, alternate.id]))
+        model.hide(targetUUID: sourceUUID)
+        model.hide(targetUUID: alternateUUID)
         for _ in 0..<250 where executor.completedEnforcements < 2 {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
@@ -1153,7 +1183,7 @@ final class WindowRelocationTests: XCTestCase {
         XCTAssertEqual(scheduler.intervals, [1], "both controllers share the single one-second cadence")
     }
 
-    func testKeepWindowsOffTracksFakeAutomationMembershipWithoutStartingHelper() async throws {
+    func testAutomationBlackoutNeverMovesWindows() async throws {
         let defaults = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let source = display(index: 1, id: 1, uuid: sourceUUID, main: false,
@@ -1169,29 +1199,59 @@ final class WindowRelocationTests: XCTestCase {
         defer { model.stopKeepWindowsOff() }
         var settings = ProtectionPreferences()
         settings.allDisplays = true
-        let rule = ProtectionRule(name: "Fake helper membership", isEnabled: false, settings: settings)
+        let rule = ProtectionRule(name: "Idle", isEnabled: false, settings: settings)
         model.automationPreferences = AutomationPreferences(rules: [rule])
         model.setKeepWindowsOffEnabled(true, for: sourceUUID)
-        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.label, "Armed")
 
-        service.applyRuntimeStatus(BlackoutRuntimeStatus(
-            state: .blackedOut, blackedOutDisplayIDs: [source.id, destination.id]
-        ))
-        XCTAssertEqual(model.blackedOutDisplayIDs, [source.id, destination.id])
-        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.label, "Paused")
-        XCTAssertTrue(model.keepWindowsOffStatuses[sourceUUID]?.reason?.contains("destination") == true)
-        XCTAssertEqual(executor.enforcementCalls, 0, "the helper-covered display is not used as a destination")
-
+        // The idle-rule regression: a rule blackout of an opted-in display must not empty it.
         service.applyRuntimeStatus(BlackoutRuntimeStatus(state: .blackedOut, blackedOutDisplayIDs: [source.id]))
-        await waitForEnforcement(executor, calls: 1)
-        XCTAssertEqual(executor.enforcementWrites, 1, "Automation-owned helper membership is authoritative coverage")
-        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.label, "Enforcing")
-
-        service.applyRuntimeStatus(BlackoutRuntimeStatus(state: .waiting, blackedOutDisplayIDs: []))
-        XCTAssertTrue(model.blackedOutDisplayIDs.isEmpty)
+        XCTAssertEqual(model.blackedOutDisplayIDs, [source.id])
+        scheduler.advance(by: 2)
+        XCTAssertEqual(executor.enforcementCalls, 0, "Automation blackouts never move windows")
         XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.label, "Armed")
-        scheduler.advance(by: 1)
-        XCTAssertEqual(executor.enforcementCalls, 1, "coverage exit cancels keep-off; it does not replay work")
+        service.applyRuntimeStatus(BlackoutRuntimeStatus(state: .waiting, blackedOutDisplayIDs: []))
+
+        model.hide(targetUUID: sourceUUID)
+        await waitForEnforcement(executor, calls: 1)
+        XCTAssertEqual(executor.enforcementWrites, 1, "the same display's manual Hide does keep windows off")
+    }
+
+    func testKeepWindowsOffFollowsEachHideAndEndsWithIt() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let source = display(index: 1, id: 1, uuid: sourceUUID, main: false,
+                             bounds: CGRect(x: -100, y: 0, width: 100, height: 100))
+        let destination = display(index: 2, id: 2, uuid: mainUUID, main: true)
+        let scheduler = FakeKeepWindowsOffScheduler()
+        let executor = FakeWindowMoveExecutor(result: AppControlWindowMoveResult(moved: 1))
+        executor.enforcementWindow = WindowMoveWindowKey(processID: 49, accessibilityElementID: UUID(), frame: source.testBounds)
+        executor.enforcementTargetFrame = CGRect(x: 10, y: 10, width: 40, height: 40)
+        let model = makeModel(defaults: defaults, records: [source, destination], mover: executor,
+            scheduler: scheduler, uptime: { scheduler.now }, cover: { _ in [] })
+        defer { model.stopKeepWindowsOff() }
+
+        model.hide(targetUUID: sourceUUID)
+        scheduler.advance(by: 2)
+        XCTAssertEqual(executor.enforcementCalls, 0, "a Hide without keep-off only blacks out")
+        XCTAssertNil(model.keepWindowsOffCovers[sourceUUID])
+
+        model.setHiddenKeepWindowsOff(true, for: sourceUUID)
+        await waitForEnforcement(executor, calls: 1)
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.state, .enforcing)
+        XCTAssertNil(model.hideConfiguration(for: sourceUUID)?.keepWindowsOff, "the remembered choice is unchanged")
+
+        model.setHiddenKeepWindowsOff(false, for: sourceUUID)
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.reason, "Paused for this hide.")
+        scheduler.advance(by: 2)
+        XCTAssertEqual(executor.enforcementCalls, 1)
+
+        model.show(targetUUID: sourceUUID)
+        XCTAssertNil(model.keepWindowsOffCovers[sourceUUID], "Show ends the Hide's intent")
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.state, .off)
+        model.hide(targetUUID: sourceUUID)
+        scheduler.advance(by: 2)
+        XCTAssertEqual(executor.enforcementCalls, 1, "the next Hide follows the remembered choice again")
+        model.show(targetUUID: sourceUUID)
     }
 
     func testKeepWindowsOffCancelsPendingWritesOnDisableAndTopologyChange() async throws {
@@ -1213,11 +1273,11 @@ final class WindowRelocationTests: XCTestCase {
         model.hide(targetUUID: sourceUUID)
         await executor.waitUntilSuspended()
         XCTAssertTrue(executor.isSuspended)
-        model.setKeepWindowsOffEnabled(false, for: sourceUUID)
+        model.setHiddenKeepWindowsOff(false, for: sourceUUID)
         executor.resumeSuspended()
         await waitForEnforcementCompletion(executor, calls: 1)
-        XCTAssertEqual(executor.enforcementWrites, 0, "turning the option off invalidates the pending setter generation")
-        XCTAssertTrue(scheduler.ticks.allSatisfy(\.isCancelled))
+        XCTAssertEqual(executor.enforcementWrites, 0, "pausing this Hide invalidates the pending setter generation")
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.reason, "Paused for this hide.")
 
         let secondDefaults = try makeDefaults()
         let alternate = display(index: 3, id: 3, uuid: alternateUUID, main: false)

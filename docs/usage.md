@@ -66,9 +66,11 @@ An Action is 1–8 ordered steps: Hide, Show or Move windows for a display. It
 runs only from **Run** or `panelctl app run-action`. Steps run in order and stop
 at the first problem; earlier changes are not undone. Hide only covers or
 removes a display; Move only relocates windows and never changes Hide state.
+A Hide (black out) step can also keep windows off the display for as long as
+that Hide lasts; see [keep windows off](display-hide-ux.md#keep-windows-off-while-hidden).
 
 Move windows is a one-shot operation for ordinary movable windows on the
-current Space. It preserves window size and relative placement where possible,
+desktop currently showing on the display; other desktops are left unchanged. It preserves window size and relative placement where possible,
 resizing only when a window exceeds the destination’s visible frame. It does
 not activate apps, switch Spaces, restore a layout on Show, or move windows
 that are already off the source. Full-screen, minimized, vanished, nonmovable,

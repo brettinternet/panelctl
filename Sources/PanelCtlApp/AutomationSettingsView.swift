@@ -627,6 +627,7 @@ struct DisplayActionEditor: View {
                     } else {
                         current.moveWindows = nil
                     }
+                    if effect != .blackOut { current.keepWindowsOff = nil }
                 }
             }
         )) {
@@ -637,7 +638,12 @@ struct DisplayActionEditor: View {
         if step.effect == .removeFromDesktop {
             removalDetails(step, index: index)
         } else if step.effect == .moveWindows {
-            moveWindowsDetails(step, index: index)
+            moveDestinationPicker(step, index: index, configuration: \.moveWindows)
+            Text("Moves supported windows on the desktop currently showing on this display, once, without hiding it. Other desktops are left unchanged. Automatic prefers the main display; hidden or unavailable displays are excluded.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if step.effect == .blackOut {
+            keepWindowsOffDetails(step, index: index)
         }
         HStack(spacing: 10) {
             Button("Move Up") { moveStep(from: index, to: index - 1) }
@@ -738,12 +744,32 @@ struct DisplayActionEditor: View {
     }
 
     @ViewBuilder
-    private func moveWindowsDetails(_ step: DisplayActionStep, index: Int) -> some View {
-        let current = step.moveWindows?.destination ?? .automatic
+    private func keepWindowsOffDetails(_ step: DisplayActionStep, index: Int) -> some View {
+        Toggle(isOn: Binding(
+            get: { step.keepWindowsOff != nil },
+            set: { enabled in
+                updateStep(at: index) { $0.keepWindowsOff = enabled ? MoveWindowsConfiguration() : nil }
+            }
+        )) {
+            Text("Keep windows off while hidden")
+            Text("Moves new and returning windows to another display until you show it. Showing it won’t move them back.")
+        }
+        .accessibilityLabel("Step \(index + 1) keep windows off while hidden")
+        if step.keepWindowsOff != nil {
+            moveDestinationPicker(step, index: index, configuration: \.keepWindowsOff)
+        }
+    }
+
+    @ViewBuilder
+    private func moveDestinationPicker(
+        _ step: DisplayActionStep, index: Int,
+        configuration: WritableKeyPath<DisplayActionStep, MoveWindowsConfiguration?>
+    ) -> some View {
+        let current = step[keyPath: configuration]?.destination ?? .automatic
         let selectedValue = moveDestinationKey(current)
         Picker("Move to", selection: Binding(
             get: { selectedValue },
-            set: { selectMoveDestination($0, at: index) }
+            set: { selectMoveDestination($0, at: index, configuration: configuration) }
         )) {
             Text("Automatic").tag("automatic")
             ForEach(stableDisplays.filter { $0.uuid?.caseInsensitiveCompare(step.target?.uuid ?? "") != .orderedSame }, id: \.id) { display in
@@ -757,9 +783,6 @@ struct DisplayActionEditor: View {
             }
         }
         .accessibilityLabel("Step \(index + 1) Move windows destination")
-        Text("Moves supported windows on the current Space once, without hiding the display. Automatic prefers the main display; hidden or unavailable displays are excluded.")
-            .font(.caption).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func moveDestinationKey(_ destination: MoveWindowsDestination) -> String {
@@ -769,22 +792,25 @@ struct DisplayActionEditor: View {
         }
     }
 
-    private func selectMoveDestination(_ value: String, at index: Int) {
+    private func selectMoveDestination(
+        _ value: String, at index: Int,
+        configuration: WritableKeyPath<DisplayActionStep, MoveWindowsConfiguration?>
+    ) {
         guard draft.steps.indices.contains(index) else { return }
         updateStep(at: index) { step in
             guard value != "automatic" else {
-                step.moveWindows = MoveWindowsConfiguration(destination: .automatic)
+                step[keyPath: configuration] = MoveWindowsConfiguration(destination: .automatic)
                 return
             }
             let uuid = String(value.dropFirst("display:".count))
             let identity = stableDisplays.first(where: { $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame })
                 .flatMap { model.automationDisplayIdentity(for: $0) }
-                ?? step.moveWindows.flatMap { configuration -> DisplayIdentityReference? in
-                    if case .display(let saved) = configuration.destination,
-                       saved.uuid.caseInsensitiveCompare(uuid) == .orderedSame { return saved }
+                ?? step[keyPath: configuration].flatMap { saved -> DisplayIdentityReference? in
+                    if case .display(let identity) = saved.destination,
+                       identity.uuid.caseInsensitiveCompare(uuid) == .orderedSame { return identity }
                     return nil
                 }
-            if let identity { step.moveWindows = MoveWindowsConfiguration(destination: .display(identity)) }
+            if let identity { step[keyPath: configuration] = MoveWindowsConfiguration(destination: .display(identity)) }
         }
     }
 

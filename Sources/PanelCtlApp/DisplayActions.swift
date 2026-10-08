@@ -75,23 +75,28 @@ struct DisplayActionStep: Codable, Equatable, Identifiable {
     var effect: DisplayActionEffect
     var reviewedRemoval: ReviewedRemovalSetup?
     var moveWindows: MoveWindowsConfiguration?
+    /// Black-out steps only: keep windows off the display for as long as this Hide lasts.
+    var keepWindowsOff: MoveWindowsConfiguration?
 
     init(id: UUID = UUID(), target: DisplayIdentityReference? = nil, effect: DisplayActionEffect = .blackOut,
-         reviewedRemoval: ReviewedRemovalSetup? = nil, moveWindows: MoveWindowsConfiguration? = nil) {
+         reviewedRemoval: ReviewedRemovalSetup? = nil, moveWindows: MoveWindowsConfiguration? = nil,
+         keepWindowsOff: MoveWindowsConfiguration? = nil) {
         self.id = id
         self.target = target
         self.effect = effect
         self.reviewedRemoval = reviewedRemoval
         self.moveWindows = moveWindows
+        self.keepWindowsOff = keepWindowsOff
     }
 
     init(id: UUID = UUID(), target: DisplayIdentitySnapshot, effect: DisplayActionEffect = .blackOut,
-         reviewedRemoval: ReviewedRemovalSetup? = nil, moveWindows: MoveWindowsConfiguration? = nil) {
+         reviewedRemoval: ReviewedRemovalSetup? = nil, moveWindows: MoveWindowsConfiguration? = nil,
+         keepWindowsOff: MoveWindowsConfiguration? = nil) {
         self.init(id: id, target: DisplayIdentityReference(target), effect: effect,
-                  reviewedRemoval: reviewedRemoval, moveWindows: moveWindows)
+                  reviewedRemoval: reviewedRemoval, moveWindows: moveWindows, keepWindowsOff: keepWindowsOff)
     }
 
-    private enum CodingKeys: String, CodingKey { case id, target, effect, reviewedRemoval, moveWindows }
+    private enum CodingKeys: String, CodingKey { case id, target, effect, reviewedRemoval, moveWindows, keepWindowsOff }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -104,6 +109,11 @@ struct DisplayActionStep: Codable, Equatable, Identifiable {
             throw DecodingError.dataCorruptedError(forKey: .moveWindows, in: values,
                 debugDescription: "Move windows steps require a destination; other effects cannot have one.")
         }
+        keepWindowsOff = try values.decodeIfPresent(MoveWindowsConfiguration.self, forKey: .keepWindowsOff)
+        guard keepWindowsOff == nil || effect == .blackOut else {
+            throw DecodingError.dataCorruptedError(forKey: .keepWindowsOff, in: values,
+                debugDescription: "Only black-out steps can keep windows off.")
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -113,6 +123,7 @@ struct DisplayActionStep: Codable, Equatable, Identifiable {
         try values.encode(effect, forKey: .effect)
         try values.encodeIfPresent(reviewedRemoval, forKey: .reviewedRemoval)
         try values.encodeIfPresent(moveWindows, forKey: .moveWindows)
+        try values.encodeIfPresent(keepWindowsOff, forKey: .keepWindowsOff)
     }
 }
 

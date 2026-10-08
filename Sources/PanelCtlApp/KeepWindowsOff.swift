@@ -33,6 +33,13 @@ final class MainRunLoopKeepWindowsOffScheduler: KeepWindowsOffScheduling {
     }
 }
 
+/// Keep-off intent of one active blackout Hide. Session-only: it ends with
+/// that Hide and is never restored on relaunch.
+struct KeepWindowsOffCover: Equatable {
+    var configuration: MoveWindowsConfiguration
+    var pausedByUser = false
+}
+
 struct KeepWindowsOffStatus: Equatable {
     enum State: Equatable {
         case off

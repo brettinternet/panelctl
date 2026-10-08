@@ -1,6 +1,7 @@
 # Window relocation contract
 
-Contract for TASK-64 (one-shot Move windows) and TASK-65 (ongoing keep-off).
+Contract for TASK-64 (one-shot Move windows) and TASK-65 (ongoing keep-off),
+as revised by TASK-74 (keep-off belongs to one blackout Hide).
 The shared direction was approved during TASK-63. TASK-64 depends on stable app
 signing (TASK-66).
 Neither task authorizes native window movement without
@@ -148,18 +149,26 @@ counts with blanket success.
 
 ## 4. Keep-off ownership and lifetime
 
-Add optional `keepWindowsOff: MoveWindowsConfiguration?` to
-`DisplayHideConfiguration`: absent/nil means off; a value means opted in with
-that destination. Decode old preferences as off, independently of the existing
-Remove-from-desktop `enabled` setting. Hide never enables it.
+TASK-74: keep-off is the intent of one blackout Hide. An idle rule that blacked
+out an opted-in display used to move every window off it, and Show never moves
+them back. `DisplayHideConfiguration.keepWindowsOff` (nil = off) is now the
+*remembered choice* used by the next manual Hide (Settings, menu, `app hide`).
+`DisplayActionStep.keepWindowsOff` (black-out steps only; older steps decode as
+off) states an Action Hide's intent and ignores the remembered choice. A
+successful black-out records the intent in session-only
+`AppModel.keepWindowsOffCovers`, pruned with `blackoutHiddenDisplays`; Show,
+failed Hide and quit end it, and relaunch never restores it. While hidden, the
+user can pause or resume that Hide's intent without changing the remembered
+choice. There is no CLI flag; Actions are the scripted way to choose.
 
 One app-owned controller per strictly resolved source UUID reuses the one-shot
-selector/mover. Feed it actual coverage: `AppModel.coveredHiddenDisplayIDs` for
-manual/Action covers, union `ProtectionCoordinator.blackedOutDisplayIDs` for
-helper-owned Automation/one-shot covers. The latter already arrives as
-newline-delimited `BlackoutRuntimeStatus` through `ProtectionService.consumeStatus`
-and membership callbacks. Resolve current numeric IDs against fresh identities;
-saved intent, helper running state, and external power-off are not coverage.
+selector/mover. Only `AppModel.coveredHiddenDisplayIDs` with recorded,
+unpaused intent enforces. Automation rule blackouts (watch or run-once,
+`ProtectionCoordinator.blackedOutDisplayIDs`) never move windows: they end on
+input, occupancy or time limits. They still exclude destinations, and a display
+they cover with the remembered choice on reports armed. Resolve current numeric
+IDs against fresh identities; helper running state and external power-off are
+not coverage.
 Stopping/dead helpers, uncertain coverage, sleep or changing topology pause moves;
 never treat a stale membership set alone as authority.
 
@@ -172,10 +181,10 @@ eligible new window is considered within one tick plus the active pass budget
 service delay, not a promise every app will accept a move. Publish delayed/failed
 passes rather than claiming enforcement succeeded.
 
-States: off, armed (visible), enforcing (covered and gates satisfied), paused
-(reason). Show state/reason and last moved/failed counts in Displays, menu and
+States: off, armed (remembered on, not hidden by PanelCtl), enforcing (hidden
+with intent and gates satisfied), paused (reason, including a user pause). Show state/reason and last moved/failed counts in Displays, menu and
 status stream. Automation snooze/disable does not control keep-off directly;
-only resulting loss of coverage stops it. Removing the option, coverage exit or
+only resulting loss of coverage stops it. Pausing, coverage exit or
 quit cancels pending work immediately and releases timers/window references;
 no new setter may start under the old generation. An already dispatched setter
 may complete; never move it back. Relaunch evaluates current coverage only.

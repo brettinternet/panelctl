@@ -34,8 +34,8 @@ struct DisplaySettingsView: View {
                 }
                 if let selected {
                     summarySection(selected)
-                    hideSection(selected, tiles: tiles)
                     keepWindowsOffSection(selected)
+                    hideSection(selected, tiles: tiles)
                     if pageProblem == nil, isJournalTarget(selected), let status = model.handoffStatus {
                         Section {
                             recoveryDetails(status, targetUUID: selected.uuid)
@@ -197,50 +197,68 @@ struct DisplaySettingsView: View {
     private func keepWindowsOffSection(_ tile: DisplayTile) -> some View {
         if let uuid = tile.uuid, UUID(uuidString: uuid) != nil {
             let display = tile.display
-            let configuration = model.hideConfiguration(for: uuid)
-            let enabled = configuration?.keepWindowsOff != nil
-            let destinations = model.windowMoveDestinationChoices(for: uuid)
-            let selectedDestination = configuration?.keepWindowsOff?.destination ?? .automatic
-            Section {
-                Toggle(isOn: Binding(
-                    get: { configuration?.keepWindowsOff != nil },
-                    set: { model.setKeepWindowsOffEnabled($0, for: uuid) }
-                )) {
-                    Text("Keep windows off while blacked out")
-                    Text("Move new and returning windows to another display.")
-                }
-                .disabled(!enabled && (display.map { !$0.active || !$0.online || $0.asleep } ?? true))
-                .accessibilityLabel("Keep windows off while blacked out on \(tile.name)")
-                if enabled {
-                    Picker("Move to", selection: Binding(
-                        get: { self.destinationKey(selectedDestination) },
-                        set: { value in self.selectKeepWindowsOffDestination(value, targetUUID: uuid, choices: destinations) }
-                    )) {
-                        Text("Automatic").tag("automatic")
-                        ForEach(destinations, id: \.id) { destination in
-                            Text(destination.main ? "\(destination.settingsName) (main display)" : destination.settingsName)
-                                .tag(destination.uuid?.lowercased() ?? "")
+            let hidden = model.isBlackoutHidden(uuid)
+            let removes = display.map { model.hideRemovesFromDesktop($0) } ?? false
+            if hidden || !removes {
+                let configuration = model.hideConfiguration(for: uuid)
+                let cover = model.keepWindowsOffCovers[uuid.lowercased()]
+                let enabled = hidden ? cover.map { !$0.pausedByUser } ?? false : configuration?.keepWindowsOff != nil
+                Section {
+                    if hidden {
+                        Toggle(isOn: Binding(
+                            get: { enabled },
+                            set: { model.setHiddenKeepWindowsOff($0, for: uuid) }
+                        )) {
+                            Text("Keep windows off")
+                            Text("Applies to this hide only.")
                         }
-                        if case .display(let saved) = selectedDestination,
-                           !destinations.contains(where: { $0.uuid?.caseInsensitiveCompare(saved.uuid) == .orderedSame }) {
-                            Text("\(saved.presentationName) (unavailable)").tag(saved.uuid.lowercased())
+                        .accessibilityLabel("Keep windows off \(tile.name) while hidden")
+                    } else {
+                        let destinations = model.windowMoveDestinationChoices(for: uuid)
+                        let selectedDestination = configuration?.keepWindowsOff?.destination ?? .automatic
+                        Toggle(isOn: Binding(
+                            get: { enabled },
+                            set: { model.setKeepWindowsOffEnabled($0, for: uuid) }
+                        )) {
+                            Text("Also keep windows off")
+                            Text("When you hide this display, move new and returning windows to another display.")
+                        }
+                        .disabled(!enabled && (display.map { !$0.active || !$0.online || $0.asleep } ?? true))
+                        .accessibilityLabel("Also keep windows off \(tile.name) when hidden")
+                        if enabled {
+                            Picker("Move to", selection: Binding(
+                                get: { self.destinationKey(selectedDestination) },
+                                set: { value in self.selectKeepWindowsOffDestination(value, targetUUID: uuid, choices: destinations) }
+                            )) {
+                                Text("Automatic").tag("automatic")
+                                ForEach(destinations, id: \.id) { destination in
+                                    Text(destination.main ? "\(destination.settingsName) (main display)" : destination.settingsName)
+                                        .tag(destination.uuid?.lowercased() ?? "")
+                                }
+                                if case .display(let saved) = selectedDestination,
+                                   !destinations.contains(where: { $0.uuid?.caseInsensitiveCompare(saved.uuid) == .orderedSame }) {
+                                    Text("\(saved.presentationName) (unavailable)").tag(saved.uuid.lowercased())
+                                }
+                            }
                         }
                     }
-                    if model.windowMovePermissionState != .granted {
-                        WindowMovePermissionRow(model: model)
+                    if enabled || cover != nil {
+                        if model.windowMovePermissionState != .granted {
+                            WindowMovePermissionRow(model: model)
+                        }
+                        if let status = model.keepWindowsOffStatuses[tile.id] {
+                            Text(status.description)
+                                .font(.caption)
+                                .foregroundStyle(status.reason == nil || cover?.pausedByUser == true ? Color.secondary : Color.orange)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
-                    if let status = model.keepWindowsOffStatuses[tile.id] {
-                        Text(status.description)
-                            .font(.caption)
-                            .foregroundStyle(status.reason == nil ? Color.secondary : Color.orange)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                } header: {
+                    Text("Windows")
+                } footer: {
+                    SectionFooter("Moves supported windows on the desktop currently showing on this display; other desktops are left unchanged. Showing the display won’t move windows back. Automation blackouts never move windows.")
                 }
-            } header: {
-                Text("Windows")
-            } footer: {
-                SectionFooter("Moves supported windows on the current Space while blacked out; Show doesn’t move them back. Automatic prefers the main available display.")
             }
         }
     }
