@@ -455,9 +455,10 @@ final class SettingsWindowTests: XCTestCase {
         window.setContentSize(NSSize(width: 680, height: 1000))
         let content = try XCTUnwrap(window.contentView)
         func keepOffSwitch() -> NSSwitch? {
-            // Experimental removal is off, so keep-off is the only Displays switch.
-            let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
-            return switches.count == 1 ? switches[0] : nil
+            // Wait for the selected display, not the previous display's still-mounted control.
+            nativeViews(in: content).compactMap { $0 as? NSSwitch }.first {
+                $0.accessibilityLabel() == "Also keep windows off \(displays[1].name ?? "") when hidden"
+            }
         }
         spin { content.layoutSubtreeIfNeeded(); return keepOffSwitch() != nil }
         let toggle = try XCTUnwrap(keepOffSwitch())
@@ -513,8 +514,9 @@ final class SettingsWindowTests: XCTestCase {
         window.setContentSize(NSSize(width: 680, height: 1000))
         let content = try XCTUnwrap(window.contentView)
         func keepOffSwitch() -> NSSwitch? {
-            let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
-            return switches.count == 1 ? switches[0] : nil
+            nativeViews(in: content).compactMap { $0 as? NSSwitch }.first {
+                $0.accessibilityLabel() == "Keep windows off \(displays[1].name ?? "") while hidden"
+            }
         }
         spin { content.layoutSubtreeIfNeeded(); return keepOffSwitch()?.state == .on }
         let toggle = try XCTUnwrap(keepOffSwitch())
