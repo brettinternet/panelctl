@@ -18,12 +18,73 @@ enum WindowMoveGate: Equatable {
     case refused(AppControlWindowMoveReason)
 }
 
+struct WindowMoveWindowKey: Hashable, Sendable {
+    let processID: Int32
+    let accessibilityElementID: UUID
+    let frame: CGRect
+
+    init(processID: Int32, accessibilityElementID: UUID, frame: CGRect) {
+        self.processID = processID
+        self.accessibilityElementID = accessibilityElementID
+        self.frame = frame
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.processID == rhs.processID && lhs.accessibilityElementID == rhs.accessibilityElementID
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(processID)
+        hasher.combine(accessibilityElementID)
+    }
+}
+
+struct WindowMoveObservedWindow: Sendable {
+    let key: WindowMoveWindowKey
+    let frame: CGRect
+    let isOnSourceDisplay: Bool
+}
+
+struct WindowMoveEnforcementHooks: Sendable {
+    let didObserve: @MainActor @Sendable ([WindowMoveObservedWindow]) -> Void
+    let shouldAttempt: @MainActor @Sendable (WindowMoveWindowKey, CGRect) -> Bool
+    let willWrite: @MainActor @Sendable (WindowMoveWindowKey, CGRect) async -> WindowMoveGate
+    let didFinish: @MainActor @Sendable (WindowMoveWindowKey, CGRect, WindowMoveWriteResult) -> Void
+}
+
 @MainActor
 protocol WindowMoveExecuting {
+    func releaseWindowIdentities()
+
     func move(
         _ request: WindowMovePlanRequest,
-        validateBeforeWrite: @escaping @MainActor @Sendable () -> WindowMoveGate
+        validateBeforeWrite: @escaping @MainActor @Sendable () async -> WindowMoveGate
     ) async -> AppControlWindowMoveResult
+
+    func enforce(
+        _ request: WindowMovePlanRequest,
+        didObserve: @escaping @MainActor @Sendable ([WindowMoveObservedWindow]) -> Void,
+        shouldAttempt: @escaping @MainActor @Sendable (WindowMoveWindowKey, CGRect) -> Bool,
+        willWrite: @escaping @MainActor @Sendable (WindowMoveWindowKey, CGRect) async -> WindowMoveGate,
+        didFinish: @escaping @MainActor @Sendable (WindowMoveWindowKey, CGRect, WindowMoveWriteResult) -> Void,
+        validateBeforeWrite: @escaping @MainActor @Sendable () async -> WindowMoveGate
+    ) async -> AppControlWindowMoveResult
+}
+
+@MainActor
+extension WindowMoveExecuting {
+    func releaseWindowIdentities() {}
+
+    func enforce(
+        _ request: WindowMovePlanRequest,
+        didObserve: @escaping @MainActor @Sendable ([WindowMoveObservedWindow]) -> Void,
+        shouldAttempt: @escaping @MainActor @Sendable (WindowMoveWindowKey, CGRect) -> Bool,
+        willWrite: @escaping @MainActor @Sendable (WindowMoveWindowKey, CGRect) async -> WindowMoveGate,
+        didFinish: @escaping @MainActor @Sendable (WindowMoveWindowKey, CGRect, WindowMoveWriteResult) -> Void,
+        validateBeforeWrite: @escaping @MainActor @Sendable () async -> WindowMoveGate
+    ) async -> AppControlWindowMoveResult {
+        await move(request, validateBeforeWrite: validateBeforeWrite)
+    }
 }
 
 @MainActor
@@ -129,13 +190,18 @@ enum WindowMoveWriteResult: Equatable {
 }
 
 protocol WindowMovePlatform: AnyObject, Sendable {
+    func releaseWindowIdentities()
     func processIDs() -> [Int32]
     func visibleWindowSample() -> [WindowMoveCGEvidence]?
     func enumerate(processID: Int32, timeout: TimeInterval, budget: TimeInterval) -> WindowMoveApplicationEnumeration
     func readWindow(_ handle: UUID, processID: Int32, timeout: TimeInterval, budget: TimeInterval) -> Result<WindowMoveAXWindowState, AppControlWindowMoveReason>
     func setFrame(_ frame: CGRect, window: WindowMoveAXWindowState, timeout: TimeInterval, budget: TimeInterval,
-                  validateBeforeWrite: @escaping @MainActor @Sendable () -> WindowMoveGate) -> WindowMoveWriteResult
+                  validateBeforeWrite: @escaping @MainActor @Sendable () async -> WindowMoveGate) -> WindowMoveWriteResult
     func finishApplication(processID: Int32)
+}
+
+extension WindowMovePlatform {
+    func releaseWindowIdentities() {}
 }
 
 private final class WindowMoveGateBox {
@@ -153,6 +219,43 @@ func waitForWindowMoveGate(
     }
     semaphore.wait()
     return box.value ?? .refused(.topologyChanged)
+}
+
+func waitForWindowMoveGateAsync(
+    _ validate: @escaping @MainActor @Sendable () async -> WindowMoveGate
+) -> WindowMoveGate {
+    let semaphore = DispatchSemaphore(value: 0)
+    let box = WindowMoveGateBox()
+    Task { @MainActor in
+        box.value = await validate()
+        semaphore.signal()
+    }
+    semaphore.wait()
+    return box.value ?? .refused(.topologyChanged)
+}
+
+func performWindowMoveCallback(_ action: @escaping @MainActor @Sendable () -> Void) {
+    let semaphore = DispatchSemaphore(value: 0)
+    Task { @MainActor in
+        action()
+        semaphore.signal()
+    }
+    semaphore.wait()
+}
+
+func waitForWindowMovePolicy(_ evaluate: @escaping @MainActor @Sendable () -> Bool) -> Bool {
+    let semaphore = DispatchSemaphore(value: 0)
+    let result = WindowMovePolicyBox()
+    Task { @MainActor in
+        result.allowed = evaluate()
+        semaphore.signal()
+    }
+    semaphore.wait()
+    return result.allowed ?? false
+}
+
+private final class WindowMovePolicyBox {
+    var allowed: Bool?
 }
 
 enum WindowMoveGeometry {

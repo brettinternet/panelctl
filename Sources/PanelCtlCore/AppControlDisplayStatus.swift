@@ -28,6 +28,27 @@ public enum AppControlOutcome: String, Codable, Sendable {
     }
 }
 
+public enum AppControlWindowEnforcementState: String, Codable, Sendable {
+    case off
+    case armed
+    case enforcing
+    case paused
+}
+
+public struct AppControlWindowEnforcementStatus: Codable, Equatable, Sendable {
+    public let state: AppControlWindowEnforcementState
+    public let reason: String?
+    public let lastMoved: Int
+    public let lastFailed: Int
+
+    public init(state: AppControlWindowEnforcementState, reason: String? = nil, lastMoved: Int = 0, lastFailed: Int = 0) {
+        self.state = state
+        self.reason = reason
+        self.lastMoved = max(0, lastMoved)
+        self.lastFailed = max(0, lastFailed)
+    }
+}
+
 /// Observations and session-only operation evidence, never inferred from input preferences.
 public struct AppControlDisplayStatus: Codable, Equatable, Sendable {
     public let targetUUID: String
@@ -35,14 +56,17 @@ public struct AppControlDisplayStatus: Codable, Equatable, Sendable {
     public let operation: String
     public let recoveryNeeded: Bool
     public let lastInputOutcome: DisplayInputOutcome?
+    public let windowEnforcement: AppControlWindowEnforcementStatus?
 
     public init(targetUUID: String, observedState: String, operation: String,
-                recoveryNeeded: Bool, lastInputOutcome: DisplayInputOutcome?) {
+                recoveryNeeded: Bool, lastInputOutcome: DisplayInputOutcome?,
+                windowEnforcement: AppControlWindowEnforcementStatus? = nil) {
         self.targetUUID = targetUUID
         self.observedState = observedState
         self.operation = operation
         self.recoveryNeeded = recoveryNeeded
         self.lastInputOutcome = lastInputOutcome
+        self.windowEnforcement = windowEnforcement
     }
 }
 

@@ -19,6 +19,7 @@ final class ProtectionCoordinator {
     private var desiredArguments: [UUID: [String]] = [:]
     private var desiredSignature: String?
     private var reconciliationGeneration: UInt64 = 0
+    private var relocationGeneration: UInt64 = 0
     private var reconciliationInProgress = false
     private var pendingDisplayRearmOnLaunch = false
     private var retryInProgress = false
@@ -73,6 +74,62 @@ final class ProtectionCoordinator {
 
     var blackedOutDisplayIDs: Set<UInt32> {
         services.values.reduce(into: Set<UInt32>()) { $0.formUnion($1.blackedOutDisplayIDs) }
+    }
+
+    var hasUncertainBlackoutCoverage: Bool {
+        services.values.contains { $0.hasManagedProcess && !$0.relocationControlIsHealthy }
+    }
+
+    func beginRelocationSuppression(_ control: BlackoutRelocationControl) async -> (Bool, String?, UInt64?) {
+        let active = services.values.filter(\.hasManagedProcess)
+        let generation = relocationGeneration
+        guard active.allSatisfy(\.relocationControlIsHealthy) else {
+            return (false, "A managed blackout helper is starting or stopping; relocation is paused until coverage is certain.", nil)
+        }
+        guard !active.isEmpty else { return (true, nil, generation) }
+        return await withCheckedContinuation { continuation in
+            var remaining = active.count
+            var failure: String?
+            var completed = false
+            let timeout = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !completed else { return }
+                completed = true
+                for service in active { service.cancelRelocationSuppressionAcknowledgement(for: control.token) }
+                continuation.resume(returning: (false, "A managed blackout helper did not acknowledge relocation suppression within one second.", nil))
+            }
+            for service in active {
+                service.beginRelocationSuppression(control) { succeeded, message in
+                    guard !completed else { return }
+                    if !succeeded, failure == nil { failure = message }
+                    remaining -= 1
+                    guard remaining == 0 else { return }
+                    completed = true
+                    timeout.cancel()
+                    guard failure == nil, self.relocationGeneration == generation,
+                          self.relocationHelpersAreHealthy else {
+                        continuation.resume(returning: (false,
+                            failure ?? "Blackout helper generation changed before relocation was acknowledged.", nil))
+                        return
+                    }
+                    continuation.resume(returning: (true, nil, generation))
+                }
+            }
+        }
+    }
+
+    func relocationSuppressionIsCurrent(_ generation: UInt64) -> Bool {
+        !isShuttingDown && relocationGeneration == generation && relocationHelpersAreHealthy
+    }
+
+    private var relocationHelpersAreHealthy: Bool {
+        services.values.filter(\.hasManagedProcess).allSatisfy(\.relocationControlIsHealthy)
+    }
+
+    func endRelocationSuppression(_ control: BlackoutRelocationControl) {
+        for service in services.values where service.hasManagedProcess {
+            service.endRelocationSuppression(control)
+        }
     }
 
     func blackedOutDisplayIDs(forRule id: UUID) -> Set<UInt32> {
@@ -396,7 +453,10 @@ final class ProtectionCoordinator {
         removeVerifiedDeletedDirectories()
         let knownRuleIDs = Set(rules.keys)
         for id in Array(services.keys) where !oneShotRuleIDs.contains(id) && !knownRuleIDs.contains(id) {
-            services.removeValue(forKey: id)?.disable()
+            if let removed = services.removeValue(forKey: id) {
+                relocationGeneration &+= 1
+                removed.disable()
+            }
         }
         for (id, arguments) in desiredArguments where canScheduleRule(id) {
             service(for: id).run(
@@ -417,13 +477,17 @@ final class ProtectionCoordinator {
         } else {
             service = makeService(id)
         }
-        service.onStateChange = { [weak self] _ in self?.publishChanges() }
+        service.onStateChange = { [weak self] _ in
+            self?.relocationGeneration &+= 1
+            self?.publishChanges()
+        }
         service.onMembershipChange = { [weak self] _ in
             guard let self else { return }
             self.onMembershipChange?(self.blackedOutDisplayIDs)
             self.publishChanges()
         }
         services[id] = service
+        relocationGeneration &+= 1
         return service
     }
 

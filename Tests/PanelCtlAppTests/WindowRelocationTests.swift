@@ -1,5 +1,6 @@
 import XCTest
 import CoreGraphics
+import Darwin
 @testable import PanelCtlApp
 @testable import PanelCtlCore
 
@@ -256,6 +257,43 @@ final class WindowRelocationTests: XCTestCase {
         XCTAssertEqual(result.failed, 1)
         XCTAssertEqual(result.reasons.first?.reason, .moveUnverified)
         XCTAssertEqual(result.refusalReason, .topologyChanged)
+    }
+
+    func testManualMoveAndEnforcementShareOneSerializedWorker() async throws {
+        let source = display(index: 1, id: 1, uuid: sourceUUID, main: false,
+                             bounds: CGRect(x: -100, y: 0, width: 100, height: 100))
+        let destination = display(index: 2, id: 2, uuid: mainUUID, main: true)
+        let frame = CGRect(x: -90, y: 10, width: 40, height: 40)
+        let window = axWindow(handle: UUID(), pid: 49, frame: frame)
+        let platform = FakeWindowMovePlatform(processIDs: [49],
+            enumerations: [49: .init(windows: [window], failure: nil)], windows: [window],
+            cgWindows: [WindowMoveCGEvidence(processID: 49, frame: frame, layer: 0)])
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        platform.pauseFirstEnumeration(entered: entered, release: release)
+        let mover = AccessibilityWindowMover(permission: FakeWindowMovePermission(.granted), platform: platform,
+            visibleFramesProvider: { [2: CGRect(x: 0, y: 0, width: 100, height: 100)] })
+        let request = request(source: source, destination: destination)
+        let enforcement = Task {
+            await mover.enforce(request, didObserve: { _ in }, shouldAttempt: { _, _ in true },
+                willWrite: { _, _ in .allowed }, didFinish: { _, _, _ in }, validateBeforeWrite: { .allowed })
+        }
+        await Task.detached { waitForSemaphoreSignal(entered) }.value
+
+        let releaseWorker = Task.detached {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            release.signal()
+        }
+        let manual = await mover.move(request) { .allowed }
+        await releaseWorker.value
+        let enforced = await enforcement.value
+
+        XCTAssertEqual(enforced.moved, 1)
+        XCTAssertEqual(manual.moved, 0)
+        XCTAssertTrue(manual.reasons.contains { $0.reason == .noWindows },
+            "the queued manual Move observes no source window after enforcement already moved it")
+        XCTAssertEqual(platform.writes.count, 1, "one serial executor prevents duplicate concurrent writes")
+        XCTAssertEqual(platform.enumerationCalls, 2)
     }
 
     func testFakeAXWorkerPermissionRevocationTopologyAndTimedOutWriteAreHonest() async throws {
@@ -517,6 +555,11 @@ final class WindowRelocationTests: XCTestCase {
         """.utf8)
         let decoded = try JSONDecoder().decode(AppControlActionStepResult.self, from: legacy)
         XCTAssertNil(decoded.windowMove)
+        let oldDisplayStatus = Data("""
+        {"targetUUID":"\(sourceUUID)","observedState":"on","operation":"none","recoveryNeeded":false,"lastInputOutcome":null}
+        """.utf8)
+        let decodedStatus = try JSONDecoder().decode(AppControlDisplayStatus.self, from: oldDisplayStatus)
+        XCTAssertNil(decodedStatus.windowEnforcement)
     }
 
     func testV2MigrationAssignsStableStepUUIDAndV3CorruptEnvelopeDoesNotFallBack() throws {
@@ -579,6 +622,722 @@ final class WindowRelocationTests: XCTestCase {
         XCTAssertEqual(reloaded.unsupportedActions.first?.id, unsupportedID.uuidString)
     }
 
+    func testKeepWindowsOffDecodesOldHideSettingsAsOffAndPreservesRemovePreference() throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let source = display(index: 1, id: 1, uuid: sourceUUID, main: false)
+        let destination = display(index: 2, id: 2, uuid: mainUUID, main: true)
+        var oldPreferences = DisplayHidePreferences()
+        oldPreferences[sourceUUID] = DisplayHideConfiguration(target: DisplayIdentityReference(source), enabled: true)
+        defaults.set(try JSONEncoder().encode(oldPreferences), forKey: "displayHidePreferences")
+        let scheduler = FakeKeepWindowsOffScheduler()
+        let model = makeModel(defaults: defaults, records: [source, destination], scheduler: scheduler)
+        defer { model.stopKeepWindowsOff() }
+
+        XCTAssertNil(model.hideConfiguration(for: sourceUUID)?.keepWindowsOff)
+        XCTAssertTrue(model.hideConfiguration(for: sourceUUID)?.enabled == true)
+        model.setKeepWindowsOffEnabled(true, for: sourceUUID)
+        XCTAssertEqual(model.hideConfiguration(for: sourceUUID)?.keepWindowsOff, MoveWindowsConfiguration())
+        XCTAssertTrue(model.hideConfiguration(for: sourceUUID)?.enabled == true, "Remove-from-desktop remains an independent setting")
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.state, .armed)
+        XCTAssertEqual(scheduler.intervals, [1])
+    }
+
+    func testKeepWindowsOffUsesOneSecondFakeClockCadenceAndStopsOnShow() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let source = display(index: 1, id: 1, uuid: sourceUUID, main: false,
+                             bounds: CGRect(x: -100, y: 0, width: 100, height: 100))
+        let destination = display(index: 2, id: 2, uuid: mainUUID, main: true)
+        let scheduler = FakeKeepWindowsOffScheduler()
+        let executor = FakeWindowMoveExecutor(result: AppControlWindowMoveResult(moved: 1))
+        executor.enforcementWindow = WindowMoveWindowKey(processID: 42, accessibilityElementID: UUID(), frame: source.testBounds)
+        executor.enforcementTargetFrame = CGRect(x: 10, y: 10, width: 40, height: 40)
+        let model = makeModel(defaults: defaults, records: [source, destination], mover: executor,
+            scheduler: scheduler, uptime: { scheduler.now }, cover: { _ in [] })
+        defer { model.stopKeepWindowsOff() }
+
+        model.setKeepWindowsOffEnabled(true, for: sourceUUID)
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.state, .armed)
+        scheduler.advance(by: 0.999)
+        XCTAssertEqual(executor.enforcementCalls, 0)
+        scheduler.advance(by: 0.001)
+        XCTAssertEqual(executor.enforcementCalls, 0, "visible displays are armed, not enforced")
+
+        model.hide(targetUUID: sourceUUID)
+        await waitForEnforcement(executor, calls: 1)
+        XCTAssertEqual(executor.enforcementWrites, 1)
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.state, .enforcing)
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.lastMoved, 1)
+        let publicStatus = try XCTUnwrap(model.controlDisplayStatuses.first { $0.targetUUID == sourceUUID })
+        XCTAssertEqual(publicStatus.windowEnforcement?.state, .enforcing)
+        XCTAssertEqual(publicStatus.windowEnforcement?.lastMoved, 1)
+        scheduler.advance(by: 0.999)
+        XCTAssertEqual(executor.enforcementCalls, 1)
+        scheduler.advance(by: 0.001)
+        await waitForEnforcement(executor, calls: 2)
+        XCTAssertEqual(executor.enforcementCalls, 2, "missed window events are reconciled on the next one-second tick")
+
+        model.show(targetUUID: sourceUUID)
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.state, .armed)
+        scheduler.advance(by: 2)
+        XCTAssertEqual(executor.enforcementCalls, 2, "show immediately cancels enforcement and never moves windows back")
+
+        model.setDisplayLifecycleTransitioning(true)
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.label, "Paused")
+        XCTAssertTrue(model.keepWindowsOffStatuses[sourceUUID]?.reason?.contains("sleeping") == true)
+        model.setDisplayLifecycleTransitioning(false)
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.state, .armed)
+        model.shutdown {}
+        XCTAssertTrue(scheduler.ticks.allSatisfy(\.isCancelled), "quit releases the cadence timer")
+
+        let relaunchedScheduler = FakeKeepWindowsOffScheduler()
+        let relaunchedExecutor = FakeWindowMoveExecutor(result: AppControlWindowMoveResult(moved: 1))
+        let relaunched = makeModel(defaults: defaults, records: [source, destination], mover: relaunchedExecutor,
+            scheduler: relaunchedScheduler, uptime: { relaunchedScheduler.now }, cover: { _ in [] })
+        defer { relaunched.stopKeepWindowsOff() }
+        XCTAssertTrue(relaunched.blackoutHiddenDisplays.isEmpty)
+        XCTAssertEqual(relaunched.keepWindowsOffStatuses[sourceUUID]?.state, .armed,
+            "relaunch reevaluates current coverage and does not replay the previous move")
+        XCTAssertEqual(relaunchedExecutor.enforcementCalls, 0)
+        relaunched.setKeepWindowsOffEnabled(false, for: sourceUUID)
+        XCTAssertEqual(relaunched.keepWindowsOffStatuses[sourceUUID]?.state, .off)
+        XCTAssertTrue(relaunchedScheduler.ticks.allSatisfy(\.isCancelled))
+    }
+
+    func testShutdownIsTerminalAgainstQueuedTickHelperCallbackAndPendingSetter() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let source = display(index: 1, id: 1, uuid: sourceUUID, main: false,
+                             bounds: CGRect(x: -100, y: 0, width: 100, height: 100))
+        let destination = display(index: 2, id: 2, uuid: mainUUID, main: true)
+        let service = ProtectionService(cleanupIsVerified: { true }, displaysAreAsleep: { false })
+        let scheduler = FakeKeepWindowsOffScheduler()
+        let executor = FakeWindowMoveExecutor(result: AppControlWindowMoveResult(moved: 1))
+        executor.enforcementWindow = WindowMoveWindowKey(processID: 51, accessibilityElementID: UUID(), frame: source.testBounds)
+        executor.enforcementTargetFrame = CGRect(x: 10, y: 10, width: 40, height: 40)
+        executor.pausePoint = .beforeFinalGate
+        let model = makeModel(defaults: defaults, records: [source, destination], mover: executor,
+            protectionService: service, scheduler: scheduler, uptime: { scheduler.now }, cover: { _ in [] })
+        defer { model.stopKeepWindowsOff() }
+        var settings = ProtectionPreferences()
+        settings.allDisplays = true
+        model.automationPreferences = AutomationPreferences(rules: [
+            ProtectionRule(name: "Idle", isEnabled: false, settings: settings)
+        ])
+        model.setKeepWindowsOffEnabled(true, for: sourceUUID)
+        model.hide(targetUUID: sourceUUID)
+        await executor.waitUntilSuspended()
+        XCTAssertTrue(executor.isSuspended)
+
+        model.shutdown {}
+        XCTAssertTrue(scheduler.ticks.allSatisfy(\.isCancelled))
+        scheduler.ticks[0].fireEvenIfCancelled()
+        service.applyRuntimeStatus(BlackoutRuntimeStatus(state: .blackedOut, blackedOutDisplayIDs: [source.id]))
+        executor.resumeSuspended()
+        await waitForEnforcementCompletion(executor, calls: 1)
+
+        XCTAssertEqual(executor.enforcementCalls, 1, "a queued timer cannot recreate a controller or pass after quit")
+        XCTAssertEqual(executor.enforcementWrites, 0, "the final setter gate rejects a completion queued during shutdown")
+        XCTAssertEqual(scheduler.ticks.count, 1)
+        XCTAssertTrue(scheduler.ticks.allSatisfy(\.isCancelled))
+    }
+
+    func testShutdownAfterInflightSetterRejectsNextSetterAndLateCallbacks() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let source = display(index: 1, id: 1, uuid: sourceUUID, main: false,
+                             bounds: CGRect(x: -100, y: 0, width: 100, height: 100))
+        let destination = display(index: 2, id: 2, uuid: mainUUID, main: true)
+        let service = ProtectionService(cleanupIsVerified: { true }, displaysAreAsleep: { false })
+        let scheduler = FakeKeepWindowsOffScheduler()
+        let executor = FakeWindowMoveExecutor(result: AppControlWindowMoveResult(moved: 2))
+        executor.enforcementWindow = WindowMoveWindowKey(processID: 76, accessibilityElementID: UUID(), frame: source.testBounds)
+        executor.additionalEnforcementWindows = [WindowMoveWindowKey(
+            processID: 77, accessibilityElementID: UUID(), frame: source.testBounds
+        )]
+        executor.enforcementTargetFrame = CGRect(x: 10, y: 10, width: 40, height: 40)
+        executor.pausePoint = .afterFirstWrite
+        let model = makeModel(defaults: defaults, records: [source, destination], mover: executor,
+            protectionService: service, scheduler: scheduler, uptime: { scheduler.now }, cover: { _ in [] })
+        var settings = ProtectionPreferences()
+        settings.allDisplays = true
+        model.automationPreferences = AutomationPreferences(rules: [
+            ProtectionRule(name: "Idle", isEnabled: false, settings: settings)
+        ])
+        model.setKeepWindowsOffEnabled(true, for: sourceUUID)
+        model.hide(targetUUID: sourceUUID)
+        await executor.waitUntilSuspended()
+        XCTAssertEqual(executor.enforcementWrites, 1, "the first fake setter completed before shutdown")
+
+        model.shutdown {}
+        scheduler.ticks[0].fireEvenIfCancelled()
+        service.applyRuntimeStatus(BlackoutRuntimeStatus(state: .blackedOut, blackedOutDisplayIDs: [source.id]))
+        executor.resumeSuspended()
+        await waitForEnforcementCompletion(executor, calls: 1)
+
+        XCTAssertEqual(executor.enforcementCalls, 1)
+        XCTAssertEqual(executor.enforcementWrites, 1, "a stale completion cannot authorize the next setter")
+        XCTAssertTrue(scheduler.ticks.allSatisfy(\.isCancelled))
+    }
+
+    func testSleepAndPermissionRevocationWhileAXEnumerationIsPendingPreventSetter() async throws {
+        for revokePermission in [false, true] {
+            let defaults = try makeDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let source = display(index: 1, id: 1, uuid: sourceUUID, main: false,
+                                 bounds: CGRect(x: -100, y: 0, width: 100, height: 100))
+            let destination = display(index: 2, id: 2, uuid: mainUUID, main: true)
+            let frame = CGRect(x: -90, y: 10, width: 40, height: 40)
+            let window = axWindow(handle: UUID(), pid: revokePermission ? 75 : 74, frame: frame)
+            let platform = FakeWindowMovePlatform(processIDs: [window.processID],
+                enumerations: [window.processID: .init(windows: [window], failure: nil)], windows: [window],
+                cgWindows: [WindowMoveCGEvidence(processID: window.processID, frame: frame, layer: 0)])
+            let entered = DispatchSemaphore(value: 0)
+            let release = DispatchSemaphore(value: 0)
+            let finished = DispatchSemaphore(value: 0)
+            platform.pauseFirstEnumeration(entered: entered, release: release)
+            platform.signalAfterApplicationFinish(finished)
+            let permission = FakeWindowMovePermission(.granted)
+            let mover = AccessibilityWindowMover(permission: permission, platform: platform,
+                visibleFramesProvider: { [destination.id: CGRect(x: 0, y: 0, width: 100, height: 100)] })
+            let service = ProtectionService(cleanupIsVerified: { true }, displaysAreAsleep: { false })
+            let scheduler = FakeKeepWindowsOffScheduler()
+            let model = makeModel(defaults: defaults, records: [source, destination], permission: permission,
+                mover: mover, protectionService: service, scheduler: scheduler,
+                uptime: { scheduler.now }, cover: { _ in [] })
+            var settings = ProtectionPreferences()
+            settings.allDisplays = true
+            model.automationPreferences = AutomationPreferences(rules: [
+                ProtectionRule(name: "Idle", isEnabled: false, settings: settings)
+            ])
+            model.setKeepWindowsOffEnabled(true, for: sourceUUID)
+            service.applyRuntimeStatus(BlackoutRuntimeStatus(state: .blackedOut, blackedOutDisplayIDs: [source.id]))
+            await Task.detached { waitForSemaphoreSignal(entered) }.value
+
+            if revokePermission {
+                permission.value = .missing
+                model.refreshWindowMovePermissionState()
+            } else {
+                model.setDisplayLifecycleTransitioning(true)
+            }
+            release.signal()
+            await Task.detached { waitForSemaphoreSignal(finished) }.value
+            XCTAssertTrue(platform.writes.isEmpty,
+                revokePermission ? "revocation during fake AX enumeration prevents a later setter" :
+                    "sleep during fake AX enumeration prevents a later setter")
+            await withCheckedContinuation { continuation in model.shutdown { continuation.resume() } }
+        }
+    }
+
+    func testSleepAndPermissionRevocationCancelPendingEnforcementWrites() async throws {
+        for revokePermission in [false, true] {
+            let defaults = try makeDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let source = display(index: 1, id: 1, uuid: sourceUUID, main: false,
+                                 bounds: CGRect(x: -100, y: 0, width: 100, height: 100))
+            let destination = display(index: 2, id: 2, uuid: mainUUID, main: true)
+            let permission = FakeWindowMovePermission(.granted)
+            let executor = FakeWindowMoveExecutor(result: AppControlWindowMoveResult(moved: 1))
+            executor.enforcementWindow = WindowMoveWindowKey(processID: revokePermission ? 53 : 52,
+                accessibilityElementID: UUID(), frame: source.testBounds)
+            executor.enforcementTargetFrame = CGRect(x: 10, y: 10, width: 40, height: 40)
+            executor.pausePoint = .beforeFinalGate
+            let model = makeModel(defaults: defaults, records: [source, destination], permission: permission,
+                mover: executor, cover: { _ in [] })
+            defer { model.stopKeepWindowsOff() }
+            model.setKeepWindowsOffEnabled(true, for: sourceUUID)
+            model.hide(targetUUID: sourceUUID)
+            await executor.waitUntilSuspended()
+            XCTAssertTrue(executor.isSuspended)
+
+            if revokePermission {
+                permission.value = .missing
+                model.refreshWindowMovePermissionState()
+            } else {
+                model.setDisplayLifecycleTransitioning(true)
+            }
+            executor.resumeSuspended()
+            await waitForEnforcementCompletion(executor, calls: 1)
+            XCTAssertEqual(executor.enforcementWrites, 0,
+                revokePermission ? "permission revocation invalidates the pending setter" : "sleep invalidates the pending setter")
+        }
+    }
+
+    func testEnforcementReacknowledgesNewHelperGenerationBeforeASetter() async throws {
+        let directory = try makeHelperDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("helper.log")
+        let helper = try writeFakeRelocationHelper(in: directory)
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        setenv("PANELCTL_TEST_ACK", "1", 1)
+        setenv("PANELCTL_TEST_ACK_DELAY", "0.01", 1)
+        XCTAssertEqual(try ProtectionService.helperExecutableURL(), helper)
+        defer {
+            unsetenv("PANELCTL_HELPER")
+            unsetenv("PANELCTL_TEST_LOG")
+            unsetenv("PANELCTL_TEST_ACK")
+            unsetenv("PANELCTL_TEST_ACK_DELAY")
+        }
+
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let source = display(index: 1, id: 1, uuid: sourceUUID, main: false,
+                             bounds: CGRect(x: -100, y: 0, width: 100, height: 100))
+        let destination = display(index: 2, id: 2, uuid: mainUUID, main: true)
+        let alternate = display(index: 3, id: 3, uuid: alternateUUID, main: false,
+                                bounds: CGRect(x: 100, y: 0, width: 100, height: 100))
+        var firstSettings = ProtectionPreferences()
+        firstSettings.selectedDisplayUUIDs = [sourceUUID]
+        let firstRule = ProtectionRule(name: "Source", isEnabled: true, settings: firstSettings)
+        let initialRules = AutomationPreferences(isEnabled: true, rules: [firstRule])
+        defaults.set(try JSONEncoder().encode(initialRules), forKey: "automationRules")
+
+        let scheduler = FakeKeepWindowsOffScheduler()
+        let executor = FakeWindowMoveExecutor(result: AppControlWindowMoveResult(moved: 1))
+        executor.enforcementWindow = WindowMoveWindowKey(processID: 60, accessibilityElementID: UUID(), frame: source.testBounds)
+        executor.additionalEnforcementWindows = [WindowMoveWindowKey(
+            processID: 61, accessibilityElementID: UUID(), frame: source.testBounds
+        )]
+        executor.enforcementTargetFrame = CGRect(x: 10, y: 10, width: 40, height: 40)
+        executor.pausePoint = .afterFirstWrite
+        let model = makeModel(defaults: defaults, records: [source, destination, alternate], mover: executor,
+            scheduler: scheduler, uptime: { scheduler.now }, cover: { _ in [] })
+        defer { model.stopKeepWindowsOff() }
+        for _ in 0..<250 where !model.blackedOutDisplayIDs.contains(source.id) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(model.blackedOutDisplayIDs.contains(source.id),
+            "the original fake helper must establish source coverage before enforcement")
+        model.setKeepWindowsOffEnabled(true, for: sourceUUID)
+        for _ in 0..<250 where !executor.isSuspended { try await Task.sleep(nanoseconds: 10_000_000) }
+        let startupLog = try? String(contentsOf: log, encoding: .utf8)
+        XCTAssertTrue(executor.isSuspended,
+            "the first window setter should finish before helper replacement; helper log=\(String(describing: startupLog)), state=\(String(describing: model.statusDetail))")
+        XCTAssertEqual(executor.enforcementWrites, 1)
+
+        setenv("PANELCTL_TEST_ACK_DELAY", "0.25", 1)
+        var secondSettings = ProtectionPreferences()
+        secondSettings.selectedDisplayUUIDs = [alternateUUID]
+        let secondRule = ProtectionRule(name: "Alternate", isEnabled: true, settings: secondSettings)
+        model.automationPreferences = AutomationPreferences(isEnabled: true, rules: [firstRule, secondRule])
+        for _ in 0..<300 {
+            if logOccurrenceCount("started", in: log) >= 3 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertGreaterThanOrEqual(logOccurrenceCount("started", in: log), 3,
+            "the replacement rule set starts both managed helpers")
+        for _ in 0..<250 where !model.blackedOutDisplayIDs.contains(source.id) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(model.blackedOutDisplayIDs.contains(source.id))
+        executor.resumeSuspended()
+        await waitForEnforcement(executor, calls: 1)
+        XCTAssertEqual(executor.enforcementWrites, 1,
+            "the old controller generation refuses the second window after helper replacement")
+
+        let previousAcknowledgements = logOccurrenceCount("relocation:", in: log)
+        scheduler.advance(by: 1)
+        for _ in 0..<250 {
+            if logOccurrenceCount("relocation:", in: log) >= previousAcknowledgements + 2 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertGreaterThanOrEqual(logOccurrenceCount("relocation:", in: log), previousAcknowledgements + 2,
+            "both current helpers receive a fresh suppression request before the second window setter")
+        XCTAssertEqual(executor.enforcementWrites, 1, "the second setter stays blocked until both current helpers acknowledge")
+        for _ in 0..<250 where executor.completedEnforcements < 2 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertGreaterThanOrEqual(executor.completedEnforcements, 2)
+        XCTAssertEqual(executor.enforcementWrites, 2)
+        await withCheckedContinuation { continuation in model.shutdown { continuation.resume() } }
+    }
+
+    func testUncertainSetterCompletionIsReportedAsConservativeRelocationProvenance() async throws {
+        let directory = try makeHelperDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("helper.log")
+        let helper = try writeFakeRelocationHelper(in: directory)
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        setenv("PANELCTL_TEST_ACK", "1", 1)
+        setenv("PANELCTL_TEST_ACK_DELAY", "0.01", 1)
+        defer {
+            unsetenv("PANELCTL_HELPER")
+            unsetenv("PANELCTL_TEST_LOG")
+            unsetenv("PANELCTL_TEST_ACK")
+            unsetenv("PANELCTL_TEST_ACK_DELAY")
+        }
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let source = display(index: 1, id: 1, uuid: sourceUUID, main: false,
+                             bounds: CGRect(x: -100, y: 0, width: 100, height: 100))
+        let destination = display(index: 2, id: 2, uuid: mainUUID, main: true)
+        let alternate = display(index: 3, id: 3, uuid: alternateUUID, main: false,
+                                bounds: CGRect(x: 100, y: 0, width: 100, height: 100))
+        var settings = ProtectionPreferences()
+        settings.selectedDisplayUUIDs = [sourceUUID]
+        let rule = ProtectionRule(name: "Source", isEnabled: true, settings: settings)
+        defaults.set(try JSONEncoder().encode(AutomationPreferences(isEnabled: true, rules: [rule])),
+            forKey: "automationRules")
+        let scheduler = FakeKeepWindowsOffScheduler()
+        let executor = FakeWindowMoveExecutor(result: AppControlWindowMoveResult(moved: 1))
+        executor.enforcementWindow = WindowMoveWindowKey(processID: 78, accessibilityElementID: UUID(), frame: source.testBounds)
+        executor.enforcementTargetFrame = CGRect(x: 10, y: 10, width: 40, height: 40)
+        executor.enforcementWriteResult = .timedOut
+        let model = makeModel(defaults: defaults, records: [source, destination, alternate], mover: executor,
+            scheduler: scheduler, uptime: { scheduler.now }, cover: { _ in [] })
+        model.setKeepWindowsOffEnabled(true, for: sourceUUID)
+        for _ in 0..<250 where !model.blackedOutDisplayIDs.contains(source.id) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(model.blackedOutDisplayIDs.contains(source.id))
+        model.refreshWindowMovePermissionState()
+        for _ in 0..<250 where executor.completedEnforcements < 1 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(executor.enforcementCalls, 1,
+            "expected one enforcement pass; status=\(String(describing: model.keepWindowsOffStatuses[sourceUUID])) log=\(String(describing: try? String(contentsOf: log, encoding: .utf8)))")
+        XCTAssertEqual(executor.enforcementWrites, 1,
+            "expected a fake setter after source coverage; status=\(String(describing: model.keepWindowsOffStatuses[sourceUUID]))")
+        for _ in 0..<250 {
+            let text = try? String(contentsOf: log, encoding: .utf8)
+            if text?.contains(":end:2") == true { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let logText = try String(contentsOf: log, encoding: .utf8)
+        XCTAssertTrue(logText.contains(":end:2"),
+            "a timed-out readback reports the destination in uncertainDisplayIDs instead of ordinary occupancy")
+        await withCheckedContinuation { continuation in model.shutdown { continuation.resume() } }
+    }
+
+    func testCoordinatorFailsClosedWhenCurrentHelperDoesNotAcknowledge() async throws {
+        let directory = try makeHelperDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = directory.appendingPathComponent("helper.log")
+        let helper = try writeFakeRelocationHelper(in: directory)
+        setenv("PANELCTL_HELPER", helper.path, 1)
+        setenv("PANELCTL_TEST_LOG", log.path, 1)
+        setenv("PANELCTL_TEST_ACK", "0", 1)
+        XCTAssertEqual(try ProtectionService.helperExecutableURL(), helper)
+        defer { unsetenv("PANELCTL_HELPER"); unsetenv("PANELCTL_TEST_LOG"); unsetenv("PANELCTL_TEST_ACK") }
+
+        let rule = ProtectionRule(name: "Managed", isEnabled: true)
+        var helperService: ProtectionService?
+        let coordinator = ProtectionCoordinator(verifyJournal: { _ in true }, discoverRuleIDs: { [] },
+            serviceFactory: { id in
+                let service = ProtectionService(cleanupRuleID: id, cleanupIsVerified: { true }, displaysAreAsleep: { false })
+                helperService = service
+                return service
+            })
+        coordinator.reconcile(ruleSet: AutomationPreferences(isEnabled: true, rules: [rule]),
+            validations: [:], arguments: [rule.id: ["blackout"]])
+        for _ in 0..<250 where helperService?.relocationControlIsHealthy != true {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(coordinator.canReceiveControl)
+        XCTAssertTrue(coordinator.hasManagedProcess)
+        XCTAssertEqual(helperService?.state, .blackedOut,
+            "the fake helper status is parsed before testing a missing acknowledgement")
+        let result = await coordinator.beginRelocationSuppression(BlackoutRelocationControl(
+            token: UUID(), kind: .begin, displayIDs: [1]
+        ))
+        XCTAssertFalse(result.0)
+        XCTAssertTrue(result.1?.contains("did not acknowledge") == true,
+            "unexpected refusal: \(String(describing: result.1))")
+        await withCheckedContinuation { continuation in coordinator.shutdown { continuation.resume() } }
+    }
+
+    func testKeepWindowsOffStopsPassBeforeProvenanceLimit() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let source = display(index: 1, id: 1, uuid: sourceUUID, main: false,
+                             bounds: CGRect(x: -100, y: 0, width: 100, height: 100))
+        let destination = display(index: 2, id: 2, uuid: mainUUID, main: true)
+        let scheduler = FakeKeepWindowsOffScheduler()
+        let executor = FakeWindowMoveExecutor(result: AppControlWindowMoveResult(moved: 64))
+        executor.enforcementWindow = WindowMoveWindowKey(processID: 400, accessibilityElementID: UUID(), frame: source.testBounds)
+        executor.additionalEnforcementWindows = (1...64).map { offset in
+            WindowMoveWindowKey(processID: Int32(400 + offset), accessibilityElementID: UUID(), frame: source.testBounds)
+        }
+        executor.enforcementTargetFrame = CGRect(x: 10, y: 10, width: 40, height: 40)
+        let model = makeModel(defaults: defaults, records: [source, destination], mover: executor,
+            scheduler: scheduler, uptime: { scheduler.now }, cover: { _ in [] })
+        defer { model.stopKeepWindowsOff() }
+        model.setKeepWindowsOffEnabled(true, for: sourceUUID)
+        model.hide(targetUUID: sourceUUID)
+
+        await waitForEnforcement(executor, calls: 1)
+        XCTAssertEqual(executor.enforcementWrites, KeepWindowsOffDisplayController.maximumWritesPerPass)
+        XCTAssertEqual(executor.enforcementCalls, 1, "the 65th eligible window waits for the next one-second reconciliation")
+    }
+
+    func testKeepWindowsOffActionCoverageAndPermissionRecovery() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let source = display(index: 1, id: 1, uuid: sourceUUID, main: false,
+                             bounds: CGRect(x: -100, y: 0, width: 100, height: 100))
+        let destination = display(index: 2, id: 2, uuid: mainUUID, main: true)
+        let permission = FakeWindowMovePermission(.missing)
+        let scheduler = FakeKeepWindowsOffScheduler()
+        let executor = FakeWindowMoveExecutor(result: AppControlWindowMoveResult(moved: 1))
+        executor.enforcementWindow = WindowMoveWindowKey(processID: 43, accessibilityElementID: UUID(), frame: source.testBounds)
+        executor.enforcementTargetFrame = CGRect(x: 10, y: 10, width: 40, height: 40)
+        let model = makeModel(defaults: defaults, records: [source, destination], permission: permission,
+            mover: executor, scheduler: scheduler, uptime: { scheduler.now }, cover: { _ in [] })
+        defer { model.stopKeepWindowsOff() }
+        model.setKeepWindowsOffEnabled(true, for: sourceUUID)
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.label, "Paused")
+        XCTAssertTrue(model.keepWindowsOffStatuses[sourceUUID]?.reason?.contains("Accessibility") == true)
+        XCTAssertEqual(executor.enforcementCalls, 0)
+
+        permission.value = .granted
+        scheduler.advance(by: 1)
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.state, .armed)
+        let action = DisplayAction(name: "Black out", steps: [DisplayActionStep(
+            target: DisplayIdentitySnapshot(source), effect: .blackOut
+        )])
+        try model.saveDisplayAction(action)
+        let result = await run(model, id: action.id)
+        XCTAssertEqual(result.outcome, .done)
+        await waitForEnforcement(executor, calls: 1)
+        XCTAssertEqual(executor.enforcementWrites, 1, "Action-owned blackout coverage starts the same per-display controller")
+        XCTAssertEqual(permission.promptCount, 0, "background enforcement never prompts")
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.state, .enforcing)
+        model.show(targetUUID: sourceUUID)
+    }
+
+    func testKeepWindowsOffUsesIndependentControllersForMultipleOwnersAndSources() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let source = display(index: 1, id: 1, uuid: sourceUUID, main: false,
+                             bounds: CGRect(x: -100, y: 0, width: 100, height: 100))
+        let destination = display(index: 2, id: 2, uuid: mainUUID, main: true)
+        let alternate = display(index: 3, id: 3, uuid: alternateUUID, main: false,
+                                bounds: CGRect(x: 100, y: 0, width: 100, height: 100))
+        let service = ProtectionService(cleanupIsVerified: { true }, displaysAreAsleep: { false })
+        let scheduler = FakeKeepWindowsOffScheduler()
+        let executor = FakeWindowMoveExecutor(result: AppControlWindowMoveResult(moved: 1))
+        let sharedElementID = UUID()
+        let first = WindowMoveWindowKey(processID: 71, accessibilityElementID: sharedElementID,
+            frame: CGRect(x: -80, y: 10, width: 40, height: 40))
+        let second = WindowMoveWindowKey(processID: 72, accessibilityElementID: sharedElementID,
+            frame: CGRect(x: 120, y: 10, width: 40, height: 40))
+        XCTAssertNotEqual(first, second, "window identity includes owner PID even when AX element IDs match")
+        executor.enforcementWindowsBySourceUUID = [sourceUUID: [first], alternateUUID: [second]]
+        executor.enforcementTargetFrame = CGRect(x: 10, y: 10, width: 40, height: 40)
+        let model = makeModel(defaults: defaults, records: [source, destination, alternate], mover: executor,
+            protectionService: service, scheduler: scheduler, uptime: { scheduler.now }, cover: { _ in [] })
+        defer { model.stopKeepWindowsOff() }
+        var settings = ProtectionPreferences()
+        settings.allDisplays = true
+        model.automationPreferences = AutomationPreferences(rules: [
+            ProtectionRule(name: "Idle", isEnabled: false, settings: settings)
+        ])
+        model.setKeepWindowsOffEnabled(true, for: sourceUUID)
+        model.setKeepWindowsOffEnabled(true, for: alternateUUID)
+        service.applyRuntimeStatus(BlackoutRuntimeStatus(state: .blackedOut,
+            blackedOutDisplayIDs: [source.id, alternate.id]))
+        for _ in 0..<250 where executor.completedEnforcements < 2 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(executor.enforcementCalls, 2, "each covered source owns an independent controller pass")
+        XCTAssertEqual(executor.enforcementWrites, 2, "windows from different owner processes are independently enforced")
+        XCTAssertEqual(Set(executor.requests.compactMap { $0.source.uuid }), Set([sourceUUID, alternateUUID]))
+        XCTAssertEqual(scheduler.intervals, [1], "both controllers share the single one-second cadence")
+    }
+
+    func testKeepWindowsOffTracksFakeAutomationMembershipWithoutStartingHelper() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let source = display(index: 1, id: 1, uuid: sourceUUID, main: false,
+                             bounds: CGRect(x: -100, y: 0, width: 100, height: 100))
+        let destination = display(index: 2, id: 2, uuid: mainUUID, main: true)
+        let service = ProtectionService(cleanupIsVerified: { true }, displaysAreAsleep: { false })
+        let scheduler = FakeKeepWindowsOffScheduler()
+        let executor = FakeWindowMoveExecutor(result: AppControlWindowMoveResult(moved: 1))
+        executor.enforcementWindow = WindowMoveWindowKey(processID: 48, accessibilityElementID: UUID(), frame: source.testBounds)
+        executor.enforcementTargetFrame = CGRect(x: 10, y: 10, width: 40, height: 40)
+        let model = makeModel(defaults: defaults, records: [source, destination], mover: executor,
+            protectionService: service, scheduler: scheduler, uptime: { scheduler.now }, cover: { _ in [] })
+        defer { model.stopKeepWindowsOff() }
+        var settings = ProtectionPreferences()
+        settings.allDisplays = true
+        let rule = ProtectionRule(name: "Fake helper membership", isEnabled: false, settings: settings)
+        model.automationPreferences = AutomationPreferences(rules: [rule])
+        model.setKeepWindowsOffEnabled(true, for: sourceUUID)
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.label, "Armed")
+
+        service.applyRuntimeStatus(BlackoutRuntimeStatus(
+            state: .blackedOut, blackedOutDisplayIDs: [source.id, destination.id]
+        ))
+        XCTAssertEqual(model.blackedOutDisplayIDs, [source.id, destination.id])
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.label, "Paused")
+        XCTAssertTrue(model.keepWindowsOffStatuses[sourceUUID]?.reason?.contains("destination") == true)
+        XCTAssertEqual(executor.enforcementCalls, 0, "the helper-covered display is not used as a destination")
+
+        service.applyRuntimeStatus(BlackoutRuntimeStatus(state: .blackedOut, blackedOutDisplayIDs: [source.id]))
+        await waitForEnforcement(executor, calls: 1)
+        XCTAssertEqual(executor.enforcementWrites, 1, "Automation-owned helper membership is authoritative coverage")
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.label, "Enforcing")
+
+        service.applyRuntimeStatus(BlackoutRuntimeStatus(state: .waiting, blackedOutDisplayIDs: []))
+        XCTAssertTrue(model.blackedOutDisplayIDs.isEmpty)
+        XCTAssertEqual(model.keepWindowsOffStatuses[sourceUUID]?.label, "Armed")
+        scheduler.advance(by: 1)
+        XCTAssertEqual(executor.enforcementCalls, 1, "coverage exit cancels keep-off; it does not replay work")
+    }
+
+    func testKeepWindowsOffCancelsPendingWritesOnDisableAndTopologyChange() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let source = display(index: 1, id: 1, uuid: sourceUUID, main: false,
+                             bounds: CGRect(x: -100, y: 0, width: 100, height: 100))
+        let destination = display(index: 2, id: 2, uuid: mainUUID, main: true)
+        let scheduler = FakeKeepWindowsOffScheduler()
+        let executor = FakeWindowMoveExecutor(result: AppControlWindowMoveResult(moved: 1))
+        executor.enforcementWindow = WindowMoveWindowKey(processID: 44, accessibilityElementID: UUID(), frame: source.testBounds)
+        executor.enforcementTargetFrame = CGRect(x: 10, y: 10, width: 40, height: 40)
+        executor.pausePoint = .beforeWillWrite
+        let topology = FakeDisplayTopology([source, destination])
+        let model = makeModel(defaults: defaults, records: [source, destination], displayProvider: { topology.records },
+            mover: executor, scheduler: scheduler, uptime: { scheduler.now }, cover: { _ in [] })
+        defer { model.stopKeepWindowsOff() }
+        model.setKeepWindowsOffEnabled(true, for: sourceUUID)
+        model.hide(targetUUID: sourceUUID)
+        await executor.waitUntilSuspended()
+        XCTAssertTrue(executor.isSuspended)
+        model.setKeepWindowsOffEnabled(false, for: sourceUUID)
+        executor.resumeSuspended()
+        await waitForEnforcementCompletion(executor, calls: 1)
+        XCTAssertEqual(executor.enforcementWrites, 0, "turning the option off invalidates the pending setter generation")
+        XCTAssertTrue(scheduler.ticks.allSatisfy(\.isCancelled))
+
+        let secondDefaults = try makeDefaults()
+        let alternate = display(index: 3, id: 3, uuid: alternateUUID, main: false)
+        let secondScheduler = FakeKeepWindowsOffScheduler()
+        let secondExecutor = FakeWindowMoveExecutor(result: AppControlWindowMoveResult(moved: 1))
+        secondExecutor.enforcementWindow = WindowMoveWindowKey(processID: 45, accessibilityElementID: UUID(), frame: source.testBounds)
+        secondExecutor.enforcementTargetFrame = CGRect(x: 10, y: 10, width: 40, height: 40)
+        secondExecutor.pausePoint = .beforeFinalGate
+        let reconnecting = FakeDisplayTopology([source, destination, alternate])
+        let second = makeModel(defaults: secondDefaults, records: [source, destination, alternate], displayProvider: { reconnecting.records },
+            mover: secondExecutor, scheduler: secondScheduler, uptime: { secondScheduler.now }, cover: { _ in [] })
+        defer {
+            second.stopKeepWindowsOff()
+            secondDefaults.removePersistentDomain(forName: suiteName)
+        }
+        second.setKeepWindowsOffEnabled(true, for: sourceUUID)
+        second.setKeepWindowsOffDestination(.display(DisplayIdentityReference(destination)), for: sourceUUID)
+        second.hide(targetUUID: sourceUUID)
+        await secondExecutor.waitUntilSuspended()
+        XCTAssertTrue(secondExecutor.isSuspended)
+        reconnecting.records = [source, alternate]
+        second.refreshDisplays()
+        XCTAssertEqual(second.keepWindowsOffStatuses[sourceUUID]?.label, "Paused")
+        secondExecutor.resumeSuspended()
+        await waitForEnforcementCompletion(secondExecutor, calls: 1)
+        XCTAssertEqual(secondExecutor.enforcementWrites, 0, "topology changes cancel an in-flight pass before its next setter")
+        reconnecting.records = [source, destination, alternate]
+        second.refreshDisplays()
+        await waitForEnforcement(secondExecutor, calls: 2)
+        XCTAssertEqual(secondExecutor.enforcementWrites, 1, "reconnection resumes only when the exact saved identities return")
+    }
+
+    func testKeepWindowsOffBackoffAndDragDeferralUseFakeClock() {
+        var now: TimeInterval = 0
+        let controller = KeepWindowsOffDisplayController(uuid: sourceUUID, now: { now })
+        controller.beginEnforcementSession()
+        let windowID = UUID()
+        let frame = CGRect(x: -80, y: 10, width: 40, height: 40)
+        let key = WindowMoveWindowKey(processID: 46, accessibilityElementID: windowID, frame: frame)
+        XCTAssertTrue(controller.shouldAttempt(key, frame: frame, mouseButtonPressed: false))
+        controller.didFinish(key, frame: frame, result: .failed)
+        controller.finishPass()
+        for delay in [1.0, 2, 4, 8, 16, 30, 30] {
+            let deadline = now + delay
+            now = deadline - 0.01
+            XCTAssertFalse(controller.shouldAttempt(key, frame: frame, mouseButtonPressed: false))
+            controller.finishPass()
+            now = deadline
+            XCTAssertTrue(controller.shouldAttempt(key, frame: frame, mouseButtonPressed: false))
+            controller.didFinish(key, frame: frame, result: .failed)
+            controller.finishPass()
+        }
+        controller.beginEnforcementSession()
+        XCTAssertTrue(controller.shouldAttempt(key, frame: frame, mouseButtonPressed: false))
+        controller.finishPass()
+        let changedFrame = CGRect(x: -70, y: 20, width: 40, height: 40)
+        XCTAssertFalse(controller.shouldAttempt(key, frame: changedFrame, mouseButtonPressed: true))
+        controller.finishPass()
+        XCTAssertFalse(controller.shouldAttempt(key, frame: changedFrame, mouseButtonPressed: false))
+        controller.finishPass()
+        now += 1
+        XCTAssertTrue(controller.shouldAttempt(key, frame: changedFrame, mouseButtonPressed: false))
+        controller.cancel()
+        controller.beginEnforcementSession()
+        XCTAssertTrue(controller.shouldAttempt(key, frame: changedFrame, mouseButtonPressed: false), "a new session resets prior backoff")
+    }
+
+    func testReturningWindowBacksOffUntilStableSuccessAndUsesAXIdentity() {
+        var now: TimeInterval = 0
+        let controller = KeepWindowsOffDisplayController(uuid: sourceUUID, now: { now })
+        controller.beginEnforcementSession()
+        let identity = UUID()
+        let sourceFrame = CGRect(x: -80, y: 10, width: 40, height: 40)
+        let destinationFrame = CGRect(x: 20, y: 10, width: 40, height: 40)
+        let key = WindowMoveWindowKey(processID: 47, accessibilityElementID: identity, frame: sourceFrame)
+        controller.observe([WindowMoveObservedWindow(key: key, frame: sourceFrame, isOnSourceDisplay: true)])
+        XCTAssertTrue(controller.shouldAttempt(key, frame: sourceFrame, mouseButtonPressed: false))
+        controller.didFinish(key, frame: destinationFrame, result: .verified)
+        controller.finishPass()
+
+        let sameIdentityAtDestination = WindowMoveWindowKey(
+            processID: 47, accessibilityElementID: identity, frame: destinationFrame
+        )
+        XCTAssertEqual(key, sameIdentityAtDestination, "frame changes do not change the PID+AX-element identity")
+        for delay in [1.0, 2.0, 4.0] {
+            controller.observe([WindowMoveObservedWindow(key: key, frame: sourceFrame, isOnSourceDisplay: true)])
+            XCTAssertFalse(controller.shouldAttempt(key, frame: sourceFrame, mouseButtonPressed: false))
+            controller.finishPass()
+            let deadline = now + delay
+            now = deadline - 0.01
+            controller.observe([WindowMoveObservedWindow(key: key, frame: sourceFrame, isOnSourceDisplay: true)])
+            XCTAssertFalse(controller.shouldAttempt(key, frame: sourceFrame, mouseButtonPressed: false),
+                "the same window returning immediately after readback waits for the escalating \(delay)s deadline")
+            controller.finishPass()
+            now = deadline
+            controller.observe([WindowMoveObservedWindow(key: key, frame: sourceFrame, isOnSourceDisplay: true)])
+            XCTAssertTrue(controller.shouldAttempt(key, frame: sourceFrame, mouseButtonPressed: false))
+            controller.didFinish(key, frame: destinationFrame, result: .verified)
+            controller.finishPass()
+        }
+
+        controller.observe([WindowMoveObservedWindow(
+            key: sameIdentityAtDestination, frame: destinationFrame, isOnSourceDisplay: false
+        )])
+        controller.finishPass()
+        controller.observe([WindowMoveObservedWindow(key: key, frame: sourceFrame, isOnSourceDisplay: true)])
+        XCTAssertFalse(controller.shouldAttempt(key, frame: sourceFrame, mouseButtonPressed: false),
+            "a stable off-source observation resets the returning window history")
+        controller.finishPass()
+
+        let newKey = WindowMoveWindowKey(processID: 49, accessibilityElementID: UUID(), frame: sourceFrame)
+        controller.observe([WindowMoveObservedWindow(key: newKey, frame: sourceFrame, isOnSourceDisplay: true)])
+        XCTAssertTrue(controller.shouldAttempt(newKey, frame: sourceFrame, mouseButtonPressed: false),
+            "new windows are eligible on the next bounded reconciliation pass")
+    }
+
+    private func waitForEnforcement(_ executor: FakeWindowMoveExecutor, calls: Int) async {
+        for _ in 0..<100 where executor.completedEnforcements < calls { await Task.yield() }
+        for _ in 0..<3 { await Task.yield() }
+    }
+
+    private func waitForEnforcementCompletion(_ executor: FakeWindowMoveExecutor, calls: Int) async {
+        for _ in 0..<100 where executor.completedEnforcements < calls { await Task.yield() }
+    }
+
     private func request(source: DisplayRecord, destination: DisplayRecord,
                          coveredDisplayIDs: Set<UInt32> = []) -> WindowMovePlanRequest {
         WindowMovePlanRequest(source: DisplayIdentitySnapshot(source), configuration: MoveWindowsConfiguration(),
@@ -601,19 +1360,24 @@ final class WindowRelocationTests: XCTestCase {
     }
 
     private func makeModel(defaults: UserDefaults, records: [DisplayRecord] = [],
+                           displayProvider: (() -> [DisplayRecord])? = nil,
                            permission: FakeWindowMovePermission? = nil,
                            mover: WindowMoveExecuting? = nil,
+                           protectionService: ProtectionService? = nil,
+                           scheduler: KeepWindowsOffScheduling? = nil,
+                           uptime: @escaping () -> TimeInterval = { 0 },
                            handoffStatus: DisplayHandoffStatus? = nil,
                            handoffState: DisplayHandoffStatus.State = .none,
                            cover: @escaping @MainActor (Set<UInt32>) -> Set<UInt32> = { _ in [] },
                            quiesce: @escaping ProtectionQuiesce = { $0(true, nil) }) -> AppModel {
-        AppModel(defaults: defaults, displayProvider: { records }, idleSecondsProvider: { nil },
+        AppModel(defaults: defaults, displayProvider: displayProvider ?? { records }, idleSecondsProvider: { nil },
             isDisplayMirrored: { _ in false }, inspectHandoff: {
                 handoffStatus ?? DisplayHandoffStatus(state: handoffState, journalPath: "/tmp/window-move-test.json")
             },
-            coverDisplays: cover, quiesceProtection: quiesce,
+            coverDisplays: cover, quiesceProtection: quiesce, protectionService: protectionService,
             windowMovePermission: permission ?? FakeWindowMovePermission(.granted),
-            windowMoveExecutor: mover ?? FakeWindowMoveExecutor(result: AppControlWindowMoveResult()))
+            windowMoveExecutor: mover ?? FakeWindowMoveExecutor(result: AppControlWindowMoveResult()),
+            windowMoveUptime: uptime, keepWindowsOffScheduler: scheduler)
     }
 
     private func run(_ model: AppModel, id: UUID) async -> AppControlResponse {
@@ -622,6 +1386,45 @@ final class WindowRelocationTests: XCTestCase {
 
     private func settleQuiescence(_ model: AppModel) async {
         for _ in 0..<20 where model.protectionQuiescencePending { await Task.yield() }
+    }
+
+    private func logOccurrenceCount(_ needle: String, in url: URL) -> Int {
+        guard let contents = try? String(contentsOf: url, encoding: .utf8) else { return 0 }
+        return contents.components(separatedBy: needle).count - 1
+    }
+
+    private func makeHelperDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("panelctl-relocation-helper-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    private func writeFakeRelocationHelper(in directory: URL) throws -> URL {
+        let helper = directory.appendingPathComponent("fake-panelctl")
+        let script = """
+        #!/bin/bash
+        printf 'started\\n' >> "$PANELCTL_TEST_LOG"
+        printf '{"state":"blacked_out","blackedOutDisplayIDs":[1,3]}\\n'
+        trap 'printf "{\\"state\\":\\"stopped\\",\\"blackedOutDisplayIDs\\":[],\\"cleanupSucceeded\\":true}\\n"; exit 0' TERM
+        while IFS= read -r command; do
+            if [[ "$command" == relocation:* ]]; then
+                payload="${command#relocation:}"
+                decoded="$(printf '%s' "$payload" | /usr/bin/base64 -D)"
+                token="$(printf '%s' "$decoded" | /usr/bin/sed -E 's/.*"token":"([^"]+)".*/\\1/')"
+                kind="$(printf '%s' "$decoded" | /usr/bin/sed -E 's/.*"kind":"([^"]+)".*/\\1/')"
+                uncertain="$(printf '%s' "$decoded" | /usr/bin/sed -E 's/.*"uncertainDisplayIDs":\\[([0-9,]*)\\].*/\\1/')"
+                printf 'relocation:%s:%s:%s\\n' "$token" "$kind" "$uncertain" >> "$PANELCTL_TEST_LOG"
+                if [[ "${PANELCTL_TEST_ACK:-1}" == "1" ]]; then
+                    /bin/sleep "${PANELCTL_TEST_ACK_DELAY:-0}"
+                    printf '{"state":"blacked_out","blackedOutDisplayIDs":[1,3],"relocationAcknowledgements":["%s"]}\\n' "$token"
+                fi
+            fi
+        done
+        """
+        try Data(script.utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        return helper
     }
 
     private func makeDefaults() throws -> UserDefaults {
@@ -651,19 +1454,148 @@ private final class FakeWindowMovePermission: WindowMovePermissionProviding {
 
 @MainActor
 private final class FakeWindowMoveExecutor: WindowMoveExecuting {
+    enum PausePoint: Equatable { case beforeWillWrite, beforeFinalGate, afterFirstWrite }
+
     var result: AppControlWindowMoveResult
     var afterGate: (() -> Void)?
+    var enforcementWindow: WindowMoveWindowKey?
+    var additionalEnforcementWindows: [WindowMoveWindowKey] = []
+    var enforcementWindowsBySourceUUID: [String: [WindowMoveWindowKey]] = [:]
+    var enforcementTargetFrame = CGRect.zero
+    var enforcementWriteResult: WindowMoveWriteResult = .verified
+    var windowOnSourceDisplay = true
+    var pausePoint: PausePoint?
+    private var pendingResume: CheckedContinuation<Void, Never>?
+    private var movedWindowIDs = Set<WindowMoveWindowKey>()
+    private(set) var isSuspended = false
+    private(set) var completedEnforcements = 0
+    private(set) var enforcementCalls = 0
+    private(set) var enforcementWrites = 0
     private(set) var requests: [WindowMovePlanRequest] = []
+
     init(result: AppControlWindowMoveResult) { self.result = result }
+
     func move(_ request: WindowMovePlanRequest,
-              validateBeforeWrite: @escaping @MainActor @Sendable () -> WindowMoveGate) async -> AppControlWindowMoveResult {
+              validateBeforeWrite: @escaping @MainActor @Sendable () async -> WindowMoveGate) async -> AppControlWindowMoveResult {
         requests.append(request)
-        guard validateBeforeWrite() == .allowed else {
+        guard await validateBeforeWrite() == .allowed else {
             return AppControlWindowMoveResult(refusalReason: .topologyChanged)
         }
         afterGate?()
         return result
     }
+
+    func enforce(
+        _ request: WindowMovePlanRequest,
+        didObserve: @escaping @MainActor @Sendable ([WindowMoveObservedWindow]) -> Void,
+        shouldAttempt: @escaping @MainActor @Sendable (WindowMoveWindowKey, CGRect) -> Bool,
+        willWrite: @escaping @MainActor @Sendable (WindowMoveWindowKey, CGRect) async -> WindowMoveGate,
+        didFinish: @escaping @MainActor @Sendable (WindowMoveWindowKey, CGRect, WindowMoveWriteResult) -> Void,
+        validateBeforeWrite: @escaping @MainActor @Sendable () async -> WindowMoveGate
+    ) async -> AppControlWindowMoveResult {
+        defer { completedEnforcements += 1 }
+        enforcementCalls += 1
+        requests.append(request)
+        let keys = enforcementWindowsBySourceUUID[request.source.uuid.lowercased()] ??
+            ([enforcementWindow].compactMap { $0 } + additionalEnforcementWindows)
+        guard !keys.isEmpty else { return result }
+        didObserve(keys.map { key in
+            let isOnSource = windowOnSourceDisplay && !movedWindowIDs.contains(key)
+            return WindowMoveObservedWindow(key: key,
+                frame: isOnSource ? key.frame : enforcementTargetFrame,
+                isOnSourceDisplay: isOnSource)
+        })
+        for key in keys {
+            guard windowOnSourceDisplay, !movedWindowIDs.contains(key), shouldAttempt(key, key.frame) else { continue }
+            await pauseIfNeeded(.beforeWillWrite)
+            guard await validateBeforeWrite() == .allowed else {
+                return AppControlWindowMoveResult(refusalReason: .cancelled)
+            }
+            guard await willWrite(key, enforcementTargetFrame) == .allowed else {
+                return AppControlWindowMoveResult(refusalReason: .cancelled)
+            }
+            await pauseIfNeeded(.beforeFinalGate)
+            guard await validateBeforeWrite() == .allowed else {
+                return AppControlWindowMoveResult(refusalReason: .cancelled)
+            }
+            afterGate?()
+            enforcementWrites += 1
+            movedWindowIDs.insert(key)
+            didFinish(key, enforcementTargetFrame, enforcementWriteResult)
+            await pauseIfNeeded(.afterFirstWrite)
+        }
+        return result
+    }
+
+    func waitUntilSuspended() async {
+        for _ in 0..<100 where !isSuspended { await Task.yield() }
+    }
+
+    func resumeSuspended() {
+        pendingResume?.resume()
+        pendingResume = nil
+    }
+
+    private func pauseIfNeeded(_ point: PausePoint) async {
+        guard pausePoint == point else { return }
+        pausePoint = nil
+        isSuspended = true
+        await withCheckedContinuation { pendingResume = $0 }
+        isSuspended = false
+    }
+}
+
+@MainActor
+private final class FakeKeepWindowsOffScheduler: KeepWindowsOffScheduling {
+    final class Tick: KeepWindowsOffTick {
+        let interval: TimeInterval
+        var nextFire: TimeInterval
+        let action: @MainActor () -> Void
+        private(set) var isCancelled = false
+
+        init(interval: TimeInterval, nextFire: TimeInterval, action: @escaping @MainActor () -> Void) {
+            self.interval = interval
+            self.nextFire = nextFire
+            self.action = action
+        }
+
+        func cancel() { isCancelled = true }
+        func fireEvenIfCancelled() { action() }
+    }
+
+    private(set) var now: TimeInterval = 0
+    private(set) var intervals: [TimeInterval] = []
+    private(set) var ticks: [Tick] = []
+
+    func scheduleRepeating(every interval: TimeInterval, action: @escaping @MainActor () -> Void) -> KeepWindowsOffTick {
+        intervals.append(interval)
+        let tick = Tick(interval: interval, nextFire: now + interval, action: action)
+        ticks.append(tick)
+        return tick
+    }
+
+    func advance(by duration: TimeInterval) {
+        now += duration
+        for tick in ticks where !tick.isCancelled {
+            while !tick.isCancelled && tick.nextFire <= now {
+                tick.nextFire += tick.interval
+                tick.action()
+            }
+        }
+    }
+}
+
+private final class FakeDisplayTopology {
+    var records: [DisplayRecord]
+    init(_ records: [DisplayRecord]) { self.records = records }
+}
+
+private extension DisplayRecord {
+    var testBounds: CGRect { CGRect(x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height) }
+}
+
+private func waitForSemaphoreSignal(_ semaphore: DispatchSemaphore) {
+    semaphore.wait()
 }
 
 private final class FakeWindowMovePlatform: WindowMovePlatform, @unchecked Sendable {
@@ -678,6 +1610,21 @@ private final class FakeWindowMovePlatform: WindowMovePlatform, @unchecked Senda
     private(set) var writes: [CGRect] = []
     private(set) var enumerationCalls = 0
     private(set) var workerThreads: [Bool] = []
+    private let enumerationPauseLock = NSLock()
+    private var nextEnumerationPause: (entered: DispatchSemaphore, release: DispatchSemaphore)?
+    private var didPauseEnumeration = false
+    private var finishSignal: DispatchSemaphore?
+
+    func signalAfterApplicationFinish(_ semaphore: DispatchSemaphore) {
+        finishSignal = semaphore
+    }
+
+    func pauseFirstEnumeration(entered: DispatchSemaphore, release: DispatchSemaphore) {
+        enumerationPauseLock.lock()
+        nextEnumerationPause = (entered, release)
+        didPauseEnumeration = false
+        enumerationPauseLock.unlock()
+    }
 
     init(processIDs: [Int32], enumerations: [Int32: WindowMoveApplicationEnumeration], windows: [WindowMoveAXWindowState],
          cgWindows: [WindowMoveCGEvidence], writeResults: [UUID: WindowMoveWriteResult] = [:],
@@ -695,6 +1642,11 @@ private final class FakeWindowMovePlatform: WindowMovePlatform, @unchecked Senda
     func enumerate(processID: Int32, timeout: TimeInterval, budget: TimeInterval) -> WindowMoveApplicationEnumeration {
         workerThreads.append(Thread.isMainThread)
         timeouts.append(timeout); budgets.append(budget); enumerationCalls += 1
+        enumerationPauseLock.lock()
+        let pause = didPauseEnumeration ? nil : nextEnumerationPause
+        if pause != nil { didPauseEnumeration = true }
+        enumerationPauseLock.unlock()
+        if let pause { pause.entered.signal(); pause.release.wait() }
         guard let enumeration = enumerations[processID] else {
             return WindowMoveApplicationEnumeration(windows: [], failure: .enumerationFailed)
         }
@@ -711,19 +1663,19 @@ private final class FakeWindowMovePlatform: WindowMovePlatform, @unchecked Senda
         return .success(state)
     }
     func setFrame(_ frame: CGRect, window: WindowMoveAXWindowState, timeout: TimeInterval, budget: TimeInterval,
-                  validateBeforeWrite: @escaping @MainActor @Sendable () -> WindowMoveGate) -> WindowMoveWriteResult {
+                  validateBeforeWrite: @escaping @MainActor @Sendable () async -> WindowMoveGate) -> WindowMoveWriteResult {
         workerThreads.append(Thread.isMainThread)
         timeouts.append(timeout); budgets.append(budget)
         let resized = frame.size != window.frame.size
         if resized {
-            if case .refused(let reason) = waitForWindowMoveGate(validateBeforeWrite) { return .refused(reason) }
+            if case .refused(let reason) = waitForWindowMoveGateAsync(validateBeforeWrite) { return .refused(reason) }
             let sizeOnly = CGRect(origin: window.frame.origin, size: frame.size)
             writes.append(sizeOnly)
             states[window.handle] = WindowMoveAXWindowState(handle: window.handle, processID: window.processID,
                 frame: sizeOnly, minimumSize: window.minimumSize, isMinimized: false, isFullscreen: false,
                 canSetPosition: window.canSetPosition, canSetSize: window.canSetSize)
-            if case .refused(let reason) = waitForWindowMoveGate(validateBeforeWrite) { return .partiallyApplied(reason) }
-        } else if case .refused(let reason) = waitForWindowMoveGate(validateBeforeWrite) {
+            if case .refused(let reason) = waitForWindowMoveGateAsync(validateBeforeWrite) { return .partiallyApplied(reason) }
+        } else if case .refused(let reason) = waitForWindowMoveGateAsync(validateBeforeWrite) {
             return .refused(reason)
         }
         writes.append(frame)
@@ -739,5 +1691,5 @@ private final class FakeWindowMovePlatform: WindowMovePlatform, @unchecked Senda
         }
         return result
     }
-    func finishApplication(processID: Int32) {}
+    func finishApplication(processID: Int32) { finishSignal?.signal() }
 }

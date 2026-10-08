@@ -230,17 +230,16 @@ struct PanelCtlMain {
                     while let newline = pending.firstIndex(of: 0x0A) {
                         let line = Data(pending[..<newline])
                         pending.removeSubrange(...newline)
-                        guard let value = String(data: line, encoding: .utf8),
-                              let command = BlackoutControlCommand(
-                                rawValue: value
-                              ) else {
-                            continue
-                        }
-                        DispatchQueue.main.async {
-                            controller.handleControl(command)
+                        guard let value = String(data: line, encoding: .utf8) else { continue }
+                        if value.hasPrefix("relocation:"),
+                           let payload = Data(base64Encoded: String(value.dropFirst("relocation:".count))),
+                           let control = try? JSONDecoder().decode(BlackoutRelocationControl.self, from: payload) {
+                            DispatchQueue.main.async { controller.handleRelocationControl(control) }
+                        } else if let command = BlackoutControlCommand(rawValue: value) {
+                            DispatchQueue.main.async { controller.handleControl(command) }
                         }
                     }
-                    if pending.count <= 1024 { continue }
+                    if pending.count <= 65_536 { continue }
                 }
                 if count < 0, errno == EINTR { continue }
                 DispatchQueue.main.async {

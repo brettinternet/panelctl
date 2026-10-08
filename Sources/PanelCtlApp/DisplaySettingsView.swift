@@ -35,6 +35,7 @@ struct DisplaySettingsView: View {
                 if let selected {
                     summarySection(selected)
                     hideSection(selected, tiles: tiles)
+                    keepWindowsOffSection(selected)
                     if pageProblem == nil, isJournalTarget(selected), let status = model.handoffStatus {
                         Section {
                             recoveryDetails(status, targetUUID: selected.uuid)
@@ -188,6 +189,73 @@ struct DisplaySettingsView: View {
             Image(systemName: attention ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .foregroundStyle(attention ? Color.orange : Color.green)
         }
+    }
+
+    // MARK: Keep windows off
+
+    @ViewBuilder
+    private func keepWindowsOffSection(_ tile: DisplayTile) -> some View {
+        if let uuid = tile.uuid, UUID(uuidString: uuid) != nil {
+            let display = tile.display
+            let configuration = model.hideConfiguration(for: uuid)
+            let enabled = configuration?.keepWindowsOff != nil
+            let destinations = model.windowMoveDestinationChoices(for: uuid)
+            let selectedDestination = configuration?.keepWindowsOff?.destination ?? .automatic
+            Section {
+                Toggle(isOn: Binding(
+                    get: { configuration?.keepWindowsOff != nil },
+                    set: { model.setKeepWindowsOffEnabled($0, for: uuid) }
+                )) {
+                    Text("Keep windows off while blacked out")
+                    Text("Continue moving eligible windows while PanelCtl has this display covered.")
+                }
+                .disabled(!enabled && (display.map { !$0.active || !$0.online || $0.asleep } ?? true))
+                .accessibilityLabel("Keep windows off while blacked out on \(tile.name)")
+                if enabled {
+                    Picker("Move to", selection: Binding(
+                        get: { self.destinationKey(selectedDestination) },
+                        set: { value in self.selectKeepWindowsOffDestination(value, targetUUID: uuid, choices: destinations) }
+                    )) {
+                        Text("Automatic").tag("automatic")
+                        ForEach(destinations, id: \.id) { destination in
+                            Text(destination.main ? "\(destination.settingsName) (main display)" : destination.settingsName)
+                                .tag(destination.uuid?.lowercased() ?? "")
+                        }
+                        if case .display(let saved) = selectedDestination,
+                           !destinations.contains(where: { $0.uuid?.caseInsensitiveCompare(saved.uuid) == .orderedSame }) {
+                            Text("\(saved.presentationName) (unavailable)").tag(saved.uuid.lowercased())
+                        }
+                    }
+                    if let status = model.keepWindowsOffStatuses[tile.id] {
+                        Text(status.description)
+                            .font(.caption)
+                            .foregroundStyle(status.reason == nil ? Color.secondary : Color.orange)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            } header: {
+                Text("Window relocation")
+            } footer: {
+                SectionFooter("This ongoing option is separate from the one-shot Move windows Action step. It moves only supported, publicly verified, movable windows on the current Space; it never moves them back. Accessibility permission is checked in the background and never prompted.")
+            }
+        }
+    }
+
+    private func destinationKey(_ destination: MoveWindowsDestination) -> String {
+        switch destination {
+        case .automatic: return "automatic"
+        case .display(let identity): return identity.uuid.lowercased()
+        }
+    }
+
+    private func selectKeepWindowsOffDestination(_ value: String, targetUUID: String, choices: [DisplayRecord]) {
+        guard value != "automatic" else {
+            model.setKeepWindowsOffDestination(.automatic, for: targetUUID)
+            return
+        }
+        guard let display = choices.first(where: { $0.uuid?.caseInsensitiveCompare(value) == .orderedSame }) else { return }
+        model.setKeepWindowsOffDestination(.display(DisplayIdentityReference(display)), for: targetUUID)
     }
 
     // MARK: Hide setup

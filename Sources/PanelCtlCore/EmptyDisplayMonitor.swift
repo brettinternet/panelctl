@@ -2,9 +2,26 @@ import CoreGraphics
 import Foundation
 import Darwin
 
+struct DisplayOccupancyWindow: Equatable {
+    let ownerPID: Int32?
+    let frame: CGRect
+}
+
 struct DisplayOccupancySample: Equatable {
     let pointerLocation: CGPoint
-    let windowFrames: [CGRect]
+    let windows: [DisplayOccupancyWindow]
+
+    var windowFrames: [CGRect] { windows.map(\.frame) }
+
+    init(pointerLocation: CGPoint, windowFrames: [CGRect]) {
+        self.pointerLocation = pointerLocation
+        self.windows = windowFrames.map { DisplayOccupancyWindow(ownerPID: nil, frame: $0) }
+    }
+
+    init(pointerLocation: CGPoint, windows: [DisplayOccupancyWindow]) {
+        self.pointerLocation = pointerLocation
+        self.windows = windows
+    }
 }
 
 protocol DisplayOccupancySource {
@@ -49,8 +66,8 @@ struct CoreGraphicsDisplayOccupancySource: DisplayOccupancySource {
             return nil
         }
 
-        var windowFrames: [CGRect] = []
-        windowFrames.reserveCapacity(rawWindows.count)
+        var windows: [DisplayOccupancyWindow] = []
+        windows.reserveCapacity(rawWindows.count)
         for window in rawWindows {
             let ownerPID = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
             guard let layer = (window[kCGWindowLayer as String] as? NSNumber)?.intValue,
@@ -66,12 +83,9 @@ struct CoreGraphicsDisplayOccupancySource: DisplayOccupancySource {
                   ownerPID.map({ !excludedPIDs.contains($0) }) ?? true else {
                 continue
             }
-            windowFrames.append(bounds)
+            windows.append(DisplayOccupancyWindow(ownerPID: ownerPID, frame: bounds))
         }
-        return DisplayOccupancySample(
-            pointerLocation: pointerLocation,
-            windowFrames: windowFrames
-        )
+        return DisplayOccupancySample(pointerLocation: pointerLocation, windows: windows)
     }
 
     private static func isFinite(_ point: CGPoint) -> Bool {
@@ -98,6 +112,10 @@ struct EmptyDisplayPolicy {
 
     private(set) var emptySince: [CGDirectDisplayID: TimeInterval] = [:]
     private(set) var requiresOccupiedBeforeRearming: Set<CGDirectDisplayID> = []
+    // After uncertain writes or provenance overflow, geometry cannot establish
+    // independent window activity. Only real pointer occupancy may rearm for
+    // the remainder of this helper session; ordinary empty detection is unchanged.
+    var windowRearmingIsUnverified = false
 
     mutating func reset() {
         emptySince.removeAll(keepingCapacity: true)
@@ -115,12 +133,15 @@ struct EmptyDisplayPolicy {
         activeDisplayBounds: [CGRect],
         hiddenDisplayBounds: [CGRect] = [],
         sample: DisplayOccupancySample?,
-        uptime: TimeInterval
+        uptime: TimeInterval,
+        relocationSuppressedDisplayIDs: Set<CGDirectDisplayID> = [],
+        currentlyCoveredDisplayIDs: Set<CGDirectDisplayID> = [],
+        relocatedWindows: Set<BlackoutRelocatedWindow> = []
     ) -> Set<CGDirectDisplayID> {
         guard uptime.isFinite,
               let sample,
               Self.isFinite(sample.pointerLocation),
-              sample.windowFrames.allSatisfy(Self.isValid),
+              sample.windows.allSatisfy({ Self.isValid($0.frame) }),
               !activeDisplayBounds.isEmpty,
               activeDisplayBounds.allSatisfy(Self.isValid),
               targets.allSatisfy({ Self.isValid($0.bounds) }),
@@ -137,15 +158,35 @@ struct EmptyDisplayPolicy {
         var desired: Set<CGDirectDisplayID> = []
         for target in targets {
             let pointerOccupies = target.bounds.contains(sample.pointerLocation)
-            let windowOccupies = sample.windowFrames.contains {
-                Self.positiveAreaIntersection($0, target.bounds)
-            }
-            if pointerOccupies || windowOccupies {
+            if pointerOccupies {
                 emptySince.removeValue(forKey: target.id)
                 requiresOccupiedBeforeRearming.remove(target.id)
                 continue
             }
-            guard !requiresOccupiedBeforeRearming.contains(target.id) else { continue }
+            let windowOccupies = sample.windows.contains {
+                Self.positiveAreaIntersection($0.frame, target.bounds)
+            }
+            let nonRelocatedWindowOccupies = sample.windows.contains { window in
+                guard Self.positiveAreaIntersection(window.frame, target.bounds) else { return false }
+                return !relocatedWindows.contains(where: { $0.matches(pid: window.ownerPID, frame: window.frame) })
+            }
+            if requiresOccupiedBeforeRearming.contains(target.id) {
+                emptySince.removeValue(forKey: target.id)
+                if nonRelocatedWindowOccupies && !windowRearmingIsUnverified &&
+                    !relocationSuppressedDisplayIDs.contains(target.id) {
+                    requiresOccupiedBeforeRearming.remove(target.id)
+                }
+                continue
+            }
+            if relocationSuppressedDisplayIDs.contains(target.id) {
+                emptySince.removeValue(forKey: target.id)
+                if currentlyCoveredDisplayIDs.contains(target.id) { desired.insert(target.id) }
+                continue
+            }
+            if windowOccupies {
+                emptySince.removeValue(forKey: target.id)
+                continue
+            }
             let beganAt = emptySince[target.id] ?? uptime
             emptySince[target.id] = beganAt
             if uptime - beganAt >= Self.gracePeriod {

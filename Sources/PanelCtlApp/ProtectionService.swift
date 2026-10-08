@@ -125,6 +125,7 @@ final class ProtectionService {
     private var pendingControlSourceProcess: Process?
     private var pendingDisplayRearm = false
     private var inFlightControlIntent: ControlIntent?
+    private var pendingRelocationAcknowledgements: [UUID: (Bool, String?) -> Void] = [:]
     private var stateAfterTermination: ProtectionRuntimeState?
     private var statusBuffer = Data()
     private var errorBuffer = Data()
@@ -275,6 +276,38 @@ final class ProtectionService {
         cleanupRetryCompletion = nil
         cleanupOnly = false
         completion?(succeeded, message)
+    }
+
+    var relocationControlIsHealthy: Bool {
+        guard hasManagedProcess else { return true }
+        return canReceiveControl && state != .starting && state != .stopping
+    }
+
+    func beginRelocationSuppression(
+        _ control: BlackoutRelocationControl,
+        completion: @escaping (Bool, String?) -> Void
+    ) {
+        guard let process, process.isRunning, canReceiveControl, state != .stopping,
+              let lifetimeWriteHandle else {
+            completion(false, "The managed blackout helper is not ready to acknowledge window relocation suppression.")
+            return
+        }
+        pendingRelocationAcknowledgements[control.token] = completion
+        do {
+            try Self.writeRelocationControl(control, to: lifetimeWriteHandle)
+        } catch {
+            pendingRelocationAcknowledgements.removeValue(forKey: control.token)?(false, error.localizedDescription)
+        }
+    }
+
+    func cancelRelocationSuppressionAcknowledgement(for token: UUID) {
+        pendingRelocationAcknowledgements.removeValue(forKey: token)
+    }
+
+    func endRelocationSuppression(_ control: BlackoutRelocationControl) {
+        guard let process, process.isRunning, canReceiveControl, state != .stopping,
+              let lifetimeWriteHandle else { return }
+        try? Self.writeRelocationControl(control, to: lifetimeWriteHandle)
     }
 
     func disableForDisplayHide(completion: @escaping (Bool, String?) -> Void) {
@@ -556,33 +589,40 @@ final class ProtectionService {
             ) else {
                 continue
             }
-            let runtimeState = status.state
-            if runtimeState == .stopped {
-                cleanupResultObserved = status.cleanupSucceeded
-            }
             if state == .stopping {
+                if status.state == .stopped { cleanupResultObserved = status.cleanupSucceeded }
                 updateInheritedControlIntent(for: status, from: sourceProcess)
                 continue
             }
-            blackedOutDisplayIDs = Set(status.blackedOutDisplayIDs)
-            updateControlIntent(for: status)
-            if currentRunIsOneShot && (runtimeState == .blackedOut || runtimeState == .sleeping) {
-                reportOneShotInstalled(true)
-            }
-            switch runtimeState {
-            case .waiting: self.state = .waiting
-            case .waitingForInput: self.state = .waitingForInput
-            case .waitingForPlayback: self.state = .waitingForPlayback
-            case .blackedOut: self.state = .blackedOut
-            case .sleeping: self.state = .sleeping
-            case .stopped:
-                if self.state != .stopping {
-                    self.state = .stopping
-                }
-            }
-            if runtimeState == .waiting || runtimeState == .waitingForPlayback {
-                deliverPendingControl(to: sourceProcess)
-            }
+            applyRuntimeStatus(status, sourceProcess: sourceProcess)
+        }
+    }
+
+    func applyRuntimeStatus(_ status: BlackoutRuntimeStatus, sourceProcess: Process? = nil) {
+        if state == .stopping {
+            if status.state == .stopped { cleanupResultObserved = status.cleanupSucceeded }
+            return
+        }
+        let runtimeState = status.state
+        if runtimeState == .stopped { cleanupResultObserved = status.cleanupSucceeded }
+        blackedOutDisplayIDs = Set(status.blackedOutDisplayIDs)
+        for token in status.relocationAcknowledgements {
+            pendingRelocationAcknowledgements.removeValue(forKey: token)?(true, nil)
+        }
+        updateControlIntent(for: status)
+        if currentRunIsOneShot && (runtimeState == .blackedOut || runtimeState == .sleeping) {
+            reportOneShotInstalled(true)
+        }
+        switch runtimeState {
+        case .waiting: state = .waiting
+        case .waitingForInput: state = .waitingForInput
+        case .waitingForPlayback: state = .waitingForPlayback
+        case .blackedOut: state = .blackedOut
+        case .sleeping: state = .sleeping
+        case .stopped: state = .stopping
+        }
+        if (runtimeState == .waiting || runtimeState == .waitingForPlayback), let sourceProcess {
+            deliverPendingControl(to: sourceProcess)
         }
     }
 
@@ -696,6 +736,9 @@ final class ProtectionService {
         currentArguments = nil
         statusBuffer.removeAll(keepingCapacity: true)
         blackedOutDisplayIDs = []
+        let relocationWaiters = Array(pendingRelocationAcknowledgements.values)
+        pendingRelocationAcknowledgements.removeAll()
+        relocationWaiters.forEach { $0(false, "The managed blackout helper stopped before acknowledging relocation suppression.") }
         let windowOnlyOverlay = Self.isHardwareFreeHiddenMirrorOverlay(arguments: terminatedArguments)
         if cleanupOnly {
             let succeeded = cleanupResultObserved == true &&
@@ -874,11 +917,20 @@ final class ProtectionService {
         throw HelperError.notFound
     }
 
+    private static func writeRelocationControl(_ control: BlackoutRelocationControl, to handle: FileHandle) throws {
+        let payload = try JSONEncoder().encode(control).base64EncodedString()
+        try writeControlLine("relocation:\(payload)", to: handle)
+    }
+
     private static func writeControl(
         _ command: BlackoutControlCommand,
         to handle: FileHandle
     ) throws {
-        let data = Data((command.rawValue + "\n").utf8)
+        try writeControlLine(command.rawValue, to: handle)
+    }
+
+    private static func writeControlLine(_ command: String, to handle: FileHandle) throws {
+        let data = Data((command + "\n").utf8)
         let descriptor = handle.fileDescriptor
         guard descriptor >= 0 else { throw HelperError.notRunning }
 

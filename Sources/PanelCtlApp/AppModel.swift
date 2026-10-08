@@ -70,11 +70,21 @@ final class AppModel: ObservableObject {
             onStatusChange?()
         }
     }
-    @Published private(set) var displays: [DisplayRecord]
+    @Published private(set) var displays: [DisplayRecord] {
+        didSet {
+            if oldValue != displays { reconcileKeepWindowsOff(startPass: true) }
+        }
+    }
+    @Published private(set) var keepWindowsOffStatuses: [String: KeepWindowsOffStatus] = [:] {
+        didSet {
+            if oldValue != keepWindowsOffStatuses { onStatusChange?() }
+        }
+    }
     @Published private(set) var hidePreferences: DisplayHidePreferences {
         didSet {
             guard hidePreferences != oldValue else { return }
             saveHidePreferences()
+            reconcileKeepWindowsOff(startPass: true)
             onStatusChange?()
         }
     }
@@ -120,7 +130,11 @@ final class AppModel: ObservableObject {
             defaults.set(protectionQuiescenceFailure, forKey: Self.cleanupFailureKey)
         }
     }
-    @Published private(set) var displayLifecycleTransitioning = false
+    @Published private(set) var displayLifecycleTransitioning = false {
+        didSet {
+            if oldValue != displayLifecycleTransitioning { reconcileKeepWindowsOff(startPass: true) }
+        }
+    }
     /// When a display was last hidden or shown. A script request received
     /// before then waited behind that change, such as while the main thread
     /// switched displays.
@@ -148,6 +162,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var blackedOutDisplayIDs: Set<UInt32> = [] {
         didSet {
             if oldValue != blackedOutDisplayIDs {
+                reconcileKeepWindowsOff(startPass: true)
                 onStatusChange?()
             }
         }
@@ -177,6 +192,12 @@ final class AppModel: ObservableObject {
     private let defaults: UserDefaults
     private let windowMovePermission: WindowMovePermissionProviding
     private let windowMoveExecutor: WindowMoveExecuting
+    private let windowMoveUptime: () -> TimeInterval
+    private let mouseButtonPressed: () -> Bool
+    private var keepWindowsOffControllers: [String: KeepWindowsOffDisplayController] = [:]
+    private var keepWindowsOffTick: KeepWindowsOffTick?
+    private var isShuttingDown = false
+    private let keepWindowsOffScheduler: KeepWindowsOffScheduling
     private let displayProvider: () -> [DisplayRecord]
     private let now: () -> Date
     private let idleSecondsProvider: () -> TimeInterval?
@@ -252,12 +273,22 @@ final class AppModel: ObservableObject {
         windowMoveExecutor: WindowMoveExecuting? = nil,
         disconnectController: DisplayDisconnectController = DisplayDisconnectController(),
         disconnectExecutable: @escaping @MainActor () throws -> URL = ProtectionService.helperExecutableURL,
-        displayWakeSettleDelay: TimeInterval = 1
+        displayWakeSettleDelay: TimeInterval = 1,
+        windowMoveUptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        keepWindowsOffScheduler: KeepWindowsOffScheduling? = nil,
+        mouseButtonPressed: @escaping () -> Bool = {
+            CGEventSource.buttonState(.combinedSessionState, button: .left) ||
+                CGEventSource.buttonState(.combinedSessionState, button: .right) ||
+                CGEventSource.buttonState(.combinedSessionState, button: .center)
+        }
     ) {
         self.defaults = defaults
         let permissionProvider = windowMovePermission ?? NoWindowMovePermission()
         self.windowMovePermission = permissionProvider
         self.windowMoveExecutor = windowMoveExecutor ?? AccessibilityWindowMover(permission: permissionProvider)
+        self.windowMoveUptime = windowMoveUptime
+        self.keepWindowsOffScheduler = keepWindowsOffScheduler ?? MainRunLoopKeepWindowsOffScheduler()
+        self.mouseButtonPressed = mouseButtonPressed
         self.windowMovePermissionState = permissionProvider.state()
         self.disconnectController = disconnectController
         self.disconnectExecutable = disconnectExecutable
@@ -382,6 +413,7 @@ final class AppModel: ObservableObject {
         }
         reconcileProtection()
         startCountdownTimer()
+        reconcileKeepWindowsOff(startPass: true)
     }
 
     var activeDisplays: [DisplayRecord] {
@@ -894,6 +926,7 @@ final class AppModel: ObservableObject {
 
     func refreshWindowMovePermissionState() {
         windowMovePermissionState = windowMovePermission.state()
+        reconcileKeepWindowsOff(startPass: true)
     }
 
     /// This is the sole permission-prompt call site and is wired only to an explicit Settings button.
@@ -1929,6 +1962,7 @@ final class AppModel: ObservableObject {
     private func hiddenDisplaysChanged() {
         lastHideOrShowFinished = .now
         manualActivityDate = now()
+        reconcileKeepWindowsOff(startPass: true)
         if !protectionQuiescencePending { reconcileProtection(restartWatcher: true) }
         onStatusChange?()
     }
@@ -2313,6 +2347,365 @@ final class AppModel: ObservableObject {
         clearFailedResult(uuid)
     }
 
+    func setKeepWindowsOffEnabled(_ enabled: Bool, for targetUUID: String) {
+        if !enabled, hidePreferences.configurations.values.contains(where: {
+            $0.target.uuid.caseInsensitiveCompare(targetUUID) == .orderedSame && $0.keepWindowsOff != nil
+        }) {
+            var updated = hidePreferences
+            for key in Array(updated.configurations.keys) {
+                guard var configuration = updated.configurations[key],
+                      configuration.target.uuid.caseInsensitiveCompare(targetUUID) == .orderedSame else { continue }
+                configuration.keepWindowsOff = nil
+                updated.configurations[key] = configuration
+            }
+            hidePreferences = updated
+            return
+        }
+        guard !displayLifecycleTransitioning else { return }
+        let candidates = displays.filter { $0.uuid?.caseInsensitiveCompare(targetUUID) == .orderedSame }
+        guard candidates.count == 1, let display = candidates.first, let uuid = display.uuid,
+              display.active, display.online, !display.asleep, !isDisplayMirrored(display.id) else { return }
+        var updated = hidePreferences
+        var configuration = updated[uuid] ?? DisplayHideConfiguration(target: DisplayIdentitySnapshot(display))
+        guard matches(configuration.target, display) else { return }
+        if enabled {
+            if configuration.keepWindowsOff == nil { configuration.keepWindowsOff = MoveWindowsConfiguration() }
+        } else {
+            configuration.keepWindowsOff = nil
+        }
+        updated[uuid] = configuration
+        hidePreferences = updated
+    }
+
+    func windowMoveDestinationChoices(for sourceUUID: String) -> [DisplayRecord] {
+        let coverage = coveredHiddenDisplayIDs.union(blackedOutDisplayIDs)
+        let removed = Set(unresolvedHandoffRemovals.map { $0.target.uuid.lowercased() })
+        let mirrored = Set(displays.filter { isDisplayMirrored($0.id) }.map(\.id))
+        return displays.filter { display in
+            guard let uuid = display.uuid, UUID(uuidString: uuid) != nil,
+                  uuid.caseInsensitiveCompare(sourceUUID) != .orderedSame,
+                  displays.filter({ $0.uuid?.caseInsensitiveCompare(uuid) == .orderedSame }).count == 1 else { return false }
+            return display.active && display.online && !display.asleep && !coverage.contains(display.id) &&
+                !removed.contains(uuid.lowercased()) && !mirrored.contains(display.id)
+        }.sorted { ($0.uuid ?? "").lowercased() < ($1.uuid ?? "").lowercased() }
+    }
+
+    func setKeepWindowsOffDestination(_ destination: MoveWindowsDestination, for targetUUID: String) {
+        guard !displayLifecycleTransitioning else { return }
+        let candidates = displays.filter { $0.uuid?.caseInsensitiveCompare(targetUUID) == .orderedSame }
+        guard candidates.count == 1, let display = candidates.first, let uuid = display.uuid else { return }
+        var updated = hidePreferences
+        var configuration = updated[uuid] ?? DisplayHideConfiguration(target: DisplayIdentitySnapshot(display))
+        guard matches(configuration.target, display), var keepWindowsOff = configuration.keepWindowsOff else { return }
+        if case .display(let reference) = destination {
+            let destinationMatches = displays.filter { $0.uuid?.caseInsensitiveCompare(reference.uuid) == .orderedSame }
+            guard destinationMatches.count == 1, let destinationDisplay = destinationMatches.first,
+                  matches(reference, destinationDisplay), destinationDisplay.id != display.id else { return }
+        }
+        keepWindowsOff.destination = destination
+        configuration.keepWindowsOff = keepWindowsOff
+        updated[uuid] = configuration
+        hidePreferences = updated
+    }
+
+    private func reconcileKeepWindowsOff(startPass: Bool) {
+        guard !isShuttingDown else { return }
+        var groups: [String: [DisplayHideConfiguration]] = [:]
+        for configuration in hidePreferences.configurations.values {
+            groups[configuration.target.uuid.lowercased(), default: []].append(configuration)
+        }
+        var configured: [String: DisplayHideConfiguration] = [:]
+        var ambiguousConfigurations = Set<String>()
+        for (key, values) in groups where values.contains(where: { $0.keepWindowsOff != nil }) {
+            guard let optedIn = values.first(where: { $0.keepWindowsOff != nil }) else { continue }
+            configured[key] = optedIn
+            if values.count > 1 { ambiguousConfigurations.insert(key) }
+        }
+        for key in Array(keepWindowsOffControllers.keys) where configured[key] == nil {
+            keepWindowsOffControllers.removeValue(forKey: key)?.cancel()
+            keepWindowsOffStatuses[key] = KeepWindowsOffStatus(state: .off)
+        }
+        for (key, configuration) in configured {
+            let controller = keepWindowsOffControllers[key] ?? KeepWindowsOffDisplayController(uuid: key, now: windowMoveUptime)
+            keepWindowsOffControllers[key] = controller
+            if controller.moveConfiguration != configuration.keepWindowsOff {
+                controller.cancel()
+                controller.moveConfiguration = configuration.keepWindowsOff
+            }
+            let previous = controller.status
+            if ambiguousConfigurations.contains(key) {
+                let reason = "Saved settings contain conflicting identities for this display. Resolve the duplicate settings before moving windows."
+                if previous.state != KeepWindowsOffStatus.State.paused(reason) { controller.cancel() }
+                let paused = KeepWindowsOffStatus(state: .paused(reason), lastMoved: previous.lastMoved, lastFailed: previous.lastFailed)
+                controller.update(paused)
+                keepWindowsOffStatuses[key] = paused
+                continue
+            }
+            if let reason = keepWindowsOffPauseReason(for: configuration) {
+                if previous.state != KeepWindowsOffStatus.State.paused(reason) { controller.cancel() }
+                let paused = KeepWindowsOffStatus(state: .paused(reason), lastMoved: previous.lastMoved, lastFailed: previous.lastFailed)
+                controller.update(paused)
+                keepWindowsOffStatuses[key] = paused
+                continue
+            }
+            guard let source = currentDisplay(matching: configuration.target) else {
+                let reason = "The exact source display is unavailable or ambiguous. Reconnect that display; PanelCtl will not guess its identity."
+                if previous.state != KeepWindowsOffStatus.State.paused(reason) { controller.cancel() }
+                let paused = KeepWindowsOffStatus(state: .paused(reason), lastMoved: previous.lastMoved, lastFailed: previous.lastFailed)
+                controller.update(paused)
+                keepWindowsOffStatuses[key] = paused
+                continue
+            }
+            if isDisplayCovered(source) {
+                if previous.state != KeepWindowsOffStatus.State.enforcing { controller.beginEnforcementSession() }
+                let enforcing = KeepWindowsOffStatus(state: .enforcing, lastMoved: previous.lastMoved, lastFailed: previous.lastFailed)
+                controller.update(enforcing)
+                keepWindowsOffStatuses[key] = enforcing
+                if startPass { startKeepWindowsOffPass(controller, source: source, configuration: configuration) }
+            } else {
+                if previous.state == KeepWindowsOffStatus.State.enforcing { controller.cancel() }
+                let armed = KeepWindowsOffStatus(state: .armed, lastMoved: previous.lastMoved, lastFailed: previous.lastFailed)
+                controller.update(armed)
+                keepWindowsOffStatuses[key] = armed
+            }
+        }
+        if configured.isEmpty {
+            keepWindowsOffTick?.cancel()
+            keepWindowsOffTick = nil
+        } else if keepWindowsOffTick == nil {
+            keepWindowsOffTick = keepWindowsOffScheduler.scheduleRepeating(every: 1) { [weak self] in
+                self?.tickKeepWindowsOff()
+            }
+        }
+        if !keepWindowsOffControllers.values.contains(where: { $0.status.state == .enforcing || $0.task != nil }) {
+            windowMoveExecutor.releaseWindowIdentities()
+        }
+    }
+
+    private func keepWindowsOffPauseReason(for configuration: DisplayHideConfiguration) -> String? {
+        if displayLifecycleTransitioning { return "Displays are sleeping or changing." }
+        if handoffInspectionFailure != nil || displayRecoveryProblem != nil || handoffStatus?.hasUnresolvedJournal == true {
+            return "Display recovery needs attention. Resolve it before moving windows."
+        }
+        if protectionQuiescencePending || protectionQuiescenceFailure != nil || hideOperation.isBusy {
+            return "A display recovery or blackout transition is in progress."
+        }
+        if disconnectAutomationPaused || disconnectLease != nil || disconnectStatus?.resolved == false || disconnectInspectionFailure != nil {
+            return "Full disconnect or its recovery is active."
+        }
+        if protectionCoordinator.hasUncertainBlackoutCoverage {
+            return "Blackout helper coverage is uncertain. Wait for helper status to settle."
+        }
+        guard let source = currentDisplay(matching: configuration.target) else {
+            return "The exact source display is unavailable or ambiguous. Reconnect that display; PanelCtl will not guess its identity."
+        }
+        guard source.active, source.online, !source.asleep, !isDisplayMirrored(source.id), !isRemovedDisplay(source.uuid) else {
+            return "The exact source display is unavailable, mirrored or removed from the desktop."
+        }
+        if let reason = windowMovePermission.state().reason { return windowMoveReasonText(reason) }
+        let moveConfiguration = configuration.keepWindowsOff ?? MoveWindowsConfiguration()
+        let request = makeWindowMovePlan(source: DisplayIdentitySnapshot(source), configuration: moveConfiguration)
+        switch WindowMoveDisplaySelector.select(
+            configuration: moveConfiguration, sourceUUID: source.uuid ?? "",
+            displays: displays, coveredDisplayIDs: request.coveredDisplayIDs,
+            removedDisplayUUIDs: request.removedDisplayUUIDs, mirroredDisplayIDs: request.mirroredDisplayIDs
+        ) {
+        case .success: return nil
+        case .failure(let reason): return windowMoveReasonText(reason)
+        }
+    }
+
+    private func currentDisplay(matching identity: DisplayIdentityReference) -> DisplayRecord? {
+        let candidates = displays.filter { $0.uuid?.caseInsensitiveCompare(identity.uuid) == .orderedSame }
+        guard candidates.count == 1, let display = candidates.first, matches(identity, display) else { return nil }
+        return display
+    }
+
+    private func isDisplayCovered(_ display: DisplayRecord) -> Bool {
+        coveredHiddenDisplayIDs.union(blackedOutDisplayIDs).contains(display.id)
+    }
+
+    private func tickKeepWindowsOff() {
+        guard !isShuttingDown else { return }
+        refreshWindowMovePermissionState()
+        reconcileKeepWindowsOff(startPass: true)
+    }
+
+    private func startKeepWindowsOffPass(
+        _ controller: KeepWindowsOffDisplayController,
+        source: DisplayRecord,
+        configuration: DisplayHideConfiguration
+    ) {
+        guard !isShuttingDown, controller.task == nil, let moveConfiguration = configuration.keepWindowsOff,
+              let sourceUUID = source.uuid else { return }
+        let request = makeWindowMovePlan(source: DisplayIdentitySnapshot(source), configuration: moveConfiguration)
+        let selected: DisplayRecord
+        switch WindowMoveDisplaySelector.select(
+            configuration: moveConfiguration, sourceUUID: sourceUUID, displays: displays,
+            coveredDisplayIDs: request.coveredDisplayIDs,
+            removedDisplayUUIDs: request.removedDisplayUUIDs, mirroredDisplayIDs: request.mirroredDisplayIDs
+        ) {
+        case .success(let value): selected = value
+        case .failure(let reason):
+            let previous = controller.status
+            let paused = KeepWindowsOffStatus(state: .paused(windowMoveReasonText(reason)),
+                lastMoved: previous.lastMoved, lastFailed: previous.lastFailed)
+            controller.update(paused)
+            keepWindowsOffStatuses[controller.uuid] = paused
+            return
+        }
+        let baseline = displays
+        let generation = controller.generation
+        let token = UUID()
+        var suppressionStarted = false
+        var acknowledgedHelperGeneration: UInt64?
+        var attemptedWindowCount = 0
+        var uncertainRelocation = false
+        var relocatedWindows = Set<BlackoutRelocatedWindow>()
+        let passTask = Task { @MainActor [weak self, weak controller] in
+            guard let self, let controller else { return }
+            let result = await self.windowMoveExecutor.enforce(request, didObserve: { windows in
+                guard controller.generation == generation else { return }
+                controller.observe(windows)
+            }, shouldAttempt: { key, frame in
+                guard controller.generation == generation, !Task.isCancelled,
+                      attemptedWindowCount < KeepWindowsOffDisplayController.maximumWritesPerPass else { return false }
+                guard controller.shouldAttempt(key, frame: frame, mouseButtonPressed: self.mouseButtonPressed()) else { return false }
+                attemptedWindowCount += 1
+                return true
+            }, willWrite: { _, _ in
+                guard controller.generation == generation, !Task.isCancelled else { return .refused(.cancelled) }
+                guard let acknowledgedHelperGeneration,
+                      self.protectionCoordinator.relocationSuppressionIsCurrent(acknowledgedHelperGeneration) else {
+                    return .refused(.topologyChanged)
+                }
+                return self.validateKeepWindowsOffGate(request, baseline: baseline, destinationID: selected.id,
+                    sourceUUID: controller.uuid, generation: generation, controller: controller)
+            }, didFinish: { key, frame, result in
+                switch result {
+                case .verified:
+                    relocatedWindows.insert(BlackoutRelocatedWindow(processID: key.processID, frame: frame))
+                case .refused, .vanished:
+                    break
+                case .failed, .unverified, .timedOut, .partiallyApplied:
+                    uncertainRelocation = true
+                    relocatedWindows.insert(BlackoutRelocatedWindow(processID: key.processID, frame: frame))
+                    relocatedWindows.insert(BlackoutRelocatedWindow(processID: key.processID, frame: key.frame))
+                    if case .partiallyApplied = result {
+                        relocatedWindows.insert(BlackoutRelocatedWindow(
+                            processID: key.processID,
+                            frame: CGRect(origin: key.frame.origin, size: frame.size)
+                        ))
+                    }
+                }
+                guard controller.generation == generation else { return }
+                controller.didFinish(key, frame: frame, result: result)
+            }, validateBeforeWrite: {
+                guard controller.generation == generation, !Task.isCancelled else { return .refused(.cancelled) }
+                let gate = self.validateKeepWindowsOffGate(request, baseline: baseline, destinationID: selected.id,
+                    sourceUUID: controller.uuid, generation: generation, controller: controller)
+                guard gate == .allowed else { return gate }
+                suppressionStarted = true
+                let control = BlackoutRelocationControl(token: token, kind: .begin,
+                    displayIDs: [source.id, selected.id])
+                let acknowledgement = await self.protectionCoordinator.beginRelocationSuppression(control)
+                guard acknowledgement.0, let helperGeneration = acknowledgement.2 else {
+                    return .refused(.topologyChanged)
+                }
+                acknowledgedHelperGeneration = helperGeneration
+                guard self.protectionCoordinator.relocationSuppressionIsCurrent(helperGeneration) else {
+                    return .refused(.topologyChanged)
+                }
+                let gateAfterAcknowledgement = self.validateKeepWindowsOffGate(
+                    request, baseline: baseline, destinationID: selected.id,
+                    sourceUUID: controller.uuid, generation: generation, controller: controller
+                )
+                guard gateAfterAcknowledgement == .allowed,
+                      self.protectionCoordinator.relocationSuppressionIsCurrent(helperGeneration) else {
+                    return gateAfterAcknowledgement == .allowed ? .refused(.topologyChanged) : gateAfterAcknowledgement
+                }
+                return .allowed
+            })
+            if suppressionStarted {
+                self.protectionCoordinator.endRelocationSuppression(BlackoutRelocationControl(
+                    token: token, kind: .end, relocatedWindows: Array(relocatedWindows),
+                    uncertainDisplayIDs: uncertainRelocation ? [selected.id] : []))
+            }
+            guard controller.generation == generation else { return }
+            controller.finishPass()
+            let moved = result.moved
+            let failed = result.failed + result.appFailures
+            let next: KeepWindowsOffStatus
+            if let reason = result.refusalReason, reason != .noWindows, reason != .cancelled {
+                next = KeepWindowsOffStatus(state: .paused(windowMoveReasonText(reason)), lastMoved: moved, lastFailed: failed)
+            } else {
+                next = KeepWindowsOffStatus(state: .enforcing, lastMoved: moved, lastFailed: failed)
+            }
+            controller.update(next)
+            self.keepWindowsOffStatuses[controller.uuid] = next
+        }
+        controller.task = passTask
+        Task { @MainActor [weak controller] in
+            await passTask.value
+            guard controller?.generation == generation else { return }
+            controller?.task = nil
+        }
+    }
+
+    private func validateKeepWindowsOffGate(
+        _ request: WindowMovePlanRequest,
+        baseline: [DisplayRecord],
+        destinationID: UInt32,
+        sourceUUID: String,
+        generation: UInt64,
+        controller: KeepWindowsOffDisplayController
+    ) -> WindowMoveGate {
+        guard !isShuttingDown, controller.generation == generation else { return .refused(.cancelled) }
+        guard controller.moveConfiguration == request.configuration,
+              let savedConfiguration = hidePreferences[sourceUUID],
+              savedConfiguration.keepWindowsOff == request.configuration else { return .refused(.cancelled) }
+        guard !displayLifecycleTransitioning, displayProvider() == baseline else { return .refused(.topologyChanged) }
+        if protectionQuiescencePending || protectionQuiescenceFailure != nil || hideOperation.isBusy ||
+            disconnectAutomationPaused || disconnectLease != nil || disconnectStatus?.resolved == false ||
+            disconnectInspectionFailure != nil || protectionCoordinator.hasUncertainBlackoutCoverage {
+            return .refused(.topologyChanged)
+        }
+        refreshHandoffStatus()
+        if handoffInspectionFailure != nil || displayRecoveryProblem != nil || handoffStatus?.hasUnresolvedJournal == true {
+            return .refused(.recoveryRequired)
+        }
+        guard let coveredSource = displays.first(where: { $0.uuid?.caseInsensitiveCompare(sourceUUID) == .orderedSame }),
+              isDisplayCovered(coveredSource) else { return .refused(.cancelled) }
+        if let reason = windowMovePermission.state().reason { return .refused(reason) }
+        let sourceMatches = displays.filter { $0.uuid?.caseInsensitiveCompare(request.source.uuid) == .orderedSame }
+        guard sourceMatches.count == 1, let source = sourceMatches.first,
+              matches(configurationIdentity(for: sourceUUID), source), source.active, source.online, !source.asleep,
+              !isDisplayMirrored(source.id), !isRemovedDisplay(source.uuid) else {
+            return .refused(sourceMatches.isEmpty ? .sourceUnavailable : .identityAmbiguous)
+        }
+        let fresh = makeWindowMovePlan(source: request.source, configuration: request.configuration, displays: displays)
+        switch WindowMoveDisplaySelector.select(configuration: request.configuration, sourceUUID: sourceUUID,
+            displays: displays, coveredDisplayIDs: fresh.coveredDisplayIDs,
+            removedDisplayUUIDs: fresh.removedDisplayUUIDs, mirroredDisplayIDs: fresh.mirroredDisplayIDs) {
+        case .failure(let reason): return .refused(reason)
+        case .success(let destination):
+            guard destination.id == destinationID else { return .refused(.topologyChanged) }
+        }
+        return .allowed
+    }
+
+    private func configurationIdentity(for uuid: String) -> DisplayIdentityReference {
+        hidePreferences[uuid]?.target ?? DisplayIdentityReference(uuid: uuid, name: nil, vendor: 0, model: 0, serial: 0)
+    }
+
+    func stopKeepWindowsOff() {
+        keepWindowsOffTick?.cancel()
+        keepWindowsOffTick = nil
+        for controller in keepWindowsOffControllers.values { controller.cancel() }
+        keepWindowsOffControllers.removeAll()
+        windowMoveExecutor.releaseWindowIdentities()
+    }
+
     func setHideSource(_ sourceUUID: String?, for targetUUID: String) {
         guard !hideConfigurationFrozen(for: targetUUID),
               let target = displays.first(where: {
@@ -2453,7 +2846,8 @@ final class AppModel: ObservableObject {
                 observedState: state,
                 operation: tile.status == .hiding ? "hiding" : tile.status == .showing ? "showing" : "idle",
                 recoveryNeeded: recoveryNeeded,
-                lastInputOutcome: displayResults[tile.id]?.inputOutcome
+                lastInputOutcome: displayResults[tile.id]?.inputOutcome,
+                windowEnforcement: (keepWindowsOffStatuses[tile.id] ?? KeepWindowsOffStatus(state: .off)).controlStatus
             )
         }
     }
@@ -4237,6 +4631,8 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown(completion: @escaping () -> Void) {
+        isShuttingDown = true
+        stopKeepWindowsOff()
         snoozeTimer?.invalidate()
         protectionCoordinator.shutdown(completion: completion)
     }

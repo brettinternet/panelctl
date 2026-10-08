@@ -21,9 +21,38 @@ final class AccessibilityWindowMover: WindowMoveExecuting {
     }
 
     @MainActor
+    func releaseWindowIdentities() {
+        let platform = self.platform
+        worker.async { platform.releaseWindowIdentities() }
+    }
+
+    @MainActor
     func move(
         _ request: WindowMovePlanRequest,
-        validateBeforeWrite: @escaping @MainActor @Sendable () -> WindowMoveGate
+        validateBeforeWrite: @escaping @MainActor @Sendable () async -> WindowMoveGate
+    ) async -> AppControlWindowMoveResult {
+        await execute(request, hooks: nil, validateBeforeWrite: validateBeforeWrite)
+    }
+
+    @MainActor
+    func enforce(
+        _ request: WindowMovePlanRequest,
+        didObserve: @escaping @MainActor @Sendable ([WindowMoveObservedWindow]) -> Void,
+        shouldAttempt: @escaping @MainActor @Sendable (WindowMoveWindowKey, CGRect) -> Bool,
+        willWrite: @escaping @MainActor @Sendable (WindowMoveWindowKey, CGRect) async -> WindowMoveGate,
+        didFinish: @escaping @MainActor @Sendable (WindowMoveWindowKey, CGRect, WindowMoveWriteResult) -> Void,
+        validateBeforeWrite: @escaping @MainActor @Sendable () async -> WindowMoveGate
+    ) async -> AppControlWindowMoveResult {
+        let hooks = WindowMoveEnforcementHooks(didObserve: didObserve, shouldAttempt: shouldAttempt,
+            willWrite: willWrite, didFinish: didFinish)
+        return await execute(request, hooks: hooks, validateBeforeWrite: validateBeforeWrite)
+    }
+
+    @MainActor
+    private func execute(
+        _ request: WindowMovePlanRequest,
+        hooks: WindowMoveEnforcementHooks?,
+        validateBeforeWrite: @escaping @MainActor @Sendable () async -> WindowMoveGate
     ) async -> AppControlWindowMoveResult {
         let permissionState = permission.state()
         guard permissionState == .granted else {
@@ -34,7 +63,7 @@ final class AccessibilityWindowMover: WindowMoveExecuting {
             let platform = self.platform
             worker.async {
                 let result = Self.perform(request, platform: platform, visibleFrames: visibleFrames,
-                                          validateBeforeWrite: validateBeforeWrite)
+                                          hooks: hooks, validateBeforeWrite: validateBeforeWrite)
                 continuation.resume(returning: result)
             }
         }
@@ -44,7 +73,8 @@ final class AccessibilityWindowMover: WindowMoveExecuting {
         _ request: WindowMovePlanRequest,
         platform: WindowMovePlatform,
         visibleFrames: [UInt32: CGRect],
-        validateBeforeWrite: @escaping @MainActor @Sendable () -> WindowMoveGate
+        hooks: WindowMoveEnforcementHooks?,
+        validateBeforeWrite: @escaping @MainActor @Sendable () async -> WindowMoveGate
     ) -> AppControlWindowMoveResult {
         var windowReasons: [AppControlWindowMoveReason: Int] = [:]
         var appReasons: [AppControlWindowMoveReason: Int] = [:]
@@ -95,6 +125,17 @@ final class AccessibilityWindowMover: WindowMoveExecuting {
                 continue
             }
             let windows = enumeration.windows
+            if let hooks {
+                let observed = windows.compactMap { window -> WindowMoveObservedWindow? in
+                    guard WindowMoveGeometry.valid(window.frame) else { return nil }
+                    let key = WindowMoveWindowKey(processID: window.processID,
+                        accessibilityElementID: window.handle, frame: window.frame)
+                    let attributed = WindowMoveGeometry.attribution(of: window.frame, to: displays)
+                    return WindowMoveObservedWindow(key: key, frame: window.frame,
+                        isOnSourceDisplay: attributed?.id == source.id)
+                }
+                performWindowMoveCallback { hooks.didObserve(observed) }
+            }
             let initialMatches = visibilityMatches(windows: windows, platform: platform)
             var stopApplication = false
             windowLoop: for (index, window) in windows.enumerated() {
@@ -204,9 +245,21 @@ final class AccessibilityWindowMover: WindowMoveExecuting {
                     windowReasons[.nonmovable, default: 0] += 1
                     continue
                 }
-                switch platform.setFrame(targetFrame, window: refreshed, timeout: elementTimeout,
-                                         budget: remainingBudget(since: appStarted),
-                                         validateBeforeWrite: validateBeforeWrite) {
+                let windowKey = WindowMoveWindowKey(processID: refreshed.processID,
+                    accessibilityElementID: refreshed.handle, frame: refreshed.frame)
+                if let hooks, !waitForWindowMovePolicy({ hooks.shouldAttempt(windowKey, refreshed.frame) }) { continue }
+                let gate: @MainActor @Sendable () async -> WindowMoveGate = {
+                    let initial = await validateBeforeWrite()
+                    guard initial == .allowed else { return initial }
+                    guard let hooks else { return .allowed }
+                    return await hooks.willWrite(windowKey, targetFrame)
+                }
+                let writeResult = platform.setFrame(targetFrame, window: refreshed, timeout: elementTimeout,
+                    budget: remainingBudget(since: appStarted), validateBeforeWrite: gate)
+                if let hooks {
+                    performWindowMoveCallback { hooks.didFinish(windowKey, targetFrame, writeResult) }
+                }
+                switch writeResult {
                 case .verified:
                     moved += 1
                 case .failed:
@@ -291,6 +344,8 @@ final class AccessibilityWindowMover: WindowMoveExecuting {
 final class SystemWindowMovePlatform: WindowMovePlatform, @unchecked Sendable {
     private var elements: [UUID: AXUIElement] = [:]
     private var handlesByProcess: [Int32: Set<UUID>] = [:]
+    // AX references are retained only to keep the opaque element identity stable across scans.
+    private var stableElementsByProcess: [Int32: [UUID: AXUIElement]] = [:]
     private var appElements: [Int32: AXUIElement] = [:]
     private var appStartedAt: [Int32: TimeInterval] = [:]
     private let appBudget: TimeInterval = 1
@@ -300,13 +355,26 @@ final class SystemWindowMovePlatform: WindowMovePlatform, @unchecked Sendable {
         "com.brettinternet.panelctl.cli"
     ]
 
+    func releaseWindowIdentities() {
+        stableElementsByProcess.removeAll()
+        elements.removeAll()
+        handlesByProcess.removeAll()
+        appElements.removeAll()
+        appStartedAt.removeAll()
+    }
+
     func processIDs() -> [Int32] {
-        NSWorkspace.shared.runningApplications.compactMap { application in
+        let identifiers: [Int32] = NSWorkspace.shared.runningApplications.compactMap { application in
             guard application.activationPolicy == .regular,
                   application.processIdentifier != ProcessInfo.processInfo.processIdentifier,
                   !excludedBundleIdentifiers.contains(application.bundleIdentifier ?? "") else { return nil }
             return application.processIdentifier
         }
+        let running = Set(identifiers)
+        for processID in Array(stableElementsByProcess.keys) where !running.contains(processID) {
+            stableElementsByProcess.removeValue(forKey: processID)
+        }
+        return identifiers
     }
 
     func visibleWindowSample() -> [WindowMoveCGEvidence]? {
@@ -339,6 +407,8 @@ final class SystemWindowMovePlatform: WindowMovePlatform, @unchecked Sendable {
         guard let children = value as? [AXUIElement] else {
             return WindowMoveApplicationEnumeration(windows: [], failure: .enumerationFailed)
         }
+        let previousElements = stableElementsByProcess[processID] ?? [:]
+        var currentElements: [UUID: AXUIElement] = [:]
         var windows: [WindowMoveAXWindowState] = []
         for element in children {
             guard remainingBudget(processID) > 0 else {
@@ -347,7 +417,8 @@ final class SystemWindowMovePlatform: WindowMovePlatform, @unchecked Sendable {
             guard setTimeout(timeout, on: element, processID: processID) else {
                 return WindowMoveApplicationEnumeration(windows: windows, failure: .appTimeout)
             }
-            let handle = UUID()
+            let handle = previousElements.first(where: { CFEqual($0.value as CFTypeRef, element as CFTypeRef) })?.key ?? UUID()
+            currentElements[handle] = element
             switch readFrame(element, processID: processID, timeout: timeout) {
             case .failure(.appTimeout):
                 return WindowMoveApplicationEnumeration(windows: windows, failure: .appTimeout)
@@ -394,6 +465,7 @@ final class SystemWindowMovePlatform: WindowMovePlatform, @unchecked Sendable {
                 ))
             }
         }
+        stableElementsByProcess[processID] = currentElements
         return WindowMoveApplicationEnumeration(windows: windows, failure: nil)
     }
 
@@ -428,14 +500,14 @@ final class SystemWindowMovePlatform: WindowMovePlatform, @unchecked Sendable {
     }
 
     func setFrame(_ frame: CGRect, window: WindowMoveAXWindowState, timeout: TimeInterval, budget: TimeInterval,
-                  validateBeforeWrite: @escaping @MainActor @Sendable () -> WindowMoveGate) -> WindowMoveWriteResult {
+                  validateBeforeWrite: @escaping @MainActor @Sendable () async -> WindowMoveGate) -> WindowMoveWriteResult {
         guard budget > 0, remainingBudget(window.processID) > 0, let element = elements[window.handle] else {
             return remainingBudget(window.processID) <= 0 ? .timedOut : .vanished
         }
         var sizeWasWritten = false
         if frame.size != window.frame.size {
             guard window.canSetSize else { return .failed }
-            if case .refused(let reason) = waitForWindowMoveGate(validateBeforeWrite) { return .refused(reason) }
+            if case .refused(let reason) = waitForWindowMoveGateAsync(validateBeforeWrite) { return .refused(reason) }
             guard setTimeout(timeout, on: element, processID: window.processID) else { return .timedOut }
             var size = frame.size
             guard let sizeValue = AXValueCreate(.cgSize, &size) else { return .failed }
@@ -444,7 +516,7 @@ final class SystemWindowMovePlatform: WindowMovePlatform, @unchecked Sendable {
             guard result == .success else { return .failed }
             sizeWasWritten = true
         }
-        if case .refused(let reason) = waitForWindowMoveGate(validateBeforeWrite) {
+        if case .refused(let reason) = waitForWindowMoveGateAsync(validateBeforeWrite) {
             return sizeWasWritten ? .partiallyApplied(reason) : .refused(reason)
         }
         guard setTimeout(timeout, on: element, processID: window.processID) else { return .timedOut }
@@ -465,7 +537,6 @@ final class SystemWindowMovePlatform: WindowMovePlatform, @unchecked Sendable {
     func finishApplication(processID: Int32) {
         appElements[processID] = nil
         appStartedAt[processID] = nil
-        // AX references are pass-scoped; retaining them would create a persistent window registry.
         for handle in handlesByProcess.removeValue(forKey: processID) ?? [] { elements[handle] = nil }
     }
 

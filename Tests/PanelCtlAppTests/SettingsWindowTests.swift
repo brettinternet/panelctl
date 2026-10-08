@@ -440,6 +440,56 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(model.windowMovePermissionState, .missing, "The editor does not request Accessibility")
     }
 
+    func testKeepWindowsOffSettingsToggleDestinationAndStatusWithoutMoving() throws {
+        try requireInteractiveUI()
+        let (model, defaults) = try makeModel(windowMovePermission: SettingsGrantedWindowMovePermission())
+        defer {
+            model.stopKeepWindowsOff()
+            defaults.removePersistentDomain(forName: Self.suiteName)
+        }
+        let controller = SettingsWindowController(model: model)
+        controller.present()
+        controller.selectDisplay(uuid: Self.sideUUID)
+        let window = try XCTUnwrap(controller.window)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 680, height: 1000))
+        let content = try XCTUnwrap(window.contentView)
+        func keepOffSwitch() -> NSSwitch? {
+            // Experimental removal is off, so keep-off is the only Displays switch.
+            let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
+            return switches.count == 1 ? switches[0] : nil
+        }
+        spin { content.layoutSubtreeIfNeeded(); return keepOffSwitch() != nil }
+        let toggle = try XCTUnwrap(keepOffSwitch())
+        XCTAssertEqual(toggle.state, .off)
+        toggle.state = .on
+        XCTAssertTrue(toggle.sendAction(toggle.action, to: toggle.target))
+        spin { model.hideConfiguration(for: Self.sideUUID)?.keepWindowsOff != nil }
+        XCTAssertEqual(model.hideConfiguration(for: Self.sideUUID)?.keepWindowsOff?.destination, .automatic)
+        XCTAssertEqual(model.keepWindowsOffStatuses[Self.sideUUID.lowercased()]?.state, .armed)
+        if let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] {
+            try writeSnapshot(of: window, to: output, name: "keep-windows-off-automatic")
+        }
+        // SwiftUI's menu Picker is not an NSPopUpButton. Exercise its model binding
+        // and capture the rendered saved choice, without opening a native AX client.
+        model.setKeepWindowsOffDestination(.display(DisplayIdentityReference(displays[0])), for: Self.sideUUID)
+        if let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] {
+            try writeSnapshot(of: window, to: output, name: "keep-windows-off-specific")
+        }
+        XCTAssertEqual(model.hideConfiguration(for: Self.sideUUID)?.keepWindowsOff?.destination,
+                       .display(DisplayIdentityReference(displays[0])))
+        let delegate = AppDelegate()
+        delegate.model = model
+        let menu = delegate.makeMenu()
+        XCTAssertTrue(menu.items.contains { $0.attributedTitle?.string.contains("Keep windows off: Armed") == true })
+        XCTAssertTrue(model.displayActionResults.isEmpty)
+        XCTAssertFalse(model.isBlackoutHidden(Self.sideUUID))
+        toggle.state = .off
+        XCTAssertTrue(toggle.sendAction(toggle.action, to: toggle.target))
+        spin { model.hideConfiguration(for: Self.sideUUID)?.keepWindowsOff == nil }
+        XCTAssertNil(model.hideConfiguration(for: Self.sideUUID)?.keepWindowsOff)
+    }
+
     func testDefaultDisplayActionEditorShowsMissingRemovalSetupAndNavigatesToSelectedDisplay() throws {
         try requireInteractiveUI()
         let app = NSApplication.shared
@@ -1678,13 +1728,12 @@ final class SettingsWindowTests: XCTestCase {
             content.layoutSubtreeIfNeeded()
             let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
             return model.experimentalFeaturesEnabled
-                ? switches.count == 1 && switches[0].state == expectedState
-                : switches.isEmpty
+                ? switches.count == 2 && switches[0].state == expectedState
+                : switches.count == 1
         }
-        // The Displays tab has only one switch. Wait for SwiftUI to apply the
-        // selection and binding instead of reading the initial default state.
+        // Hide precedes Window relocation; the latter is always present.
         let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
-        return switches.count == 1 ? switches[0] : nil
+        return model.experimentalFeaturesEnabled && switches.count == 2 ? switches[0] : nil
     }
 
     private var hiddenDisplays: [DisplayRecord] {
@@ -1729,6 +1778,7 @@ final class SettingsWindowTests: XCTestCase {
             DDCInputReading(displayID: $0.displayID, uuid: $0.uuid, current: 0x0F)
         },
         protectionCoordinator: ProtectionCoordinator? = nil,
+        windowMovePermission: WindowMovePermissionProviding? = nil,
         configure: (UserDefaults) throws -> Void = { _ in }
     ) throws -> (AppModel, UserDefaults) {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: Self.suiteName))
@@ -1751,7 +1801,8 @@ final class SettingsWindowTests: XCTestCase {
             // Black out never draws over a real screen in tests.
             coverDisplays: { _ in [] },
             quiesceProtection: { $0(true, nil) },
-            protectionCoordinator: protectionCoordinator
+            protectionCoordinator: protectionCoordinator,
+            windowMovePermission: windowMovePermission
         )
         return (model, defaults)
     }
@@ -1779,6 +1830,12 @@ final class SettingsWindowTests: XCTestCase {
             pixelHeight: portrait ? 1920 : 1080
         )
     }
+}
+
+@MainActor
+private final class SettingsGrantedWindowMovePermission: WindowMovePermissionProviding {
+    func state() -> WindowMovePermissionState { .granted }
+    func requestFromExplicitUserInteraction() { XCTFail("Settings fixture must never prompt") }
 }
 
 @MainActor

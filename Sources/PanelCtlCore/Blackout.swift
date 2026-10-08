@@ -80,20 +80,24 @@ public struct BlackoutRuntimeStatus: Codable, Equatable {
     public let state: BlackoutRuntimeState
     public let blackedOutDisplayIDs: [CGDirectDisplayID]
     public let cleanupSucceeded: Bool?
+    public let relocationAcknowledgements: [UUID]
     private enum CodingKeys: String, CodingKey {
         case state
         case blackedOutDisplayIDs
         case cleanupSucceeded
+        case relocationAcknowledgements
     }
 
     public init(
         state: BlackoutRuntimeState,
         blackedOutDisplayIDs: [CGDirectDisplayID],
-        cleanupSucceeded: Bool? = nil
+        cleanupSucceeded: Bool? = nil,
+        relocationAcknowledgements: [UUID] = []
     ) {
         self.state = state
         self.blackedOutDisplayIDs = Array(Set(blackedOutDisplayIDs)).sorted()
         self.cleanupSucceeded = cleanupSucceeded
+        self.relocationAcknowledgements = Array(Set(relocationAcknowledgements)).sorted { $0.uuidString < $1.uuidString }
     }
 
     public init(from decoder: Decoder) throws {
@@ -104,7 +108,65 @@ public struct BlackoutRuntimeStatus: Codable, Equatable {
                 [CGDirectDisplayID].self,
                 forKey: .blackedOutDisplayIDs
             ),
-            cleanupSucceeded: try values.decodeIfPresent(Bool.self, forKey: .cleanupSucceeded)
+            cleanupSucceeded: try values.decodeIfPresent(Bool.self, forKey: .cleanupSucceeded),
+            relocationAcknowledgements: try values.decodeIfPresent([UUID].self, forKey: .relocationAcknowledgements) ?? []
+        )
+    }
+}
+
+public struct BlackoutRelocatedWindow: Codable, Equatable, Hashable, Sendable {
+    public let processID: Int32
+    public let x: Double
+    public let y: Double
+    public let width: Double
+    public let height: Double
+
+    public init(processID: Int32, frame: CGRect) {
+        self.processID = processID
+        x = Double(frame.minX)
+        y = Double(frame.minY)
+        width = Double(frame.width)
+        height = Double(frame.height)
+    }
+
+    func matches(pid: Int32?, frame: CGRect) -> Bool {
+        guard processID == pid else { return false }
+        return abs(frame.minX - x) <= 1 && abs(frame.minY - y) <= 1 &&
+            abs(frame.width - width) <= 1 && abs(frame.height - height) <= 1
+    }
+}
+
+public enum BlackoutRelocationControlKind: String, Codable, Sendable {
+    case begin
+    case end
+}
+
+public struct BlackoutRelocationControl: Codable, Sendable {
+    private enum CodingKeys: String, CodingKey { case token, kind, displayIDs, relocatedWindows, uncertainDisplayIDs }
+
+    public let token: UUID
+    public let kind: BlackoutRelocationControlKind
+    public let displayIDs: [CGDirectDisplayID]
+    public let relocatedWindows: [BlackoutRelocatedWindow]
+    public let uncertainDisplayIDs: [CGDirectDisplayID]
+
+    public init(token: UUID, kind: BlackoutRelocationControlKind, displayIDs: [CGDirectDisplayID] = [],
+                relocatedWindows: [BlackoutRelocatedWindow] = [], uncertainDisplayIDs: [CGDirectDisplayID] = []) {
+        self.token = token
+        self.kind = kind
+        self.displayIDs = Array(Set(displayIDs)).sorted()
+        self.relocatedWindows = relocatedWindows
+        self.uncertainDisplayIDs = Array(Set(uncertainDisplayIDs)).sorted()
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            token: try values.decode(UUID.self, forKey: .token),
+            kind: try values.decode(BlackoutRelocationControlKind.self, forKey: .kind),
+            displayIDs: try values.decodeIfPresent([CGDirectDisplayID].self, forKey: .displayIDs) ?? [],
+            relocatedWindows: try values.decodeIfPresent([BlackoutRelocatedWindow].self, forKey: .relocatedWindows) ?? [],
+            uncertainDisplayIDs: try values.decodeIfPresent([CGDirectDisplayID].self, forKey: .uncertainDisplayIDs) ?? []
         )
     }
 }
@@ -433,7 +495,13 @@ public final class BlackoutController {
     private var runtimeState: BlackoutRuntimeState = .waiting
     private var lastStatus: BlackoutRuntimeStatus?
     private var blackoutEmptyDisplays = false
-    private var emptyDisplayPolicy = EmptyDisplayPolicy()
+    private(set) var emptyDisplayPolicy = EmptyDisplayPolicy()
+    private var relocationSuppressions: [UUID: Set<CGDirectDisplayID>] = [:]
+    private var relocationAcknowledgements = Set<UUID>()
+    private var relocationAcknowledgementOrder: [UUID] = []
+    private(set) var relocatedWindows = Set<BlackoutRelocatedWindow>()
+    static let maximumRelocatedWindows = 256
+    private static let maximumRelocationAcknowledgements = 64
     private var screenConfigurationGeneration: UInt64 = 0
     private var cachedEmptyDisplayContext: (
         generation: UInt64,
@@ -630,6 +698,39 @@ public final class BlackoutController {
                 }
             }
         }
+    }
+
+    public func handleRelocationControl(_ control: BlackoutRelocationControl) {
+        guard !stopRequested else { return }
+        switch control.kind {
+        case .begin:
+            relocationSuppressions[control.token] = Set(control.displayIDs)
+        case .end:
+            let suppressedDisplayIDs = relocationSuppressions.removeValue(forKey: control.token) ?? Set(control.displayIDs)
+            emptyDisplayPolicy.restoredCoveredDisplays(Set(control.uncertainDisplayIDs))
+            if !control.uncertainDisplayIDs.isEmpty {
+                emptyDisplayPolicy.windowRearmingIsUnverified = true
+            }
+            let combinedWindows = relocatedWindows.union(control.relocatedWindows)
+            if combinedWindows.count > Self.maximumRelocatedWindows {
+                // Missing provenance could misclassify PanelCtl's windows as real activity.
+                // Do not let the next window sample clear these or earlier latches:
+                // discarded provenance makes all window-only rearming unverified.
+                emptyDisplayPolicy.windowRearmingIsUnverified = true
+                emptyDisplayPolicy.restoredCoveredDisplays(suppressedDisplayIDs)
+                relocatedWindows.removeAll(keepingCapacity: false)
+            } else {
+                relocatedWindows = combinedWindows
+            }
+        }
+        if relocationAcknowledgements.insert(control.token).inserted {
+            relocationAcknowledgementOrder.append(control.token)
+            if relocationAcknowledgementOrder.count > Self.maximumRelocationAcknowledgements {
+                let expired = relocationAcknowledgementOrder.removeFirst()
+                relocationAcknowledgements.remove(expired)
+            }
+        }
+        emitStatus(force: true)
     }
 
     public func handleControl(_ command: BlackoutControlCommand) {
@@ -1132,12 +1233,24 @@ public final class BlackoutController {
         guard now >= emptyResolutionRetryAfter else { return }
         do {
             let context = try emptyDisplayContext(options: options)
+            let sample = occupancySource.sample()
+            if let sample {
+                relocatedWindows = Set(relocatedWindows.filter { relocated in
+                    sample.windows.contains { relocated.matches(pid: $0.ownerPID, frame: $0.frame) }
+                })
+            }
+            let suppressedIDs = relocationSuppressions.values.reduce(into: Set<CGDirectDisplayID>()) {
+                $0.formUnion($1)
+            }
             let desiredIDs = emptyDisplayPolicy.desiredDisplayIDs(
                 targets: context.targets,
                 activeDisplayBounds: context.activeDisplayBounds,
                 hiddenDisplayBounds: context.hiddenDisplayBounds,
-                sample: occupancySource.sample(),
-                uptime: now
+                sample: sample,
+                uptime: now,
+                relocationSuppressedDisplayIDs: suppressedIDs,
+                currentlyCoveredDisplayIDs: Set(windows.keys),
+                relocatedWindows: relocatedWindows
             )
             let desiredScreens = desiredIDs.compactMap { context.screensByID[$0] }
             guard desiredScreens.count == desiredIDs.count else {
@@ -1449,7 +1562,8 @@ public final class BlackoutController {
         let status = BlackoutRuntimeStatus(
             state: runtimeState,
             blackedOutDisplayIDs: Array(windows.keys),
-            cleanupSucceeded: runtimeState == .stopped ? cleanupSucceeded : nil
+            cleanupSucceeded: runtimeState == .stopped ? cleanupSucceeded : nil,
+            relocationAcknowledgements: Array(relocationAcknowledgements)
         )
         guard force || status != lastStatus else { return }
         lastStatus = status

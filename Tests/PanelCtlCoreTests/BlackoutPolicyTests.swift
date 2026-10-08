@@ -28,6 +28,130 @@ final class BlackoutPolicyTests: XCTestCase {
         XCTAssertTrue(policy.shouldBegin(idleSeconds: 60))
     }
 
+    func testRelocationControlIsAcknowledgedByHelperStatusWithoutChangingCoverage() {
+        var statuses: [BlackoutRuntimeStatus] = []
+        let controller = BlackoutController(statusHandler: { statuses.append($0) })
+        let token = UUID()
+        controller.handleRelocationControl(BlackoutRelocationControl(
+            token: token, kind: .begin, displayIDs: [2, 1]
+        ))
+        XCTAssertEqual(statuses.last?.relocationAcknowledgements, [token])
+        XCTAssertEqual(statuses.last?.blackedOutDisplayIDs, [], "suppression cannot request or extend blackout")
+
+        controller.handleRelocationControl(BlackoutRelocationControl(
+            token: token, kind: .end,
+            relocatedWindows: [BlackoutRelocatedWindow(processID: 9, frame: CGRect(x: 5, y: 6, width: 7, height: 8))]
+        ))
+        XCTAssertEqual(statuses.last?.relocationAcknowledgements, [token])
+        XCTAssertEqual(statuses.last?.blackedOutDisplayIDs, [])
+        let oldControl = Data("{\"token\":\"\(UUID().uuidString)\",\"kind\":\"begin\",\"displayIDs\":[1],\"relocatedWindows\":[]}".utf8)
+        XCTAssertEqual(try? JSONDecoder().decode(BlackoutRelocationControl.self, from: oldControl).uncertainDisplayIDs, [])
+    }
+
+    func testUncertainRelocationLatchesTheDestinationUntilIndependentOccupancy() {
+        let controller = BlackoutController()
+        let token = UUID()
+        let targetFrame = CGRect(x: 120, y: 20, width: 40, height: 30)
+        controller.handleRelocationControl(BlackoutRelocationControl(
+            token: token, kind: .begin, displayIDs: [1, 2]
+        ))
+        controller.handleRelocationControl(BlackoutRelocationControl(
+            token: token, kind: .end,
+            relocatedWindows: [BlackoutRelocatedWindow(processID: 77, frame: targetFrame)],
+            uncertainDisplayIDs: [2]
+        ))
+        XCTAssertTrue(controller.emptyDisplayPolicy.requiresOccupiedBeforeRearming.contains(2))
+        XCTAssertFalse(controller.emptyDisplayPolicy.requiresOccupiedBeforeRearming.contains(1))
+
+        var policy = controller.emptyDisplayPolicy
+        let destination = EmptyDisplayTarget(id: 2, bounds: CGRect(x: 100, y: 0, width: 100, height: 100))
+        let activeBounds = [CGRect(x: 0, y: 0, width: 100, height: 100), destination.bounds]
+        let moved = DisplayOccupancySample(pointerLocation: CGPoint(x: 50, y: 50), windows: [
+            DisplayOccupancyWindow(ownerPID: 77, frame: targetFrame)
+        ])
+        let relocated: Set<BlackoutRelocatedWindow> = [BlackoutRelocatedWindow(processID: 77, frame: targetFrame)]
+        XCTAssertEqual(policy.desiredDisplayIDs(targets: [destination], activeDisplayBounds: activeBounds,
+            sample: moved, uptime: 1, relocatedWindows: relocated), [])
+        XCTAssertEqual(policy.desiredDisplayIDs(targets: [destination], activeDisplayBounds: activeBounds,
+            sample: DisplayOccupancySample(pointerLocation: CGPoint(x: 50, y: 50), windowFrames: []), uptime: 2), [])
+        XCTAssertTrue(policy.requiresOccupiedBeforeRearming.contains(2), "disappearance alone cannot clear uncertainty")
+        // An app may apply a different frame than requested before readback times out.
+        let unverified = DisplayOccupancySample(pointerLocation: CGPoint(x: 50, y: 50), windows: [
+            DisplayOccupancyWindow(ownerPID: 77, frame: targetFrame.offsetBy(dx: 3, dy: 4))
+        ])
+        XCTAssertEqual(policy.desiredDisplayIDs(targets: [destination], activeDisplayBounds: activeBounds,
+            sample: unverified, uptime: 3, relocatedWindows: relocated), [])
+        XCTAssertTrue(policy.requiresOccupiedBeforeRearming.contains(2), "unknown geometry is not independent activity")
+        XCTAssertEqual(policy.desiredDisplayIDs(targets: [destination], activeDisplayBounds: activeBounds,
+            sample: DisplayOccupancySample(pointerLocation: CGPoint(x: 150, y: 50), windowFrames: []), uptime: 4), [])
+        XCTAssertFalse(policy.requiresOccupiedBeforeRearming.contains(2), "real pointer activity still rearms")
+    }
+
+    func testRelocationAcknowledgementsRetainNewestTokenAtCapacity() {
+        var statuses: [BlackoutRuntimeStatus] = []
+        let controller = BlackoutController(statusHandler: { statuses.append($0) })
+        let highTokens = (1...64).map { index in
+            UUID(uuidString: String(format: "f0000000-0000-0000-0000-%012d", index))!
+        }
+        for token in highTokens {
+            controller.handleRelocationControl(BlackoutRelocationControl(token: token, kind: .begin))
+        }
+        let newestLowToken = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        controller.handleRelocationControl(BlackoutRelocationControl(token: newestLowToken, kind: .begin))
+        XCTAssertEqual(statuses.last?.relocationAcknowledgements.count, 64)
+        XCTAssertTrue(statuses.last?.relocationAcknowledgements.contains(newestLowToken) == true)
+        XCTAssertFalse(statuses.last?.relocationAcknowledgements.contains(highTokens[0]) == true)
+    }
+
+    func testRelocationProvenanceCapacityLatchesInsteadOfDroppingWindows() {
+        let controller = BlackoutController()
+        let firstToken = UUID()
+        controller.handleRelocationControl(BlackoutRelocationControl(token: firstToken, kind: .begin, displayIDs: [2]))
+        let first65 = (0..<65).map { index in
+            BlackoutRelocatedWindow(processID: Int32(1000 + index),
+                frame: CGRect(x: CGFloat(index), y: 10, width: 20, height: 20))
+        }
+        controller.handleRelocationControl(BlackoutRelocationControl(
+            token: firstToken, kind: .end, relocatedWindows: first65
+        ))
+        XCTAssertEqual(controller.relocatedWindows.count, 65, "no per-pass 64-entry truncation")
+
+        for index in 65..<257 {
+            let token = UUID()
+            controller.handleRelocationControl(BlackoutRelocationControl(token: token, kind: .begin, displayIDs: [2]))
+            controller.handleRelocationControl(BlackoutRelocationControl(token: token, kind: .end, relocatedWindows: [
+                BlackoutRelocatedWindow(processID: Int32(1000 + index),
+                    frame: CGRect(x: CGFloat(index), y: 10, width: 20, height: 20))
+            ]))
+        }
+        XCTAssertTrue(controller.emptyDisplayPolicy.requiresOccupiedBeforeRearming.contains(2),
+            "overflow conservatively prevents unknown moved windows from rearming the display")
+        XCTAssertTrue(controller.relocatedWindows.isEmpty)
+        var policy = controller.emptyDisplayPolicy
+        let target = EmptyDisplayTarget(id: 2, bounds: CGRect(x: 0, y: 0, width: 300, height: 100))
+        let activeBounds = [target.bounds, CGRect(x: 300, y: 0, width: 100, height: 100)]
+        let stillVisible = DisplayOccupancySample(pointerLocation: CGPoint(x: 350, y: 50), windows: [
+            DisplayOccupancyWindow(ownerPID: 1000, frame: CGRect(x: 0, y: 10, width: 20, height: 20)),
+            DisplayOccupancyWindow(ownerPID: 1256, frame: CGRect(x: 256, y: 10, width: 20, height: 20))
+        ])
+        XCTAssertEqual(policy.desiredDisplayIDs(targets: [target], activeDisplayBounds: activeBounds,
+            sample: stillVisible, uptime: 1, relocatedWindows: controller.relocatedWindows), [])
+        XCTAssertTrue(policy.requiresOccupiedBeforeRearming.contains(2), "neither oldest nor newest discarded provenance may rearm")
+        let empty = DisplayOccupancySample(pointerLocation: CGPoint(x: 350, y: 50), windowFrames: [])
+        for time in [2.0, 4.0] {
+            XCTAssertEqual(policy.desiredDisplayIDs(targets: [target], activeDisplayBounds: activeBounds,
+                sample: empty, uptime: time), [], "disappearance after overflow cannot re-blackout")
+        }
+        XCTAssertEqual(policy.desiredDisplayIDs(targets: [target], activeDisplayBounds: activeBounds,
+            sample: DisplayOccupancySample(pointerLocation: CGPoint(x: 150, y: 50), windowFrames: []), uptime: 5), [])
+        XCTAssertFalse(policy.requiresOccupiedBeforeRearming.contains(2))
+        // The uncertainty survives later restorations for this helper session.
+        policy.restoredCoveredDisplays([2])
+        _ = policy.desiredDisplayIDs(targets: [target], activeDisplayBounds: activeBounds,
+            sample: stillVisible, uptime: 6)
+        XCTAssertTrue(policy.requiresOccupiedBeforeRearming.contains(2))
+    }
+
     func testActivityDeferralOnlyAppliesToAutomaticIdleBlackout() {
         let automatic = BlackoutPolicy(idleAfter: 60, timeout: nil, sleepAfter: nil)
         XCTAssertTrue(automatic.shouldDeferForActivity(

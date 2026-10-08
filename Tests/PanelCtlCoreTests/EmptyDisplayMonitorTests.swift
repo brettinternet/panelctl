@@ -25,6 +25,14 @@ final class EmptyDisplayMonitorTests: XCTestCase {
             )
         )
         XCTAssertEqual(decoded, status)
+        XCTAssertTrue(decoded.relocationAcknowledgements.isEmpty, "older helper status remains compatible")
+
+        let token = UUID()
+        let acknowledged = BlackoutRuntimeStatus(
+            state: .waiting, blackedOutDisplayIDs: [2], relocationAcknowledgements: [token]
+        )
+        let data = try JSONEncoder().encode(acknowledged)
+        XCTAssertEqual(try JSONDecoder().decode(BlackoutRuntimeStatus.self, from: data), acknowledged)
     }
 
     func testIndependentGraceAndImmediateSampledRestoration() {
@@ -57,6 +65,85 @@ final class EmptyDisplayMonitorTests: XCTestCase {
             sample: sample(pointer: CGPoint(x: 50, y: 50)),
             uptime: 12.25
         ), [1])
+    }
+
+    func testRelocationSuppressionDoesNotRearmFeedbackAndRealPointerRestores() {
+        var policy = EmptyDisplayPolicy()
+        let activeBounds = [left.bounds, right.bounds]
+        policy.restoredCoveredDisplays([left.id])
+        let movedFrame = CGRect(x: -80, y: 20, width: 30, height: 30)
+        let relocated = BlackoutRelocatedWindow(processID: 42, frame: movedFrame)
+        let movedSample = DisplayOccupancySample(pointerLocation: CGPoint(x: 50, y: 50), windows: [
+            DisplayOccupancyWindow(ownerPID: 42, frame: movedFrame)
+        ])
+
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [left], activeDisplayBounds: activeBounds, sample: movedSample, uptime: 1,
+            relocationSuppressedDisplayIDs: [left.id], currentlyCoveredDisplayIDs: [left.id]
+        ), [], "restoration latch takes precedence over an active relocation suppression")
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [left], activeDisplayBounds: activeBounds, sample: movedSample, uptime: 2,
+            relocatedWindows: [relocated]
+        ), [], "PanelCtl-authored occupancy alone cannot clear the restored-display latch")
+        XCTAssertTrue(policy.requiresOccupiedBeforeRearming.contains(left.id))
+
+        let independent = DisplayOccupancySample(pointerLocation: CGPoint(x: 50, y: 50), windows: [
+            DisplayOccupancyWindow(ownerPID: 43, frame: movedFrame)
+        ])
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [left], activeDisplayBounds: activeBounds, sample: independent, uptime: 3
+        ), [])
+        XCTAssertFalse(policy.requiresOccupiedBeforeRearming.contains(left.id))
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [left], activeDisplayBounds: activeBounds,
+            sample: sample(pointer: CGPoint(x: 50, y: 50)), uptime: 4
+        ), [])
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [left], activeDisplayBounds: activeBounds,
+            sample: sample(pointer: CGPoint(x: 50, y: 50)), uptime: 5
+        ), [left.id])
+
+        policy.restoredCoveredDisplays([left.id])
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [left], activeDisplayBounds: activeBounds,
+            sample: sample(pointer: CGPoint(x: -50, y: 50)), uptime: 6,
+            relocationSuppressedDisplayIDs: [left.id], currentlyCoveredDisplayIDs: [left.id]
+        ), [], "real pointer input still restores the covered display during suppression")
+        XCTAssertFalse(policy.requiresOccupiedBeforeRearming.contains(left.id))
+    }
+
+    func testKeyboardAndTimeoutRestorationLatchesOverridePendingRelocationSuppression() {
+        let activeBounds = [left.bounds, right.bounds]
+        let movedFrame = CGRect(x: -80, y: 20, width: 30, height: 30)
+        let movedSample = DisplayOccupancySample(pointerLocation: CGPoint(x: 50, y: 50), windows: [
+            DisplayOccupancyWindow(ownerPID: 42, frame: movedFrame)
+        ])
+        for restoration in ["keyboard", "timeout"] {
+            var policy = EmptyDisplayPolicy()
+            policy.restoredCoveredDisplays([left.id])
+            XCTAssertEqual(policy.desiredDisplayIDs(
+                targets: [left], activeDisplayBounds: activeBounds, sample: movedSample, uptime: 1,
+                relocationSuppressedDisplayIDs: [left.id], currentlyCoveredDisplayIDs: [left.id],
+                relocatedWindows: [BlackoutRelocatedWindow(processID: 42, frame: movedFrame)]
+            ), [], "\(restoration) restoration removes the cover while the acknowledged pass is pending")
+            XCTAssertTrue(policy.requiresOccupiedBeforeRearming.contains(left.id))
+        }
+    }
+
+    func testRelocationSuppressionCannotStartCoverageOnAnUncoveredDisplay() {
+        var policy = EmptyDisplayPolicy()
+        let activeBounds = [left.bounds, right.bounds]
+        let empty = sample(pointer: CGPoint(x: 50, y: 50))
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [left], activeDisplayBounds: activeBounds, sample: empty, uptime: 1,
+            relocationSuppressedDisplayIDs: [left.id], currentlyCoveredDisplayIDs: []
+        ), [])
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [left], activeDisplayBounds: activeBounds, sample: empty, uptime: 2
+        ), [])
+        XCTAssertEqual(policy.desiredDisplayIDs(
+            targets: [left], activeDisplayBounds: activeBounds, sample: empty, uptime: 3
+        ), [left.id])
     }
 
     func testRestoredEmptyCoverWaitsForOccupiedThenEmptyBeforeRearming() {

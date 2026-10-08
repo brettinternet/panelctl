@@ -1,8 +1,8 @@
 # Window relocation contract
 
-Contract for TASK-64 (implemented one-shot Move windows) and TASK-65 (planned
-keep-off). The shared direction was approved during TASK-63; the keep-off section
-is not shipped functionality. TASK-64 depends on stable app signing (TASK-66).
+Contract for TASK-64 (one-shot Move windows) and TASK-65 (ongoing keep-off).
+The shared direction was approved during TASK-63. TASK-64 depends on stable app
+signing (TASK-66).
 Neither task authorizes native window movement without
 separate approval, DDC writes, or private display setters.
 
@@ -199,7 +199,13 @@ before proceeding: suppress empty-policy transitions for affected displays durin
 the pass, and do not clear a restored-display rearm latch solely from moved-window
 occupancy afterward. Independent pointer/non-relocated occupancy may clear it.
 Use conservative attribution; if it cannot be established, pause keep-off rather
-than invent user activity. This signal is not AX work in the helper and cannot
+than invent user activity. Each pass attempts at most 64 windows and revalidates
+acknowledgement against the current helper set before each setter. Uncertain
+writes report both possible frames and the destination to helpers. Uncertain
+geometry or overflow of the helper's 256-window provenance budget disables
+window-only rearming for the rest of that helper session; real pointer occupancy
+still clears rearm latches. Never discard provenance and then treat the next
+window sample as independent activity. This signal is not AX work in the helper and cannot
 request blackout or override real input restoration, coverage exit, or time limits.
 The existing physical occupancy policy must not be silently redefined as the
 largest-share relocation rule. No keep-off controller starts or maintains covers.

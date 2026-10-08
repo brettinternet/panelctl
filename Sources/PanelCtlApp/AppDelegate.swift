@@ -389,6 +389,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let message = model.runtimeState.detailMessage {
             menu.addItem(infoItem(message, maxLines: 3))
         }
+        for (uuid, status) in model.keepWindowsOffStatuses.sorted(by: { $0.key < $1.key }) where status.state != .off {
+            let name = model.displayTiles.first(where: { $0.id == uuid })?.name ?? "Display \(uuid.prefix(8))…"
+            menu.addItem(infoItem("\(name): \(status.description)", maxLines: 3))
+        }
 
         menu.addItem(.separator())
         let runRule = NSMenuItem(title: "Run rule", action: nil, keyEquivalent: "")
@@ -497,12 +501,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 display.isEnabled = tile.actionBlocker == nil
                 display.toolTip = tile.actionBlocker
             }
+            let enforcement = model.keepWindowsOffStatuses[tile.id]
+            let subtitle = enforcement.map { "\(tile.status.label) · Keep windows \($0.label)" } ?? tile.status.label
             if #available(macOS 14.4, *) {
-                display.subtitle = tile.status.label
+                display.subtitle = subtitle
             } else {
-                display.title += " — \(tile.status.label)"
+                display.title += " — \(subtitle)"
             }
             items.append(display)
+            if let enforcement {
+                let line = infoItem(enforcement.description, maxLines: 3)
+                line.indentationLevel = 1
+                items.append(line)
+            }
             if let line = model.displayResults[tile.id]?.menuLine {
                 let result = infoItem(line, maxLines: 2)
                 result.indentationLevel = 1

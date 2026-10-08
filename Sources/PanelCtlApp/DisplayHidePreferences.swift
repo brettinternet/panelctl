@@ -97,26 +97,32 @@ struct DisplayHideConfiguration: Codable, Equatable {
     var source: DisplayIdentityReference?
     var awayInput: UInt8?
     var returnInput: UInt8?
+    var keepWindowsOff: MoveWindowsConfiguration?
 
     init(target: DisplayIdentityReference, enabled: Bool = false, source: DisplayIdentityReference? = nil,
-         awayInput: UInt8? = nil, returnInput: UInt8? = nil) {
+         awayInput: UInt8? = nil, returnInput: UInt8? = nil,
+         keepWindowsOff: MoveWindowsConfiguration? = nil) {
         self.target = target
         self.enabled = enabled
         self.source = source
         self.awayInput = awayInput
         self.returnInput = returnInput
+        self.keepWindowsOff = keepWindowsOff
     }
 
     init(target: DisplayIdentitySnapshot, enabled: Bool = false, source: DisplayIdentitySnapshot? = nil,
-         awayInput: UInt8? = nil, returnInput: UInt8? = nil) {
+         awayInput: UInt8? = nil, returnInput: UInt8? = nil,
+         keepWindowsOff: MoveWindowsConfiguration? = nil) {
         self.init(target: DisplayIdentityReference(target), enabled: enabled,
-                  source: source.map(DisplayIdentityReference.init), awayInput: awayInput, returnInput: returnInput)
+                  source: source.map(DisplayIdentityReference.init), awayInput: awayInput, returnInput: returnInput,
+                  keepWindowsOff: keepWindowsOff)
     }
 
     init(target: DisplayIdentityReference, enabled: Bool = false, source: DisplayIdentitySnapshot,
-         awayInput: UInt8? = nil, returnInput: UInt8? = nil) {
+         awayInput: UInt8? = nil, returnInput: UInt8? = nil,
+         keepWindowsOff: MoveWindowsConfiguration? = nil) {
         self.init(target: target, enabled: enabled, source: DisplayIdentityReference(source),
-                  awayInput: awayInput, returnInput: returnInput)
+                  awayInput: awayInput, returnInput: returnInput, keepWindowsOff: keepWindowsOff)
     }
 }
 
