@@ -1,11 +1,11 @@
 ---
 id: TASK-75
 title: Fix keep-windows-off Settings CI interactions for v0.7.0
-status: In Progress
+status: Done
 assignee:
   - '@agent'
 created_date: '2026-10-08 20:06'
-updated_date: '2026-10-08 21:21'
+updated_date: '2026-10-08 21:33'
 labels: []
 dependencies: []
 type: bug
@@ -20,8 +20,8 @@ Main CI reports seven failures in two keep-windows-off Settings tests. Release v
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Both affected Settings tests pass in dedicated-runner CI without weakening their behavior assertions
-- [ ] #2 Main and v0.7.0 release CI pass and signed universal assets are published
+- [x] #1 Both affected Settings tests pass in dedicated-runner CI without weakening their behavior assertions
+- [x] #2 Main and v0.7.0 release CI pass and signed universal assets are published
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -44,4 +44,12 @@ Main CI 37839544849 passed. Tagged v0.7.0 at d64ed1c; release CI 37840035917 pas
 Signing diagnosis confirmed configured identity exists but lacks runner trust. User-domain add-trusted-cert stalled on headless authorization; canceled run 37841843127 and changed to noninteractive sudo admin-domain codeSign-only trust on the disposable runner. Security commands now have 30-second bounds, manual signing step has a two-minute limit, and dispatch no longer duplicates main tests. Fourteen fake signing tests and actionlint pass.
 
 Main CI 37845490025 green; probe 37845489718 confirms imported identity valid after scoped trust, but codesign still cannot locate it. macOS codesign man page requires signing keychain on user search list even with --keychain for certificate-chain resolution. Importer now snapshots and temporarily extends existing list; always cleanup restores exact original list before deleting keychain. Existing regression test now verifies preservation/restoration including paths with spaces. Fourteen signing tests and actionlint pass.
+
+Final verification: main CI 37846217550 and real signing probe 37846217610 passed on d740e7b; approved unpublished tag retarget used exact old-object force-with-lease. Release CI 37846729682 passed and published v0.7.0 with four app/CLI/checksum assets. Downloaded both archives and validated SHA-256, strict app/helper/CLI signatures, identical configured certificate pin without cdhash, arm64+x86_64 architectures, app plist 0.7.0 and both CLI versions panelctl 0.7.0. No GUI launch or hardware commands during asset verification. Fourteen offline signing tests and actionlint pass; original CLIParser 26 and WindowRelocation 37 checks passed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Published v0.7.0 at d740e7b after fixing native Settings test synchronization and release-runner signing trust/search-list resolution. Main CI 37846217550, signing probe 37846217610 and release CI 37846729682 all passed. Verified published app/CLI checksums, strict certificate-pinned signatures, universal architectures and 0.7.0 versions. No private-key exports/rotation, hardware writes or worktrees.
+<!-- SECTION:FINAL_SUMMARY:END -->
