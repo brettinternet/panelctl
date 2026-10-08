@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@agent'
 created_date: '2026-10-08 20:06'
-updated_date: '2026-10-08 20:27'
+updated_date: '2026-10-08 20:39'
 labels: []
 dependencies: []
 type: bug
@@ -38,4 +38,6 @@ Main CI 37837084104 proves hidden-display pause/resume now passes with performCl
 CI 37837757000 showed native NSSwitch accessibility labels are nil. User approved exactly the two affected local UI tests, with fake displays and no real window movement or hardware writes. Direct inspection confirmed nil labels; selecting the target before presenting Settings removes the stale first-display control race. Both affected tests now pass locally (2 tests, 0 failures), retaining all behavior assertions; diagnostic prints removed.
 
 Main CI 37838933066 still exposes initial-page rendering on macOS 15 even after preselecting before present. Changed approach: enable keep-off on the initial main display, leave target off, and wait for off before clicking, so stale controls are observably distinct. Added regression assertion that target clicks leave the initial display preference unchanged. Both scoped local UI tests pass again (2/2); no production behavior or existing assertions weakened.
+
+Main CI 37839544849 passed. Tagged v0.7.0 at d64ed1c; release CI 37840035917 passed all tests and secret import, but signing failed with item not found in keychain; no release exists. User approved safe existing-secret CI diagnostics and moving the unpublished tag to the verified repair. Added early identity availability/validity checks and a manual dedicated-runner import/sign probe (no key export or disclosure).
 <!-- SECTION:NOTES:END -->

@@ -23,6 +23,9 @@ if name == "codesign":
 elif name == "security":
     if args[0] == "import":
         assert pathlib.Path(args[1]).read_bytes() == b"fake certificate"
+    if args[0] == "find-identity":
+        if not os.environ.get("MISSING_IDENTITY") and not ("-v" in args and os.environ.get("INVALID_IDENTITY")):
+            print(os.environ["PANELCTL_SIGNING_IDENTITY"])
     if os.environ.get("FAIL_SECURITY") == args[0]:
         print("sensitive diagnostic", file=sys.stderr)
         sys.exit(1)
@@ -158,12 +161,24 @@ class SigningTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
         self.assertEqual([call[1] for call in calls], ["create-keychain", "set-keychain-settings",
-                         "unlock-keychain", "import", "set-key-partition-list"])
+                         "unlock-keychain", "import", "set-key-partition-list",
+                         "find-identity", "find-identity"])
         imported = calls[3]
         self.assertFalse(Path(imported[2]).exists())
         self.assertEqual(imported[-2:], ["-T", "/usr/bin/codesign"])
         self.assertNotIn("fake password", result.stdout + result.stderr)
         self.assertFalse(any("list-keychains" in call for call in calls))
+
+    def test_import_refuses_missing_or_invalid_identity(self):
+        self.configure_import()
+        for flag, message in (("MISSING_IDENTITY", "no matching signing identity"),
+                              ("INVALID_IDENTITY", "not valid for code signing")):
+            self.env[flag] = "1"
+            result = self.import_identity()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(message, result.stderr)
+            self.assertNotIn("fake password", result.stdout + result.stderr)
+            del self.env[flag]
 
     def test_import_failure_hides_diagnostics_and_removes_p12(self):
         self.configure_import()

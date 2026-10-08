@@ -26,6 +26,7 @@ def main():
         result = subprocess.run(["security", *args], capture_output=True)
         if result.returncode:
             raise SystemExit(f"security {args[0]} failed (output withheld)")
+        return result.stdout.decode()
 
     with tempfile.TemporaryDirectory(prefix="panelctl-signing-") as directory:
         certificate = Path(directory) / "identity.p12"
@@ -40,6 +41,13 @@ def main():
                  "-T", "/usr/bin/codesign")
         security("set-key-partition-list", "-S", "apple-tool:,apple:,codesign:",
                  "-s", "-k", password, keychain)
+        identities = security("find-identity", "-p", "codesigning", keychain)
+        if identity.upper() not in identities.upper():
+            raise SystemExit("Imported keychain has no matching signing identity; check certificate/private-key export and fingerprint secret")
+        valid = security("find-identity", "-v", "-p", "codesigning", keychain)
+        if identity.upper() not in valid.upper():
+            raise SystemExit("Imported signing identity is not valid for code signing on this runner; check certificate trust and validity")
+        print("Configured signing identity is present and valid in the job keychain")
 
 
 if __name__ == "__main__":
