@@ -1,11 +1,10 @@
 ---
 id: TASK-64
 title: Add a standalone Move windows to another display action
-status: In Progress
-assignee:
-  - '@pi'
+status: Done
+assignee: []
 created_date: '2026-10-07 22:44'
-updated_date: '2026-10-08 03:52'
+updated_date: '2026-10-08 03:53'
 labels: []
 dependencies:
   - TASK-63
@@ -46,4 +45,12 @@ A black cover leaves the monitor in the macOS desktop, so windows stay (and open
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented one-shot Move windows, v3 Action storage and stable step IDs, same-source composition, strict selection/gates, bounded app-only AX worker, explicit permission interaction and typed CLI/status/UI results. No watcher or Show restoration. One independent acceptance/safety verification passed AC2–6 and found one AC1/7 defect: Double decoding rounded unsupported payload integers above 2^53. Fixed by decoding signed/unsigned 64-bit integers before floating point; regression saves a valid sibling and checks exact positive/negative >2^53 and Int64/UInt64 boundary values plus unsupported identity/raw retention. No second general review was run. Parent reran swift test --disable-sandbox --filter WindowRelocationTests|DisplayActionAppTests|AppControlTests: 19 + 56 + 17 = 92 passed. Worker also built panelctl and PanelCtlApp successfully. git diff --check passes. LSP diagnostics were unknown (no version-matched report), not claimed clean. AC1/6 additionally verified with owner-approved native editor-only test: SettingsWindowTests.testMoveWindowsEditorShowsDestinationAndSavesWithoutRunning passes, preserves ID/destination, saves without running or prompting; visual snapshot .build/task64-ui/move-windows-editor.png confirms Move and Automatic controls. Two initial harness probes failed to expose SwiftUI pickers through NSPopUpButton/in-process accessibility, then switched to rendered snapshot plus established Save interaction; no focus-sensitive rerun loop. Native AX permission grant and real window moving remain unverified and require separate explicit approval; no permission prompt, real window move, DDC/private display write or TASK-65 watcher was performed. No worktree created. Implementation commit follows, then release claim and record delivery.
+
+Delivered implementation, tests and docs in 803661f (Add Move windows action) on main. Staged diff validation also caught and removed one trailing blank line in the new AX worker; staged git diff --check then passed. All seven criteria satisfied with fake execution and approved editor-only evidence above; real AX movement remains a separately approved validation activity, not performed or claimed. Claim released. Next dependency-ready work is TASK-65; not started. No push, PR, worktree or retained workspace.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added a standalone/composable Move windows Action with strict destination and write gates, bounded app-only AX execution, v3 persistence, explicit permission UI and honest count/reason results throughout editor/CLI/status. Committed as 803661f on main. 92 focused fake-backed tests and one approved native editor-only test pass; both products build. One independent review finding fixed and regression-tested. No real window movement, permission prompt or display writes.
+<!-- SECTION:FINAL_SUMMARY:END -->
