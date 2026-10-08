@@ -2,9 +2,12 @@
 """Import owner-provided release secrets into a job-local signing keychain."""
 import base64
 import hashlib
+import json
 import os
 import re
+import shlex
 import ssl
+import sys
 from pathlib import Path
 import secrets
 import subprocess
@@ -72,8 +75,30 @@ def main():
             valid = security("find-identity", "-v", "-p", "codesigning", keychain)
             if identity.upper() not in valid.upper():
                 raise SystemExit("Signing identity remains invalid after code-signing-only trust")
-        print("Configured signing identity is present and valid in the job keychain")
+        # --keychain selects the identity, but codesign still resolves certificates
+        # through the user's search list. Preserve it for the always() cleanup.
+        previous = shlex.split(security("list-keychains", "-d", "user"))
+        Path(keychain + ".search-list.json").write_text(json.dumps(previous))
+        security("list-keychains", "-d", "user", "-s", keychain, *previous)
+        print("Configured signing identity is valid and available to codesign")
+
+
+def cleanup():
+    keychain = os.environ.get("PANELCTL_SIGNING_KEYCHAIN")
+    if not keychain:
+        return
+    saved = Path(keychain + ".search-list.json")
+    if saved.exists():
+        subprocess.run(["security", "list-keychains", "-d", "user", "-s",
+                        *json.loads(saved.read_text())], check=True, timeout=30,
+                       capture_output=True)
+    if Path(keychain).exists():
+        subprocess.run(["security", "delete-keychain", keychain], check=True,
+                       timeout=30, capture_output=True)
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--cleanup"]:
+        cleanup()
+    else:
+        main()

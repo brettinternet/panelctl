@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@agent'
 created_date: '2026-10-08 20:06'
-updated_date: '2026-10-08 21:15'
+updated_date: '2026-10-08 21:21'
 labels: []
 dependencies: []
 type: bug
@@ -27,7 +27,7 @@ Main CI reports seven failures in two keep-windows-off Settings tests. Release v
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-Use NSSwitch.performClick and current-control rendering waits; select the target display before presenting Settings. Validate the two tests locally with scoped approval and fake-backed suites, then push main, tag v0.7.0 after main CI succeeds, and verify release CI/assets.
+Synchronize native Settings tests using distinct initial/target states and performClick; retain cross-display preference assertion. Verify pinned signing identity, scoped noninteractive CI trust and temporary search-list restoration using fake checks and real runner probe. After main/probe green retarget unpublished v0.7.0 with approved lease, publish and verify signed assets, then finalize task.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -42,4 +42,6 @@ Main CI 37838933066 still exposes initial-page rendering on macOS 15 even after 
 Main CI 37839544849 passed. Tagged v0.7.0 at d64ed1c; release CI 37840035917 passed all tests and secret import, but signing failed with item not found in keychain; no release exists. User approved safe existing-secret CI diagnostics and moving the unpublished tag to the verified repair. Added early identity availability/validity checks and a manual dedicated-runner import/sign probe (no key export or disclosure).
 
 Signing diagnosis confirmed configured identity exists but lacks runner trust. User-domain add-trusted-cert stalled on headless authorization; canceled run 37841843127 and changed to noninteractive sudo admin-domain codeSign-only trust on the disposable runner. Security commands now have 30-second bounds, manual signing step has a two-minute limit, and dispatch no longer duplicates main tests. Fourteen fake signing tests and actionlint pass.
+
+Main CI 37845490025 green; probe 37845489718 confirms imported identity valid after scoped trust, but codesign still cannot locate it. macOS codesign man page requires signing keychain on user search list even with --keychain for certificate-chain resolution. Importer now snapshots and temporarily extends existing list; always cleanup restores exact original list before deleting keychain. Existing regression test now verifies preservation/restoration including paths with spaces. Fourteen signing tests and actionlint pass.
 <!-- SECTION:NOTES:END -->

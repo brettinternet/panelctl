@@ -46,10 +46,7 @@ jobs:
           codesign --verify --strict "$RUNNER_TEMP/panelctl-signing-probe"
       - name: Remove signing keychain
         if: always()
-        run: |
-          if [[ -f "$PANELCTL_SIGNING_KEYCHAIN" ]]; then
-            security delete-keychain "$PANELCTL_SIGNING_KEYCHAIN"
-          fi
+        run: python3 scripts/import-signing.py --cleanup
 
   test:
     name: Swift tests
@@ -117,10 +114,7 @@ jobs:
         run: ./scripts/package-release.sh "$GITHUB_REF_NAME"
       - name: Remove release signing keychain
         if: always()
-        run: |
-          if [[ -f "$PANELCTL_SIGNING_KEYCHAIN" ]]; then
-            security delete-keychain "$PANELCTL_SIGNING_KEYCHAIN"
-          fi
+        run: python3 scripts/import-signing.py --cleanup
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

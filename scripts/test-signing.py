@@ -25,6 +25,8 @@ if name == "codesign":
     if os.environ.get("FAIL_SIGN") and "--sign" in args:
         sys.exit(42)
 elif name == "security":
+    if args == ["list-keychains", "-d", "user"]:
+        print('"/a path/login.keychain-db"')
     if args[0] == "import":
         assert pathlib.Path(args[1]).read_bytes() == b"fake certificate"
     if args[0] == "find-identity":
@@ -174,12 +176,16 @@ class SigningTests(unittest.TestCase):
         calls = self.calls()
         self.assertEqual([call[1] for call in calls], ["create-keychain", "set-keychain-settings",
                          "unlock-keychain", "import", "set-key-partition-list",
-                         "find-identity", "find-identity"])
+                         "find-identity", "find-identity", "list-keychains", "list-keychains"])
         imported = calls[3]
         self.assertFalse(Path(imported[2]).exists())
         self.assertEqual(imported[-2:], ["-T", "/usr/bin/codesign"])
         self.assertNotIn("fake password", result.stdout + result.stderr)
-        self.assertFalse(any("list-keychains" in call for call in calls))
+        self.assertEqual(calls[-1][2:], ["-d", "user", "-s", self.env["PANELCTL_SIGNING_KEYCHAIN"],
+                                       "/a path/login.keychain-db"])
+        cleanup = self.run_command("python3", str(ROOT / "scripts/import-signing.py"), "--cleanup")
+        self.assertEqual(cleanup.returncode, 0, cleanup.stderr)
+        self.assertEqual(self.calls()[-1][2:], ["-d", "user", "-s", "/a path/login.keychain-db"])
 
     def test_import_trusts_only_matching_public_certificate_for_code_signing(self):
         self.configure_import()

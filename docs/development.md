@@ -131,13 +131,15 @@ chat or logs. No Apple Developer membership is needed.
    Remove the temporary export through Finder after uploading and backing it up.
    Never paste the export or password into a task, chat or log. Release CI imports
    these secrets into a job-local keychain, grants `/usr/bin/codesign` access,
-   passes that keychain explicitly (without changing the search list), and verifies
+   passes that keychain explicitly, temporarily adds it to the runner's keychain
+   search list for certificate resolution, and verifies
    the configured identity is available. If the runner reports the self-signed
    certificate as untrusted, it verifies the public certificate's fingerprint and
    grants trust for **code signing only** in the disposable runner's admin domain
    using noninteractive `sudo`, avoiding a GUI authorization prompt.
    Expired or otherwise invalid identities still fail. It deletes the temporary
-   `.p12` and public certificate, and deletes the keychain in an `always()` step. Missing
+   `.p12` and public certificate, then restores the original search list and deletes
+   the keychain in an `always()` step. Missing
    secrets, import failures or signing failures prevent publication. PR jobs do
    not receive these secrets. The ephemeral runner is the final cleanup boundary
    if a job is forcibly terminated.
