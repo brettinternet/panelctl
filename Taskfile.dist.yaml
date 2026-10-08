@@ -2,6 +2,9 @@
 # yaml-language-server: $schema=https://taskfile.dev/schema.json
 version: "3"
 
+# Optional, untracked: PANELCTL_SIGNING_IDENTITY for local signed builds (see docs/development.md).
+dotenv: [".env.local"]
+
 vars:
   ARM64_BUILD_DIR: .build/task-release-arm64
   X86_64_BUILD_DIR: .build/task-release-x86_64

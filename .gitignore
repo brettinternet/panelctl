@@ -23,4 +23,4 @@ release/
 *.sha256
 
 debug/
-mise.local.toml
+.env.local

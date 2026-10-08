@@ -106,8 +106,9 @@ chat or logs. No Apple Developer membership is needed.
    identity, PR/local packaging may use ad-hoc signing with a visible warning,
    unless `PANELCTL_REQUIRE_SIGNING=1`. Direct `swift build` is not app packaging.
 
-   To keep the fingerprint set for local `task` runs, put it in an untracked
-   `mise.local.toml` (`[env]` table, `PANELCTL_SIGNING_IDENTITY = "…"`).
+   To keep the fingerprint set for local `task` runs, put
+   `PANELCTL_SIGNING_IDENTITY=…` in an untracked `.env.local`, which the
+   Taskfile loads.
    `task copy:release` refuses to install an ad-hoc signed app, because each
    ad-hoc build would make macOS drop Accessibility and other privacy grants.
 
