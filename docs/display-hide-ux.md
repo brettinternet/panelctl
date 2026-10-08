@@ -223,6 +223,12 @@ Remove from desktop style; this is per-request and does not edit saved preferenc
 The Scripts copy command remains style-neutral, and Action steps keep their saved
 effects. The app must be running. See [exit codes and status](usage.md#scripted-hide-and-show).
 
+`panelctl app blackout-now` and the menu's Blackout Now item are retired; the
+command exits 2 and older CLIs are refused. They triggered every enabled
+Automation rule at once. Use `app hide --display` for one display,
+`app run-action --action` for a saved Action, or `app run-rule --rule` (or the
+menu's Run rule submenu) to run one saved Automation rule once.
+
 ## Keyboard
 
 Cmd-, opens Settings; Cmd-1/2/3 switch tabs. In editors, Return saves and
