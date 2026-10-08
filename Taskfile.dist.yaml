@@ -40,6 +40,12 @@ tasks:
     desc: Copy the built app release to the Applications folder
     deps: ["build:release"]
     cmds:
+      # An ad-hoc signature changes every build, so macOS would drop privacy grants such as Accessibility.
+      - |
+        if ! codesign -d -r- "{{.APP_PATH}}" 2>&1 | grep -q 'certificate leaf = H"'; then
+          echo 'copy:release: refusing an ad-hoc signed app; set PANELCTL_SIGNING_IDENTITY (see docs/development.md)' >&2
+          exit 1
+        fi
       - /usr/bin/xcrun swift ./scripts/install-release.swift "{{.APP_PATH}}" /Applications/PanelCtl.app
 
   open:release:
