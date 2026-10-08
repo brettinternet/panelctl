@@ -4825,11 +4825,30 @@ final class AppModel: ObservableObject {
                     )
                 }
             } else {
+                // A running one-shot is saved as disabled, so ordinary validation
+                // ignores it. Gate automatic rules as if it were enabled so they
+                // cannot combine with it to cover every display.
+                let oneShotRule = protectionCoordinator.runningOneShotRuleID.flatMap { id in
+                    automationPreferences.rules.first { $0.id == id && !$0.isEnabled }
+                }
+                var withOneShot = automationPreferences
+                if let oneShotRule, let index = withOneShot.rules.firstIndex(where: { $0.id == oneShotRule.id }) {
+                    withOneShot.rules[index].isEnabled = true
+                }
                 for rule in automationPreferences.rules where rule.isEnabled {
-                    if let validation = validations[rule.id], validation.isRunnable,
-                       let ruleArguments = validation.arguments {
-                        arguments[rule.id] = ruleArguments
+                    guard let validation = validations[rule.id], validation.isRunnable,
+                          let ruleArguments = validation.arguments else { continue }
+                    if let oneShotRule, !ProtectionRuleValidator.validate(
+                        rule, in: withOneShot, displays: displays, hiddenUUIDs: hiddenUUIDs
+                    ).isRunnable {
+                        validations[rule.id] = ProtectionRuleValidation(
+                            blockingReason: nil,
+                            waitingReason: "“\(oneShotRule.name)” is running once; this rule starts when it finishes.",
+                            arguments: nil
+                        )
+                        continue
                     }
+                    arguments[rule.id] = ruleArguments
                 }
             }
         }

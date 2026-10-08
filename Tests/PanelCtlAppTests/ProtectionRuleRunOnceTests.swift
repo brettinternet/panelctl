@@ -448,6 +448,44 @@ final class ProtectionRuleRunOnceTests: XCTestCase {
         }
     }
 
+    func testDisjointUntimedRuleCannotCombineWithUntimedOneShotToCoverEveryDisplay() async throws {
+        try await withHelper(mode: "hold") { log in
+            var selected = rule(id: UUID(), name: "One shot", displayUUID: firstUUID, enabled: false)
+            selected.settings.followUpAction = .untilActivity
+            var other = rule(id: UUID(), name: "Other display", displayUUID: secondUUID, enabled: false)
+            other.settings.followUpAction = .untilActivity
+            let preferences = AutomationPreferences(isEnabled: true, rules: [selected, other])
+            let (model, defaults, suite, journals) = try makeModel(preferences: preferences)
+            defer {
+                defaults.removePersistentDomain(forName: suite)
+                try? FileManager.default.removeItem(at: journals)
+            }
+            let otherWatchCount = {
+                self.launchLines(at: log).filter {
+                    $0.contains("--panelctl-rule \(other.id.uuidString)") && $0.contains("--watch")
+                }.count
+            }
+
+            let response = await model.handleProtectionRuleControlRequest(
+                AppControlRequest(command: .runRule, ruleID: selected.id)
+            )
+            XCTAssertEqual(response.outcome, .done)
+            model.setProtectionRuleEnabled(true, id: other.id)
+            let enabled = try XCTUnwrap(model.automationPreferences.rules.first { $0.id == other.id })
+            XCTAssertTrue(enabled.isEnabled)
+            try await Task.sleep(nanoseconds: 200_000_000)
+            XCTAssertEqual(otherWatchCount(), 0, "the untimed rules together would cover every display")
+            XCTAssertTrue(model.protectionRuleRowStatus(for: enabled).headline.contains("running once"))
+
+            XCTAssertTrue(try model.restoreBlackout())
+            try await wait { model.controlRunningRule == nil && otherWatchCount() == 1 }
+            var expected = preferences
+            expected.rules[1].isEnabled = true
+            XCTAssertEqual(model.automationPreferences, expected)
+            await shutdown(model)
+        }
+    }
+
     func testActiveSelectedRuleIsRefusedWithoutRestartingItsTimer() async throws {
         try await withHelper(mode: "active-watch") { log in
             let selected = rule(id: UUID(), name: "Already active", displayUUID: firstUUID, enabled: true)
