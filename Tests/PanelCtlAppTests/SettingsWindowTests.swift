@@ -490,6 +490,91 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertNil(model.hideConfiguration(for: Self.sideUUID)?.keepWindowsOff)
     }
 
+    func testHiddenKeepWindowsOffSwitchPausesOnlyThisHide() throws {
+        try requireInteractiveUI()
+        // Missing permission keeps enforcement paused, so no real window can move.
+        let (model, defaults) = try makeModel(windowMovePermission: SettingsWindowMovePermission())
+        defer {
+            model.stopKeepWindowsOff()
+            defaults.removePersistentDomain(forName: Self.suiteName)
+        }
+        model.setKeepWindowsOffEnabled(true, for: Self.sideUUID)
+        model.hide(targetUUID: Self.sideUUID)
+        XCTAssertTrue(model.isBlackoutHidden(Self.sideUUID))
+        let key = Self.sideUUID.lowercased()
+        XCTAssertEqual(model.keepWindowsOffCovers[key]?.pausedByUser, false)
+        let controller = SettingsWindowController(model: model)
+        controller.present()
+        controller.selectDisplay(uuid: Self.sideUUID)
+        let window = try XCTUnwrap(controller.window)
+        defer {
+            window.close()
+            model.show(targetUUID: Self.sideUUID)
+        }
+        window.setContentSize(NSSize(width: 680, height: 1000))
+        let content = try XCTUnwrap(window.contentView)
+        func keepOffSwitch() -> NSSwitch? {
+            let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
+            return switches.count == 1 ? switches[0] : nil
+        }
+        spin { content.layoutSubtreeIfNeeded(); return keepOffSwitch() != nil }
+        let toggle = try XCTUnwrap(keepOffSwitch())
+        XCTAssertEqual(toggle.state, .on, "the switch reflects this Hide's intent")
+        toggle.state = .off
+        XCTAssertTrue(toggle.sendAction(toggle.action, to: toggle.target))
+        spin { model.keepWindowsOffCovers[key]?.pausedByUser == true }
+        XCTAssertEqual(model.keepWindowsOffStatuses[key]?.reason, "Paused for this hide.")
+        XCTAssertNotNil(model.hideConfiguration(for: Self.sideUUID)?.keepWindowsOff, "the remembered choice is unchanged")
+        if let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] {
+            try writeSnapshot(of: window, to: output, name: "keep-windows-off-hidden-paused")
+        }
+        toggle.state = .on
+        XCTAssertTrue(toggle.sendAction(toggle.action, to: toggle.target))
+        spin { model.keepWindowsOffCovers[key]?.pausedByUser == false }
+        XCTAssertEqual(model.keepWindowsOffCovers[key]?.pausedByUser, false)
+    }
+
+    func testBlackOutStepKeepWindowsOffSwitchSavesWithoutRunning() throws {
+        try requireInteractiveUI()
+        let app = NSApplication.shared
+        let originalPolicy = app.activationPolicy()
+        app.setActivationPolicy(.accessory)
+        app.activate(ignoringOtherApps: true)
+        defer { app.setActivationPolicy(originalPolicy) }
+        let (model, defaults) = try makeModel()
+        defer { defaults.removePersistentDomain(forName: Self.suiteName) }
+        let step = DisplayActionStep(target: DisplayIdentitySnapshot(displays[1]), effect: .blackOut)
+        let action = DisplayAction(name: "Hide and keep clear", steps: [step])
+        let (parent, sheet) = try presentProductionDisplayActionEditor(
+            model: model, navigation: SettingsNavigation(), action: action, existingID: nil, isNew: true)
+        defer { parent.close() }
+        let content = try XCTUnwrap(sheet.contentView)
+        func keepOffSwitch() -> NSSwitch? {
+            let switches = nativeViews(in: content).compactMap { $0 as? NSSwitch }
+            return switches.count == 1 ? switches[0] : nil
+        }
+        spin { content.layoutSubtreeIfNeeded(); return keepOffSwitch() != nil }
+        let toggle = try XCTUnwrap(keepOffSwitch())
+        XCTAssertEqual(toggle.state, .off)
+        toggle.state = .on
+        XCTAssertTrue(toggle.sendAction(toggle.action, to: toggle.target))
+        spin(timeout: 0.3) { content.layoutSubtreeIfNeeded(); return false }
+        if let output = ProcessInfo.processInfo.environment["PANELCTL_SETTINGS_FIXTURE_OUTPUT"] {
+            try writeSnapshot(of: sheet, to: output, name: "black-out-step-keep-windows-off")
+        }
+        let returnKey = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: sheet.windowNumber, context: nil, characters: "\r",
+            charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        app.sendEvent(returnKey)
+        spin { parent.attachedSheet == nil && model.displayActions.actions.count == 1 }
+        let saved = try XCTUnwrap(model.displayActions.actions.first)
+        XCTAssertEqual(saved.steps.first?.effect, .blackOut)
+        XCTAssertEqual(saved.steps.first?.keepWindowsOff?.destination, .automatic)
+        XCTAssertTrue(model.displayActionResults.isEmpty, "Editing never runs the Action")
+        XCTAssertFalse(model.isBlackoutHidden(Self.sideUUID))
+    }
+
     func testWindowMovePermissionIsExplicitAndAvailableInBothSettingsPages() throws {
         try requireInteractiveUI()
         let permission = SettingsWindowMovePermission()
