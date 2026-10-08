@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Import owner-provided release secrets into a job-local signing keychain."""
 import base64
+import hashlib
 import os
+import re
+import ssl
 from pathlib import Path
 import secrets
 import subprocess
@@ -46,7 +49,23 @@ def main():
             raise SystemExit("Imported keychain has no matching signing identity; check certificate/private-key export and fingerprint secret")
         valid = security("find-identity", "-v", "-p", "codesigning", keychain)
         if identity.upper() not in valid.upper():
-            raise SystemExit("Imported signing identity is not valid for code signing on this runner; check certificate trust and validity")
+            matching = next(line for line in identities.splitlines() if identity.upper() in line.upper())
+            if "CSSMERR_TP_NOT_TRUSTED" not in matching:
+                reasons = re.findall(r"CSSMERR_[A-Z_]+", matching)
+                raise SystemExit(f"Imported signing identity is not valid for code signing: {', '.join(reasons) or 'unknown reason'}")
+            # Only trust the exact configured public certificate, for code signing.
+            # This importer runs on disposable CI runners; never export a private key.
+            pem = security("find-certificate", "-p", keychain)
+            der = ssl.PEM_cert_to_DER_cert(pem)
+            if hashlib.sha1(der).hexdigest().upper() != identity.upper():
+                raise SystemExit("Refusing to trust a certificate that does not match the configured fingerprint")
+            public_certificate = Path(directory) / "signing-certificate.pem"
+            public_certificate.write_text(pem)
+            security("add-trusted-cert", "-r", "trustRoot", "-p", "codeSign",
+                     "-k", keychain, str(public_certificate))
+            valid = security("find-identity", "-v", "-p", "codesigning", keychain)
+            if identity.upper() not in valid.upper():
+                raise SystemExit("Signing identity remains invalid after code-signing-only trust")
         print("Configured signing identity is present and valid in the job keychain")
 
 

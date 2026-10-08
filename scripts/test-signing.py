@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline signing checks: fake tools only; no certificate, TCC or UI access."""
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -9,7 +10,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-IDENTITY = "0123456789ABCDEF0123456789ABCDEF01234567"
+IDENTITY = hashlib.sha1(b"fake certificate").hexdigest().upper()
 
 FAKE_TOOL = '''#!/usr/bin/env python3
 import json, os, pathlib, sys
@@ -24,8 +25,16 @@ elif name == "security":
     if args[0] == "import":
         assert pathlib.Path(args[1]).read_bytes() == b"fake certificate"
     if args[0] == "find-identity":
-        if not os.environ.get("MISSING_IDENTITY") and not ("-v" in args and os.environ.get("INVALID_IDENTITY")):
-            print(os.environ["PANELCTL_SIGNING_IDENTITY"])
+        trusted = pathlib.Path(os.environ["SIGNING_TEST_LOG"] + ".trusted").exists()
+        invalid = os.environ.get("INVALID_IDENTITY") or (os.environ.get("UNTRUSTED_IDENTITY") and not trusted)
+        if not os.environ.get("MISSING_IDENTITY") and not ("-v" in args and invalid):
+            reason = "CSSMERR_TP_CERT_EXPIRED" if os.environ.get("INVALID_IDENTITY") else "CSSMERR_TP_NOT_TRUSTED" if invalid else ""
+            print(os.environ["PANELCTL_SIGNING_IDENTITY"], reason)
+    if args[0] == "find-certificate":
+        encoded = "d3Jvbmc=" if os.environ.get("WRONG_CERTIFICATE") else "ZmFrZSBjZXJ0aWZpY2F0ZQ=="
+        print("-----BEGIN CERTIFICATE-----\\n" + encoded + "\\n-----END CERTIFICATE-----")
+    if args[0] == "add-trusted-cert":
+        pathlib.Path(os.environ["SIGNING_TEST_LOG"] + ".trusted").touch()
     if os.environ.get("FAIL_SECURITY") == args[0]:
         print("sensitive diagnostic", file=sys.stderr)
         sys.exit(1)
@@ -168,6 +177,24 @@ class SigningTests(unittest.TestCase):
         self.assertEqual(imported[-2:], ["-T", "/usr/bin/codesign"])
         self.assertNotIn("fake password", result.stdout + result.stderr)
         self.assertFalse(any("list-keychains" in call for call in calls))
+
+    def test_import_trusts_only_matching_public_certificate_for_code_signing(self):
+        self.configure_import()
+        self.env["UNTRUSTED_IDENTITY"] = "1"
+        result = self.import_identity()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        trust = next(call for call in self.calls() if call[1] == "add-trusted-cert")
+        self.assertEqual(trust[2:6], ["-r", "trustRoot", "-p", "codeSign"])
+        self.assertFalse(Path(trust[-1]).exists())
+        self.assertFalse(any(call[1] == "export" for call in self.calls()))
+
+    def test_import_never_trusts_a_different_certificate(self):
+        self.configure_import()
+        self.env.update(UNTRUSTED_IDENTITY="1", WRONG_CERTIFICATE="1")
+        result = self.import_identity()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not match", result.stderr)
+        self.assertFalse(any(call[1] == "add-trusted-cert" for call in self.calls()))
 
     def test_import_refuses_missing_or_invalid_identity(self):
         self.configure_import()
