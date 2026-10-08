@@ -26,7 +26,11 @@ def main():
 
     def security(*args):
         # Never print arguments: import/partition commands contain passwords.
-        result = subprocess.run(["security", *args], capture_output=True)
+        command = ["sudo", "-n", "security", *args] if args[0] == "add-trusted-cert" else ["security", *args]
+        try:
+            result = subprocess.run(command, capture_output=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            raise SystemExit(f"security {args[0]} timed out after 30 seconds (output withheld)")
         if result.returncode:
             raise SystemExit(f"security {args[0]} failed (output withheld)")
         return result.stdout.decode()
@@ -61,7 +65,9 @@ def main():
                 raise SystemExit("Refusing to trust a certificate that does not match the configured fingerprint")
             public_certificate = Path(directory) / "signing-certificate.pem"
             public_certificate.write_text(pem)
-            security("add-trusted-cert", "-r", "trustRoot", "-p", "codeSign",
+            # The user trust domain prompts for authorization without a desktop.
+            # Dedicated macOS runners permit noninteractive sudo; use their admin domain.
+            security("add-trusted-cert", "-d", "-r", "trustRoot", "-p", "codeSign",
                      "-k", keychain, str(public_certificate))
             valid = security("find-identity", "-v", "-p", "codesigning", keychain)
             if identity.upper() not in valid.upper():

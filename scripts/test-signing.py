@@ -16,6 +16,9 @@ FAKE_TOOL = '''#!/usr/bin/env python3
 import json, os, pathlib, sys
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
+if name == "sudo":
+    assert args[0] == "-n"
+    os.execvp(args[1], args[1:])
 with open(os.environ["SIGNING_TEST_LOG"], "a") as log:
     log.write(json.dumps([name, *args]) + "\\n")
 if name == "codesign":
@@ -61,7 +64,7 @@ class SigningTests(unittest.TestCase):
                     and key != "PANELCTL_REQUIRE_SIGNING"}
         self.env.update(PATH=f"{self.directory}:{os.environ['PATH']}",
                         SIGNING_TEST_LOG=str(self.log))
-        for name in ("codesign", "security", "lipo", "xcrun", "vtool"):
+        for name in ("codesign", "security", "sudo", "lipo", "xcrun", "vtool"):
             tool = self.directory / name
             tool.write_text(FAKE_TOOL)
             tool.chmod(0o755)
@@ -184,7 +187,7 @@ class SigningTests(unittest.TestCase):
         result = self.import_identity()
         self.assertEqual(result.returncode, 0, result.stderr)
         trust = next(call for call in self.calls() if call[1] == "add-trusted-cert")
-        self.assertEqual(trust[2:6], ["-r", "trustRoot", "-p", "codeSign"])
+        self.assertEqual(trust[2:7], ["-d", "-r", "trustRoot", "-p", "codeSign"])
         self.assertFalse(Path(trust[-1]).exists())
         self.assertFalse(any(call[1] == "export" for call in self.calls()))
 

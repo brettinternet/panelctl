@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@agent'
 created_date: '2026-10-08 20:06'
-updated_date: '2026-10-08 20:39'
+updated_date: '2026-10-08 21:15'
 labels: []
 dependencies: []
 type: bug
@@ -40,4 +40,6 @@ CI 37837757000 showed native NSSwitch accessibility labels are nil. User approve
 Main CI 37838933066 still exposes initial-page rendering on macOS 15 even after preselecting before present. Changed approach: enable keep-off on the initial main display, leave target off, and wait for off before clicking, so stale controls are observably distinct. Added regression assertion that target clicks leave the initial display preference unchanged. Both scoped local UI tests pass again (2/2); no production behavior or existing assertions weakened.
 
 Main CI 37839544849 passed. Tagged v0.7.0 at d64ed1c; release CI 37840035917 passed all tests and secret import, but signing failed with item not found in keychain; no release exists. User approved safe existing-secret CI diagnostics and moving the unpublished tag to the verified repair. Added early identity availability/validity checks and a manual dedicated-runner import/sign probe (no key export or disclosure).
+
+Signing diagnosis confirmed configured identity exists but lacks runner trust. User-domain add-trusted-cert stalled on headless authorization; canceled run 37841843127 and changed to noninteractive sudo admin-domain codeSign-only trust on the disposable runner. Security commands now have 30-second bounds, manual signing step has a two-minute limit, and dispatch no longer duplicates main tests. Fourteen fake signing tests and actionlint pass.
 <!-- SECTION:NOTES:END -->

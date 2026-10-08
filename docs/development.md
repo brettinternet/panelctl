@@ -134,7 +134,8 @@ chat or logs. No Apple Developer membership is needed.
    passes that keychain explicitly (without changing the search list), and verifies
    the configured identity is available. If the runner reports the self-signed
    certificate as untrusted, it verifies the public certificate's fingerprint and
-   grants trust for **code signing only** in the disposable runner's user domain.
+   grants trust for **code signing only** in the disposable runner's admin domain
+   using noninteractive `sudo`, avoiding a GUI authorization prompt.
    Expired or otherwise invalid identities still fail. It deletes the temporary
    `.p12` and public certificate, and deletes the keychain in an `always()` step. Missing
    secrets, import failures or signing failures prevent publication. PR jobs do
