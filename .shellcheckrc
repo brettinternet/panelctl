@@ -1,0 +1,3 @@
+# Lets `# shellcheck source=x.sh` resolve scripts sourced via "$(dirname "${BASH_SOURCE[0]}")".
+source-path=SCRIPTDIR
+external-sources=true

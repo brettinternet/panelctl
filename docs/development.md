@@ -1,8 +1,11 @@
 # Development
 
-Requires macOS 13+ and Swift 5.9+.
+Requires macOS 13+, Swift 5.9+ and [mise](https://mise.jdx.dev).
 
 ```sh
+task init                     # install tools, create .env, install Git hooks
+task check                    # Prettier, ShellCheck, warnings-as-errors build
+task fix                      # apply Prettier formatting
 swift test --disable-sandbox
 swift build --product panelctl
 swift build --product PanelCtlApp
@@ -106,9 +109,9 @@ chat or logs. No Apple Developer membership is needed.
    identity, PR/local packaging may use ad-hoc signing with a visible warning,
    unless `PANELCTL_REQUIRE_SIGNING=1`. Direct `swift build` is not app packaging.
 
-   To keep the fingerprint set for local `task` runs, put
-   `PANELCTL_SIGNING_IDENTITY=…` in an untracked `.env.local`, which the
-   Taskfile loads.
+   For local `task` runs, set
+   `PANELCTL_SIGNING_IDENTITY=…` in `.env` (created from `example.env`
+   by `task init`; untracked), which the Taskfile loads.
    `task copy:release` refuses to install an ad-hoc signed app, because each
    ad-hoc build would make macOS drop Accessibility and other privacy grants.
 

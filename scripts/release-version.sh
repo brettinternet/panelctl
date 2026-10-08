@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034 # Sets RELEASE_* variables for the scripts that source it.
 
 # Display the validated release version, identifying builds not at that tag.
 release_version_display() {

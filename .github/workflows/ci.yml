@@ -6,7 +6,7 @@ on:
     branches:
       - main
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: read
@@ -18,7 +18,7 @@ defaults:
 
 # CI runners are dedicated to testing; local runs remain noninteractive by default.
 env:
-  PANELCTL_TEST_INTERACTIVE_UI: '1'
+  PANELCTL_TEST_INTERACTIVE_UI: "1"
 
 jobs:
   test:
@@ -57,7 +57,7 @@ jobs:
     permissions:
       contents: write
     env:
-      PANELCTL_REQUIRE_SIGNING: '1'
+      PANELCTL_REQUIRE_SIGNING: "1"
       PANELCTL_SIGNING_IDENTITY: ${{ secrets.PANELCTL_SIGNING_IDENTITY }}
     steps:
       - name: Check out source

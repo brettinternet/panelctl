@@ -2,8 +2,8 @@
 # yaml-language-server: $schema=https://taskfile.dev/schema.json
 version: "3"
 
-# Optional, untracked: PANELCTL_SIGNING_IDENTITY for local signed builds (see docs/development.md).
-dotenv: [".env.local"]
+# Untracked local settings created by `task init` from example.env.
+dotenv: [".env"]
 
 vars:
   ARM64_BUILD_DIR: .build/task-release-arm64
@@ -19,6 +19,58 @@ tasks:
     silent: true
     cmds:
       - task -l
+
+  init:
+    desc: Install tools, create .env and install Git hooks
+    aliases: [setup]
+    cmds:
+      - task: setup:mise
+      - task: setup:env
+      - task: setup:lefthook
+
+  setup:mise:
+    desc: Install workstation tools
+    cmds:
+      - mise trust -q -a
+      - mise install -q
+    preconditions:
+      - sh: command -v mise
+        msg: Mise is not installed
+
+  setup:env:
+    desc: Create .env from example.env
+    cmds:
+      - cp example.env .env
+    status:
+      - test -f .env
+
+  setup:lefthook:
+    desc: Install Lefthook Git hooks
+    cmds:
+      - mise exec lefthook -- lefthook install
+    preconditions:
+      - test -f lefthook.yaml
+
+  check:
+    desc: Run formatting and lint checks
+    deps: ["lint:swift"]
+    cmds:
+      - mise exec prettier -- prettier --check .
+      - mise exec shellcheck -- shellcheck scripts/*.sh
+
+  check:staged:
+    desc: Run checks only for staged files
+    aliases: [check-staged]
+    cmd: mise exec lefthook -- lefthook run pre-commit
+
+  fix:
+    desc: Fix formatting
+    cmd: mise exec prettier -- prettier --write .
+
+  lint:swift:
+    desc: Build with compiler warnings as errors, as CI does
+    # A separate scratch path keeps the extra flag from invalidating test builds.
+    cmd: swift build --disable-sandbox --build-tests --scratch-path .build/lint -Xswiftc -warnings-as-errors
 
   build:release:
     desc: Build the app (Release)
@@ -46,7 +98,7 @@ tasks:
       # An ad-hoc signature changes every build, so macOS would drop privacy grants such as Accessibility.
       - |
         if ! codesign -d -r- "{{.APP_PATH}}" 2>&1 | grep -q 'certificate leaf = H"'; then
-          echo 'copy:release: refusing an ad-hoc signed app; set PANELCTL_SIGNING_IDENTITY (see docs/development.md)' >&2
+          echo 'copy:release: refusing an ad-hoc signed app; set PANELCTL_SIGNING_IDENTITY in .env (see example.env)' >&2
           exit 1
         fi
       - /usr/bin/xcrun swift ./scripts/install-release.swift "{{.APP_PATH}}" /Applications/PanelCtl.app

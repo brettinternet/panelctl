@@ -1,0 +1,5 @@
+# Markdown is hand-wrapped, and Backlog.md owns backlog/.
+*.md
+backlog/
+Packaging/Assets.xcassets/
+Tests/**/Fixtures/

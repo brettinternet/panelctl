@@ -18,8 +18,10 @@ fi
 
 tag=$1
 output_dir=${2:-dist}
+# shellcheck source=signing.sh
 source "$(dirname "${BASH_SOURCE[0]}")/signing.sh"
 panelctl_signing_configure
+# shellcheck source=release-version.sh
 source "$(dirname "${BASH_SOURCE[0]}")/release-version.sh"
 if ! release_version_parse "$tag"; then
 	echo "package-release.sh: tag must be a semantic version such as v1.2.3 or v1.2.3-beta.1: $tag" >&2

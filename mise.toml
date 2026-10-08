@@ -1,2 +1,7 @@
 [tools]
 "github:MrLesk/Backlog.md" = "1.53.0"
+gitleaks = "latest"
+lefthook = "latest"
+prettier = "latest"
+shellcheck = "latest"
+task = "latest"

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shellcheck source=release-version.sh
 source "$(dirname "${BASH_SOURCE[0]}")/release-version.sh"
 
 assert_parse() {
