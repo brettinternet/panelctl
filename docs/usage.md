@@ -132,8 +132,9 @@ panelctl app status --watch --json |
   jq --unbuffered -r 'if .running then .summary else "PanelCtl disconnected" end'
 ```
 
-Consumers must read promptly. The app does not queue unsent snapshots: a full
-socket buffer or partial write disconnects that watcher without affecting others.
+Consumers must read promptly. Each watcher's socket buffer holds one maximum-size
+frame and the app queues nothing beyond it: once a consumer's unread backlog fills
+that buffer, the next partial write disconnects it without affecting others.
 Frames are bounded to 1 MiB; oversized snapshots disconnect rather than omit
 display evidence. At most 64 watchers are accepted. The stream accepts no further
 requests; use a separate normal CLI invocation for commands. Existing one-shot

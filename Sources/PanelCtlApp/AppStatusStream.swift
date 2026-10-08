@@ -3,7 +3,8 @@ import Foundation
 import PanelCtlCore
 
 /// Main-actor ownership serializes subscriptions, snapshots and descriptor use.
-/// Writes never wait: a partial write or full kernel buffer ends the subscription.
+/// Writes never wait: each watcher's kernel send buffer holds one maximum-size
+/// frame, so a partial write means the consumer is behind and ends the subscription.
 @MainActor
 final class AppStatusStream {
     private struct Watcher {
@@ -26,8 +27,11 @@ final class AppStatusStream {
     }
 
     func subscribe(_ fd: Int32) {
+        // The default AF_UNIX send buffer is 8 KiB, smaller than valid frames.
+        var bufferSize = Int32(AppControlSocket.streamMessageLimit)
         guard !stopped, watchers.count < 64,
-              fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) == 0 else {
+              fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) == 0,
+              setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufferSize, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
             Darwin.close(fd)
             return
         }

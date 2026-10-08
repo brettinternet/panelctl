@@ -98,13 +98,13 @@ final class AppStatusStreamTests: XCTestCase {
         let slow = try socketPair()
         let fast = try socketPair()
         defer { Darwin.close(slow[1]); Darwin.close(fast[1]) }
-        var size: Int32 = 1024
-        XCTAssertEqual(setsockopt(slow[0], SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout<Int32>.size)), 0)
         stream.subscribe(slow[0])
         stream.subscribe(fast[0])
         _ = try Self.readFrame(fast[1])
+        // Each frame is valid, but an unread backlog soon exceeds the
+        // one-frame send buffer and must disconnect only the stalled consumer.
         for index in 0..<100 {
-            snapshot = Self.status("\(index)-" + String(repeating: "x", count: 256))
+            snapshot = Self.status("\(index)-" + String(repeating: "x", count: 100_000))
             stream.statusDidChange()
             // Wait off the main actor so the coalesced publisher can run even
             // when the runner takes longer than its nominal timer interval.
@@ -113,6 +113,27 @@ final class AppStatusStreamTests: XCTestCase {
             if stream.watcherCount == 1 { break }
         }
         XCTAssertEqual(stream.watcherCount, 1)
+    }
+
+    @MainActor
+    func testValidFrameLargerThanDefaultSocketBufferReachesWatcherBeforeItReads() throws {
+        let pair = try socketPair()
+        defer { Darwin.close(pair[1]) }
+        var defaultSize: Int32 = 0
+        var length = socklen_t(MemoryLayout<Int32>.size)
+        XCTAssertEqual(getsockopt(pair[0], SOL_SOCKET, SO_SNDBUF, &defaultSize, &length), 0)
+        // Leave room for the JSON envelope, sequence and newline.
+        let state = String(repeating: "x", count: AppControlSocket.streamMessageLimit - 512)
+        XCTAssertGreaterThan(state.utf8.count, Int(defaultSize))
+        let stream = AppStatusStream {
+            AppControlResponse(ok: true, running: true, enabled: true, state: state, summary: "large")
+        }
+        defer { stream.stop() }
+        stream.subscribe(pair[0])
+        XCTAssertEqual(stream.watcherCount, 1, "a healthy watcher that has not read yet stays subscribed")
+        let frame = try Self.readFrame(pair[1])
+        XCTAssertEqual(frame.state, state)
+        XCTAssertEqual(frame.sequence, 1)
     }
 
     @MainActor
@@ -187,13 +208,18 @@ final class AppStatusStreamTests: XCTestCase {
         return pair
     }
 
+    // Tests read each frame before another is published, so a chunk never
+    // spans two frames.
     private static func readFrame(_ fd: Int32) throws -> AppControlResponse {
         var data = Data()
-        var byte: UInt8 = 0
-        while Darwin.read(fd, &byte, 1) == 1 {
-            if byte == 0x0A { return try JSONDecoder().decode(AppControlResponse.self, from: data) }
-            data.append(byte)
+        var chunk = [UInt8](repeating: 0, count: 65_536)
+        while true {
+            let count = Darwin.read(fd, &chunk, chunk.count)
+            guard count > 0 else { throw POSIXError(.EIO) }
+            data.append(contentsOf: chunk[..<count])
+            if let newline = data.firstIndex(of: 0x0A) {
+                return try JSONDecoder().decode(AppControlResponse.self, from: data[..<newline])
+            }
         }
-        throw POSIXError(.EIO)
     }
 }
