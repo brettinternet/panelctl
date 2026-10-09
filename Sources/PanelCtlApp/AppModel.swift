@@ -4433,14 +4433,17 @@ final class AppModel: ObservableObject {
         return CLIHelp.version.replacingOccurrences(of: "panelctl ", with: "")
     }
 
-    /// A `MenuImage` name.
-    var statusImageName: String {
-        if !blackedOutDisplayIDs.isEmpty { return "rectangle.fill" }
+    var statusMark: StatusMark {
+        var mark = runtimeState.statusMark
         if disconnectAutomationPaused {
-            return disconnectInspectionFailure != nil || protectionQuiescenceFailure != nil
-                ? "exclamationmark.triangle.fill" : "pause.circle.fill"
+            let failed = disconnectInspectionFailure != nil || protectionQuiescenceFailure != nil
+            mark = StatusMark(badge: failed ? .attention : .paused)
         }
-        return runtimeState.imageName
+        // Hide's displays, Automation blackouts and removed displays alike.
+        if displayTiles.contains(where: { [.hidden, .blackedOut, .needsRecovery].contains($0.status) }) {
+            mark.hidden = true
+        }
+        return mark
     }
 
     var statusSummary: String {

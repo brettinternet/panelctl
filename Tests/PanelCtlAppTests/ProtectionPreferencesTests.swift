@@ -1414,7 +1414,7 @@ final class ProtectionPreferencesTests: XCTestCase {
         try await waitUntil { model.blackedOutDisplayIDs == [202] }
 
         XCTAssertEqual(model.runtimeState, .waiting)
-        XCTAssertEqual(model.statusImageName, "rectangle.fill")
+        XCTAssertEqual(model.statusMark, StatusMark(watching: true, hidden: true))
         XCTAssertTrue(model.statusSummary.hasPrefix("Empty-display blackout active"))
         XCTAssertTrue(model.statusSummary.contains("to blackout"))
         XCTAssertEqual(model.nextAction, "blackout")

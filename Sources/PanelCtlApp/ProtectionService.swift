@@ -41,17 +41,13 @@ enum ProtectionRuntimeState: Equatable {
         }
     }
 
-    /// A `MenuImage` name.
-    var imageName: String {
+    var statusMark: StatusMark {
         switch self {
-        case .disabled: return MenuImage.displays
-        case .snoozed, .disconnectPaused: return "pause.circle.fill"
-        case .starting, .waiting, .waitingForInput, .waitingForPlayback: return MenuImage.displaysFill
-        case .blackedOut: return "rectangle.fill"
-        case .sleeping: return "moon.fill"
-        case .stopping: return MenuImage.displays
-        case .waitingForDisplays: return MenuImage.displays
-        case .failed: return "exclamationmark.triangle.fill"
+        case .disabled, .stopping, .waitingForDisplays: return StatusMark()
+        case .snoozed, .disconnectPaused: return StatusMark(badge: .paused)
+        case .starting, .waiting, .waitingForInput, .waitingForPlayback: return StatusMark(watching: true)
+        case .blackedOut, .sleeping: return StatusMark(watching: true, hidden: true)
+        case .failed: return StatusMark(badge: .attention)
         }
     }
 

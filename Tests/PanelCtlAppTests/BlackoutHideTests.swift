@@ -31,11 +31,13 @@ final class BlackoutHideTests: XCTestCase {
         let delegate = AppDelegate()
         delegate.model = model
         XCTAssertTrue(model.displayTiles.allSatisfy { $0.action == .hide && $0.actionBlocker == nil })
+        XCTAssertFalse(model.statusMark.hidden)
 
         var result = hide(Self.sideUUID, model)
         XCTAssertEqual(result?.succeeded, true)
         XCTAssertEqual(coverRequests.last, [202])
         XCTAssertEqual(tile(Self.sideUUID, model).status, .hidden)
+        XCTAssertTrue(model.statusMark.hidden, "the menu-bar mark shows a hidden display")
         XCTAssertEqual(tile(Self.sideUUID, model).action, .show)
         XCTAssertNil(tile(Self.sideUUID, model).actionBlocker)
         XCTAssertEqual(model.coveredHiddenDisplayIDs, [202])
@@ -78,6 +80,7 @@ final class BlackoutHideTests: XCTestCase {
         XCTAssertEqual(coverRequests.last, [])
         XCTAssertEqual(tile(Self.sideUUID, model).status, .on)
         XCTAssertEqual(tile(Self.sideUUID, model).action, .hide)
+        XCTAssertFalse(model.statusMark.hidden)
 
         // Hidden displays are session-only: relaunch starts with every display shown.
         XCTAssertEqual(hide(Self.sideUUID, model)?.succeeded, true)

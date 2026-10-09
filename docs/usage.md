@@ -95,6 +95,10 @@ Closing Settings keeps everything running. Quitting removes black-outs but can
 leave removed displays hidden, so the quit prompt offers **Show and Quit**.
 If the menu icon is hidden, reopen the app to show Settings.
 
+The menu icon shows two displays. The front one fills while Automation runs;
+the back one fills while any display is hidden, blacked out or removed. A pause
+badge means Automation is paused, and **!** means it needs attention.
+
 ## App automation
 
 ```sh

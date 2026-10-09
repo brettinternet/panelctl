@@ -51,7 +51,7 @@ so native UI tests drive AppKit controls and check the rest through the model.
 
 `Packaging/AppIcon.icon` is the Icon Composer source. After editing it, run
 `task build:icon` (Xcode 26+) to refresh the app icon images, which the README
-also shows. The menu-bar mark in `MenuImage.swift` follows the same design.
+also shows. The menu-bar mark in `StatusMark.swift` follows the same design.
 
 ## Release
 
