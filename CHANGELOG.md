@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.1
+
+- Show hidden, paused, and attention states on the menu-bar mark.
+
 ## 0.8.0
 
 - Redesign the app icon and menu-bar mark.
