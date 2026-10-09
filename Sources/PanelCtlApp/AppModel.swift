@@ -229,6 +229,7 @@ final class AppModel: ObservableObject {
     private var screensAwakeAfterSleep = false
     private var sleepWakeSettlement: Task<Void, Never>?
     private let displayWakeSettleDelay: TimeInterval
+    private var sleepWakeDeadline: Date?
     private static let preferencesKey = "blackoutPreferences"
     private static let automationPreferencesKey = "automationRules"
     private static let hidePreferencesKey = "displayHidePreferences"
@@ -4056,6 +4057,7 @@ final class AppModel: ObservableObject {
         sleepWakeSettlement?.cancel()
         sleepWakeSettlement = nil
         screensAwakeAfterSleep = false
+        sleepWakeDeadline = nil
         if !sleepLifecycleActive {
             sleepLifecycleActive = true
             sleepHideResumeIntent = runningDisplayAction == nil ? captureSleepHideResumeIntent() : nil
@@ -4073,6 +4075,7 @@ final class AppModel: ObservableObject {
             return
         }
         if screensAwake {
+            if sleepWakeDeadline == nil { sleepWakeDeadline = now().addingTimeInterval(15) }
             screensAwakeAfterSleep = true
             scheduleSleepWakeSettlement()
         } else if screensAwakeAfterSleep {
@@ -4176,7 +4179,7 @@ final class AppModel: ObservableObject {
 
     private func captureSleepHideResumeIntent() -> SleepHideResumeIntent? {
         guard handoffInspectionFailure == nil, let status = handoffStatus,
-              status.state == .hidden, status.mirrorTopologyVerified,
+              status.mirrorTopologyVerified,
               let journalID = status.journalID, let baselineIdentity = status.baselineIdentity else { return nil }
         var journalRemovals = status.removals
         var removals = journalRemovals.filter(\.isUnresolved)
@@ -4186,7 +4189,7 @@ final class AppModel: ObservableObject {
         }
         if journalRemovals.isEmpty { journalRemovals = removals }
         guard !removals.isEmpty,
-              removals.allSatisfy({ $0.state == "mirrored" && $0.canShow && $0.topologyVerified }) else { return nil }
+              removals.allSatisfy({ $0.state == "mirrored" && $0.topologyVerified }) else { return nil }
         return SleepHideResumeIntent(journalID: journalID, baselineIdentity: baselineIdentity,
                                      journalRemovals: journalRemovals, removals: removals)
     }
@@ -4195,7 +4198,8 @@ final class AppModel: ObservableObject {
         sleepWakeSettlement?.cancel()
         sleepWakeSettlement = Task { [weak self] in
             guard let self else { return }
-            let delay = UInt64(self.displayWakeSettleDelay * 1_000_000_000)
+            let remaining = max(0, self.sleepWakeDeadline?.timeIntervalSince(self.now()) ?? 0)
+            let delay = UInt64(min(max(0.01, self.displayWakeSettleDelay), remaining) * 1_000_000_000)
             if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
             guard !Task.isCancelled else { return }
             self.finishSleepWakeSettlement()
@@ -4208,9 +4212,26 @@ final class AppModel: ObservableObject {
         displays = displayProvider()
         refreshHandoffStatus()
         if let intent = sleepHideResumeIntent {
+            // Off-input monitors can take ~10 seconds to return after screensDidWake.
+            // Retain intent until they return, but never retry a write.
+            let ready = intent.removals.allSatisfy { removal in
+                matchesPresentDisplay(removal.target) && matchesAwakeDisplay(removal.source) &&
+                    (matchesAwakeDisplay(removal.target) ||
+                     handoffStatus?.removal(for: removal.target.uuid)?.topologyVerified == true)
+            }
+            let identityChanged = intent.removals.flatMap { [$0.target, $0.source] }.contains { identity in
+                let found = displays.filter { $0.uuid?.caseInsensitiveCompare(identity.uuid) == .orderedSame }
+                return !found.isEmpty && (found.count != 1 || found[0].id != identity.id ||
+                    found[0].vendor != identity.vendor || found[0].model != identity.model || found[0].serial != identity.serial)
+            }
+            if !ready, !identityChanged, let deadline = sleepWakeDeadline, now() < deadline {
+                scheduleSleepWakeSettlement()
+                return
+            }
             resumeSleepHideIntent(intent)
         }
         sleepHideResumeIntent = nil
+        sleepWakeDeadline = nil
         sleepLifecycleActive = false
         screensAwakeAfterSleep = false
         setDisplayLifecycleTransitioning(false)
@@ -4232,11 +4253,15 @@ final class AppModel: ObservableObject {
         }
 
         // If macOS kept the verified mirror topology, there is nothing to reapply.
-        if status.state == .hidden {
+        if status.state != .none, status.mirrorTopologyVerified {
             guard sleepRemovalsStillHidden(intent.journalRemovals, in: status) else {
                 recordSleepResumeFailure(intent.removals.first, reason: "The mirror topology no longer verifies after wake. Inspect recovery before continuing.")
                 return
             }
+            return
+        }
+        if status.state == .recovery {
+            resumeDriftedSleepHideIntent(intent, status: status)
             return
         }
         guard status.state == .none,
@@ -4292,6 +4317,34 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func resumeDriftedSleepHideIntent(_ intent: SleepHideResumeIntent, status: DisplayHandoffStatus) {
+        guard let removal = intent.removals.first,
+              let journalIdentity = status.journalIdentity,
+              let topologyIdentity = status.observedTopologyIdentity else { return }
+        hideOperation = .hiding(removal.target.uuid)
+        onStatusChange?()
+        defer { hideOperation = .idle; onStatusChange?() }
+        let target = coreIdentity(removal.target)
+        let source = coreIdentity(removal.source)
+        let expectation = DisplayHideWakeExpectation(
+            journalID: intent.journalID, journalIdentity: journalIdentity,
+            baselineIdentity: intent.baselineIdentity, observedTopologyIdentity: topologyIdentity,
+            target: target, source: source, resumeRemovalIDs: intent.removals.map(\.id)
+        )
+        do {
+            _ = try sleepResumeHideDisplay(target, source, expectation)
+            displays = displayProvider()
+            refreshHandoffStatus()
+            guard resumedRemovalsMatch(intent.removals, baselineIdentity: intent.baselineIdentity) else {
+                throw RecoveryError.unsafe("The resumed mirrors did not verify. The original layout journal is retained.")
+            }
+        } catch {
+            displays = displayProvider()
+            refreshHandoffStatus()
+            recordSleepResumeFailure(removal, reason: error.localizedDescription)
+        }
+    }
+
     private func sameSleepRemovalIdentities(_ expected: [DisplayHandoffRemoval],
                                             in status: DisplayHandoffStatus) -> Bool {
         guard status.removals.count == expected.count else { return false }
@@ -4308,7 +4361,7 @@ final class AppModel: ObservableObject {
         return expected.allSatisfy { wanted in
             guard let actual = status.removals.first(where: { $0.id == wanted.id }) else { return false }
             if wanted.isUnresolved {
-                return actual.isUnresolved && actual.state == "mirrored" && actual.canShow && actual.topologyVerified
+                return actual.isUnresolved && actual.state == "mirrored" && actual.topologyVerified
             }
             return !actual.isUnresolved && actual.state == wanted.state
         }
@@ -4338,13 +4391,13 @@ final class AppModel: ObservableObject {
 
     private func resumedRemovalsMatch(_ expected: [DisplayHandoffRemoval], baselineIdentity: String) -> Bool {
         guard let status = handoffStatus, handoffInspectionFailure == nil,
-              status.state == .hidden, status.baselineIdentity == baselineIdentity,
+              status.mirrorTopologyVerified, status.baselineIdentity == baselineIdentity,
               status.removals.filter(\.isUnresolved).count == expected.count else { return false }
         return expected.allSatisfy { wanted in
             guard let actual = status.removals.first(where: {
                 $0.target.uuid.caseInsensitiveCompare(wanted.target.uuid) == .orderedSame
             }) else { return false }
-            return actual.isUnresolved && actual.state == "mirrored" && actual.canShow && actual.topologyVerified &&
+            return actual.isUnresolved && actual.state == "mirrored" && actual.topologyVerified &&
                 sameSleepDisplayIdentity(actual.target, wanted.target) &&
                 sameSleepDisplayIdentity(actual.source, wanted.source)
         }

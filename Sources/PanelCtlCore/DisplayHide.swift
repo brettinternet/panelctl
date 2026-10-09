@@ -40,15 +40,19 @@ public struct DisplayHideWakeExpectation: Equatable {
     public let observedTopologyIdentity: String
     public let target: DisplayHideIdentity
     public let source: DisplayHideIdentity
+    /// The complete set verified hidden before this sleep, never inferred from wake topology.
+    public let resumeRemovalIDs: [String]
 
     public init(journalID: String, journalIdentity: String, baselineIdentity: String,
-                observedTopologyIdentity: String, target: DisplayHideIdentity, source: DisplayHideIdentity) {
+                observedTopologyIdentity: String, target: DisplayHideIdentity, source: DisplayHideIdentity,
+                resumeRemovalIDs: [String] = []) {
         self.journalID = journalID
         self.journalIdentity = journalIdentity
         self.baselineIdentity = baselineIdentity
         self.observedTopologyIdentity = observedTopologyIdentity
         self.target = target
         self.source = source
+        self.resumeRemovalIDs = resumeRemovalIDs
     }
 }
 

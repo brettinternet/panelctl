@@ -65,9 +65,23 @@ A display that needs attention blocks new removals until it's fixed.
 
 ## Sleep, wake and reboot
 
-macOS may undo mirroring on wake. If the whole original layout came back
-cleanly, the app mirrors each hidden display again, once, without switching
-inputs. Anything unexpected is left alone and shown as needing recovery.
+macOS may undo mirroring on wake and return an off-input monitor late, with a
+changed main display or arrangement. The running app retains the set verified
+hidden before sleep and waits up to 15 seconds for those displays to return.
+If the original layout came back exactly, it mirrors the hidden displays again.
+For a multi-display journal with layout drift, it reapplies the captured mirrors
+and saved visible-display origins/main together in one session transaction.
+It never switches inputs on wake. Follower modes are negotiated by mirroring;
+a missing saved follower mode does not prevent re-hide, but still blocks Show
+until that exact mode returns. The original layout and modes remain journaled.
+
+Changed identities, unrelated mirrors, changed visible-display modes, interrupted
+Show operations or failed verification remain in recovery. There is no write
+retry, and explicit Hide/Show cancels pending wake resume. Resume requires intent
+captured by this running app before sleep; relaunch never starts it. A monitor
+that returns after the bounded window still needs explicit recovery. This path
+is covered by fake-writer regressions; live monitor/driver acceptance and timing
+remain hardware-validation limits.
 
 A monitor on another computer's input may reconnect with a reduced mode list
 (for example, 60 Hz instead of the saved 240 Hz). Explicit app **Show** or

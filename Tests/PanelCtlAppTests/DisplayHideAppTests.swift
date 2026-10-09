@@ -1894,6 +1894,14 @@ final class DisplayHideAppTests: XCTestCase {
     }
 
     func testSleepWakeRehidesTwoDisplaySessionEndToEndAcrossFreshCoreCaptures() async throws {
+        try await exerciseWakeCore(layoutDrift: false)
+    }
+
+    func testSleepWakeWaitsForOffInputDisplayAndRepairsDriftWithoutItsSavedMode() async throws {
+        try await exerciseWakeCore(layoutDrift: true)
+    }
+
+    private func exerciseWakeCore(layoutDrift: Bool) async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("panelctl-app-wake-core-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
@@ -1922,6 +1930,8 @@ final class DisplayHideAppTests: XCTestCase {
         var stagedTargets: [UInt32] = []
         var commits = 0
         var ddcCalls = 0
+        var savedTargetModeUnavailable = false
+        var origins: [UInt32: [Int32]] = [:]
         let transaction = MirrorTransaction(
             begin: { OpaquePointer(bitPattern: 1)! },
             stage: { _, targetID, sourceID in
@@ -1939,7 +1949,8 @@ final class DisplayHideAppTests: XCTestCase {
                 pendingTarget = nil
                 commits += 1
             },
-            cancel: { _ in }
+            cancel: { _ in },
+            stageOrigin: { _, id, x, y in origins[id] = [x, y] }
         )
         let mirror = MirrorController(
             records: { self.appDisplayRecords(fakeTopology) },
@@ -1947,7 +1958,11 @@ final class DisplayHideAppTests: XCTestCase {
             engine: RecoveryEngine(capture: { fakeTopology }, apply: { _ in
                 throw RecoveryError.unsafe("wake resume must use the public mirror transaction")
             }, convergencePause: {}),
-            preflightModes: { _ in },
+            preflightModes: { _ in
+                if savedTargetModeUnavailable {
+                    throw RecoveryError.modeUnavailable(displayUUID: Self.targetUUID, mode: "saved high refresh rate")
+                }
+            },
             transaction: transaction
         )
         var handoff = HandoffController(mirror: mirror)
@@ -1983,17 +1998,49 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(model.handoffStatus?.state, DisplayHandoffStatus.State.hidden)
         model.beginDisplaySleepTransition()
 
-        // A fresh independent capture differs only in diagnostic capture timestamps.
-        fakeTopology = try appRecoverySnapshot(capturedAt: Date(timeIntervalSince1970: 1_800_000_000))
+        // The recorded failure first leaves the off-input target inactive,
+        // then returns it as main with a reduced mode and shifted desktops.
+        savedTargetModeUnavailable = layoutDrift
+        fakeTopology = try appRecoverySnapshot(capturedAt: Date(timeIntervalSince1970: 1_800_000_000)) {
+            if layoutDrift { $0[1]["active"] = false }
+        }
         model.displayWakeObserved(screensAwake: true)
+        if layoutDrift {
+            try await Task.sleep(nanoseconds: 50_000_000)
+            XCTAssertTrue(model.displayLifecycleTransitioning, "do not consume intent during temporary inactivity")
+            XCTAssertEqual(commits, 0)
+            fakeTopology = try appRecoverySnapshot(capturedAt: Date()) { displays in
+                displays[0]["main"] = false
+                displays[0]["x"] = 2560
+                displays[1]["main"] = true
+                displays[1]["x"] = 0
+                displays[2]["x"] = 6400
+                displays[3]["x"] = -1600
+                var mode = displays[1]["mode"] as! [String: Any]
+                mode["id"] = 999
+                mode["refreshRate"] = 30
+                displays[1]["mode"] = mode
+            }
+            model.displayParametersChanged()
+        }
         try await waitUntil { !model.displayLifecycleTransitioning }
 
         let final = try core.inspect()
         XCTAssertEqual(final.journal?.state, RecoveryState.mirrored.rawValue)
         XCTAssertEqual(final.removals.filter { $0.isUnresolved }.count, 2)
         XCTAssertEqual(stagedTargets, [202, 303])
-        XCTAssertEqual(commits, 2)
+        XCTAssertEqual(commits, layoutDrift ? 1 : 2)
         XCTAssertEqual(ddcCalls, 0)
+        XCTAssertEqual(final.journal?.baselineIdentity, baseline.stableTopologyIdentity())
+        if layoutDrift {
+            XCTAssertEqual(origins, [101: [0, 0], 404: [-1920, 0]])
+            XCTAssertEqual(try journalStore.load().id, journal.id)
+            XCTAssertEqual(try journalStore.load().publicMirrorSession?.removals.map(\.id), removals.map(\.id))
+            XCTAssertTrue(final.observations.filter(\.isJournalTarget).allSatisfy { $0.state == .hiddenByPanelCtl })
+            XCTAssertFalse(final.showAvailable, "missing Show modes must not prevent a verified Hide")
+            model.displayWakeObserved(screensAwake: true)
+            XCTAssertEqual(commits, 1, "duplicate wake never replays the transaction")
+        }
     }
 
     func testSleepWakeRehidesExactRestoredTwoDisplaySessionOnceWithoutDDC() async throws {
@@ -2233,6 +2280,44 @@ final class DisplayHideAppTests: XCTestCase {
         try await Task.sleep(nanoseconds: 30_000_000)
         XCTAssertEqual(hideCalls, 0)
         XCTAssertTrue(model.displayLifecycleTransitioning)
+    }
+
+    func testWakeReadinessDeadlineCannotBeExtendedByDuplicateNotifications() async throws {
+        let defaults = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName(defaults)) }
+        let mirrored = sleepRemoval(id: "deadline-entry", target: displays[1], source: displays[2], resolved: false)
+        let box = StatusBox(multiHandoffStatus([mirrored], observations: [], journalID: "deadline-journal",
+                                               state: .hidden, baselineIdentity: "stable-baseline"))
+        var connected = displays
+        var clock = Date()
+        var writes = 0
+        let model = AppModel(
+            defaults: defaults, displayProvider: { connected }, now: { clock },
+            inspectHandoff: { box.value },
+            sleepResumeHideDisplay: { _, _, _ in writes += 1; return .notRequested },
+            quiesceProtection: { $0(true, nil) }, displayWakeSettleDelay: 0.01
+        )
+        try await waitUntil { !model.protectionQuiescencePending }
+        model.beginDisplaySleepTransition()
+        connected.remove(at: 1)
+        box.value = multiHandoffStatus([
+            sleepRemoval(id: mirrored.id, target: displays[1], source: displays[2], resolved: false,
+                         state: "needsAttention", canShow: false, topologyVerified: false)
+        ], observations: [], journalID: "deadline-journal", state: .recovery, baselineIdentity: "stable-baseline")
+        model.displayWakeObserved(screensAwake: true)
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertTrue(model.displayLifecycleTransitioning)
+        clock.addTimeInterval(14)
+        model.displayWakeObserved(screensAwake: true)
+        clock.addTimeInterval(2)
+        model.displayParametersChanged()
+        try await waitUntil { !model.displayLifecycleTransitioning }
+        XCTAssertEqual(writes, 0)
+        XCTAssertNotNil(model.displayResults[Self.targetKey])
+        connected = displays
+        model.displayWakeObserved(screensAwake: true)
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(writes, 0, "a late reconnect cannot revive expired intent")
     }
 
     func testSleepAgainDuringWakeDebounceKeepsIntentUntilFreshWake() async throws {
@@ -3572,14 +3657,16 @@ final class DisplayHideAppTests: XCTestCase {
         XCTAssertEqual(missingDisplay.outcome, .refused)
     }
 
-    private func appRecoverySnapshot(capturedAt: Date, mirroredIDs: Set<UInt32> = []) throws -> RecoverySnapshot {
+    private func appRecoverySnapshot(capturedAt: Date, mirroredIDs: Set<UInt32> = [],
+                                     modify: (inout [[String: Any]]) -> Void = { _ in }) throws -> RecoverySnapshot {
         let specs: [(id: UInt32, uuid: String, name: String, vendor: UInt32, model: UInt32,
                      serial: UInt32, x: Int32, width: Int, height: Int)] = [
             (101, Self.mainUUID, "Main OLED", 1, 1, 11, 0, 1920, 1080),
             (202, Self.targetUUID, "Target", 2, 2, 22, 1920, 2560, 1440),
-            (303, Self.sourceUUID, "Mirror source", 3, 3, 33, 4480, 1920, 1080)
+            (303, Self.sourceUUID, "Mirror source", 3, 3, 33, 4480, 1920, 1080),
+            (404, "00000000-0000-0000-0000-000000000004", "Other visible", 4, 4, 44, -1920, 1920, 1080)
         ]
-        let displays: [[String: Any]] = specs.map { spec in
+        var displays: [[String: Any]] = specs.map { spec in
             let hidden = mirroredIDs.contains(spec.id)
             return [
                 "uuid": spec.uuid, "id": spec.id, "name": spec.name,
@@ -3593,6 +3680,7 @@ final class DisplayHideAppTests: XCTestCase {
                                      "capturedAt": capturedAt.timeIntervalSinceReferenceDate]
             ]
         }
+        modify(&displays)
         let payload: [String: Any] = [
             "bootSession": "app-wake-fixture", "osBuild": "fixture-build", "userID": getuid(),
             "hostModel": "synthetic-host", "displays": displays

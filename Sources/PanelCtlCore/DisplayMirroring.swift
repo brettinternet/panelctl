@@ -50,13 +50,29 @@ struct MirrorTransaction {
     }
     var cancel: (CGDisplayConfigRef) -> Void = { _ = CGCancelDisplayConfiguration($0) }
 
+    var stageOrigin: (CGDisplayConfigRef, UInt32, Int32, Int32) throws -> Void = {
+        try check(CGConfigureDisplayOrigin($0, $1, $2, $3), "stage wake origin")
+    }
+
     func apply(target: UInt32, source: UInt32, revalidate: () throws -> Void) throws {
+        try apply(removals: [(target, source)], origins: [], revalidate: revalidate)
+    }
+
+    func apply(removals: [(UInt32, UInt32)], origins: [(UInt32, Int32, Int32)],
+               revalidate: () throws -> Void) throws {
         try revalidate()
         let config = try begin()
         var consumed = false
         defer { if !consumed { cancel(config) } }
         try revalidate()
-        try stage(config, target, source)
+        for (target, source) in removals {
+            try revalidate()
+            try stage(config, target, source)
+        }
+        for (id, x, y) in origins {
+            try revalidate()
+            try stageOrigin(config, id, x, y)
+        }
         try revalidate()
         consumed = true
         try complete(config, .forSession)
@@ -279,6 +295,13 @@ struct MirrorController {
         try store.lock()
         defer { store.unlock() }
 
+        if let wakeExpectation, !wakeExpectation.resumeRemovalIDs.isEmpty {
+            guard expectedTarget == wakeExpectation.target, expectedSource == wakeExpectation.source else {
+                throw RecoveryError.unsafe("wake resume selection changed")
+            }
+            return try resumeWakeSession(wakeExpectation, store: store)
+        }
+
         let available = try records()
         guard Set(available.map(\.id)).count == available.count,
               Set(available.compactMap { $0.uuid?.lowercased() }).count == available.count,
@@ -451,6 +474,140 @@ struct MirrorController {
             journal.failure = String(describing: error)
             try? store.save(journal)
             throw fallback(error, store: store, selector: target.uuid)
+        }
+    }
+
+    /// Reapply only the live app's pre-sleep removal set. Follower modes are
+    /// negotiated by mirroring, not restored; keep their exact saved modes for Show.
+    private func resumeWakeSession(_ expectation: DisplayHideWakeExpectation,
+                                   store: RecoveryStore) throws -> RecoveryJournal {
+        var journal = try store.load()
+        let before = try engine.capture()
+        guard journal.id.uuidString.caseInsensitiveCompare(expectation.journalID) == .orderedSame,
+              journal.wakeResumeIdentity() == expectation.journalIdentity,
+              before.stableTopologyIdentity() == expectation.observedTopologyIdentity,
+              var session = journal.publicMirrorSession,
+              session.baseline.stableTopologyIdentity() == expectation.baselineIdentity,
+              journal.disabledByUsID == nil, !journal.state.resolved else {
+            throw RecoveryError.unsafe("wake resume journal, baseline or topology changed")
+        }
+        let ids = Set(expectation.resumeRemovalIDs.map { $0.lowercased() })
+        let removals = session.removals.filter { ids.contains($0.id.uuidString.lowercased()) }
+        guard ids.count == expectation.resumeRemovalIDs.count, removals.count == ids.count,
+              Set(session.removals.filter { !$0.state.resolved }.map { $0.id.uuidString.lowercased() }) == ids,
+              removals.allSatisfy({ ($0.state == .mirrored || $0.state == .needsAttention) && $0.restoreFrom == nil }),
+              removals.contains(where: {
+                  $0.targetID == expectation.target.displayID && $0.targetUUID == expectation.target.uuid &&
+                  $0.sourceID == expectation.source.displayID && $0.sourceUUID == expectation.source.uuid
+              }) else {
+            throw RecoveryError.unsafe("wake resume removal intent changed or a Show was interrupted")
+        }
+        try session.baseline.validateRestoration(to: before)
+        let targets = Set(removals.map(\.targetUUID))
+        guard targets.count == removals.count,
+              removals.allSatisfy({ !targets.contains($0.sourceUUID) }),
+              let savedMain = session.baseline.displays.first(where: \.main),
+              let mainUUID = targets.contains(savedMain.uuid)
+                ? removals.first(where: { $0.targetUUID == savedMain.uuid })?.sourceUUID : savedMain.uuid,
+              let main = session.baseline.displays.first(where: { $0.uuid == mainUUID }),
+              before.displays.filter(\.main).count == 1 else {
+            throw RecoveryError.unsafe("wake resume has no unambiguous visible main display")
+        }
+        // Accept lost/intact owned mirrors, not external mirrors or a mode
+        // change on an unrelated visible desktop.
+        for display in before.displays {
+            let saved = session.baseline.displays.first { $0.uuid == display.uuid }!
+            if let removal = removals.first(where: { $0.targetUUID == display.uuid }) {
+                guard !display.builtin,
+                      (display.active && display.mirrorUUID == nil) ||
+                        (!display.active && display.mirrorUUID == removal.sourceUUID) else {
+                    throw RecoveryError.unsafe("wake resume target is unavailable or has an unrelated mirror")
+                }
+            } else {
+                guard display.active == saved.active, display.mirrorUUID == saved.mirrorUUID,
+                      display.mode == saved.mode else {
+                    throw RecoveryError.unsafe("wake resume changed an unrelated desktop or its mode")
+                }
+            }
+        }
+        let origins = try session.baseline.displays.filter { !targets.contains($0.uuid) && $0.active }
+            .sorted { $0.uuid != mainUUID && $1.uuid == mainUUID }
+            .map { display -> (UInt32, Int32, Int32) in
+                guard let x = Int32(exactly: Int64(display.x) - Int64(main.x)),
+                      let y = Int32(exactly: Int64(display.y) - Int64(main.y)) else {
+                    throw RecoveryError.unsafe("wake resume origin is unrepresentable")
+                }
+                return (display.id, x, y)
+            }
+        func validateAwake() throws {
+            let available = try records()
+            guard Set(available.map(\.id)).count == available.count,
+                  Set(available.compactMap { $0.uuid?.lowercased() }).count == available.count,
+                  Set(available.filter(\.online).map(\.id)) == Set(before.displays.map(\.id)),
+                  available.contains(where: { matches(expectation.target, record: $0) }),
+                  available.contains(where: { matches(expectation.source, record: $0) }),
+                  before.displays.allSatisfy({ saved in
+                      available.contains { record in
+                          record.id == saved.id && record.uuid?.lowercased() == saved.uuid &&
+                          record.vendor == saved.vendor && record.model == saved.model && record.serial == saved.serial &&
+                          record.online && !record.asleep && record.active == saved.active
+                      }
+                  }) else {
+                throw RecoveryError.unsafe("wake resume displays are not awake with the captured identities")
+            }
+        }
+        try validateAwake()
+        // Keep the original journal/baseline/removal IDs. Intent is durable
+        // before staging, and a failed/consumed transaction is never retried.
+        for index in session.removals.indices where ids.contains(session.removals[index].id.uuidString.lowercased()) {
+            session.removals[index].state = .captured
+            session.removals[index].failure = nil
+        }
+        journal.publicMirrorSession = session
+        journal.state = .captured
+        journal.trigger = "wake-resume"
+        journal.failure = nil
+        try store.save(journal)
+        let pending = journal
+        do {
+            try transaction.apply(removals: removals.map { ($0.targetID, $0.sourceID) }, origins: origins) {
+                try before.verify(engine.capture())
+                try validateAwake()
+                guard Self.sameStoredJournal(pending, try store.load()) else {
+                    throw RecoveryError.unsafe("wake resume journal changed at the writer boundary")
+                }
+            }
+            try engine.converge {
+                let observed = try engine.capture()
+                guard MirrorSessionTopology.matches(baseline: session.baseline, removals: session.removals, current: observed),
+                      observed.displays.first(where: \.main)?.uuid == mainUUID,
+                      origins.allSatisfy({ id, x, y in
+                          observed.displays.contains { $0.id == id && $0.x == x && $0.y == y &&
+                              $0.mode == before.displays.first(where: { $0.id == id })?.mode }
+                      }) else { throw RecoveryError.unsafe("wake resume mirrors or visible layout did not verify") }
+            }
+            guard Self.sameStoredJournal(pending, try store.load()) else {
+                throw RecoveryError.unsafe("wake resume journal changed during verification")
+            }
+            for index in session.removals.indices where ids.contains(session.removals[index].id.uuidString.lowercased()) {
+                session.removals[index].state = .mirrored
+            }
+            journal.publicMirrorSession = session
+            journal.state = .mirrored
+            try store.save(journal)
+            return journal
+        } catch {
+            if let durable = try? store.load(), Self.sameStoredJournal(pending, durable) {
+                for index in session.removals.indices where ids.contains(session.removals[index].id.uuidString.lowercased()) {
+                    session.removals[index].state = .needsAttention
+                    session.removals[index].failure = error.localizedDescription
+                }
+                journal.publicMirrorSession = session
+                journal.state = .needsAttention
+                journal.failure = error.localizedDescription
+                try? store.save(journal)
+            }
+            throw error
         }
     }
 
@@ -898,6 +1055,10 @@ struct MirrorController {
             try? store.save(journal)
             return
         }
+        // A wake transaction also promises exact visible modes/origins. The
+        // ordinary mirror predicate is weaker and must not erase its failed
+        // verification or an interrupted commit on the next inspection.
+        if journal.trigger == "wake-resume", journal.state != .mirrored, !journal.state.resolved { return }
         var changed = false
         if MirrorSessionTopology.matches(baseline: session.baseline, removals: session.removals, current: current) {
             for index in session.removals.indices where !session.removals[index].state.resolved {

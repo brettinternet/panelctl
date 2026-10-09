@@ -157,6 +157,132 @@ final class DisplayHideTests: XCTestCase {
         XCTAssertNoThrow(try baseline.verify(topology.snapshot))
     }
 
+    func testWakeLayoutRepairRetainsBaselineAndRefusesChangedWriterEvidence() throws {
+        // A new automatic write path must not act on a changed identity, an
+        // unrelated mirror/mode, or a journal/topology changed after inspection.
+        for scenario in ["success", "identity", "external-mirror", "visible-mode", "journal-before",
+                         "journal-after-begin", "topology-after-stage", "commit-failure", "wrong-visible-mode",
+                         "wrong-visible-origin"] {
+            store = RecoveryStore(url: directory.appendingPathComponent("wake-\(scenario).json"))
+            let status = try prepareWakeResetStatus(layoutDrift: true)
+            let original = try store.load()
+            var expectation = try wakeExpectation(status, targetUUID: targetUUID, resumeSession: true)
+            if ["identity", "external-mirror", "visible-mode"].contains(scenario) {
+                let raw = try JSONEncoder().encode(topology.snapshot)
+                var payload = try JSONSerialization.jsonObject(with: raw) as! [String: Any]
+                var displays = payload["displays"] as! [[String: Any]]
+                if scenario == "identity" { displays[1]["serial"] = 999 }
+                if scenario == "external-mirror" { displays[1]["mirrorUUID"] = otherUUID }
+                if scenario == "visible-mode" {
+                    var mode = displays[0]["mode"] as! [String: Any]
+                    mode["refreshRate"] = 30
+                    displays[0]["mode"] = mode
+                }
+                payload["displays"] = displays
+                topology.snapshot = try JSONDecoder().decode(RecoverySnapshot.self,
+                    from: JSONSerialization.data(withJSONObject: payload))
+                // Even a fresh inspection token cannot authorize those changes.
+                expectation = DisplayHideWakeExpectation(
+                    journalID: expectation.journalID, journalIdentity: expectation.journalIdentity,
+                    baselineIdentity: expectation.baselineIdentity,
+                    observedTopologyIdentity: try XCTUnwrap(topology.snapshot.stableTopologyIdentity()),
+                    target: expectation.target, source: expectation.source, resumeRemovalIDs: expectation.resumeRemovalIDs
+                )
+            }
+            func changeJournal() throws {
+                var changed = try store.load()
+                changed.failure = "another operation changed the journal"
+                try store.save(changed)
+            }
+            if scenario == "journal-before" {
+                try store.lock()
+                try changeJournal()
+                store.unlock()
+            }
+            var staged: [UInt32] = []
+            var origins: [UInt32: [Int32]] = [:]
+            var commits = 0
+            var cancels = 0
+            let transaction = MirrorTransaction(
+                begin: {
+                    if scenario == "journal-after-begin" { try changeJournal() }
+                    return OpaquePointer(bitPattern: 1)!
+                },
+                stage: { _, target, source in
+                    XCTAssertEqual(source, self.sourceID)
+                    staged.append(target)
+                    if scenario == "topology-after-stage" {
+                        self.topology.snapshot = try self.snapshot { $0[0]["x"] = 999 }
+                    }
+                },
+                complete: { _, scope in
+                    commits += 1
+                    XCTAssertEqual(scope, .forSession)
+                    if scenario == "commit-failure" { throw RecoveryError.unsafe("commit failed") }
+                    self.topology.snapshot = try self.snapshot { displays in
+                        for index in displays.indices {
+                            let id = (displays[index]["id"] as! NSNumber).uint32Value
+                            if staged.contains(id) {
+                                displays[index]["mirrorUUID"] = self.sourceUUID
+                                displays[index]["active"] = false
+                            }
+                            if let origin = origins[id] {
+                                displays[index]["x"] = origin[0]
+                                displays[index]["y"] = origin[1]
+                            }
+                        }
+                        if scenario == "wrong-visible-mode" {
+                            var mode = displays[0]["mode"] as! [String: Any]
+                            mode["refreshRate"] = 30
+                            displays[0]["mode"] = mode
+                        }
+                        if scenario == "wrong-visible-origin" { displays[0]["x"] = 10 }
+                    }
+                },
+                cancel: { _ in cancels += 1 },
+                stageOrigin: { _, id, x, y in origins[id] = [x, y] }
+            )
+            let core = controller(transaction: transaction)
+            if scenario == "success" {
+                XCTAssertNoThrow(try core.hide(target: expectation.target, source: expectation.source,
+                                               awayInput: nil, wakeExpectation: expectation))
+                XCTAssertEqual(Set(staged), Set([targetID, 9]))
+                XCTAssertEqual(origins, [sourceID: [0, 0]])
+                XCTAssertEqual(commits, 1)
+                XCTAssertTrue(try core.inspect().removals.allSatisfy { $0.topologyVerified && $0.state == "mirrored" })
+            } else {
+                XCTAssertThrowsError(try core.hide(target: expectation.target, source: expectation.source,
+                                                   awayInput: nil, wakeExpectation: expectation), scenario)
+                let committed = scenario == "commit-failure" || scenario.hasPrefix("wrong-visible-")
+                XCTAssertEqual(commits, committed ? 1 : 0, scenario)
+                if scenario != "topology-after-stage" && !committed {
+                    XCTAssertTrue(staged.isEmpty, scenario)
+                }
+                XCTAssertEqual(cancels, ["journal-after-begin", "topology-after-stage"].contains(scenario) ? 1 : 0)
+            }
+            let retained = try store.load()
+            XCTAssertEqual(retained.id, original.id)
+            XCTAssertEqual(retained.publicMirrorSession?.baseline, original.publicMirrorSession?.baseline)
+            XCTAssertEqual(retained.publicMirrorSession?.removals.map(\.id), original.publicMirrorSession?.removals.map(\.id))
+            if scenario.hasPrefix("journal-") {
+                XCTAssertEqual(retained.failure, "another operation changed the journal")
+            }
+            if scenario == "commit-failure" || scenario == "topology-after-stage" || scenario.hasPrefix("wrong-visible-") {
+                XCTAssertEqual(retained.state, .needsAttention)
+                XCTAssertEqual(try core.inspect().journal?.state, "needsAttention",
+                               "inspection cannot replace the stronger wake postcondition with mirror-only verification")
+                if scenario.hasPrefix("wrong-visible-") {
+                    var interrupted = retained
+                    interrupted.state = .captured
+                    try store.lock()
+                    try store.save(interrupted)
+                    store.unlock()
+                    XCTAssertEqual(try core.inspect().journal?.state, "captured", "an interrupted commit also retains recovery")
+                }
+            }
+        }
+    }
+
     func testExplicitShowRecoversMissingModeAfterInputReturnWithoutTreatingOnlineAsIntent() throws {
         for scenario in ["mirrors-return", "separate", "unverified", "late-mode", "failed", "no-ddc", "no-input",
                          "timeout", "unstable", "identity-before", "identity-after", "journal-after", "other-mode"] {
@@ -786,7 +912,7 @@ final class DisplayHideTests: XCTestCase {
         XCTAssertEqual(writerCount, 0)
     }
 
-    private func prepareWakeResetStatus() throws -> DisplayHideStatus {
+    private func prepareWakeResetStatus(layoutDrift: Bool = false) throws -> DisplayHideStatus {
         let baseline = try timestampedSnapshot(Date(timeIntervalSince1970: 1_700_000_000))
         let firstHidden = try timestampedSnapshot(Date(timeIntervalSince1970: 1_700_000_001)) { displays in
             displays[1]["mirrorUUID"] = self.sourceUUID
@@ -812,15 +938,28 @@ final class DisplayHideTests: XCTestCase {
         XCTAssertEqual(try controller().inspect().removals.filter(\.isUnresolved).count, 2)
 
         // New capture timestamps model macOS restoring the saved baseline after wake.
-        topology.snapshot = try timestampedSnapshot(Date(timeIntervalSince1970: 1_800_000_000))
+        topology.snapshot = try timestampedSnapshot(Date(timeIntervalSince1970: 1_800_000_000)) { displays in
+            if layoutDrift {
+                displays[0]["main"] = false
+                displays[0]["x"] = 2560
+                displays[1]["main"] = true
+                displays[1]["x"] = 0
+                displays[2]["x"] = 6400
+            }
+        }
         let status = try controller().inspect()
-        XCTAssertEqual(status.journal?.state, RecoveryState.verified.rawValue)
-        XCTAssertTrue(status.removals.allSatisfy { !$0.isUnresolved && $0.state == "restored" })
-        XCTAssertEqual(status.journal?.baselineIdentity, status.journal?.observedTopologyIdentity)
+        if layoutDrift {
+            XCTAssertTrue(status.removals.allSatisfy { $0.isUnresolved && $0.state == "needsAttention" })
+        } else {
+            XCTAssertEqual(status.journal?.state, RecoveryState.verified.rawValue)
+            XCTAssertTrue(status.removals.allSatisfy { !$0.isUnresolved && $0.state == "restored" })
+            XCTAssertEqual(status.journal?.baselineIdentity, status.journal?.observedTopologyIdentity)
+        }
         return status
     }
 
-    private func wakeExpectation(_ status: DisplayHideStatus, targetUUID: String) throws -> DisplayHideWakeExpectation {
+    private func wakeExpectation(_ status: DisplayHideStatus, targetUUID: String,
+                                 resumeSession: Bool = false) throws -> DisplayHideWakeExpectation {
         let journal = try XCTUnwrap(status.journal)
         let removal = try XCTUnwrap(status.removals.first {
             $0.target.uuid.caseInsensitiveCompare(targetUUID) == .orderedSame
@@ -830,7 +969,8 @@ final class DisplayHideTests: XCTestCase {
             journalIdentity: try XCTUnwrap(journal.journalIdentity),
             baselineIdentity: try XCTUnwrap(journal.baselineIdentity),
             observedTopologyIdentity: try XCTUnwrap(journal.observedTopologyIdentity),
-            target: removal.target, source: removal.source
+            target: removal.target, source: removal.source,
+            resumeRemovalIDs: resumeSession ? status.removals.filter(\.isUnresolved).map(\.id) : []
         )
     }
 

@@ -119,6 +119,10 @@ Show: restore layout → verify → switch input back (optional)
   windows go.
 - Show restores layout and display modes, not HDR, color profiles, windows or
   Spaces.
+- While the app stays running, sleep/wake preserves the hidden set when the
+  same displays return safely. Wake can repair lost mirrors and shifted layout
+  without switching monitor inputs; identity changes or failed verification
+  remain in recovery. See [wake recovery](display-recovery.md#sleep-wake-and-reboot).
 - With **Don't switch**, Hide and Show send no DDC commands. Use the monitor's
   input button if needed.
 
