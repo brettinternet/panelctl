@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0
+
+- Redesign the app icon and menu-bar mark.
+- Preserve hidden displays across wake layout drift.
+- Build and test releases with Xcode 26.6 on macOS 26 runners.
+
 ## 0.7.0
 
 - Add a standalone Move windows action and opt-in Keep windows off for individual hides, with explicit Accessibility permission controls.
