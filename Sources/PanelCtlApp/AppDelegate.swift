@@ -357,10 +357,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         configureStatusItem()
         guard let statusItem else { return }
-        let image = NSImage(
-            systemSymbolName: model.statusSystemImage,
+        let image = MenuImage.named(
+            model.statusImageName,
             accessibilityDescription: model.statusSummary
-        ) ?? NSImage(systemSymbolName: "shield", accessibilityDescription: "PanelCtl")
+        ) ?? MenuImage.named(MenuImage.displays, accessibilityDescription: "PanelCtl")
         image?.isTemplate = true
         statusItem.button?.image = image
         statusItem.button?.imagePosition = .imageOnly
@@ -380,10 +380,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
 
         let status = infoItem(model.statusSummary)
-        status.image = NSImage(
-            systemSymbolName: model.statusSystemImage,
-            accessibilityDescription: nil
-        )
+        status.image = MenuImage.named(model.statusImageName, accessibilityDescription: nil)
         menu.addItem(status)
 
         if let message = model.runtimeState.detailMessage {
@@ -529,10 +526,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.refreshHandoffStatus()
         guard let status = menu.items.first else { return }
         setInfoTitle(model.statusSummary, of: status)
-        status.image = NSImage(
-            systemSymbolName: model.statusSystemImage,
-            accessibilityDescription: nil
-        )
+        status.image = MenuImage.named(model.statusImageName, accessibilityDescription: nil)
         statusItem?.button?.toolTip = "PanelCtl — \(model.statusSummary)"
     }
 

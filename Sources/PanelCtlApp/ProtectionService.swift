@@ -41,15 +41,16 @@ enum ProtectionRuntimeState: Equatable {
         }
     }
 
-    var systemImage: String {
+    /// A `MenuImage` name.
+    var imageName: String {
         switch self {
-        case .disabled: return "shield"
+        case .disabled: return MenuImage.displays
         case .snoozed, .disconnectPaused: return "pause.circle.fill"
-        case .starting, .waiting, .waitingForInput, .waitingForPlayback: return "shield.fill"
+        case .starting, .waiting, .waitingForInput, .waitingForPlayback: return MenuImage.displaysFill
         case .blackedOut: return "rectangle.fill"
         case .sleeping: return "moon.fill"
-        case .stopping: return "shield"
-        case .waitingForDisplays: return "shield"
+        case .stopping: return MenuImage.displays
+        case .waitingForDisplays: return MenuImage.displays
         case .failed: return "exclamationmark.triangle.fill"
         }
     }

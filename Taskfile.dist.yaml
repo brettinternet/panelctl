@@ -91,6 +91,18 @@ tasks:
           "$x86_64_bin/panelctl" \
           "{{.APP_PATH}}"
 
+  build:icon:
+    desc: Render the app icon images from Packaging/AppIcon.icon (Xcode 26+)
+    vars:
+      ICON_BUILD_DIR: .build/app-icon
+    cmds:
+      - /bin/test ! -e "{{.ICON_BUILD_DIR}}" || /usr/bin/trash "{{.ICON_BUILD_DIR}}"
+      - mkdir -p "{{.ICON_BUILD_DIR}}"
+      # Release CI's Xcode can't compile .icon documents, so ship the legacy renditions.
+      - xcrun actool Packaging/AppIcon.icon --compile "{{.ICON_BUILD_DIR}}" --platform macosx --minimum-deployment-target 13.0 --app-icon AppIcon --standalone-icon-behavior all --output-partial-info-plist "{{.ICON_BUILD_DIR}}/partial.plist" --output-format human-readable-text
+      - iconutil -c iconset -o "{{.ICON_BUILD_DIR}}/AppIcon.iconset" "{{.ICON_BUILD_DIR}}/AppIcon.icns"
+      - cp "{{.ICON_BUILD_DIR}}"/AppIcon.iconset/*.png Packaging/Assets.xcassets/AppIcon.appiconset/
+
   copy:release:
     desc: Copy the built app release to the Applications folder
     deps: ["build:release"]

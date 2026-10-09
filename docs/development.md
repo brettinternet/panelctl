@@ -47,6 +47,12 @@ PANELCTL_DISCONNECT_FIXTURE_OUTPUT=/tmp/panelctl-disconnect swift test --disable
 SwiftUI exposes its accessibility tree only to a connected assistive client,
 so native UI tests drive AppKit controls and check the rest through the model.
 
+## App icon
+
+`Packaging/AppIcon.icon` is the Icon Composer source. After editing it, run
+`task build:icon` (Xcode 26+) to refresh the app icon images, which the README
+also shows. The menu-bar mark in `MenuImage.swift` follows the same design.
+
 ## Release
 
 The version in `Sources/PanelCtlCore/CLIHelp.swift` must match the tag's base

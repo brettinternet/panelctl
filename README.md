@@ -1,5 +1,5 @@
 <p align="center">
-  <img width="128" src="Packaging/AppIcon.png" style="padding:0.5rem;">
+  <img width="128" src="Packaging/Assets.xcassets/AppIcon.appiconset/icon_128x128@2x.png" style="padding:0.5rem;">
 </p>
 
 <h1 align="center">panelctl</h1>

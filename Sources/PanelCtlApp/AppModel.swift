@@ -4433,13 +4433,14 @@ final class AppModel: ObservableObject {
         return CLIHelp.version.replacingOccurrences(of: "panelctl ", with: "")
     }
 
-    var statusSystemImage: String {
+    /// A `MenuImage` name.
+    var statusImageName: String {
         if !blackedOutDisplayIDs.isEmpty { return "rectangle.fill" }
         if disconnectAutomationPaused {
             return disconnectInspectionFailure != nil || protectionQuiescenceFailure != nil
                 ? "exclamationmark.triangle.fill" : "pause.circle.fill"
         }
-        return runtimeState.systemImage
+        return runtimeState.imageName
     }
 
     var statusSummary: String {
